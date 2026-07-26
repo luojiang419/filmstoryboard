@@ -2,6 +2,7 @@
 
 - 故事板拼图页新增“高清重绘”：可对当前画板所有图片按 `16:9`、`2K`、`Gemini 3 Pro Image` 并发重绘，返回后自动替换原格图片。
 - Gemini 图像生成接入稳定 `gemini-3-pro-image` 的 Interactions API；旧 preview 路由保留为历史记录兼容。
+- 修复诗影等第三方 Gemini 代理不支持 `/v1beta/interactions` 时高清重绘全部失败的问题；非 Google Gemini 地址会自动走 preview `generateContent` 兼容路由。
 - 多宫格裁切页移除会烧录到裁切结果图片里的数字编号，避免故事板再次编号时产生重复叠加；裁切画布标尺数字仍保留。
 - 修复浅色模式下导出 PNG/JPG/PDF 仍使用深色画布的问题，导出文件现在跟随当前主题色板。
 - 修复浅色模式下导出预览舞台背景仍为黑色的问题。

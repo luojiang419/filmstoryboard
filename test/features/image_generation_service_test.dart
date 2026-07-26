@@ -403,6 +403,75 @@ void main() {
     );
   });
 
+  test('第三方Gemini地址对稳定图像模型使用preview generateContent兼容路由', () async {
+    final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
+    addTearDown(() => root.delete(recursive: true));
+    final source = await _writeImage(root, 'reference.png');
+    final output = Directory('${root.path}${Platform.pathSeparator}output');
+
+    Map<String, dynamic>? submitBody;
+    final resultBytes = List<int>.generate(384, (index) => index % 197);
+    final encodedResult = base64Encode(resultBytes);
+    final service = ImageGenerationService(
+      client: MockClient((request) async {
+        expect(request.url.host, 'www.shiying-api.com');
+        expect(
+          request.url.path,
+          '/v1beta/models/gemini-3-pro-image-preview:generateContent',
+        );
+        expect(request.headers['authorization'], 'Bearer gemini-key');
+        expect(request.headers.containsKey('x-goog-api-key'), isFalse);
+        submitBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'candidates': [
+              {
+                'content': {
+                  'parts': [
+                    {
+                      'inlineData': {
+                        'mimeType': 'image/png',
+                        'data': encodedResult,
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            'modelVersion': 'gemini-3-pro-image-preview',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    addTearDown(service.close);
+
+    final result = await service.generateEditedImage(
+      ImageGenerationRequest(
+        provider: _providerFor(
+          model: 'gemini-3-pro-image',
+          apiBaseUrl: 'https://www.shiying-api.com',
+          apiKey: 'gemini-key',
+        ),
+        model: 'gemini-3-pro-image',
+        prompt: '保留构图并高清重绘',
+        aspectRatio: '16:9',
+        imageSize: '2K',
+        quality: 'auto',
+        referenceImagePaths: [source.path],
+        outputDirectory: output,
+      ),
+    );
+
+    final generationConfig =
+        submitBody?['generationConfig'] as Map<String, dynamic>;
+    final imageConfig = generationConfig['imageConfig'] as Map<String, dynamic>;
+    expect(imageConfig, containsPair('aspectRatio', '16:9'));
+    expect(imageConfig, containsPair('imageSize', '2K'));
+    expect(await File(result.localPath).readAsBytes(), resultBytes);
+  });
+
   test('图片修改仍然要求至少一张参考图', () async {
     final root = await Directory.systemTemp.createTemp('image_gen_service_');
     addTearDown(() => root.delete(recursive: true));

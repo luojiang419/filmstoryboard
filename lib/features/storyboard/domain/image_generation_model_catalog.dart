@@ -40,6 +40,7 @@ class ImageGenerationModelDescriptor {
     this.supportsReferenceImages = true,
     this.maxReferenceImages = 10,
     this.referenceApiModel,
+    this.geminiGenerateContentFallbackApiModel,
   });
 
   /// Stable app-side selection id. Provider prefixes prevent model-id clashes.
@@ -58,6 +59,7 @@ class ImageGenerationModelDescriptor {
 
   /// Some providers use a distinct model id for image editing.
   final String? referenceApiModel;
+  final String? geminiGenerateContentFallbackApiModel;
 
   bool get isApiMart => protocol == ImageGenerationProviderProtocol.apiMart;
   bool get supportsQuality => qualities.length > 1;
@@ -182,6 +184,7 @@ class ImageGenerationCatalog {
       aspectRatios: defaultAspectRatios,
       resolutions: defaultResolutions,
       maxReferenceImages: 11,
+      geminiGenerateContentFallbackApiModel: 'gemini-3-pro-image-preview',
     ),
     ImageGenerationModelDescriptor(
       id: 'gemini-3.1-flash-image',
@@ -194,6 +197,7 @@ class ImageGenerationCatalog {
       aspectRatios: [..._wideAspectRatios, '1:4', '4:1', '1:8', '8:1'],
       resolutions: ['0.5K', '1K', '2K', '4K'],
       maxReferenceImages: 14,
+      geminiGenerateContentFallbackApiModel: 'gemini-3.1-flash-image-preview',
     ),
     ImageGenerationModelDescriptor(
       id: 'gemini-3-pro-image-preview',

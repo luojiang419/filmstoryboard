@@ -615,6 +615,15 @@ class ImageGenerationService {
     ImageGenerationModelDescriptor descriptor,
   ) {
     if (descriptor.route == ImageGenerationApiRoute.geminiInteractions) {
+      final fallbackApiModel = descriptor.geminiGenerateContentFallbackApiModel;
+      if (!_isGoogleGeminiEndpoint(request.apiBaseUrl) &&
+          fallbackApiModel != null) {
+        return _generateGeminiGenerateContentImage(
+          request,
+          descriptor,
+          apiModelOverride: fallbackApiModel,
+        );
+      }
       return _generateGeminiInteractionImage(request, descriptor);
     }
     return _generateGeminiGenerateContentImage(request, descriptor);
@@ -668,8 +677,9 @@ class ImageGenerationService {
 
   Future<ImageGenerationResult> _generateGeminiGenerateContentImage(
     ImageGenerationRequest request,
-    ImageGenerationModelDescriptor descriptor,
-  ) async {
+    ImageGenerationModelDescriptor descriptor, {
+    String? apiModelOverride,
+  }) async {
     final parts = <Map<String, Object?>>[
       {'text': request.prompt.trim()},
     ];
@@ -693,7 +703,7 @@ class ImageGenerationService {
       });
     }
 
-    final model = descriptor.apiModel.trim();
+    final model = (apiModelOverride ?? descriptor.apiModel).trim();
     final endpoint = _apiUri(
       request.apiBaseUrl,
       '/v1beta/models/${Uri.encodeComponent(model)}:generateContent',
