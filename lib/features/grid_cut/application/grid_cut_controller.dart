@@ -16,7 +16,6 @@ import '../../../core/services/file_explorer_service.dart';
 import '../../../core/services/workspace_snapshot_save_queue.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../projects/data/project_path_resolver.dart';
-import '../../settings/application/settings_controller.dart';
 import '../data/grid_crop_service.dart';
 import '../data/grid_detection_service.dart';
 import '../domain/grid_cut_models.dart';
@@ -32,7 +31,6 @@ final gridCutControllerProvider = Provider<GridCutController>(
     final controller = GridCutController(
       directories: ref.watch(projectDirectoriesProvider),
       database: ref.watch(appDatabaseProvider),
-      settingsController: ref.watch(settingsControllerProvider),
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
       cutResultsChangeNotifier: ref.watch(cutResultsChangeNotifierProvider),
@@ -53,14 +51,12 @@ class GridCutController extends ValueNotifier<GridCutState> {
   GridCutController({
     required WorkspaceDirectories directories,
     required AppDatabase database,
-    required SettingsController settingsController,
     required GridDetectionService detectionService,
     required GridCropService cropService,
     ValueNotifier<int>? cutResultsChangeNotifier,
     String projectName = '项目',
   }) : _directories = directories,
        _database = database,
-       _settingsController = settingsController,
        _detectionService = detectionService,
        _cropService = cropService,
        _cutResultsChangeNotifier = cutResultsChangeNotifier,
@@ -90,7 +86,6 @@ class GridCutController extends ValueNotifier<GridCutState> {
 
   final WorkspaceDirectories _directories;
   final AppDatabase _database;
-  final SettingsController _settingsController;
   final GridDetectionService _detectionService;
   final GridCropService _cropService;
   final ValueNotifier<int>? _cutResultsChangeNotifier;
@@ -634,17 +629,12 @@ class GridCutController extends ValueNotifier<GridCutState> {
     final outputDirectory = Directory(
       p.join(_directories.cuts.path, image.baseName),
     );
-    final settings = _settingsController.value;
     final exported = await _cropService.exportCells(
       bytes: bytes,
       layout: image.layout,
       cellIndexes: indexes,
       outputDirectory: outputDirectory,
       baseName: image.baseName,
-      numberEnabled: settings.cutImageNumberEnabled,
-      numberPosition: settings.cutImageNumberPosition,
-      numberBackgroundOpacity: settings.cutImageNumberBackgroundOpacity,
-      numberTextScale: settings.cutImageNumberTextScale,
     );
 
     _database

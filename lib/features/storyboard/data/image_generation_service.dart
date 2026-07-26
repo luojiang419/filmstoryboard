@@ -613,6 +613,62 @@ class ImageGenerationService {
   Future<ImageGenerationResult> _generateGeminiImage(
     ImageGenerationRequest request,
     ImageGenerationModelDescriptor descriptor,
+  ) {
+    if (descriptor.route == ImageGenerationApiRoute.geminiInteractions) {
+      return _generateGeminiInteractionImage(request, descriptor);
+    }
+    return _generateGeminiGenerateContentImage(request, descriptor);
+  }
+
+  Future<ImageGenerationResult> _generateGeminiInteractionImage(
+    ImageGenerationRequest request,
+    ImageGenerationModelDescriptor descriptor,
+  ) async {
+    final input = <Map<String, Object?>>[
+      {'type': 'text', 'text': request.prompt.trim()},
+    ];
+    for (final reference in request.referenceImagePaths) {
+      final normalized = reference.trim();
+      if (normalized.isEmpty) {
+        continue;
+      }
+      input.add(await _geminiInteractionImageInput(normalized));
+    }
+
+    final responseFormat = <String, Object?>{
+      'type': 'image',
+      'aspect_ratio': request.aspectRatio.trim() == 'auto'
+          ? '1:1'
+          : _normalizeDefaultAspectRatio(request.aspectRatio),
+      'image_size': _normalizeDefaultImageSize(request.imageSize),
+    };
+    final endpoint = _apiUri(request.apiBaseUrl, '/v1beta/interactions');
+    final responseData = await _postGeminiJson(
+      endpoint,
+      apiBaseUrl: request.apiBaseUrl,
+      apiKey: request.apiKey,
+      body: {
+        'model': descriptor.apiModel.trim(),
+        'input': input,
+        'response_format': responseFormat,
+      },
+    );
+    final inlineImage =
+        _geminiInteractionImage(responseData) ??
+        _geminiInlineImage(responseData);
+    if (inlineImage == null) {
+      throw HttpException(_errorMessage(responseData, 'Gemini API 未返回图片数据'));
+    }
+    return _saveGeminiInlineResult(
+      inlineImage: inlineImage,
+      request: request,
+      responseData: responseData,
+    );
+  }
+
+  Future<ImageGenerationResult> _generateGeminiGenerateContentImage(
+    ImageGenerationRequest request,
+    ImageGenerationModelDescriptor descriptor,
   ) async {
     final parts = <Map<String, Object?>>[
       {'text': request.prompt.trim()},
@@ -666,6 +722,18 @@ class ImageGenerationService {
       throw HttpException(_errorMessage(responseData, 'Gemini API 未返回图片数据'));
     }
 
+    return _saveGeminiInlineResult(
+      inlineImage: inlineImage,
+      request: request,
+      responseData: responseData,
+    );
+  }
+
+  Future<ImageGenerationResult> _saveGeminiInlineResult({
+    required _GeminiInlineImage inlineImage,
+    required ImageGenerationRequest request,
+    required Map<String, dynamic> responseData,
+  }) async {
     final localPath = await _saveInlineImage(
       inlineImage.data,
       inlineImage.mimeType,
@@ -683,6 +751,23 @@ class ImageGenerationService {
       remoteUrl: '',
       rawResponse: rawResponse,
     );
+  }
+
+  Future<Map<String, Object?>> _geminiInteractionImageInput(
+    String input,
+  ) async {
+    final dataUri = await _prepareGeminiReferenceImage(input);
+    final separator = dataUri.indexOf(',');
+    if (separator <= 5 ||
+        !dataUri.substring(0, separator).contains(';base64')) {
+      throw const FormatException('Gemini 参考图格式无效');
+    }
+    final mimeType = dataUri.substring(5, separator).split(';').first;
+    return {
+      'type': 'image',
+      'mime_type': mimeType,
+      'data': dataUri.substring(separator + 1),
+    };
   }
 
   Future<String> _prepareGeminiReferenceImage(String input) async {
@@ -731,6 +816,63 @@ class ImageGenerationService {
       return _GeminiInlineImage(data: encoded, mimeType: mimeType);
     }
     return null;
+  }
+
+  _GeminiInlineImage? _geminiInteractionImage(Map<String, dynamic> data) {
+    final direct = data['output_image'] ?? data['outputImage'];
+    if (direct is Map) {
+      final image = _geminiInteractionImageBlock(direct);
+      if (image != null) {
+        return image;
+      }
+    }
+
+    final steps = data['steps'] ?? data['outputs'];
+    if (steps is! List) {
+      return null;
+    }
+    for (final step in steps) {
+      if (step is! Map) {
+        continue;
+      }
+      final content = step['content'];
+      if (content is List) {
+        for (final block in content) {
+          if (block is! Map) {
+            continue;
+          }
+          final image = _geminiInteractionImageBlock(block);
+          if (image != null) {
+            return image;
+          }
+        }
+      } else if (content is Map) {
+        final image = _geminiInteractionImageBlock(content);
+        if (image != null) {
+          return image;
+        }
+      }
+    }
+    return null;
+  }
+
+  _GeminiInlineImage? _geminiInteractionImageBlock(Map block) {
+    final type = block['type']?.toString().trim().toLowerCase() ?? '';
+    if (type.isNotEmpty && type != 'image') {
+      return null;
+    }
+    final encoded =
+        block['data']?.toString().trim() ??
+        block['base64']?.toString().trim() ??
+        '';
+    if (encoded.isEmpty) {
+      return null;
+    }
+    final mimeType =
+        block['mime_type']?.toString().trim() ??
+        block['mimeType']?.toString().trim() ??
+        'image/png';
+    return _GeminiInlineImage(data: encoded, mimeType: mimeType);
   }
 
   Future<String> _saveInlineImage(
@@ -1238,6 +1380,20 @@ class ImageGenerationService {
     return _decodeJsonResponse(response);
   }
 
+  Future<Map<String, dynamic>> _postGeminiJson(
+    Uri uri, {
+    required String apiBaseUrl,
+    required String apiKey,
+    required Map<String, Object?> body,
+  }) async {
+    final response = await _client.post(
+      uri,
+      headers: _geminiHeaders(apiBaseUrl, apiKey, json: true),
+      body: jsonEncode(body),
+    );
+    return _decodeJsonResponse(response);
+  }
+
   Future<Map<String, dynamic>> _getJson(
     Uri uri, {
     required String apiKey,
@@ -1251,6 +1407,35 @@ class ImageGenerationService {
       if (json) 'Content-Type': 'application/json',
       if (apiKey.trim().isNotEmpty) 'Authorization': 'Bearer ${apiKey.trim()}',
     };
+  }
+
+  Map<String, String> _geminiHeaders(
+    String apiBaseUrl,
+    String apiKey, {
+    bool json = false,
+  }) {
+    final headers = <String, String>{
+      if (json) 'Content-Type': 'application/json',
+    };
+    final trimmedKey = apiKey.trim();
+    if (trimmedKey.isEmpty) {
+      return headers;
+    }
+    if (_isGoogleGeminiEndpoint(apiBaseUrl)) {
+      headers['x-goog-api-key'] = trimmedKey;
+    } else {
+      headers['Authorization'] = 'Bearer $trimmedKey';
+    }
+    return headers;
+  }
+
+  bool _isGoogleGeminiEndpoint(String apiBaseUrl) {
+    try {
+      final host = Uri.parse(_apiOrigin(apiBaseUrl)).host.toLowerCase();
+      return host == 'generativelanguage.googleapis.com';
+    } on FormatException {
+      return false;
+    }
   }
 
   Map<String, dynamic> _decodeJsonResponse(http.Response response) {
@@ -1404,7 +1589,18 @@ class ImageGenerationService {
     if (key == 'data' && normalizedParent == 'inlinedata') {
       return true;
     }
+    if (key == 'data' &&
+        const {'content', 'image', 'outputimage'}.contains(normalizedParent)) {
+      return _looksLikeBase64Payload(value);
+    }
     return value.startsWith('data:image/') && value.contains(';base64,');
+  }
+
+  bool _looksLikeBase64Payload(String value) {
+    if (value.length < 256) {
+      return false;
+    }
+    return RegExp(r'^[A-Za-z0-9+/=\r\n]+$').hasMatch(value);
   }
 
   void _validateBaseRequest(ImageGenerationRequest request) {

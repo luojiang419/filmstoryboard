@@ -43,7 +43,7 @@ void main() {
   test('Gemini模型只解析诗影独立地址和Gemini Key', () {
     final connection = ImageGenerationProviderResolver.resolve(
       settings: settings,
-      model: 'gemini-3-pro-image-preview',
+      model: 'gemini-3-pro-image',
     );
 
     expect(connection.providerId, 'gemini');

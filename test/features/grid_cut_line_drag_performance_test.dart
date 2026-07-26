@@ -40,7 +40,6 @@ void main() {
     final controller = GridCutController(
       directories: directories,
       database: database,
-      settingsController: settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );

@@ -14,7 +14,13 @@ void main() {
     }
 
     expect(groupedIds.toSet().length, groupedIds.length);
-    expect(groupedIds.toSet(), ImageGenerationModelCatalog.values.toSet());
+    expect(ImageGenerationModelCatalog.values.toSet(), containsAll(groupedIds));
+    expect(groupedIds, contains('gemini-3-pro-image'));
+    expect(
+      groupedIds,
+      isNot(contains('gemini-3-pro-image-preview')),
+      reason: '已停用的 preview 模型只保留历史记录兼容，不再出现在选择器里',
+    );
   });
 
   test('GRSai 保留 Nano 和 GPT 两个系列', () {

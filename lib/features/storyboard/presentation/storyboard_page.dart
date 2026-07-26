@@ -32,6 +32,7 @@ import 'widgets/image_generation_model_selector.dart';
 
 enum _StoryboardInspectorSection {
   analysis,
+  redraw,
   number,
   layout,
   size,
@@ -7989,6 +7990,59 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
           ),
           const SizedBox(height: 10),
           _StoryboardInspectorSectionPanel(
+            title: '高清重绘',
+            icon: Icons.high_quality_rounded,
+            expanded: _sectionExpanded(_StoryboardInspectorSection.redraw),
+            onToggle: () =>
+                widget.onToggleSection(_StoryboardInspectorSection.redraw),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _InspectorSettingLine(
+                  icon: Icons.auto_awesome_rounded,
+                  label: '模型',
+                  value: ImageGenerationModelCatalog.labelFor(
+                    StoryboardController.highDefinitionRedrawModel,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const _InspectorSettingLine(
+                  icon: Icons.crop_16_9_rounded,
+                  label: '比例',
+                  value: StoryboardController.highDefinitionRedrawAspectRatio,
+                ),
+                const SizedBox(height: 6),
+                const _InspectorSettingLine(
+                  icon: Icons.hd_rounded,
+                  label: '分辨率',
+                  value: StoryboardController.highDefinitionRedrawImageSize,
+                ),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  key: const ValueKey('storyboard-hd-redraw-button'),
+                  onPressed:
+                      locked ||
+                          state.isGeneratingImage ||
+                          board.visibleItemCount == 0
+                      ? null
+                      : widget
+                            .controller
+                            .enqueueHighDefinitionRedrawForSelectedBoard,
+                  icon: state.isGeneratingImage
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.high_quality_rounded),
+                  label: Text(
+                    state.isGeneratingImage ? '重绘进行中...' : '高清重绘当前画板',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _StoryboardInspectorSectionPanel(
             title: '自动解析',
             icon: Icons.auto_awesome_rounded,
             expanded: _sectionExpanded(_StoryboardInspectorSection.analysis),
@@ -8449,6 +8503,45 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
       return;
     }
     widget.controller.clearSelectedBoard();
+  }
+}
+
+class _InspectorSettingLine extends StatelessWidget {
+  const _InspectorSettingLine({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: scheme.onSurfaceVariant),
+        const SizedBox(width: 7),
+        Text(
+          label,
+          style: Theme.of(
+            context,
+          ).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+        ),
+      ],
+    );
   }
 }
 

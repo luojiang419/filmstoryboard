@@ -438,6 +438,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     String firstPath,
     AppSettings settings,
   ) async {
+    final canvasColors = StoryboardCanvasStyle.of(context);
     setState(() {
       _isExporting = true;
       _exportCanCancel = true;
@@ -466,6 +467,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
             board: boards[i],
             format: _format,
             outputPath: outputPath,
+            canvasColors: canvasColors,
             includeSummaryPage: settings.storyboardSummaryPageEnabled,
             numberEnabled: settings.cutImageNumberEnabled,
             numberPosition: settings.cutImageNumberPosition,
@@ -1157,6 +1159,9 @@ class _BoardExportPreviewPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final stageColor = scheme.brightness == Brightness.dark
+        ? const Color(0xFF080C10)
+        : scheme.surface;
     return Focus(
       key: const ValueKey('exporter-preview-focus'),
       autofocus: true,
@@ -1169,7 +1174,8 @@ class _BoardExportPreviewPane extends StatelessWidget {
         return KeyEventResult.ignored;
       },
       child: ColoredBox(
-        color: const Color(0xFF080C10),
+        key: const ValueKey('exporter-preview-stage'),
+        color: stageColor,
         child: Column(
           children: [
             Container(

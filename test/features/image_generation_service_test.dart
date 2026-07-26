@@ -199,11 +199,11 @@ void main() {
       () => service.generateEditedImage(
         ImageGenerationRequest(
           provider: _providerFor(
-            model: 'gemini-3-pro-image-preview',
+            model: 'gemini-3-pro-image',
             apiBaseUrl: 'https://grsai.dakka.com.cn',
             apiKey: '',
           ),
-          model: 'gemini-3-pro-image-preview',
+          model: 'gemini-3-pro-image',
           prompt: '增强画面质感',
           aspectRatio: '16:9',
           imageSize: '2K',
@@ -222,7 +222,7 @@ void main() {
     );
   });
 
-  test('Gemini模型使用诗影generateContent接口并保存内联图片', () async {
+  test('旧版Gemini预览模型使用诗影generateContent接口并保存内联图片', () async {
     final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
     addTearDown(() => root.delete(recursive: true));
     final source = await _writeImage(root, 'reference.png');
@@ -325,6 +325,82 @@ void main() {
         jsonDecode(await metadataFile.readAsString()) as Map<String, dynamic>;
     expect(metadata['rawResponse'], result.rawResponse);
     expect(await metadataFile.length(), lessThan(2048));
+  });
+
+  test('Gemini稳定图像模型使用Interactions接口并保存内联图片', () async {
+    final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
+    addTearDown(() => root.delete(recursive: true));
+    final source = await _writeImage(root, 'reference.png');
+    final output = Directory('${root.path}${Platform.pathSeparator}output');
+
+    Map<String, dynamic>? submitBody;
+    final resultBytes = List<int>.generate(512, (index) => index % 251);
+    final encodedResult = base64Encode(resultBytes);
+    final service = ImageGenerationService(
+      client: MockClient((request) async {
+        expect(request.url.host, 'generativelanguage.googleapis.com');
+        expect(request.url.path, '/v1beta/interactions');
+        expect(request.headers['x-goog-api-key'], 'gemini-key');
+        expect(request.headers.containsKey('authorization'), isFalse);
+        submitBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'id': 'interaction-1',
+            'steps': [
+              {
+                'type': 'model_output',
+                'content': [
+                  {'type': 'text', 'text': '已完成'},
+                  {
+                    'type': 'image',
+                    'mime_type': 'image/png',
+                    'data': encodedResult,
+                  },
+                ],
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    addTearDown(service.close);
+
+    final result = await service.generateEditedImage(
+      ImageGenerationRequest(
+        provider: _providerFor(
+          model: 'gemini-3-pro-image',
+          apiBaseUrl: 'https://generativelanguage.googleapis.com',
+          apiKey: 'gemini-key',
+        ),
+        model: 'gemini-3-pro-image',
+        prompt: '保留构图并高清重绘',
+        aspectRatio: '16:9',
+        imageSize: '2K',
+        quality: 'auto',
+        referenceImagePaths: [source.path],
+        outputDirectory: output,
+      ),
+    );
+
+    expect(submitBody?['model'], 'gemini-3-pro-image');
+    final input = submitBody?['input'] as List<dynamic>;
+    expect((input.first as Map)['text'], '保留构图并高清重绘');
+    expect((input.last as Map)['type'], 'image');
+    expect(
+      submitBody?['response_format'],
+      containsPair('aspect_ratio', '16:9'),
+    );
+    expect(submitBody?['response_format'], containsPair('image_size', '2K'));
+    expect(await File(result.localPath).readAsBytes(), resultBytes);
+    expect(result.rawResponse, isNot(contains(encodedResult)));
+    final compactResponse =
+        jsonDecode(result.rawResponse) as Map<String, dynamic>;
+    expect(
+      compactResponse['payloadOmissions'],
+      containsPair('imagePayloadCharacters', encodedResult.length),
+    );
   });
 
   test('图片修改仍然要求至少一张参考图', () async {

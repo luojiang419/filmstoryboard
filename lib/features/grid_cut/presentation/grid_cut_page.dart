@@ -15,14 +15,12 @@ import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
 import '../../../core/widgets/viewport_lazy_grid.dart';
-import '../../settings/domain/app_settings.dart';
-import '../../settings/presentation/cut_image_number_controls.dart';
 import '../application/grid_cut_controller.dart';
 import '../domain/grid_cut_models.dart';
 
 enum _CutLineAxis { vertical, horizontal }
 
-enum _GridCutInspectorSection { metrics, number, layout, results }
+enum _GridCutInspectorSection { metrics, layout, results }
 
 const _canvasTopRulerHeight = 38.0;
 const _canvasLeftRulerWidth = 58.0;
@@ -2690,7 +2688,7 @@ class _DropHint extends StatelessWidget {
   }
 }
 
-class _CropCanvas extends ConsumerStatefulWidget {
+class _CropCanvas extends StatefulWidget {
   const _CropCanvas({
     required this.image,
     required this.scale,
@@ -2715,10 +2713,10 @@ class _CropCanvas extends ConsumerStatefulWidget {
   final double lineStrokeWidth;
 
   @override
-  ConsumerState<_CropCanvas> createState() => _CropCanvasState();
+  State<_CropCanvas> createState() => _CropCanvasState();
 }
 
-class _CropCanvasState extends ConsumerState<_CropCanvas> {
+class _CropCanvasState extends State<_CropCanvas> {
   _LineDragTarget? _hoverTarget;
   _LineDragTarget? _pendingDragTarget;
   _LineDragTarget? _dragTarget;
@@ -2745,102 +2743,89 @@ class _CropCanvasState extends ConsumerState<_CropCanvas> {
 
   @override
   Widget build(BuildContext context) {
-    final settingsController = ref.watch(settingsControllerProvider);
-    return ValueListenableBuilder(
-      valueListenable: settingsController,
-      builder: (context, settings, _) {
-        final layout = _effectiveLayout;
-        final imageProvider = previewFileImageProvider(
-          path: widget.image.storedPath,
-          logicalWidth: layout.imageWidth * widget.scale,
-          devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
-          maxCacheWidth: 2048,
-        );
-        return MouseRegion(
-          cursor: _lineCursor(_dragTarget ?? _hoverTarget),
-          onHover: (event) =>
-              _setHoverTarget(_nearestDraggableLine(event.localPosition)),
-          onExit: (_) => _setHoverTarget(null),
-          child: GestureDetector(
-            key: const ValueKey('grid-cut-crop-canvas'),
-            behavior: HitTestBehavior.opaque,
-            onTapUp: (details) =>
-                _selectCellAt(details.localPosition, selected: true),
-            onSecondaryTapUp: (details) =>
-                _handleSecondaryTap(details.localPosition),
-            onPanDown: (details) {
-              _pendingDragTarget = _nearestDraggableLine(details.localPosition);
-            },
-            onPanStart: (details) {
-              final target =
-                  _pendingDragTarget ??
-                  _nearestDraggableLine(details.localPosition);
-              if (target == null) {
-                return;
-              }
-              setState(() => _dragTarget = target);
-              _dragLineTo(target, details.localPosition);
-            },
-            onPanUpdate: (details) {
-              final target = _dragTarget;
-              if (target == null) {
-                return;
-              }
-              _dragLineTo(target, details.localPosition);
-            },
-            onPanEnd: (_) {
-              if (_pointerCancelled) {
-                _pointerCancelled = false;
-                _cancelLineDrag();
-                return;
-              }
-              _finishLineDrag();
-            },
-            onPanCancel: () {
-              _pointerCancelled = false;
-              _cancelLineDrag();
-            },
-            child: Listener(
-              onPointerDown: (_) => _pointerCancelled = false,
-              onPointerCancel: (_) => _pointerCancelled = true,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image(
-                      image: imageProvider,
-                      fit: BoxFit.fill,
-                      gaplessPlayback: true,
-                    ),
-                  ),
-                  for (final cell in layout.cells())
-                    _CellHitRegion(
-                      cell: cell,
-                      scale: widget.scale,
-                      selected: widget.image.selectedCells.contains(cell.index),
-                      number: settings.cutImageNumberEnabled
-                          ? cell.index + 1
-                          : null,
-                      numberPosition: settings.cutImageNumberPosition,
-                      numberBackgroundOpacity:
-                          settings.cutImageNumberBackgroundOpacity,
-                      numberTextScale: settings.cutImageNumberTextScale,
-                    ),
-                  CustomPaint(
-                    painter: _GridLinePainter(
-                      layout: layout,
-                      scale: widget.scale,
-                      color: widget.lineColor,
-                      strokeWidth: widget.lineStrokeWidth,
-                    ),
-                  ),
-                ],
+    final layout = _effectiveLayout;
+    final imageProvider = previewFileImageProvider(
+      path: widget.image.storedPath,
+      logicalWidth: layout.imageWidth * widget.scale,
+      devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+      maxCacheWidth: 2048,
+    );
+    return MouseRegion(
+      cursor: _lineCursor(_dragTarget ?? _hoverTarget),
+      onHover: (event) =>
+          _setHoverTarget(_nearestDraggableLine(event.localPosition)),
+      onExit: (_) => _setHoverTarget(null),
+      child: GestureDetector(
+        key: const ValueKey('grid-cut-crop-canvas'),
+        behavior: HitTestBehavior.opaque,
+        onTapUp: (details) =>
+            _selectCellAt(details.localPosition, selected: true),
+        onSecondaryTapUp: (details) =>
+            _handleSecondaryTap(details.localPosition),
+        onPanDown: (details) {
+          _pendingDragTarget = _nearestDraggableLine(details.localPosition);
+        },
+        onPanStart: (details) {
+          final target =
+              _pendingDragTarget ??
+              _nearestDraggableLine(details.localPosition);
+          if (target == null) {
+            return;
+          }
+          setState(() => _dragTarget = target);
+          _dragLineTo(target, details.localPosition);
+        },
+        onPanUpdate: (details) {
+          final target = _dragTarget;
+          if (target == null) {
+            return;
+          }
+          _dragLineTo(target, details.localPosition);
+        },
+        onPanEnd: (_) {
+          if (_pointerCancelled) {
+            _pointerCancelled = false;
+            _cancelLineDrag();
+            return;
+          }
+          _finishLineDrag();
+        },
+        onPanCancel: () {
+          _pointerCancelled = false;
+          _cancelLineDrag();
+        },
+        child: Listener(
+          onPointerDown: (_) => _pointerCancelled = false,
+          onPointerCancel: (_) => _pointerCancelled = true,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image(
+                  image: imageProvider,
+                  fit: BoxFit.fill,
+                  gaplessPlayback: true,
+                ),
               ),
-            ),
+              for (final cell in layout.cells())
+                _CellHitRegion(
+                  cell: cell,
+                  scale: widget.scale,
+                  selected: widget.image.selectedCells.contains(cell.index),
+                ),
+              CustomPaint(
+                painter: _GridLinePainter(
+                  layout: layout,
+                  scale: widget.scale,
+                  color: widget.lineColor,
+                  strokeWidth: widget.lineStrokeWidth,
+                ),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -3027,19 +3012,11 @@ class _CellHitRegion extends StatelessWidget {
     required this.cell,
     required this.scale,
     required this.selected,
-    required this.number,
-    required this.numberPosition,
-    required this.numberBackgroundOpacity,
-    required this.numberTextScale,
   });
 
   final GridCell cell;
   final double scale;
   final bool selected;
-  final int? number;
-  final CutImageNumberPosition numberPosition;
-  final double numberBackgroundOpacity;
-  final double numberTextScale;
 
   @override
   Widget build(BuildContext context) {
@@ -3051,99 +3028,16 @@ class _CellHitRegion extends StatelessWidget {
       top: cell.y * scale,
       width: width,
       height: height,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            margin: const EdgeInsets.all(2),
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              borderRadius: BorderRadius.circular(5),
-              border: Border.all(
-                color: selected
-                    ? scheme.primary.withValues(alpha: 0.58)
-                    : Colors.transparent,
-              ),
-            ),
-          ),
-          if (number != null)
-            _CellNumberBadge(
-              number: number!,
-              position: numberPosition,
-              cellSize: Size(width, height),
-              backgroundOpacity: numberBackgroundOpacity,
-              textScale: numberTextScale,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CellNumberBadge extends StatelessWidget {
-  const _CellNumberBadge({
-    required this.number,
-    required this.position,
-    required this.cellSize,
-    required this.backgroundOpacity,
-    required this.textScale,
-  });
-
-  final int number;
-  final CutImageNumberPosition position;
-  final Size cellSize;
-  final double backgroundOpacity;
-  final double textScale;
-
-  @override
-  Widget build(BuildContext context) {
-    final shortestSide = math.min(cellSize.width, cellSize.height);
-    final opacity = backgroundOpacity.clamp(0.0, 1.0).toDouble();
-    final fontScale = textScale.clamp(0.7, 1.6).toDouble();
-    final baseBadgeSize = shortestSide.clamp(14.0, 28.0).toDouble();
-    final maxBadgeSize = math.max(14.0, shortestSide * 0.56);
-    final badgeSize = (baseBadgeSize * fontScale)
-        .clamp(10.0, maxBadgeSize)
-        .toDouble();
-    final margin = math.max(4.0, badgeSize * 0.28);
-    final alignment = switch (position) {
-      CutImageNumberPosition.topLeft => Alignment.topLeft,
-      CutImageNumberPosition.bottomLeft => Alignment.bottomLeft,
-      CutImageNumberPosition.topRight => Alignment.topRight,
-      CutImageNumberPosition.bottomRight => Alignment.bottomRight,
-      CutImageNumberPosition.center => Alignment.center,
-    };
-    return Align(
-      alignment: alignment,
-      child: Padding(
-        padding: EdgeInsets.all(
-          position == CutImageNumberPosition.center ? 0 : margin,
-        ),
-        child: Container(
-          width: badgeSize,
-          height: badgeSize,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: opacity),
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.black.withValues(alpha: 0.42)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.18),
-                blurRadius: 8,
-              ),
-            ],
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            '$number',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: const Color(0xFF161616),
-              fontSize: (badgeSize * 0.48).clamp(8.0, 24.0),
-              fontWeight: FontWeight.w800,
-              height: 1,
-            ),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        margin: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(5),
+          border: Border.all(
+            color: selected
+                ? scheme.primary.withValues(alpha: 0.58)
+                : Colors.transparent,
           ),
         ),
       ),
@@ -3188,7 +3082,7 @@ class _GridLinePainter extends CustomPainter {
   }
 }
 
-class _InspectorPanel extends ConsumerWidget {
+class _InspectorPanel extends StatelessWidget {
   const _InspectorPanel({
     required this.controller,
     required this.state,
@@ -3212,10 +3106,9 @@ class _InspectorPanel extends ConsumerWidget {
   final VoidCallback onCollapse;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final image = state.selectedImage;
     final scheme = Theme.of(context).colorScheme;
-    final settingsController = ref.watch(settingsControllerProvider);
     return Container(
       key: const ValueKey('grid-cut-inspector-panel'),
       padding: const EdgeInsets.all(14),
@@ -3291,39 +3184,6 @@ class _InspectorPanel extends ConsumerWidget {
                                   '${image.selectedCells.length} / ${image.layout.cellCount}',
                             ),
                           ],
-                        ),
-                      ),
-                      _GridCutCollapsibleSection(
-                        title: '图片编号',
-                        icon: Icons.format_list_numbered_rounded,
-                        expanded: expandedSections.contains(
-                          _GridCutInspectorSection.number,
-                        ),
-                        onToggle: () =>
-                            onToggleSection(_GridCutInspectorSection.number),
-                        child: ValueListenableBuilder(
-                          valueListenable: settingsController,
-                          builder: (context, settings, _) {
-                            return CutImageNumberControls(
-                              enabled: settings.cutImageNumberEnabled,
-                              position: settings.cutImageNumberPosition,
-                              backgroundOpacity:
-                                  settings.cutImageNumberBackgroundOpacity,
-                              textScale: settings.cutImageNumberTextScale,
-                              onEnabledChanged:
-                                  settingsController.setCutImageNumberEnabled,
-                              onPositionChanged:
-                                  settingsController.setCutImageNumberPosition,
-                              onBackgroundOpacityChanged: settingsController
-                                  .previewCutImageNumberBackgroundOpacity,
-                              onBackgroundOpacityChangeEnd: settingsController
-                                  .setCutImageNumberBackgroundOpacity,
-                              onTextScaleChanged: settingsController
-                                  .previewCutImageNumberTextScale,
-                              onTextScaleChangeEnd:
-                                  settingsController.setCutImageNumberTextScale,
-                            );
-                          },
                         ),
                       ),
                       _GridCutCollapsibleSection(

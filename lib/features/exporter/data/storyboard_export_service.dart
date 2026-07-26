@@ -99,6 +99,7 @@ class StoryboardExportService {
     required StoryboardBoard board,
     required StoryboardExportFormat format,
     required String outputPath,
+    StoryboardCanvasColors canvasColors = StoryboardCanvasStyle.darkColors,
     bool includeSummaryPage = false,
     bool numberEnabled = false,
     CutImageNumberPosition numberPosition = CutImageNumberPosition.topLeft,
@@ -124,6 +125,7 @@ class StoryboardExportService {
             board: renderBoard,
             file: file,
             exported: exported,
+            canvasColors: canvasColors,
             includeSummaryPage: includeSummaryPage,
             numberEnabled: numberEnabled,
             numberPosition: numberPosition,
@@ -139,6 +141,7 @@ class StoryboardExportService {
             board: renderBoard,
             file: file,
             exported: exported,
+            canvasColors: canvasColors,
             includeSummaryPage: includeSummaryPage,
             numberEnabled: numberEnabled,
             numberPosition: numberPosition,
@@ -154,6 +157,7 @@ class StoryboardExportService {
             board: renderBoard,
             file: file,
             exported: exported,
+            canvasColors: canvasColors,
             includeSummaryPage: includeSummaryPage,
             numberEnabled: numberEnabled,
             numberPosition: numberPosition,
@@ -182,6 +186,7 @@ class StoryboardExportService {
     required StoryboardBoard board,
     required File file,
     required List<File> exported,
+    required StoryboardCanvasColors canvasColors,
     required bool includeSummaryPage,
     required bool numberEnabled,
     required CutImageNumberPosition numberPosition,
@@ -194,6 +199,7 @@ class StoryboardExportService {
   }) async {
     final pngBytes = await renderBoardToPng(
       board,
+      canvasColors: canvasColors,
       numberEnabled: numberEnabled,
       numberPosition: numberPosition,
       numberBackgroundOpacity: numberBackgroundOpacity,
@@ -209,7 +215,10 @@ class StoryboardExportService {
     onProgress?.call(0.78);
     if (_shouldExportSummaryPage(board, includeSummaryPage)) {
       _throwIfCancelled(isCancelled);
-      final summaryBytes = await renderSummaryPageToPng(board);
+      final summaryBytes = await renderSummaryPageToPng(
+        board,
+        canvasColors: canvasColors,
+      );
       _throwIfCancelled(isCancelled);
       final summaryFile = File(_summaryPagePath(file.path));
       await _atomicWriteBytes(summaryFile, summaryBytes);
@@ -221,6 +230,7 @@ class StoryboardExportService {
     required StoryboardBoard board,
     required File file,
     required List<File> exported,
+    required StoryboardCanvasColors canvasColors,
     required bool includeSummaryPage,
     required bool numberEnabled,
     required CutImageNumberPosition numberPosition,
@@ -233,6 +243,7 @@ class StoryboardExportService {
   }) async {
     final pngBytes = await renderBoardToPng(
       board,
+      canvasColors: canvasColors,
       numberEnabled: numberEnabled,
       numberPosition: numberPosition,
       numberBackgroundOpacity: numberBackgroundOpacity,
@@ -248,7 +259,10 @@ class StoryboardExportService {
     _throwIfCancelled(isCancelled);
     onProgress?.call(0.76);
     if (_shouldExportSummaryPage(board, includeSummaryPage)) {
-      final summaryBytes = await renderSummaryPageToPng(board);
+      final summaryBytes = await renderSummaryPageToPng(
+        board,
+        canvasColors: canvasColors,
+      );
       _throwIfCancelled(isCancelled);
       final summaryFile = File(_summaryPagePath(file.path));
       await _writeJpg(summaryFile, summaryBytes);
@@ -261,6 +275,7 @@ class StoryboardExportService {
     required StoryboardBoard board,
     required File file,
     required List<File> exported,
+    required StoryboardCanvasColors canvasColors,
     required bool includeSummaryPage,
     required bool numberEnabled,
     required CutImageNumberPosition numberPosition,
@@ -273,6 +288,7 @@ class StoryboardExportService {
   }) async {
     final pngBytes = await renderBoardToPng(
       board,
+      canvasColors: canvasColors,
       numberEnabled: numberEnabled,
       numberPosition: numberPosition,
       numberBackgroundOpacity: numberBackgroundOpacity,
@@ -287,7 +303,10 @@ class StoryboardExportService {
       TransferableTypedData.fromList([pngBytes]),
     ];
     if (_shouldExportSummaryPage(board, includeSummaryPage)) {
-      final summaryBytes = await renderSummaryPageToPng(board);
+      final summaryBytes = await renderSummaryPageToPng(
+        board,
+        canvasColors: canvasColors,
+      );
       _throwIfCancelled(isCancelled);
       pages.add(TransferableTypedData.fromList([summaryBytes]));
     }
@@ -311,6 +330,7 @@ class StoryboardExportService {
 
   Future<Uint8List> renderBoardToPng(
     StoryboardBoard board, {
+    StoryboardCanvasColors canvasColors = StoryboardCanvasStyle.darkColors,
     bool numberEnabled = false,
     CutImageNumberPosition numberPosition = CutImageNumberPosition.topLeft,
     double numberBackgroundOpacity =
@@ -329,7 +349,7 @@ class StoryboardExportService {
       renderBoard.width.toDouble(),
       renderBoard.height.toDouble(),
     );
-    final background = Paint()..color = StoryboardCanvasStyle.background;
+    final background = Paint()..color = canvasColors.background;
     canvas.drawRect(Offset.zero & size, background);
 
     final columns = math.max(1, renderBoard.columns);
@@ -350,7 +370,7 @@ class StoryboardExportService {
       itemsBySlot.putIfAbsent(item.slotIndex, () => item);
     }
 
-    _paintBoardTitle(canvas, renderBoard, layout);
+    _paintBoardTitle(canvas, renderBoard, layout, canvasColors);
     ui.Picture? picture;
     ui.Image? outputImage;
     try {
@@ -360,7 +380,8 @@ class StoryboardExportService {
         _drawPanel(
           canvas,
           tileRect,
-          fill: StoryboardCanvasStyle.tileBackground,
+          fill: canvasColors.tileBackground,
+          canvasColors: canvasColors,
         );
 
         final item = itemsBySlot[i];
@@ -416,6 +437,7 @@ class StoryboardExportService {
                     captionRect,
                     i + 1,
                     renderBoard.captionFontSize,
+                    canvasColors,
                   )
                 : captionRect;
             if (caption.isNotEmpty) {
@@ -425,7 +447,7 @@ class StoryboardExportService {
                 textRect,
                 fontFamily: renderBoard.captionFontFamily,
                 fontSize: renderBoard.captionFontSize,
-                color: StoryboardCanvasStyle.text,
+                color: canvasColors.text,
                 maxLines: null,
               );
             }
@@ -437,7 +459,12 @@ class StoryboardExportService {
       if (showRowCaptions) {
         for (var rowIndex = 0; rowIndex < rows; rowIndex++) {
           final rect = layout.rowCaptionRect(rowIndex);
-          _drawPanel(canvas, rect, fill: StoryboardCanvasStyle.imageBackground);
+          _drawPanel(
+            canvas,
+            rect,
+            fill: canvasColors.imageBackground,
+            canvasColors: canvasColors,
+          );
           final padding = math.min(14.0, math.max(8.0, rect.width * 0.018));
           _paintText(
             canvas,
@@ -445,13 +472,13 @@ class StoryboardExportService {
             rect.deflate(padding),
             fontFamily: renderBoard.captionFontFamily,
             fontSize: renderBoard.captionFontSize,
-            color: StoryboardCanvasStyle.text,
+            color: canvasColors.text,
             maxLines: null,
           );
         }
       }
       if (renderBoard.rowDividerEnabled && rows > 1) {
-        _paintRowDividers(canvas, renderBoard, layout);
+        _paintRowDividers(canvas, renderBoard, layout, canvasColors);
       }
 
       _throwIfCancelled(isCancelled);
@@ -476,7 +503,10 @@ class StoryboardExportService {
     }
   }
 
-  Future<Uint8List> renderSummaryPageToPng(StoryboardBoard board) async {
+  Future<Uint8List> renderSummaryPageToPng(
+    StoryboardBoard board, {
+    StoryboardCanvasColors canvasColors = StoryboardCanvasStyle.darkColors,
+  }) async {
     final summary = board.summary;
     if (summary == null || summary.isEmpty) {
       throw const FormatException('故事板内容页为空');
@@ -486,7 +516,7 @@ class StoryboardExportService {
     final size = Size(board.width.toDouble(), board.height.toDouble());
     canvas.drawRect(
       Offset.zero & size,
-      Paint()..color = StoryboardCanvasStyle.background,
+      Paint()..color = canvasColors.background,
     );
 
     final margin = math.max(48.0, board.width * 0.055);
@@ -499,7 +529,7 @@ class StoryboardExportService {
       Rect.fromLTWH(margin, y, contentWidth, 72),
       fontFamily: board.captionFontFamily,
       fontSize: math.max(38.0, board.width * 0.032),
-      color: StoryboardCanvasStyle.text,
+      color: canvasColors.text,
       maxLines: 1,
     );
     y += 96;
@@ -518,6 +548,7 @@ class StoryboardExportService {
         y: y,
         width: contentWidth,
         fontFamily: board.captionFontFamily,
+        canvasColors: canvasColors,
       );
       y += 22;
     }
@@ -549,6 +580,7 @@ class StoryboardExportService {
     required double y,
     required double width,
     required String fontFamily,
+    required StoryboardCanvasColors canvasColors,
   }) {
     _paintText(
       canvas,
@@ -556,7 +588,7 @@ class StoryboardExportService {
       Rect.fromLTWH(x, y, width, 42),
       fontFamily: fontFamily,
       fontSize: 28,
-      color: StoryboardCanvasStyle.accent,
+      color: canvasColors.accent,
       maxLines: 1,
     );
     final bodyRect = Rect.fromLTWH(x, y + 48, width, 210);
@@ -566,7 +598,7 @@ class StoryboardExportService {
       bodyRect,
       fontFamily: fontFamily,
       fontSize: 22,
-      color: StoryboardCanvasStyle.text,
+      color: canvasColors.text,
       maxLines: 5,
     );
     return y +
@@ -610,13 +642,14 @@ class StoryboardExportService {
     Canvas canvas,
     StoryboardBoard board,
     _BoardRenderLayout layout,
+    StoryboardCanvasColors canvasColors,
   ) {
     final painter =
         TextPainter(
           text: TextSpan(
             text: board.name.trim().isEmpty ? '画板' : board.name.trim(),
             style: TextStyle(
-              color: StoryboardCanvasStyle.text,
+              color: canvasColors.text,
               fontFamily: board.captionFontFamily,
               fontSize: StoryboardBoard.titleFontSizeFor(board.captionFontSize),
               height: 1.2,
@@ -743,6 +776,7 @@ class StoryboardExportService {
     Rect rect,
     int number,
     double fontSize,
+    StoryboardCanvasColors canvasColors,
   ) {
     if (rect.isEmpty) {
       return rect;
@@ -760,12 +794,12 @@ class StoryboardExportService {
     final radius = RRect.fromRectAndRadius(badgeRect, const Radius.circular(6));
     canvas.drawRRect(
       radius,
-      Paint()..color = StoryboardCanvasStyle.accent.withValues(alpha: 0.16),
+      Paint()..color = canvasColors.accent.withValues(alpha: 0.16),
     );
     canvas.drawRRect(
       radius,
       Paint()
-        ..color = StoryboardCanvasStyle.accent.withValues(alpha: 0.38)
+        ..color = canvasColors.accent.withValues(alpha: 0.38)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1,
     );
@@ -774,7 +808,7 @@ class StoryboardExportService {
       text: TextSpan(
         text: '$number',
         style: TextStyle(
-          color: StoryboardCanvasStyle.text,
+          color: canvasColors.text,
           fontSize: math.max(10.0, fontSize * 0.72),
           height: 1,
           fontWeight: FontWeight.w800,
@@ -818,13 +852,18 @@ class StoryboardExportService {
     }
   }
 
-  void _drawPanel(Canvas canvas, Rect rect, {required Color fill}) {
+  void _drawPanel(
+    Canvas canvas,
+    Rect rect, {
+    required Color fill,
+    required StoryboardCanvasColors canvasColors,
+  }) {
     final radius = RRect.fromRectAndRadius(rect, const Radius.circular(8));
     canvas.drawRRect(radius, Paint()..color = fill);
     canvas.drawRRect(
       radius,
       Paint()
-        ..color = StoryboardCanvasStyle.slotBorder
+        ..color = canvasColors.slotBorder
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2,
     );
@@ -834,9 +873,10 @@ class StoryboardExportService {
     Canvas canvas,
     StoryboardBoard board,
     _BoardRenderLayout layout,
+    StoryboardCanvasColors canvasColors,
   ) {
     final paint = Paint()
-      ..color = StoryboardCanvasStyle.mutedText.withValues(
+      ..color = canvasColors.mutedText.withValues(
         alpha: board.rowDividerOpacity,
       )
       ..strokeWidth = 1.5

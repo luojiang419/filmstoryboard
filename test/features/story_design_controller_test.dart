@@ -448,7 +448,6 @@ _createFixture() async {
   final gridCutController = GridCutController(
     directories: directories,
     database: database,
-    settingsController: settingsController,
     detectionService: const GridDetectionService(),
     cropService: const GridCropService(),
   );

@@ -103,6 +103,16 @@ void main() {
       controller.value.selectedBoard!.titleAlignment,
       StoryboardTitleAlignment.center,
     );
+    expect(find.text('高清重绘'), findsOneWidget);
+    await tester.tap(find.text('高清重绘'));
+    await tester.pumpAndSettle();
+    expect(find.text('Gemini 3 Pro Image'), findsOneWidget);
+    expect(find.text('16:9'), findsOneWidget);
+    expect(find.text('2K'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('storyboard-hd-redraw-button')),
+      findsOneWidget,
+    );
     await tester.tap(find.text('居右'));
     await tester.pumpAndSettle();
     expect(
@@ -2164,9 +2174,16 @@ void main() {
     );
     expect(captionNumberSwitch, findsOneWidget);
     expect(tester.widget<Switch>(captionNumberSwitch).value, isTrue);
+    await tester.ensureVisible(captionNumberSwitch);
+    await tester.pumpAndSettle();
     await tester.tap(captionNumberSwitch);
     await tester.pumpAndSettle();
     expect(settingsController.value.storyboardCaptionNumberEnabled, isFalse);
+    await tester.drag(
+      find.byKey(const ValueKey('storyboard-inspector-list')),
+      const Offset(0, 96),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('图片编号').first);
     await tester.pumpAndSettle();
     expect(find.text('圆圈透明度'), findsNothing);
@@ -2224,6 +2241,8 @@ void main() {
 
     tester.state<ScrollableState>(inspectorScrollable).position.jumpTo(0);
     await tester.pumpAndSettle();
+    await tester.drag(inspectorScrollable, const Offset(0, -120));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('多宫格布局'));
     await tester.pumpAndSettle();
@@ -2233,6 +2252,8 @@ void main() {
             as Map<String, Object?>;
     expect(saved['inspectorExpandedSections'], isNot(contains('layout')));
 
+    tester.state<ScrollableState>(inspectorScrollable).position.jumpTo(0);
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('收起画板参数'));
     await tester.pumpAndSettle();
 
@@ -2329,7 +2350,6 @@ void main() {
     final gridCutController = GridCutController(
       directories: directories,
       database: database,
-      settingsController: settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -2396,7 +2416,6 @@ void main() {
     final gridCutController = GridCutController(
       directories: directories,
       database: database,
-      settingsController: settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -2462,7 +2481,6 @@ void main() {
     final gridCutController = GridCutController(
       directories: directories,
       database: database,
-      settingsController: settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -2517,7 +2535,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('裁切预览标尺绘制在图片画布上层且编号不受选中格影响', (tester) async {
+  testWidgets('裁切预览保留带数字标识的标尺且不再显示图片编号', (tester) async {
     late final Directory root;
     late final AppDirectories directories;
     late final AppDatabase database;
@@ -2545,7 +2563,6 @@ void main() {
     final gridCutController = GridCutController(
       directories: directories,
       database: database,
-      settingsController: settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -2596,6 +2613,15 @@ void main() {
 
     expect(canvasIndex, isNonNegative);
     expect(firstRulerIndex, greaterThan(canvasIndex));
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint &&
+            widget.painter.runtimeType.toString() == '_AxisRulerPainter',
+      ),
+      findsNWidgets(2),
+    );
+    expect(find.text('图片编号'), findsNothing);
 
     final cropViewportRect = tester.getRect(
       find.byKey(const ValueKey('grid-cut-canvas-viewport')),
@@ -2663,17 +2689,12 @@ void main() {
     await settingsController.setCutImageNumberEnabled(true);
     await tester.pumpAndSettle();
 
-    final numberBadges = find.byWidgetPredicate(
-      (widget) => widget.runtimeType.toString() == '_CellNumberBadge',
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget.runtimeType.toString() == '_CellNumberBadge',
+      ),
+      findsNothing,
     );
-    expect(numberBadges, findsNWidgets(4));
-    final displayedNumbers = tester
-        .widgetList<Text>(
-          find.descendant(of: numberBadges, matching: find.byType(Text)),
-        )
-        .map((widget) => widget.data)
-        .toSet();
-    expect(displayedNumbers, {'1', '2', '3', '4'});
 
     final firstImageId = gridCutController.value.images.first.id;
     final secondImageId = gridCutController.value.images.last.id;

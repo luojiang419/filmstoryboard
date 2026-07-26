@@ -3,8 +3,8 @@ class AppUpdateConfig {
 
   static const appName = '故事板';
   static const userAgent = 'StoryboardGridApp';
-  static const currentVersion = '1.0.0.98';
-  static const currentVersionTag = 'v1.0.0.98';
+  static const currentVersion = '1.0.0.104';
+  static const currentVersionTag = 'v1.0.0.104';
   static const windowTitle = '$appName $currentVersionTag';
   static const installerBaseName = 'StoryboardGridApp-Setup';
   static const defaultReleaseRepositoryUrl =

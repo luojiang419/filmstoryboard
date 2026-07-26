@@ -132,6 +132,57 @@ void main() {
     expect(previewWidths.reduce((a, b) => a > b ? a : b), greaterThan(192));
   });
 
+  testWidgets('浅色模式导出预览舞台背景使用浅色主题', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1200, 760)
+      ..devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view
+        ..resetPhysicalSize()
+        ..resetDevicePixelRatio();
+    });
+
+    final theme = AppTheme.light();
+    final fixture = await _createFixture(tester, 'light_export_preview_');
+    final storyboardController = StoryboardController(
+      database: fixture.database,
+    );
+    final board = storyboardController.value.selectedBoard!;
+    addTearDown(() async {
+      storyboardController.dispose();
+      await fixture.dispose();
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(fixture.database),
+          settingsControllerProvider.overrideWithValue(
+            fixture.settingsController,
+          ),
+          storyboardControllerProvider.overrideWithValue(storyboardController),
+        ],
+        child: MaterialApp(
+          theme: theme,
+          home: const Scaffold(body: ExporterPage()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final boardCard = find.byKey(ValueKey('export-board-${board.id}'));
+    await tester.tap(boardCard);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(boardCard);
+    await tester.pumpAndSettle();
+
+    final stage = tester.widget<ColoredBox>(
+      find.byKey(const ValueKey('exporter-preview-stage')),
+    );
+    expect(stage.color, theme.colorScheme.surface);
+    expect(stage.color, isNot(const Color(0xFF080C10)));
+  });
+
   testWidgets('导出页双击进入竖屏预览并支持 Esc 和返回按钮', (tester) async {
     tester.view
       ..physicalSize = const Size(1200, 760)
@@ -250,7 +301,6 @@ void main() {
     final gridCutController = GridCutController(
       directories: fixture.directories,
       database: fixture.database,
-      settingsController: fixture.settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );

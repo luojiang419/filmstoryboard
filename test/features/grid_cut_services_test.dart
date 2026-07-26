@@ -6,7 +6,6 @@ import 'package:image/image.dart' as img;
 import 'package:storyboard_grid_app/features/grid_cut/data/grid_crop_service.dart';
 import 'package:storyboard_grid_app/features/grid_cut/data/grid_detection_service.dart';
 import 'package:storyboard_grid_app/features/grid_cut/domain/grid_cut_models.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -161,7 +160,6 @@ void main() {
       cellIndexes: [1, 4],
       outputDirectory: root,
       baseName: 'demo',
-      numberEnabled: true,
     );
 
     expect(paths.map((path) => File(path).uri.pathSegments.last), [
@@ -174,12 +172,16 @@ void main() {
     );
   });
 
-  test('裁切导出默认不写入图片编号', () async {
+  test('裁切导出只保留源图像素且不烧录图片编号', () async {
     final root = await Directory.systemTemp.createTemp('storyboard_crop_');
     addTearDown(() => root.delete(recursive: true));
 
     final image = img.Image(width: 80, height: 40);
-    img.fill(image, color: img.ColorRgb8(120, 160, 200));
+    for (var y = 0; y < image.height; y++) {
+      for (var x = 0; x < image.width; x++) {
+        image.setPixelRgb(x, y, x * 3, y * 5, (x + y) * 2);
+      }
+    }
     final layout = const GridDetectionService().evenGrid(
       imageWidth: 80,
       imageHeight: 40,
@@ -190,86 +192,23 @@ void main() {
     final paths = await const GridCropService().exportCells(
       bytes: Uint8List.fromList(img.encodePng(image)),
       layout: layout,
-      cellIndexes: [0],
+      cellIndexes: [0, 1],
       outputDirectory: root,
       baseName: 'demo',
     );
 
-    final exported = img.decodePng(await File(paths.first).readAsBytes())!;
-    expect(_hasChangedPixel(exported), isFalse);
-  });
-
-  test('裁切导出开启编号后按指定位置绘制徽章', () async {
-    final root = await Directory.systemTemp.createTemp('storyboard_crop_');
-    addTearDown(() => root.delete(recursive: true));
-
-    final image = img.Image(width: 200, height: 200);
-    img.fill(image, color: img.ColorRgb8(120, 160, 200));
-    const layout = GridLayout(
-      imageWidth: 200,
-      imageHeight: 200,
-      xLines: [0, 200],
-      yLines: [0, 200],
-      confidence: 1,
-      usedFallback: false,
-    );
-
-    for (final probe in _numberPositionProbes) {
-      final outputDirectory = Directory(
-        '${root.path}${Platform.pathSeparator}${probe.position.name}',
+    for (var index = 0; index < paths.length; index++) {
+      final exported = img.decodePng(await File(paths[index]).readAsBytes())!;
+      final cell = layout.cellAt(index);
+      final expected = img.copyCrop(
+        image,
+        x: cell.x,
+        y: cell.y,
+        width: cell.width,
+        height: cell.height,
       );
-      final paths = await const GridCropService().exportCells(
-        bytes: Uint8List.fromList(img.encodePng(image)),
-        layout: layout,
-        cellIndexes: [0],
-        outputDirectory: outputDirectory,
-        baseName: 'demo',
-        numberEnabled: true,
-        numberPosition: probe.position,
-      );
-
-      final exported = img.decodePng(await File(paths.first).readAsBytes())!;
-      expect(
-        _hasChangedPixel(
-          exported,
-          x1: probe.x1,
-          y1: probe.y1,
-          x2: probe.x2,
-          y2: probe.y2,
-        ),
-        isTrue,
-        reason: '${probe.position.label} 应出现编号像素',
-      );
+      _expectSamePixels(exported, expected);
     }
-  });
-
-  test('裁切导出图片编号徽章不会覆盖旧版大尺寸外圈区域', () async {
-    final root = await Directory.systemTemp.createTemp('storyboard_crop_');
-    addTearDown(() => root.delete(recursive: true));
-
-    final image = img.Image(width: 200, height: 200);
-    img.fill(image, color: img.ColorRgb8(_baseR, _baseG, _baseB));
-    const layout = GridLayout(
-      imageWidth: 200,
-      imageHeight: 200,
-      xLines: [0, 200],
-      yLines: [0, 200],
-      confidence: 1,
-      usedFallback: false,
-    );
-
-    final paths = await const GridCropService().exportCells(
-      bytes: Uint8List.fromList(img.encodePng(image)),
-      layout: layout,
-      cellIndexes: [0],
-      outputDirectory: root,
-      baseName: 'demo',
-      numberEnabled: true,
-      numberPosition: CutImageNumberPosition.topLeft,
-    );
-
-    final exported = img.decodePng(await File(paths.first).readAsBytes())!;
-    expect(_hasChangedPixel(exported, x1: 45, y1: 12, x2: 62, y2: 30), isFalse);
   });
 
   test('手动插入裁切线会排序、去重并限制边界', () {
@@ -358,46 +297,18 @@ void main() {
   });
 }
 
-const _baseR = 120;
-const _baseG = 160;
-const _baseB = 200;
-
-const _numberPositionProbes = [
-  _NumberPositionProbe(CutImageNumberPosition.topLeft, 25, 25, 60, 60),
-  _NumberPositionProbe(CutImageNumberPosition.bottomLeft, 25, 140, 60, 175),
-  _NumberPositionProbe(CutImageNumberPosition.topRight, 140, 25, 175, 60),
-  _NumberPositionProbe(CutImageNumberPosition.bottomRight, 140, 140, 175, 175),
-  _NumberPositionProbe(CutImageNumberPosition.center, 82, 82, 118, 118),
-];
-
-class _NumberPositionProbe {
-  const _NumberPositionProbe(this.position, this.x1, this.y1, this.x2, this.y2);
-
-  final CutImageNumberPosition position;
-  final int x1;
-  final int y1;
-  final int x2;
-  final int y2;
-}
-
-bool _hasChangedPixel(
-  img.Image image, {
-  int x1 = 0,
-  int y1 = 0,
-  int? x2,
-  int? y2,
-}) {
-  final maxX = x2 ?? image.width - 1;
-  final maxY = y2 ?? image.height - 1;
-  for (var y = y1; y <= maxY; y++) {
-    for (var x = x1; x <= maxX; x++) {
-      final pixel = image.getPixel(x, y);
-      if ((pixel.r - _baseR).abs() > 2 ||
-          (pixel.g - _baseG).abs() > 2 ||
-          (pixel.b - _baseB).abs() > 2) {
-        return true;
-      }
+void _expectSamePixels(img.Image actual, img.Image expected) {
+  expect(actual.width, expected.width);
+  expect(actual.height, expected.height);
+  for (var y = 0; y < expected.height; y++) {
+    for (var x = 0; x < expected.width; x++) {
+      final actualPixel = actual.getPixel(x, y);
+      final expectedPixel = expected.getPixel(x, y);
+      expect(
+        [actualPixel.r, actualPixel.g, actualPixel.b, actualPixel.a],
+        [expectedPixel.r, expectedPixel.g, expectedPixel.b, expectedPixel.a],
+        reason: '像素 ($x, $y) 不应被编号或其他叠加内容修改',
+      );
     }
   }
-  return false;
 }

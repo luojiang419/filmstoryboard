@@ -47,7 +47,6 @@ void main() {
       gridCutController = GridCutController(
         directories: directories,
         database: database,
-        settingsController: settingsController,
         detectionService: const GridDetectionService(),
         cropService: const GridCropService(),
       );
@@ -226,7 +225,6 @@ void main() {
       gridCutController = GridCutController(
         directories: directories,
         database: database,
-        settingsController: settingsController,
         detectionService: const GridDetectionService(),
         cropService: const GridCropService(),
       );

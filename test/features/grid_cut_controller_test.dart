@@ -157,7 +157,6 @@ void main() {
         executableDirectory: fixture.root,
       ),
       database: fixture.database,
-      settingsController: fixture.settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -226,7 +225,6 @@ void main() {
         executableDirectory: fixture.root,
       ),
       database: fixture.database,
-      settingsController: fixture.settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -283,7 +281,6 @@ void main() {
         executableDirectory: fixture.root,
       ),
       database: fixture.database,
-      settingsController: fixture.settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -307,7 +304,6 @@ void main() {
         executableDirectory: fixture.root,
       ),
       database: fixture.database,
-      settingsController: fixture.settingsController,
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
     );
@@ -343,7 +339,6 @@ _createFixture({String projectName = '项目'}) async {
   final controller = GridCutController(
     directories: directories,
     database: database,
-    settingsController: settingsController,
     detectionService: const GridDetectionService(),
     cropService: const GridCropService(),
     projectName: projectName,

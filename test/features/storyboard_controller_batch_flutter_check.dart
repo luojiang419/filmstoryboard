@@ -1924,6 +1924,76 @@ void main() {
     expect(controller.value.isGeneratingImage, isFalse);
   });
 
+  test('高清重绘当前画板固定使用Gemini Pro参数并并发替换', () async {
+    final fixture = await _createImageGenerationFixture(
+      imageServiceFactory: _ConcurrentImageGenerationService.new,
+    );
+    await fixture.settingsController.setImageGenerationSettings(
+      baseUrl: 'https://grsai.example.com',
+      grsaiApiKey: 'grsai-key-123',
+      geminiBaseUrl: 'https://generativelanguage.googleapis.com',
+      geminiApiKey: 'gemini-key-456',
+      model: 'nano-banana-fast',
+    );
+    final imageService =
+        fixture.imageService as _ConcurrentImageGenerationService;
+    final controller = fixture.controller;
+    final assets = [
+      await _registeredAsset(fixture.database, fixture.root, 1),
+      await _registeredAsset(fixture.database, fixture.root, 2),
+    ];
+    controller.setAssetsUsed(assets, true);
+    controller.updateCaption(0, '第一格说明');
+
+    final accepted = controller.enqueueHighDefinitionRedrawForSelectedBoard();
+
+    expect(accepted, isTrue);
+    await imageService.bothStarted.future;
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests.map((request) => request.model).toSet(), {
+      'gemini-3-pro-image',
+    });
+    expect(
+      imageService.requests.map((request) => request.aspectRatio).toSet(),
+      {'16:9'},
+    );
+    expect(imageService.requests.map((request) => request.imageSize).toSet(), {
+      '2K',
+    });
+    expect(imageService.requests.map((request) => request.apiKey).toSet(), {
+      'gemini-key-456',
+    });
+    expect(imageService.requests.first.prompt, contains('高清重绘'));
+    expect(imageService.requests.first.prompt, contains('第一格说明'));
+    expect(imageService.requests.first.referenceImagePaths, [assets[0].path]);
+    expect(imageService.requests.last.referenceImagePaths, [assets[1].path]);
+    expect(controller.value.isGeneratingImage, isTrue);
+
+    imageService.releaseAll();
+    await _waitUntil(() {
+      final board = controller.value.selectedBoard;
+      return board != null &&
+          board.items.length == 2 &&
+          board.items.every(
+            (item) => item.asset.id.startsWith('generated-cut-'),
+          );
+    });
+    await _waitUntil(() => !controller.value.isGeneratingImage);
+
+    final updatedBoard = controller.value.selectedBoard!;
+    expect(
+      updatedBoard.items.map((item) => item.asset.id),
+      everyElement(startsWith('generated-cut-')),
+    );
+    expect(
+      fixture.database.listImageGenerationRecords().where(
+        (record) => record.model == 'gemini-3-pro-image',
+      ),
+      hasLength(2),
+    );
+    expect(controller.value.message, contains('高清重绘完成'));
+  });
+
   test('连续 AI 修改按画板名称归档并合并为单一来源组', () async {
     final fixture = await _createImageGenerationFixture();
     final controller = fixture.controller;
@@ -2211,7 +2281,7 @@ void main() {
       baseUrl: 'https://grsai.example.com',
       grsaiApiKey: 'grsai-key-123',
       geminiApiKey: 'gemini-key-456',
-      model: 'gemini-3-pro-image-preview',
+      model: 'gemini-3-pro-image',
     );
     final controller = fixture.controller;
     final asset = await _registeredAsset(fixture.database, fixture.root, 1);
@@ -2221,7 +2291,7 @@ void main() {
     final generated = await controller.generateReplacementForItem(
       item: selectedItem,
       prompt: '保持构图并提升光线',
-      model: 'gemini-3-pro-image-preview',
+      model: 'gemini-3-pro-image',
       aspectRatio: '16:9',
       imageSize: '2K',
       quality: 'auto',
@@ -2553,6 +2623,16 @@ Future<StoryboardCutAsset> _registeredAsset(
     path: file.path,
     indexNo: index,
   );
+}
+
+Future<void> _waitUntil(bool Function() condition) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (condition()) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('等待条件超时');
 }
 
 List<String> _itemIds(StoryboardController controller) {

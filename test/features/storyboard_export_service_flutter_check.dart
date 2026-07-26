@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
+import 'package:storyboard_grid_app/app/app_theme.dart';
 import 'package:storyboard_grid_app/features/exporter/data/storyboard_export_service.dart';
 import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
 import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_canvas_style.dart';
@@ -89,6 +90,44 @@ void main() {
     expect(pixel.g, 0x2A);
     expect(pixel.b, 0x2E);
     expect(StoryboardCanvasStyle.background, isNotNull);
+  });
+
+  test('浅色主题导出的 PNG 使用浅色画布背景', () async {
+    const board = StoryboardBoard(
+      id: 'board-light',
+      name: '浅色画板',
+      width: 120,
+      height: 120,
+      rows: 2,
+      columns: 2,
+      gap: 12,
+      items: [],
+    );
+    final root = await Directory.systemTemp.createTemp(
+      'storyboard_light_export_',
+    );
+    final canvasColors = StoryboardCanvasStyle.fromColorScheme(
+      AppTheme.light().colorScheme,
+    );
+
+    try {
+      final files = await const StoryboardExportService().exportBoard(
+        board: board,
+        format: StoryboardExportFormat.png,
+        outputPath: p.join(root.path, 'light-board.png'),
+        canvasColors: canvasColors,
+      );
+      final image = img.decodePng(await files.single.readAsBytes());
+
+      expect(image, isNotNull);
+      final pixel = image!.getPixel(0, 0);
+      expect(pixel.r, _colorByte(canvasColors.background.r));
+      expect(pixel.g, _colorByte(canvasColors.background.g));
+      expect(pixel.b, _colorByte(canvasColors.background.b));
+      expect(canvasColors.background, isNot(StoryboardCanvasStyle.background));
+    } finally {
+      await root.delete(recursive: true);
+    }
   });
 
   test('竖屏模式导出每行一张16比9图片的纵向画布', () async {
@@ -799,6 +838,8 @@ void main() {
     expect(files.single.lengthSync(), greaterThan(0));
   });
 }
+
+int _colorByte(double channel) => (channel * 255).round();
 
 double _exportDividerY(StoryboardBoard board, int rowIndex) {
   final layout = _ExportTestLayout(board.withAdaptiveHeight());

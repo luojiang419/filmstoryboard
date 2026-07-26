@@ -3,6 +3,7 @@ enum ImageGenerationProviderProtocol { gemini, grsai, apiMart }
 enum ImageGenerationApiRoute {
   grsaiUnified,
   geminiGenerateContent,
+  geminiInteractions,
   apiMartImages,
   apiMartGrok,
   apiMartMidjourney,
@@ -170,6 +171,30 @@ class ImageGenerationCatalog {
 
   static final models = <ImageGenerationModelDescriptor>[
     // Existing models keep their raw ids for persisted-setting compatibility.
+    ImageGenerationModelDescriptor(
+      id: 'gemini-3-pro-image',
+      apiModel: 'gemini-3-pro-image',
+      label: 'Gemini 3 Pro Image',
+      providerId: 'gemini',
+      familyId: 'gemini-image',
+      protocol: ImageGenerationProviderProtocol.gemini,
+      route: ImageGenerationApiRoute.geminiInteractions,
+      aspectRatios: defaultAspectRatios,
+      resolutions: defaultResolutions,
+      maxReferenceImages: 11,
+    ),
+    ImageGenerationModelDescriptor(
+      id: 'gemini-3.1-flash-image',
+      apiModel: 'gemini-3.1-flash-image',
+      label: 'Gemini 3.1 Flash Image',
+      providerId: 'gemini',
+      familyId: 'gemini-image',
+      protocol: ImageGenerationProviderProtocol.gemini,
+      route: ImageGenerationApiRoute.geminiInteractions,
+      aspectRatios: [..._wideAspectRatios, '1:4', '4:1', '1:8', '8:1'],
+      resolutions: ['0.5K', '1K', '2K', '4K'],
+      maxReferenceImages: 14,
+    ),
     ImageGenerationModelDescriptor(
       id: 'gemini-3-pro-image-preview',
       apiModel: 'gemini-3-pro-image-preview',
@@ -525,10 +550,7 @@ class ImageGenerationCatalog {
         ImageGenerationModelFamily(
           id: 'gemini-image',
           label: 'Gemini Image',
-          modelIds: [
-            'gemini-3-pro-image-preview',
-            'gemini-3.1-flash-image-preview',
-          ],
+          modelIds: ['gemini-3-pro-image', 'gemini-3.1-flash-image'],
         ),
       ],
     ),

@@ -110,6 +110,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   static const _assetNormalizationVersionKey =
       'storyboardAssetNormalizationVersion';
   static const _assetNormalizationVersion = 1;
+  static const highDefinitionRedrawModel = 'gemini-3-pro-image';
+  static const highDefinitionRedrawAspectRatio = '16:9';
+  static const highDefinitionRedrawImageSize = '2K';
 
   final AppDatabase _database;
   final WorkspaceDirectories? _directories;
@@ -2403,6 +2406,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     required String imageSize,
     required String quality,
     required List<String> extraReferenceImagePaths,
+    String? successMessage,
+    String? changedMessage,
   }) {
     final directories = _directories;
     if (directories == null) {
@@ -2478,7 +2483,114 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       imageSize: imageSize,
       quality: quality,
       referenceImagePaths: references,
+      successMessage: successMessage ?? '图片修改完成，已替换当前格',
+      changedMessage: changedMessage ?? '图片已生成，但当前格内容已变化，未自动替换',
     );
+  }
+
+  bool enqueueHighDefinitionRedrawForSelectedBoard() {
+    final board = value.selectedBoard;
+    if (board == null) {
+      value = value.copyWith(message: '请先创建故事板');
+      return false;
+    }
+    if (_guardLockedBoard(board, '高清重绘')) {
+      return false;
+    }
+    final items = _orderedVisibleItems(board);
+    if (items.isEmpty) {
+      value = value.copyWith(message: '当前画板没有可高清重绘的图片');
+      return false;
+    }
+    final descriptor = ImageGenerationModelCatalog.descriptorFor(
+      highDefinitionRedrawModel,
+    );
+    if (descriptor == null) {
+      value = value.copyWith(message: '高清重绘模型未配置');
+      return false;
+    }
+
+    final existingItems = <StoryboardItem>[];
+    var missingCount = 0;
+    for (final item in items) {
+      if (File(item.asset.path).existsSync()) {
+        existingItems.add(item);
+      } else {
+        missingCount++;
+      }
+    }
+    if (existingItems.isEmpty) {
+      value = value.copyWith(message: '当前画板图片文件不存在，无法高清重绘');
+      return false;
+    }
+
+    final tasks = <_PreparedImageReplacementTask>[];
+    for (var index = 0; index < existingItems.length; index++) {
+      final item = existingItems[index];
+      final task = _prepareImageReplacementTask(
+        item: item,
+        prompt: _highDefinitionRedrawPrompt(
+          board: board,
+          item: item,
+          sequenceNo: index + 1,
+        ),
+        model: highDefinitionRedrawModel,
+        aspectRatio: highDefinitionRedrawAspectRatio,
+        imageSize: highDefinitionRedrawImageSize,
+        quality: 'auto',
+        extraReferenceImagePaths: const [],
+        successMessage: '高清重绘完成，已替换当前格',
+        changedMessage: '图片已高清重绘，但当前格内容已变化，未自动替换',
+      );
+      if (task != null) {
+        tasks.add(task);
+      }
+    }
+    if (tasks.isEmpty) {
+      return false;
+    }
+
+    for (final task in tasks) {
+      unawaited(_runImageReplacementTask(task));
+    }
+    value = value.copyWith(
+      isGeneratingImage: true,
+      message:
+          '已并发提交 ${tasks.length} 张高清重绘任务'
+          '${missingCount > 0 ? '，跳过 $missingCount 张缺失图片' : ''}',
+    );
+    return true;
+  }
+
+  String _highDefinitionRedrawPrompt({
+    required StoryboardBoard board,
+    required StoryboardItem item,
+    required int sequenceNo,
+  }) {
+    final rowIndex = item.slotIndex ~/ board.columns;
+    final columnIndex = item.slotIndex % board.columns;
+    final parts = [
+      '请以参考图为唯一视觉依据，对当前故事板第 $sequenceNo 张分镜进行高清重绘。',
+      '保持原图主体、角色身份、场景、镜头角度、构图、动作关系和故事板连续性，不新增无关元素。',
+      '提升清晰度、细节、光影、材质、线条和边缘质量，输出适合故事板拼图使用的 16:9 2K 图像。',
+      '格位：第 ${rowIndex + 1} 行，第 ${columnIndex + 1} 列。',
+    ];
+    final caption = item.caption.trim();
+    if (caption.isNotEmpty) {
+      parts.add('当前分镜描述：$caption');
+    }
+    final rowCaption = board.rowCaptionAt(rowIndex).trim();
+    if (rowCaption.isNotEmpty) {
+      parts.add('当前行描述：$rowCaption');
+    }
+    final summary = board.summary;
+    if (summary != null) {
+      final outline = summary.outline.trim();
+      if (outline.isNotEmpty) {
+        parts.add('故事概述：$outline');
+      }
+    }
+    return parts.join('\n');
   }
 
   Future<bool> _runImageReplacementTask(
@@ -2520,6 +2632,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           slotIndex: task.slotIndex,
           oldAssetId: task.sourceAsset.id,
           replacement: replacement,
+          successMessage: task.successMessage,
+          changedMessage: task.changedMessage,
         );
         _database.updateImageGenerationRecord(
           id: task.generationId,
@@ -5627,6 +5741,8 @@ class _PreparedImageReplacementTask {
     required this.imageSize,
     required this.quality,
     required this.referenceImagePaths,
+    required this.successMessage,
+    required this.changedMessage,
   });
 
   final String generationId;
@@ -5640,6 +5756,8 @@ class _PreparedImageReplacementTask {
   final String imageSize;
   final String quality;
   final List<String> referenceImagePaths;
+  final String successMessage;
+  final String changedMessage;
 }
 
 class _AnalyzedStoryboardItem {
