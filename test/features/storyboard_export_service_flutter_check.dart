@@ -130,6 +130,66 @@ void main() {
     }
   });
 
+  test('原图细节模式会按源图像素放大画布，标准模式保持画板尺寸', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'storyboard_export_source_detail_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final sourceFile = File('${root.path}${Platform.pathSeparator}source.png');
+    final sourceImage = img.Image(width: 240, height: 135);
+    img.fill(sourceImage, color: img.ColorRgb8(40, 90, 150));
+    await sourceFile.writeAsBytes(img.encodePng(sourceImage));
+
+    final board = StoryboardBoard(
+      id: 'source-detail-board',
+      name: '原图细节',
+      width: 120,
+      height: 120,
+      rows: 1,
+      columns: 1,
+      gap: 0,
+      storyDescriptionEnabled: false,
+      items: [
+        StoryboardItem(
+          asset: StoryboardCutAsset(
+            id: 'source-detail-asset',
+            imageId: 'source-detail-image',
+            sourceName: 'source.png',
+            path: sourceFile.path,
+            indexNo: 1,
+          ),
+          caption: '',
+          slotIndex: 0,
+        ),
+      ],
+    );
+    const service = StoryboardExportService();
+
+    final standard = img.decodePng(
+      await service.renderBoardToPng(
+        board,
+        resolution: StoryboardExportResolution.standard,
+      ),
+    )!;
+    var intrinsicWidth = 0;
+    var decodedWidth = 0;
+    final sourceDetail = img.decodePng(
+      await service.renderBoardToPng(
+        board,
+        onSourceDecoded: (intrinsic, decoded) {
+          intrinsicWidth = intrinsic;
+          decodedWidth = decoded;
+        },
+      ),
+    )!;
+
+    expect(standard.width, board.withAdaptiveHeight().width);
+    expect(sourceDetail.width, greaterThanOrEqualTo(sourceImage.width));
+    expect(sourceDetail.height, greaterThanOrEqualTo(sourceImage.height));
+    expect(intrinsicWidth, sourceImage.width);
+    expect(decodedWidth, intrinsicWidth);
+  });
+
   test('竖屏模式导出每行一张16比9图片的纵向画布', () async {
     const board = StoryboardBoard(
       id: 'board-portrait',

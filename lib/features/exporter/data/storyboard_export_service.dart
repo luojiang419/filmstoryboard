@@ -26,6 +26,16 @@ enum StoryboardExportFormat {
   final String extension;
 }
 
+enum StoryboardExportResolution {
+  standard('标准尺寸', '按画板尺寸导出'),
+  sourceDetail('原图细节', '自动放大画布，保留源图像素细节');
+
+  const StoryboardExportResolution(this.label, this.description);
+
+  final String label;
+  final String description;
+}
+
 String storyboardExportFileName({
   required String boardName,
   required StoryboardExportFormat format,
@@ -98,6 +108,8 @@ class StoryboardExportService {
   Future<List<File>> exportBoard({
     required StoryboardBoard board,
     required StoryboardExportFormat format,
+    StoryboardExportResolution resolution =
+        StoryboardExportResolution.sourceDetail,
     required String outputPath,
     StoryboardCanvasColors canvasColors = StoryboardCanvasStyle.darkColors,
     bool includeSummaryPage = false,
@@ -113,6 +125,11 @@ class StoryboardExportService {
   }) async {
     _throwIfCancelled(isCancelled);
     final renderBoard = board.withAdaptiveHeight();
+    final renderScale = await _resolveRenderScale(
+      board: renderBoard,
+      resolution: resolution,
+      isCancelled: isCancelled,
+    );
     final file = File(_ensureExtension(outputPath, format.extension));
     if (!file.parent.existsSync()) {
       await file.parent.create(recursive: true);
@@ -123,6 +140,7 @@ class StoryboardExportService {
         case StoryboardExportFormat.png:
           await _exportPng(
             board: renderBoard,
+            renderScale: renderScale,
             file: file,
             exported: exported,
             canvasColors: canvasColors,
@@ -139,6 +157,7 @@ class StoryboardExportService {
         case StoryboardExportFormat.jpg:
           await _exportJpg(
             board: renderBoard,
+            renderScale: renderScale,
             file: file,
             exported: exported,
             canvasColors: canvasColors,
@@ -155,6 +174,7 @@ class StoryboardExportService {
         case StoryboardExportFormat.pdf:
           await _exportPdf(
             board: renderBoard,
+            renderScale: renderScale,
             file: file,
             exported: exported,
             canvasColors: canvasColors,
@@ -184,6 +204,7 @@ class StoryboardExportService {
 
   Future<void> _exportPng({
     required StoryboardBoard board,
+    required double renderScale,
     required File file,
     required List<File> exported,
     required StoryboardCanvasColors canvasColors,
@@ -199,6 +220,7 @@ class StoryboardExportService {
   }) async {
     final pngBytes = await renderBoardToPng(
       board,
+      renderScale: renderScale,
       canvasColors: canvasColors,
       numberEnabled: numberEnabled,
       numberPosition: numberPosition,
@@ -217,6 +239,7 @@ class StoryboardExportService {
       _throwIfCancelled(isCancelled);
       final summaryBytes = await renderSummaryPageToPng(
         board,
+        renderScale: renderScale,
         canvasColors: canvasColors,
       );
       _throwIfCancelled(isCancelled);
@@ -228,6 +251,7 @@ class StoryboardExportService {
 
   Future<void> _exportJpg({
     required StoryboardBoard board,
+    required double renderScale,
     required File file,
     required List<File> exported,
     required StoryboardCanvasColors canvasColors,
@@ -243,6 +267,7 @@ class StoryboardExportService {
   }) async {
     final pngBytes = await renderBoardToPng(
       board,
+      renderScale: renderScale,
       canvasColors: canvasColors,
       numberEnabled: numberEnabled,
       numberPosition: numberPosition,
@@ -261,6 +286,7 @@ class StoryboardExportService {
     if (_shouldExportSummaryPage(board, includeSummaryPage)) {
       final summaryBytes = await renderSummaryPageToPng(
         board,
+        renderScale: renderScale,
         canvasColors: canvasColors,
       );
       _throwIfCancelled(isCancelled);
@@ -273,6 +299,7 @@ class StoryboardExportService {
 
   Future<void> _exportPdf({
     required StoryboardBoard board,
+    required double renderScale,
     required File file,
     required List<File> exported,
     required StoryboardCanvasColors canvasColors,
@@ -288,6 +315,7 @@ class StoryboardExportService {
   }) async {
     final pngBytes = await renderBoardToPng(
       board,
+      renderScale: renderScale,
       canvasColors: canvasColors,
       numberEnabled: numberEnabled,
       numberPosition: numberPosition,
@@ -305,6 +333,7 @@ class StoryboardExportService {
     if (_shouldExportSummaryPage(board, includeSummaryPage)) {
       final summaryBytes = await renderSummaryPageToPng(
         board,
+        renderScale: renderScale,
         canvasColors: canvasColors,
       );
       _throwIfCancelled(isCancelled);
@@ -317,8 +346,8 @@ class StoryboardExportService {
       _writePdfInWorker,
       _PdfWriteRequest(
         path: temporaryFile.path,
-        width: board.width,
-        height: board.height,
+        width: _scaledPixelDimension(board.width, renderScale),
+        height: _scaledPixelDimension(board.height, renderScale),
         pages: pages,
       ),
       debugLabel: 'storyboard-pdf-export',
@@ -330,6 +359,9 @@ class StoryboardExportService {
 
   Future<Uint8List> renderBoardToPng(
     StoryboardBoard board, {
+    StoryboardExportResolution resolution =
+        StoryboardExportResolution.sourceDetail,
+    double? renderScale,
     StoryboardCanvasColors canvasColors = StoryboardCanvasStyle.darkColors,
     bool numberEnabled = false,
     CutImageNumberPosition numberPosition = CutImageNumberPosition.topLeft,
@@ -343,15 +375,6 @@ class StoryboardExportService {
   }) async {
     _throwIfCancelled(isCancelled);
     final renderBoard = board.withAdaptiveHeight();
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    final size = Size(
-      renderBoard.width.toDouble(),
-      renderBoard.height.toDouble(),
-    );
-    final background = Paint()..color = canvasColors.background;
-    canvas.drawRect(Offset.zero & size, background);
-
     final columns = math.max(1, renderBoard.columns);
     final rows = math.max(1, renderBoard.rows);
     final layout = _BoardRenderLayout(
@@ -370,6 +393,22 @@ class StoryboardExportService {
       itemsBySlot.putIfAbsent(item.slotIndex, () => item);
     }
 
+    final effectiveRenderScale =
+        renderScale ??
+        await _resolveRenderScale(
+          board: renderBoard,
+          resolution: resolution,
+          isCancelled: isCancelled,
+        );
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder)..scale(effectiveRenderScale);
+    final size = Size(
+      renderBoard.width.toDouble(),
+      renderBoard.height.toDouble(),
+    );
+    final background = Paint()..color = canvasColors.background;
+    canvas.drawRect(Offset.zero & size, background);
+
     _paintBoardTitle(canvas, renderBoard, layout, canvasColors);
     ui.Picture? picture;
     ui.Image? outputImage;
@@ -387,25 +426,21 @@ class StoryboardExportService {
         final item = itemsBySlot[i];
         if (item != null) {
           final caption = item.caption.trim();
+          final imageRect = _imageRectForItem(
+            tileRect: tileRect,
+            layout: layout,
+            showItemCaptions: showItemCaptions,
+          );
           final padding = math.min(12.0, math.max(6.0, tileRect.width * 0.035));
           final captionHeight = showItemCaptions
               ? layout.itemCaptionHeight
               : 0.0;
-          final imageRect = Rect.fromLTWH(
-            tileRect.left + padding,
-            tileRect.top + padding,
-            math.max(1.0, tileRect.width - padding * 2),
-            math.max(
-              1.0,
-              tileRect.height -
-                  padding * 2 -
-                  captionHeight -
-                  (showItemCaptions ? 8 : 0),
-            ),
-          );
           final image = await _decodeUiImageFile(
             item.asset.path,
-            targetWidth: imageRect.width.ceil(),
+            targetWidth: math.max(
+              1,
+              (imageRect.width * effectiveRenderScale).ceil(),
+            ),
             onSourceDecoded: onSourceDecoded,
           );
           try {
@@ -484,8 +519,8 @@ class StoryboardExportService {
       _throwIfCancelled(isCancelled);
       picture = recorder.endRecording();
       outputImage = await picture.toImage(
-        renderBoard.width,
-        renderBoard.height,
+        _scaledPixelDimension(renderBoard.width, effectiveRenderScale),
+        _scaledPixelDimension(renderBoard.height, effectiveRenderScale),
       );
       final byteData = await outputImage.toByteData(
         format: ui.ImageByteFormat.png,
@@ -505,6 +540,7 @@ class StoryboardExportService {
 
   Future<Uint8List> renderSummaryPageToPng(
     StoryboardBoard board, {
+    double renderScale = 1,
     StoryboardCanvasColors canvasColors = StoryboardCanvasStyle.darkColors,
   }) async {
     final summary = board.summary;
@@ -512,7 +548,7 @@ class StoryboardExportService {
       throw const FormatException('故事板内容页为空');
     }
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
+    final canvas = Canvas(recorder)..scale(renderScale);
     final size = Size(board.width.toDouble(), board.height.toDouble());
     canvas.drawRect(
       Offset.zero & size,
@@ -557,7 +593,10 @@ class StoryboardExportService {
     ui.Image? image;
     try {
       picture = recorder.endRecording();
-      image = await picture.toImage(board.width, board.height);
+      image = await picture.toImage(
+        _scaledPixelDimension(board.width, renderScale),
+        _scaledPixelDimension(board.height, renderScale),
+      );
       final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) {
         throw const FormatException('无法渲染故事板内容页');
@@ -610,6 +649,91 @@ class StoryboardExportService {
           fontSize: 22,
           maxLines: 5,
         );
+  }
+
+  Future<double> _resolveRenderScale({
+    required StoryboardBoard board,
+    required StoryboardExportResolution resolution,
+    StoryboardExportCancellationCheck? isCancelled,
+  }) async {
+    if (resolution == StoryboardExportResolution.standard) {
+      return 1;
+    }
+
+    final rows = math.max(1, board.rows);
+    final columns = math.max(1, board.columns);
+    final layout = _BoardRenderLayout(
+      board: board,
+      rows: rows,
+      columns: columns,
+    );
+    final showItemCaptions =
+        board.storyDescriptionEnabled && !board.rowDescriptionEnabled;
+    final itemsBySlot = <int, StoryboardItem>{};
+    for (final item in board.items) {
+      itemsBySlot.putIfAbsent(item.slotIndex, () => item);
+    }
+    final sourceSizes = <String, Size>{};
+    var scale = 1.0;
+    for (var slotIndex = 0; slotIndex < board.slotCount; slotIndex++) {
+      _throwIfCancelled(isCancelled);
+      final item = itemsBySlot[slotIndex];
+      if (item == null) {
+        continue;
+      }
+      final imageRect = _imageRectForItem(
+        tileRect: layout.slotRect(slotIndex),
+        layout: layout,
+        showItemCaptions: showItemCaptions,
+      );
+      final sourceSize = sourceSizes[item.asset.path] ??=
+          await _readUiImageSize(item.asset.path);
+      scale = math.max(
+        scale,
+        math.max(
+          sourceSize.width / imageRect.width,
+          sourceSize.height / imageRect.height,
+        ),
+      );
+    }
+    return scale;
+  }
+
+  Rect _imageRectForItem({
+    required Rect tileRect,
+    required _BoardRenderLayout layout,
+    required bool showItemCaptions,
+  }) {
+    final padding = math.min(12.0, math.max(6.0, tileRect.width * 0.035));
+    final captionHeight = showItemCaptions ? layout.itemCaptionHeight : 0.0;
+    return Rect.fromLTWH(
+      tileRect.left + padding,
+      tileRect.top + padding,
+      math.max(1.0, tileRect.width - padding * 2),
+      math.max(
+        1.0,
+        tileRect.height -
+            padding * 2 -
+            captionHeight -
+            (showItemCaptions ? 8 : 0),
+      ),
+    );
+  }
+
+  Future<Size> _readUiImageSize(String path) async {
+    final buffer = await ui.ImmutableBuffer.fromFilePath(path);
+    ui.ImageDescriptor? descriptor;
+    try {
+      descriptor = await ui.ImageDescriptor.encoded(buffer);
+      return Size(descriptor.width.toDouble(), descriptor.height.toDouble());
+    } finally {
+      descriptor?.dispose();
+      buffer.dispose();
+    }
+  }
+
+  int _scaledPixelDimension(int logicalDimension, double renderScale) {
+    return math.max(1, (logicalDimension * renderScale).ceil());
   }
 
   void _paintStoryboardImage(

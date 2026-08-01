@@ -30,6 +30,8 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
 
   final _selectedBoardIds = <String>{};
   StoryboardExportFormat _format = StoryboardExportFormat.png;
+  StoryboardExportResolution _resolution =
+      StoryboardExportResolution.sourceDetail;
   String _message = '选择需要导出的故事板';
   bool _isExporting = false;
   bool _exportCanCancel = false;
@@ -72,6 +74,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
                   width: sidebarWidth,
                   child: _ExportSidebar(
                     format: _format,
+                    resolution: _resolution,
                     message: _message,
                     boardCount: boards.length,
                     selectedBoards: selectedBoards,
@@ -79,6 +82,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
                     progress: _exportProgress,
                     onCancelExport: _exportCanCancel ? _cancelExport : null,
                     onFormatChanged: _setFormat,
+                    onResolutionChanged: _setResolution,
                     onExportSelected: canExport
                         ? () =>
                               _exportSelected(boards, settingsController.value)
@@ -176,6 +180,14 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     _saveUiState();
   }
 
+  void _setResolution(StoryboardExportResolution resolution) {
+    if (_resolution == resolution) {
+      return;
+    }
+    setState(() => _resolution = resolution);
+    _saveUiState();
+  }
+
   void _syncSelectionWithBoards(List<StoryboardBoard> boards) {
     final validIds = boards.map((board) => board.id).toSet();
     final beforeCount = _selectedBoardIds.length;
@@ -211,6 +223,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
         return;
       }
       _format = _formatFromJson(decoded['format']);
+      _resolution = _resolutionFromJson(decoded['resolution']);
       _selectedBoardIds
         ..clear()
         ..addAll(_jsonStringSet(decoded['selectedBoardIds']));
@@ -231,6 +244,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
             _uiStateKey,
             jsonEncode({
               'format': _format.name,
+              'resolution': _resolution.name,
               'selectedBoardIds': _selectedBoardIds.toList()..sort(),
               'anchorIndex': _anchorIndex,
             }),
@@ -248,6 +262,16 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
       }
     }
     return StoryboardExportFormat.png;
+  }
+
+  StoryboardExportResolution _resolutionFromJson(Object? value) {
+    final name = value?.toString();
+    for (final resolution in StoryboardExportResolution.values) {
+      if (resolution.name == name) {
+        return resolution;
+      }
+    }
+    return StoryboardExportResolution.sourceDetail;
   }
 
   Set<String> _jsonStringSet(Object? value) {
@@ -466,6 +490,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
           await service.exportBoard(
             board: boards[i],
             format: _format,
+            resolution: _resolution,
             outputPath: outputPath,
             canvasColors: canvasColors,
             includeSummaryPage: settings.storyboardSummaryPageEnabled,
@@ -623,6 +648,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
 class _ExportSidebar extends StatelessWidget {
   const _ExportSidebar({
     required this.format,
+    required this.resolution,
     required this.message,
     required this.boardCount,
     required this.selectedBoards,
@@ -630,6 +656,7 @@ class _ExportSidebar extends StatelessWidget {
     required this.progress,
     required this.onCancelExport,
     required this.onFormatChanged,
+    required this.onResolutionChanged,
     required this.onExportSelected,
     required this.onExportDefault,
     required this.onExportBoardImages,
@@ -638,6 +665,7 @@ class _ExportSidebar extends StatelessWidget {
   });
 
   final StoryboardExportFormat format;
+  final StoryboardExportResolution resolution;
   final String message;
   final int boardCount;
   final List<StoryboardBoard> selectedBoards;
@@ -645,6 +673,7 @@ class _ExportSidebar extends StatelessWidget {
   final double? progress;
   final VoidCallback? onCancelExport;
   final ValueChanged<StoryboardExportFormat> onFormatChanged;
+  final ValueChanged<StoryboardExportResolution> onResolutionChanged;
   final VoidCallback? onExportSelected;
   final VoidCallback? onExportDefault;
   final VoidCallback? onExportBoardImages;
@@ -725,6 +754,24 @@ class _ExportSidebar extends StatelessWidget {
               selected: {format},
               onSelectionChanged: (selection) =>
                   onFormatChanged(selection.first),
+            ),
+            const SizedBox(height: 18),
+            const _ExportSectionLabel('导出清晰度'),
+            const SizedBox(height: 8),
+            SegmentedButton<StoryboardExportResolution>(
+              showSelectedIcon: false,
+              segments: [
+                for (final item in StoryboardExportResolution.values)
+                  ButtonSegment(value: item, label: Text(item.label)),
+              ],
+              selected: {resolution},
+              onSelectionChanged: (selection) =>
+                  onResolutionChanged(selection.first),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              resolution.description,
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 18),
             Container(

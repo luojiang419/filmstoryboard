@@ -56,7 +56,7 @@ void main() {
       expect(decodedWidths, hasLength(10));
       expect(
         decodedWidths.every(
-          (widths) => widths.$1 == 2400 && widths.$2 < widths.$1,
+          (widths) => widths.$1 == 2400 && widths.$2 == widths.$1,
         ),
         isTrue,
       );
@@ -64,8 +64,11 @@ void main() {
       for (var index = 0; index < exported.length; index++) {
         final decoded = img.decodeJpg(await exported[index].readAsBytes());
         expect(decoded, isNotNull);
-        expect(decoded!.width, boards[index].withAdaptiveHeight().width);
-        expect(decoded.height, boards[index].withAdaptiveHeight().height);
+        expect(decoded!.width, greaterThanOrEqualTo(2400));
+        expect(
+          decoded.height,
+          greaterThanOrEqualTo(boards[index].withAdaptiveHeight().height),
+        );
       }
     },
     timeout: const Timeout(Duration(minutes: 2)),

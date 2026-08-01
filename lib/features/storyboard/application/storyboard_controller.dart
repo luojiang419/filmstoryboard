@@ -112,7 +112,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   static const _assetNormalizationVersion = 1;
   static const highDefinitionRedrawModel = 'gemini-3-pro-image';
   static const highDefinitionRedrawAspectRatio = '16:9';
-  static const highDefinitionRedrawImageSize = '2K';
+  static const highDefinitionRedrawImageSize = '4K';
 
   final AppDatabase _database;
   final WorkspaceDirectories? _directories;
@@ -2570,24 +2570,27 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     final rowIndex = item.slotIndex ~/ board.columns;
     final columnIndex = item.slotIndex % board.columns;
     final parts = [
-      '请以参考图为唯一视觉依据，对当前故事板第 $sequenceNo 张分镜进行高清重绘。',
-      '保持原图主体、角色身份、场景、镜头角度、构图、动作关系和故事板连续性，不新增无关元素。',
-      '提升清晰度、细节、光影、材质、线条和边缘质量，输出适合故事板拼图使用的 16:9 2K 图像。',
+      '这是高清重绘的图像超分辨率修复任务，不是重新创作。请先分析参考图，再以参考图为唯一视觉依据，修复当前故事板第 $sequenceNo 张分镜。',
+      '在不改变原图内容的前提下，恢复原图中已有但因低清、压缩、噪点或运动模糊而损失的真实细节；保持原图的媒介、画风、色彩逻辑和真实质感，不把插画或概念图改成另一种风格。',
+      '必须保持完全一致：画面裁切、景别、镜头角度、透视、主体位置、人物身份与脸部特征、姿态与表情、服装和配饰、道具、背景空间关系、光源方向、阴影、色温、曝光和故事连续性。',
+      '只补回参考图有视觉证据支持的细节：自然的边缘、发丝、皮肤与毛发纹理、布料和材质纹理、建筑与环境细节、真实光影层次；细节应与原有焦点、景深和颗粒感一致。',
+      '严格禁止：新增或删除人物、道具、文字、标识和背景元素；改变构图、动作、表情、年龄、身份、服装颜色或镜头语言；臆造看不见的内容；过度锐化、光晕、塑料皮肤、蜡像感、重复纹理、伪影和不自然的 HDR。原图文字、标识、图案若存在，按原样保留，不重写。',
+      '输出一张适合故事板演示的真实高清 16:9 4K 图像，画面干净、边缘自然、纹理清晰，但不要添加任何新的创意元素或水印。',
       '格位：第 ${rowIndex + 1} 行，第 ${columnIndex + 1} 列。',
     ];
     final caption = item.caption.trim();
     if (caption.isNotEmpty) {
-      parts.add('当前分镜描述：$caption');
+      parts.add('辅助理解（不得覆盖参考图视觉证据）- 当前分镜描述：$caption');
     }
     final rowCaption = board.rowCaptionAt(rowIndex).trim();
     if (rowCaption.isNotEmpty) {
-      parts.add('当前行描述：$rowCaption');
+      parts.add('辅助理解（不得覆盖参考图视觉证据）- 当前行描述：$rowCaption');
     }
     final summary = board.summary;
     if (summary != null) {
       final outline = summary.outline.trim();
       if (outline.isNotEmpty) {
-        parts.add('故事概述：$outline');
+        parts.add('辅助理解（不得覆盖参考图视觉证据）- 故事概述：$outline');
       }
     }
     return parts.join('\n');

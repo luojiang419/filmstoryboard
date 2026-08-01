@@ -108,7 +108,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Gemini 3 Pro Image'), findsOneWidget);
     expect(find.text('16:9'), findsOneWidget);
-    expect(find.text('2K'), findsOneWidget);
+    expect(find.text('4K'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('storyboard-hd-redraw-button')),
       findsOneWidget,
@@ -2807,6 +2807,7 @@ void main() {
       'exporterPageUiState',
       jsonEncode({
         'format': 'pdf',
+        'resolution': 'standard',
         'selectedBoardIds': [boardId],
         'anchorIndex': 0,
       }),
@@ -2839,6 +2840,13 @@ void main() {
       ),
     );
     expect(segmented.selected, {StoryboardExportFormat.pdf});
+    final resolutionSegmented = tester
+        .widget<SegmentedButton<StoryboardExportResolution>>(
+          find.byWidgetPredicate(
+            (widget) => widget is SegmentedButton<StoryboardExportResolution>,
+          ),
+        );
+    expect(resolutionSegmented.selected, {StoryboardExportResolution.standard});
     expect(find.text('已选择 1 个故事板'), findsOneWidget);
     expect(find.text('导出到...'), findsOneWidget);
     expect(find.text('导出画板图片'), findsOneWidget);
