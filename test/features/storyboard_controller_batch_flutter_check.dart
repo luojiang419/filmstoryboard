@@ -4,15 +4,15 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/settings/application/settings_controller.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
-import 'package:storyboard_grid_app/features/storyboard/application/storyboard_controller.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/image_generation_service.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/vision_storyboard_service.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -144,6 +144,35 @@ void main() {
     expect(board.columns, 2);
     expect(board.configuredRows, 1);
     expect(board.configuredColumns, 2);
+  });
+
+  test('修改行列时另一项会按当前图片数量自动适配', () async {
+    final fixture = await _createFixture();
+    final controller = fixture.controller;
+    final assets = [for (var index = 1; index <= 30; index++) _asset(index)];
+
+    controller.setGrid(5, 6);
+    controller.setAssetsUsed(assets, true);
+
+    var board = controller.value.selectedBoard!;
+    expect(board.rows, 5);
+    expect(board.columns, 6);
+
+    controller.setRowsAndAdaptColumns(7);
+
+    board = controller.value.selectedBoard!;
+    expect(board.rows, 7);
+    expect(board.columns, 5);
+    expect(board.configuredRows, 7);
+    expect(board.configuredColumns, 5);
+
+    controller.setColumnsAndAdaptRows(4);
+
+    board = controller.value.selectedBoard!;
+    expect(board.rows, 8);
+    expect(board.columns, 4);
+    expect(board.configuredRows, 8);
+    expect(board.configuredColumns, 4);
   });
 
   test('调整图片间距会扩展画板并保持格子尺寸', () async {
@@ -378,6 +407,37 @@ void main() {
     item = controller.value.selectedBoard!.itemAtSlot(0)!;
     expect(item.flipHorizontal, isFalse);
     expect(item.flipVertical, isTrue);
+  });
+
+  test('设计分镜图生成结果会显示为故事板左侧分镜图文件夹', () async {
+    final root = await Directory.systemTemp.createTemp('storyboard_design_');
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final controller = StoryboardController(
+      database: database,
+      directories: directories,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    final designDirectory = Directory(
+      p.join(directories.generatedImages.path, 'design'),
+    );
+    await designDirectory.create(recursive: true);
+    final image = File(p.join(designDirectory.path, 'shot-1.png'));
+    await image.writeAsBytes(img.encodePng(img.Image(width: 8, height: 6)));
+
+    await controller.refreshAssets();
+
+    final folder = controller.value.folders.singleWhere(
+      (folder) => folder.name == '分镜图',
+    );
+    expect(folder.path, designDirectory.path);
+    expect(folder.assets, hasLength(1));
+    expect(folder.assets.single.path, image.path);
+    expect(folder.assets.single.sourceName, '分镜图');
   });
 
   test('手动替换图片会复制到工程目录并保留当前格描述与翻转状态', () async {
@@ -2687,6 +2747,7 @@ class _FakeVisionStoryboardService extends VisionStoryboardService {
     required int sequenceNo,
     required int rowIndex,
     required int columnIndex,
+    bool allowThinking = false,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeImageCount++;
@@ -2730,6 +2791,7 @@ class _FakeVisionStoryboardService extends VisionStoryboardService {
   Future<VisionStoryboardSummaryResult> summarizeStoryboard({
     required AppSettings settings,
     required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
   }) async {
     return const VisionStoryboardSummaryResult(
       outline: '测试大纲',
@@ -2744,6 +2806,7 @@ class _FakeVisionStoryboardService extends VisionStoryboardService {
   Future<VisionStoryboardCaptionRewriteResult> rewriteStoryboardCaptions({
     required AppSettings settings,
     required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
     void Function(int completed, int total)? onProgress,
   }) async {
     onProgress?.call(1, 1);
@@ -2859,6 +2922,7 @@ class _BlockingVisionStoryboardService extends _FakeVisionStoryboardService {
     required int sequenceNo,
     required int rowIndex,
     required int columnIndex,
+    bool allowThinking = false,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     if (!analysisStarted.isCompleted) {

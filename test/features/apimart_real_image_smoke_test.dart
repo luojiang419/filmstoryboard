@@ -1,7 +1,7 @@
 import 'dart:io';
 
-import 'package:storyboard_grid_app/features/storyboard/data/image_generation_diagnostic_logger.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_diagnostic_logger.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
 import 'package:test/test.dart';
 
 void main() {

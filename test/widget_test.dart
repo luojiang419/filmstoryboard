@@ -9,27 +9,27 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
-import 'package:storyboard_grid_app/app/app_theme.dart';
-import 'package:storyboard_grid_app/app/window_title_bar.dart';
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/providers/app_providers.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/core/services/file_explorer_service.dart';
-import 'package:storyboard_grid_app/features/exporter/data/storyboard_export_service.dart';
-import 'package:storyboard_grid_app/features/exporter/presentation/exporter_page.dart';
-import 'package:storyboard_grid_app/features/grid_cut/application/grid_cut_controller.dart';
-import 'package:storyboard_grid_app/features/grid_cut/data/grid_crop_service.dart';
-import 'package:storyboard_grid_app/features/grid_cut/data/grid_detection_service.dart';
-import 'package:storyboard_grid_app/features/grid_cut/domain/grid_cut_models.dart';
-import 'package:storyboard_grid_app/features/grid_cut/presentation/grid_cut_page.dart';
-import 'package:storyboard_grid_app/features/settings/application/settings_controller.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/settings/presentation/settings_page.dart';
-import 'package:storyboard_grid_app/features/storyboard/application/storyboard_controller.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/image_generation_service.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_canvas_style.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_models.dart';
-import 'package:storyboard_grid_app/features/storyboard/presentation/storyboard_page.dart';
+import 'package:filmstoryboard/app/app_theme.dart';
+import 'package:filmstoryboard/app/window_title_bar.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/providers/app_providers.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/core/services/file_explorer_service.dart';
+import 'package:filmstoryboard/features/exporter/data/storyboard_export_service.dart';
+import 'package:filmstoryboard/features/exporter/presentation/exporter_page.dart';
+import 'package:filmstoryboard/features/grid_cut/application/grid_cut_controller.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_crop_service.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dart';
+import 'package:filmstoryboard/features/grid_cut/domain/grid_cut_models.dart';
+import 'package:filmstoryboard/features/grid_cut/presentation/grid_cut_page.dart';
+import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/presentation/settings_page.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_canvas_style.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/features/storyboard/presentation/storyboard_page.dart';
 
 void main() {
   testWidgets('标题栏窗口按钮固定在右侧', (tester) async {
@@ -48,7 +48,7 @@ void main() {
     expect(closeButtonRect.right, titleBarRect.right);
   });
 
-  testWidgets('故事板拼图页面可以渲染', (tester) async {
+  testWidgets('故事板页面可以渲染', (tester) async {
     late final Directory root;
     late final AppDirectories directories;
     late final AppDatabase database;
@@ -660,7 +660,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('故事板拼图页面浅色模式画布使用浅色动态背景', (tester) async {
+  testWidgets('故事板页面浅色模式画布使用浅色动态背景', (tester) async {
     late final Directory root;
     late final AppDatabase database;
     await tester.runAsync(() async {
@@ -2188,7 +2188,19 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('圆圈透明度'), findsNothing);
     expect(find.text('数字尺寸'), findsNothing);
-    expect(find.text('应用宫格布局'), findsOneWidget);
+    expect(find.text('应用宫格布局'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('storyboard-layout-rows-field')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('storyboard-layout-columns-field')),
+      findsOneWidget,
+    );
+    expect(find.text('9宫格'), findsNothing);
+    expect(find.text('12宫格'), findsNothing);
+    expect(find.text('16宫格'), findsNothing);
+    expect(find.text('24宫格'), findsNothing);
     final portraitModeSwitch = find.byKey(
       const ValueKey('storyboard-portrait-mode-switch'),
     );

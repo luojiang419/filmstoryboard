@@ -152,6 +152,16 @@ class VisionStoryboardSummaryResult {
   final String rawResponse;
 }
 
+class VisionVideoDimensionResult {
+  const VisionVideoDimensionResult({
+    required this.dimensions,
+    required this.rawResponse,
+  });
+
+  final Map<String, String> dimensions;
+  final String rawResponse;
+}
+
 class VisionStoryboardCaptionRewriteResult {
   const VisionStoryboardCaptionRewriteResult({
     required this.captions,
@@ -219,6 +229,7 @@ class VisionStoryboardService {
     required int sequenceNo,
     required int rowIndex,
     required int columnIndex,
+    bool allowThinking = false,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     _validateSettings(settings);
@@ -242,6 +253,7 @@ class VisionStoryboardService {
         prompt: prompt,
         imageDataUrl: image,
         maxTokens: maxTokens,
+        allowThinking: allowThinking,
       );
       responses.add(content);
       return content;
@@ -423,12 +435,14 @@ class VisionStoryboardService {
   Future<VisionStoryboardSummaryResult> summarizeStoryboard({
     required AppSettings settings,
     required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
   }) async {
     _validateSettings(settings);
     final content = await _createChatCompletion(
       settings: settings,
       prompt: _summaryPrompt(analyses),
       maxTokens: 1200,
+      allowThinking: allowThinking,
     );
     final json = _extractJsonObject(content);
     return VisionStoryboardSummaryResult(
@@ -464,9 +478,51 @@ class VisionStoryboardService {
     );
   }
 
+  Future<VisionVideoDimensionResult> analyzeVideoDimensions({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    required Map<String, String> summary,
+    bool allowThinking = false,
+  }) async {
+    _validateSettings(settings);
+    final content = await _createChatCompletion(
+      settings: settings,
+      prompt: _videoDimensionPrompt(analyses, summary),
+      maxTokens: 2200,
+      allowThinking: allowThinking,
+    );
+    final json = _extractJsonObject(content);
+    const fields = [
+      '开场类型',
+      '黄金3秒内容',
+      '留存钩子',
+      '视频结构',
+      '镜头节奏',
+      '信息密度',
+      '出现时间',
+      '产品展示方式',
+      '卖点表达',
+      '场景',
+      '画面风格',
+      '色彩',
+      '刺激点',
+      '购买理由',
+      'CTA',
+      '福利',
+      '评论引导',
+    ];
+    return VisionVideoDimensionResult(
+      dimensions: {
+        for (final field in fields) field: _stringValue(json, field),
+      },
+      rawResponse: content,
+    );
+  }
+
   Future<VisionStoryboardCaptionRewriteResult> rewriteStoryboardCaptions({
     required AppSettings settings,
     required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
     void Function(int completed, int total)? onProgress,
   }) async {
     if (analyses.isEmpty) {
@@ -484,6 +540,7 @@ class VisionStoryboardService {
           settings: settings,
           prompt: prompt,
           maxTokens: maxTokens,
+          allowThinking: allowThinking,
         );
         _throwIfCancelled(requestGeneration);
         return completion;
@@ -635,12 +692,14 @@ class VisionStoryboardService {
     required String prompt,
     String? imageDataUrl,
     required int maxTokens,
+    bool allowThinking = false,
   }) async {
     final completion = await _createChatCompletionDetailed(
       settings: settings,
       prompt: prompt,
       imageDataUrl: imageDataUrl,
       maxTokens: maxTokens,
+      allowThinking: allowThinking,
     );
     return completion.content;
   }
@@ -650,12 +709,25 @@ class VisionStoryboardService {
     required String prompt,
     String? imageDataUrl,
     required int maxTokens,
+    bool allowThinking = false,
   }) async {
     final endpoint = normalizeChatCompletionsEndpoint(
       settings.visionApiBaseUrl,
     );
+    final disableThinking = _shouldDisableThinking(
+      settings,
+      allowThinking: allowThinking,
+    );
+    final enableThinking = _shouldEnableThinking(settings, allowThinking);
     final content = <Map<String, Object?>>[
-      {'type': 'text', 'text': prompt},
+      {
+        'type': 'text',
+        'text': disableThinking
+            ? '/no_think\n$prompt'
+            : enableThinking
+            ? '/think\n$prompt'
+            : prompt,
+      },
       if (imageDataUrl != null)
         {
           'type': 'image_url',
@@ -676,7 +748,14 @@ class VisionStoryboardService {
               {'role': 'user', 'content': content},
             ],
             'temperature': 0,
-            'max_tokens': maxTokens,
+            if (disableThinking) ...{
+              'chat_template_kwargs': {'enable_thinking': false},
+              'enable_thinking': false,
+            },
+            if (enableThinking) ...{
+              'chat_template_kwargs': {'enable_thinking': true},
+              'enable_thinking': true,
+            },
           }),
         )
         .timeout(
@@ -739,6 +818,22 @@ class VisionStoryboardService {
     if (value is int) return value;
     if (value is num) return value.round();
     return int.tryParse(value?.toString() ?? '');
+  }
+
+  bool _shouldDisableThinking(
+    AppSettings settings, {
+    required bool allowThinking,
+  }) {
+    return !allowThinking && _supportsThinkingToggle(settings);
+  }
+
+  bool _shouldEnableThinking(AppSettings settings, bool allowThinking) {
+    return allowThinking && _supportsThinkingToggle(settings);
+  }
+
+  bool _supportsThinkingToggle(AppSettings settings) {
+    final model = settings.visionModel.trim().toLowerCase();
+    return model.contains('qwen3') || model.contains('qwen-3');
   }
 
   void _validateSettings(AppSettings settings) {
@@ -900,6 +995,56 @@ JSON 字段：
         ..writeln('叙事功能：${item.narrativeFunction}')
         ..writeln('剪辑承接：${item.transitionHint}')
         ..writeln();
+    }
+    return buffer.toString();
+  }
+
+  String _videoDimensionPrompt(
+    List<VisionImageAnalysis> analyses,
+    Map<String, String> summary,
+  ) {
+    final buffer = StringBuffer()
+      ..writeln('你是一名资深短视频广告策略师、剪辑导演和转化分析师。')
+      ..writeln('请基于下面可见的逐镜头事实，完成整条参考视频的多维度专业拆解。')
+      ..writeln('只返回一个扁平 JSON 对象，不要 Markdown，不要解释，不要新增字段。')
+      ..writeln('不得编造画面中不存在的产品、福利、价格或 CTA；无法确认时明确写“未在可见画面中确认”。')
+      ..writeln('结论必须具体说明“什么画面/动作产生什么作用”，避免“吸引用户、节奏较快”等空泛套话。')
+      ..writeln('JSON 必须包含以下全部字段：')
+      ..writeln('''{
+  "开场类型": "具体开场机制",
+  "黄金3秒内容": "前三秒可见内容与信息顺序",
+  "留存钩子": "具体视觉/动作/悬念钩子",
+  "视频结构": "按阶段说明完整结构",
+  "镜头节奏": "镜头长度、切换密度和快慢变化",
+  "信息密度": "单位时间承载的主体、卖点和动作信息",
+  "出现时间": "产品首次/重点/收尾出现位置",
+  "产品展示方式": "拿取、使用、细节、结果、包装等具体方式",
+  "卖点表达": "画面如何证明卖点",
+  "场景": "主要场景及切换关系",
+  "画面风格": "构图、机位、光线和质感",
+  "色彩": "主色、对比和情绪作用",
+  "刺激点": "具体触发注意或情绪反应的画面",
+  "购买理由": "由画面证据支撑的购买动机",
+  "CTA": "可见的行动号召及出现位置",
+  "福利": "可见的价格/优惠/赠品信息",
+  "评论引导": "可见或可推断自台词结构的互动设计"
+}''')
+      ..writeln('视频级已有摘要：')
+      ..writeln('大纲：${summary['outline'] ?? ''}')
+      ..writeln('内容：${summary['content'] ?? ''}')
+      ..writeln('逐镜头事实：');
+    for (var index = 0; index < analyses.length; index++) {
+      final item = analyses[index];
+      buffer
+        ..writeln('镜头 ${index + 1}：${item.caption}')
+        ..writeln('场景/人物/动作：${item.scene}；${item.people}；${item.bodyAction}')
+        ..writeln('道具/产品：${item.props}')
+        ..writeln(
+          '景别/运镜/构图：${item.shotSize}；${item.cameraMovement}；${item.composition}',
+        )
+        ..writeln(
+          '焦点/光色/功能：${item.visualFocus}；${item.lightingMood}；${item.colorPalette}；${item.narrativeFunction}',
+        );
     }
     return buffer.toString();
   }

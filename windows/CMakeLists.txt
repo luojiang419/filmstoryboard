@@ -1,10 +1,10 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(storyboard_grid_app LANGUAGES CXX)
+project(filmstoryboard LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "storyboard_grid_app")
+set(BINARY_NAME "filmstoryboard")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -71,6 +71,8 @@ endif()
 
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
+set(BUNDLED_FFMPEG_DIR "${CMAKE_BINARY_DIR}/bundled_ffmpeg")
+file(MAKE_DIRECTORY "${BUNDLED_FFMPEG_DIR}/bin")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
@@ -86,6 +88,22 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+install(CODE "
+  execute_process(
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+      -File \"${CMAKE_CURRENT_SOURCE_DIR}/../scripts/ensure_ffmpeg_windows.ps1\"
+      -Destination \"${BUNDLED_FFMPEG_DIR}\"
+      -Root \"${CMAKE_CURRENT_SOURCE_DIR}/..\"
+    RESULT_VARIABLE ffmpeg_result
+  )
+  if(NOT ffmpeg_result EQUAL 0)
+    message(FATAL_ERROR \"Failed to prepare bundled FFmpeg tools.\")
+  endif()
+  " COMPONENT Runtime)
+install(DIRECTORY "${BUNDLED_FFMPEG_DIR}/bin"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/ffmpeg"
+  COMPONENT Runtime)
 
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")

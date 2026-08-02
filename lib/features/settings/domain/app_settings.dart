@@ -15,6 +15,40 @@ enum AppThemePreference {
   }
 }
 
+enum AppNavigationPosition {
+  bottom('底部'),
+  left('左侧');
+
+  const AppNavigationPosition(this.label);
+
+  final String label;
+
+  static AppNavigationPosition fromName(String? value) {
+    return AppNavigationPosition.values.firstWhere(
+      (position) => position.name == value,
+      orElse: () => AppNavigationPosition.bottom,
+    );
+  }
+}
+
+enum VideoFrameExtractionStrategy {
+  perFrame('逐帧'),
+  sceneAndInterval('场景变化 + 间隔补帧'),
+  intervalOnly('固定间隔'),
+  highFidelity('高保真采样');
+
+  const VideoFrameExtractionStrategy(this.label);
+
+  final String label;
+
+  static VideoFrameExtractionStrategy fromName(String? value) {
+    return VideoFrameExtractionStrategy.values.firstWhere(
+      (strategy) => strategy.name == value,
+      orElse: () => VideoFrameExtractionStrategy.sceneAndInterval,
+    );
+  }
+}
+
 enum CutImageNumberPosition {
   topLeft('左上'),
   bottomLeft('左下'),
@@ -55,6 +89,17 @@ class AppSettings {
   const AppSettings({
     required this.exportDirectory,
     required this.themePreference,
+    this.navigationPosition = AppNavigationPosition.bottom,
+    this.ffmpegExecutable = 'ffmpeg',
+    this.ffprobeExecutable = 'ffprobe',
+    this.videoFrameExtractionStrategy =
+        VideoFrameExtractionStrategy.sceneAndInterval,
+    this.videoFrameIntervalSeconds = 1,
+    this.videoSceneThreshold = 0.3,
+    this.videoMinimumSharpness = 0.08,
+    this.videoAnalysisThinkingEnabled = false,
+    this.replicateDefaultGlobalStyle = defaultReplicateGlobalStyle,
+    this.replicateDefaultConstraints = defaultReplicateConstraints,
     required this.cutImageNumberEnabled,
     required this.cutImageNumberPosition,
     required this.cutImageNumberBackgroundOpacity,
@@ -85,9 +130,22 @@ class AppSettings {
       'https://api.apimart.ai';
   static const defaultImageGenerationGeminiApiBaseUrl =
       'https://www.shiying-api.com';
+  static const defaultReplicateGlobalStyle = '高清电影广告质感，细节丰富，色彩自然，光影层次清晰';
+  static const defaultReplicateConstraints =
+      '保持主体外观、服装、产品结构与场景连续稳定；人物面部和身体比例自然，动作连续，无卡顿、无闪烁、无穿模；保持无字幕，避免生成任何文字或字幕，不要生成 Logo，不要生成水印，不出现重复人物或同款分身';
 
   final String exportDirectory;
   final AppThemePreference themePreference;
+  final AppNavigationPosition navigationPosition;
+  final String ffmpegExecutable;
+  final String ffprobeExecutable;
+  final VideoFrameExtractionStrategy videoFrameExtractionStrategy;
+  final double videoFrameIntervalSeconds;
+  final double videoSceneThreshold;
+  final double videoMinimumSharpness;
+  final bool videoAnalysisThinkingEnabled;
+  final String replicateDefaultGlobalStyle;
+  final String replicateDefaultConstraints;
   final bool cutImageNumberEnabled;
   final CutImageNumberPosition cutImageNumberPosition;
   final double cutImageNumberBackgroundOpacity;
@@ -112,6 +170,16 @@ class AppSettings {
   AppSettings copyWith({
     String? exportDirectory,
     AppThemePreference? themePreference,
+    AppNavigationPosition? navigationPosition,
+    String? ffmpegExecutable,
+    String? ffprobeExecutable,
+    VideoFrameExtractionStrategy? videoFrameExtractionStrategy,
+    double? videoFrameIntervalSeconds,
+    double? videoSceneThreshold,
+    double? videoMinimumSharpness,
+    bool? videoAnalysisThinkingEnabled,
+    String? replicateDefaultGlobalStyle,
+    String? replicateDefaultConstraints,
     bool? cutImageNumberEnabled,
     CutImageNumberPosition? cutImageNumberPosition,
     double? cutImageNumberBackgroundOpacity,
@@ -136,6 +204,22 @@ class AppSettings {
     return AppSettings(
       exportDirectory: exportDirectory ?? this.exportDirectory,
       themePreference: themePreference ?? this.themePreference,
+      navigationPosition: navigationPosition ?? this.navigationPosition,
+      ffmpegExecutable: ffmpegExecutable ?? this.ffmpegExecutable,
+      ffprobeExecutable: ffprobeExecutable ?? this.ffprobeExecutable,
+      videoFrameExtractionStrategy:
+          videoFrameExtractionStrategy ?? this.videoFrameExtractionStrategy,
+      videoFrameIntervalSeconds:
+          videoFrameIntervalSeconds ?? this.videoFrameIntervalSeconds,
+      videoSceneThreshold: videoSceneThreshold ?? this.videoSceneThreshold,
+      videoMinimumSharpness:
+          videoMinimumSharpness ?? this.videoMinimumSharpness,
+      videoAnalysisThinkingEnabled:
+          videoAnalysisThinkingEnabled ?? this.videoAnalysisThinkingEnabled,
+      replicateDefaultGlobalStyle:
+          replicateDefaultGlobalStyle ?? this.replicateDefaultGlobalStyle,
+      replicateDefaultConstraints:
+          replicateDefaultConstraints ?? this.replicateDefaultConstraints,
       cutImageNumberEnabled:
           cutImageNumberEnabled ?? this.cutImageNumberEnabled,
       cutImageNumberPosition:

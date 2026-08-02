@@ -3,16 +3,16 @@ import 'dart:io';
 
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/grid_cut/application/grid_cut_controller.dart';
-import 'package:storyboard_grid_app/features/grid_cut/data/grid_crop_service.dart';
-import 'package:storyboard_grid_app/features/grid_cut/data/grid_detection_service.dart';
-import 'package:storyboard_grid_app/features/settings/application/settings_controller.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/story_design/application/story_design_controller.dart';
-import 'package:storyboard_grid_app/features/story_design/data/story_design_preferences_repository.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/grid_cut/application/grid_cut_controller.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_crop_service.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dart';
+import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/story_design/application/story_design_controller.dart';
+import 'package:filmstoryboard/features/story_design/data/story_design_preferences_repository.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
 import 'package:test/test.dart';
 
 void main() {

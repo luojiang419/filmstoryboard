@@ -40,7 +40,7 @@ def prepare(root: Path, version: str) -> None:
         f"  static const currentVersionTag = '{tag}';",
     )
     replace_once(
-        root / "installer/storyboard_grid_app.iss",
+        root / "installer/filmstoryboard.iss",
         r'^#define MyAppVersion "[^"]+"\s*$',
         f'#define MyAppVersion "{version}"',
     )
@@ -57,7 +57,7 @@ def self_test() -> None:
             "  static const currentVersionTag = 'v1.0.0.7';\n",
             encoding="utf-8",
         )
-        (root / "installer/storyboard_grid_app.iss").write_text(
+        (root / "installer/filmstoryboard.iss").write_text(
             '#define MyAppVersion "1.0.0.7"\n', encoding="utf-8"
         )
         prepare(root, "1.0.0.8")
@@ -68,7 +68,7 @@ def self_test() -> None:
         assert "currentVersion = '1.0.0.8'" in config
         assert "currentVersionTag = 'v1.0.0.8'" in config
         assert 'MyAppVersion "1.0.0.8"' in (
-            root / "installer/storyboard_grid_app.iss"
+            root / "installer/filmstoryboard.iss"
         ).read_text(encoding="utf-8")
 
 

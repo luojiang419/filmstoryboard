@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/core/widgets/value_listenable_selector_builder.dart';
+import 'package:filmstoryboard/core/widgets/value_listenable_selector_builder.dart';
 
 void main() {
   testWidgets('非选中状态连续变化不会重建目标子树', (tester) async {

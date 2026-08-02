@@ -223,6 +223,8 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
+  static const currentSchemaVersion = 4;
+
   AppDatabase._(this._database, this._settingWriteObserver);
 
   final Database _database;
@@ -427,8 +429,234 @@ class AppDatabase {
           updated_at TEXT NOT NULL
         );
       ''');
+    _migrateFeatureSchema();
     _ensureVisionAnalysisItemColumns();
     _ensureVisionAnalysisItemsSupportAllStoryboardAssets();
+  }
+
+  void _migrateFeatureSchema() {
+    final row = _database.select('PRAGMA user_version;').first;
+    final version = row['user_version'] as int? ?? 0;
+    if (version < 1) {
+      _database
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS source_videos (
+          id TEXT PRIMARY KEY,
+          original_path TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          stored_path TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL DEFAULT 0,
+          frame_rate REAL NOT NULL DEFAULT 0,
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          has_audio INTEGER NOT NULL DEFAULT 0,
+          frame_count INTEGER NOT NULL DEFAULT 0,
+          successful_frames INTEGER NOT NULL DEFAULT 0,
+          failed_frames INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS video_frames (
+          id TEXT PRIMARY KEY,
+          video_id TEXT NOT NULL REFERENCES source_videos(id) ON DELETE CASCADE,
+          index_no INTEGER NOT NULL,
+          timestamp_ms INTEGER NOT NULL DEFAULT 0,
+          path TEXT NOT NULL,
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          sharpness REAL NOT NULL DEFAULT 0,
+          brightness REAL NOT NULL DEFAULT 0,
+          motion_score REAL NOT NULL DEFAULT 0,
+          perceptual_hash TEXT NOT NULL DEFAULT '',
+          is_focus INTEGER NOT NULL DEFAULT 0,
+          is_selected INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          UNIQUE(video_id, index_no)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS video_shots (
+          id TEXT PRIMARY KEY,
+          video_id TEXT NOT NULL REFERENCES source_videos(id) ON DELETE CASCADE,
+          shot_number INTEGER NOT NULL,
+          start_ms INTEGER NOT NULL DEFAULT 0,
+          end_ms INTEGER NOT NULL DEFAULT 0,
+          primary_frame_id TEXT,
+          description TEXT NOT NULL DEFAULT '',
+          story_flow TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(video_id, shot_number)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS video_shot_frames (
+          shot_id TEXT NOT NULL REFERENCES video_shots(id) ON DELETE CASCADE,
+          frame_id TEXT NOT NULL REFERENCES video_frames(id) ON DELETE CASCADE,
+          position INTEGER NOT NULL DEFAULT 0,
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(shot_id, frame_id)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS marketing_analyses (
+          id TEXT PRIMARY KEY,
+          video_id TEXT NOT NULL REFERENCES source_videos(id) ON DELETE CASCADE,
+          scope TEXT NOT NULL,
+          dimensions_json TEXT NOT NULL DEFAULT '{}',
+          raw_response TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(video_id, scope)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS shooting_scripts (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source_storyboard_id TEXT,
+          source_video_id TEXT,
+          status TEXT NOT NULL DEFAULT 'draft',
+          version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS script_shots (
+          id TEXT PRIMARY KEY,
+          script_id TEXT NOT NULL REFERENCES shooting_scripts(id) ON DELETE CASCADE,
+          shot_number INTEGER NOT NULL,
+          duration_seconds REAL NOT NULL DEFAULT 0,
+          frame_path TEXT NOT NULL DEFAULT '',
+          visual TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL DEFAULT '',
+          shot_size TEXT NOT NULL DEFAULT '',
+          camera_movement TEXT NOT NULL DEFAULT '',
+          camera_notes TEXT NOT NULL DEFAULT '',
+          scene TEXT NOT NULL DEFAULT '',
+          product_code TEXT NOT NULL DEFAULT '',
+          product_styling TEXT NOT NULL DEFAULT '',
+          dialogue TEXT NOT NULL DEFAULT '',
+          sound TEXT NOT NULL DEFAULT '',
+          prompt TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          updated_at TEXT NOT NULL,
+          UNIQUE(script_id, shot_number)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS replicate_runs (
+          id TEXT PRIMARY KEY,
+          video_id TEXT,
+          script_id TEXT NOT NULL DEFAULT '',
+          global_style TEXT NOT NULL DEFAULT '',
+          constraints_text TEXT NOT NULL DEFAULT '',
+          confirmed_shot_ids_json TEXT NOT NULL DEFAULT '[]',
+          image_reference_count INTEGER NOT NULL DEFAULT 0,
+          video_reference_count INTEGER NOT NULL DEFAULT 0,
+          audio_reference_count INTEGER NOT NULL DEFAULT 0,
+          current_step TEXT NOT NULL DEFAULT 'confirmShots',
+          status TEXT NOT NULL DEFAULT 'pending',
+          confirm_shots_status TEXT NOT NULL DEFAULT 'pending',
+          prepare_assets_status TEXT NOT NULL DEFAULT 'pending',
+          compose_prompts_status TEXT NOT NULL DEFAULT 'pending',
+          completed_count INTEGER NOT NULL DEFAULT 0,
+          total_count INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS replicate_assets (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL REFERENCES replicate_runs(id) ON DELETE CASCADE,
+          asset_type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          path TEXT NOT NULL DEFAULT '',
+          reference_number INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS shot_prompts (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL REFERENCES replicate_runs(id) ON DELETE CASCADE,
+          shot_number INTEGER NOT NULL,
+          script_shot_id TEXT,
+          asset_ids_json TEXT NOT NULL DEFAULT '[]',
+          prompt TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL DEFAULT '',
+          raw_response TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          error_message TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL,
+          UNIQUE(run_id, shot_number)
+        );
+      ''')
+        ..execute('PRAGMA user_version = 1;');
+    }
+    if (version < 2) {
+      _database
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS video_frame_analyses (
+            id TEXT PRIMARY KEY,
+            video_id TEXT NOT NULL REFERENCES source_videos(id) ON DELETE CASCADE,
+            frame_id TEXT NOT NULL REFERENCES video_frames(id) ON DELETE CASCADE,
+            sequence_no INTEGER NOT NULL,
+            dimensions_json TEXT NOT NULL DEFAULT '{}',
+            raw_response TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(video_id, frame_id)
+          );
+        ''')
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS video_summaries (
+            id TEXT PRIMARY KEY,
+            video_id TEXT NOT NULL REFERENCES source_videos(id) ON DELETE CASCADE,
+            fields_json TEXT NOT NULL DEFAULT '{}',
+            raw_response TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_message TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            UNIQUE(video_id)
+          );
+        ''')
+        ..execute('PRAGMA user_version = 2;');
+    }
+    if (version < 3) {
+      _ensureTextColumn('replicate_runs', 'script_id');
+      _ensureTextColumn('replicate_runs', 'global_style');
+      _ensureTextColumn('replicate_runs', 'constraints_text');
+      _ensureTextColumn('replicate_runs', 'confirmed_shot_ids_json');
+      _database.execute(
+        "UPDATE replicate_runs SET confirmed_shot_ids_json = '[]' "
+        "WHERE confirmed_shot_ids_json = '';",
+      );
+      _database.execute('PRAGMA user_version = 3;');
+    }
+    if (version < 4) {
+      _ensureIntegerColumn('replicate_runs', 'image_reference_count');
+      _ensureIntegerColumn('replicate_runs', 'video_reference_count');
+      _ensureIntegerColumn('replicate_runs', 'audio_reference_count');
+      _database.execute('PRAGMA user_version = 4;');
+    }
   }
 
   void _ensureVisionAnalysisItemColumns() {
@@ -461,6 +689,19 @@ class AppDatabase {
     }
     _database.execute(
       "ALTER TABLE $tableName ADD COLUMN $columnName TEXT NOT NULL DEFAULT '';",
+    );
+  }
+
+  void _ensureIntegerColumn(String tableName, String columnName) {
+    final columns = _database
+        .select('PRAGMA table_info($tableName);')
+        .map((row) => row['name'] as String)
+        .toSet();
+    if (columns.contains(columnName)) {
+      return;
+    }
+    _database.execute(
+      'ALTER TABLE $tableName ADD COLUMN $columnName INTEGER NOT NULL DEFAULT 0;',
     );
   }
 
@@ -1472,6 +1713,17 @@ class AppDatabase {
   int countRows(String tableName) {
     final rows = _database.select('SELECT COUNT(*) AS total FROM $tableName');
     return rows.first['total'] as int;
+  }
+
+  List<Map<String, Object?>> selectRows(
+    String sql, [
+    List<Object?> parameters = const [],
+  ]) {
+    return _database.select(sql, parameters);
+  }
+
+  void executeStatement(String sql, [List<Object?> parameters = const []]) {
+    _database.execute(sql, parameters);
   }
 
   void dispose() {

@@ -19,6 +19,13 @@ class AppDirectories implements WorkspaceDirectories {
     required this.database,
     required this.temp,
     required this.logs,
+    required this.videos,
+    required this.frames,
+    required this.analyses,
+    required this.reports,
+    required this.scripts,
+    required this.assets,
+    required this.prompts,
   });
 
   final Directory executableDirectory;
@@ -43,6 +50,20 @@ class AppDirectories implements WorkspaceDirectories {
   final Directory temp;
   @override
   final Directory logs;
+  @override
+  final Directory videos;
+  @override
+  final Directory frames;
+  @override
+  final Directory analyses;
+  @override
+  final Directory reports;
+  @override
+  final Directory scripts;
+  @override
+  final Directory assets;
+  @override
+  final Directory prompts;
 
   @override
   Directory get workspaceRoot => data;
@@ -63,6 +84,13 @@ class AppDirectories implements WorkspaceDirectories {
     database,
     temp,
     logs,
+    videos,
+    frames,
+    analyses,
+    reports,
+    scripts,
+    assets,
+    prompts,
   ];
 
   static Future<AppDirectories> create({Directory? executableDirectory}) async {
@@ -85,6 +113,13 @@ class AppDirectories implements WorkspaceDirectories {
       database: Directory(p.join(data.path, 'database')),
       temp: Directory(p.join(data.path, 'temp')),
       logs: Directory(p.join(data.path, 'logs')),
+      videos: Directory(p.join(data.path, 'videos')),
+      frames: Directory(p.join(data.path, 'frames')),
+      analyses: Directory(p.join(data.path, 'analyses')),
+      reports: Directory(p.join(data.path, 'reports')),
+      scripts: Directory(p.join(data.path, 'scripts')),
+      assets: Directory(p.join(data.path, 'assets')),
+      prompts: Directory(p.join(data.path, 'prompts')),
     );
 
     for (final directory in directories.all) {

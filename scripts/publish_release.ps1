@@ -33,7 +33,7 @@ $asset = Get-Item -LiteralPath $AssetPath
 $checksum = Get-Item -LiteralPath $ChecksumPath
 $assetName = $asset.Name
 $checksumName = $checksum.Name
-$expectedAssetName = "StoryboardGridApp-Setup-$Version.exe"
+$expectedAssetName = "filmstoryboard-Setup-$Version.exe"
 if ($assetName -ne $expectedAssetName) {
     throw "Unexpected installer name: $assetName"
 }
@@ -49,7 +49,7 @@ $headers = @{
     Accept = 'application/vnd.github+json'
     Authorization = "Bearer $env:GH_TOKEN"
     'X-GitHub-Api-Version' = '2022-11-28'
-    'User-Agent' = 'StoryboardGridAppReleaseWorkflow'
+    'User-Agent' = 'filmstoryboardReleaseWorkflow'
 }
 $apiBase = "https://api.github.com/repos/$ReleaseRepo"
 $tag = "v$Version"
@@ -179,7 +179,7 @@ $notes
     $draft = Invoke-GitHubApi -Method Post -Uri "$apiBase/releases" -Body @{
         tag_name = $tag
         target_commitish = $targetSha
-        name = "故事板 $tag"
+        name = "filmstoryboard $tag"
         body = $body
         draft = $true
         prerelease = $false

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/app/app_theme.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_canvas_style.dart';
+import 'package:filmstoryboard/app/app_theme.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_canvas_style.dart';
 
 void main() {
   test('故事板画布 UI 样式在深色主题保持原深灰配色', () {

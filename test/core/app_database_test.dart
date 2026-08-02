@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart';
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -109,7 +109,7 @@ void main() {
     expect(loaded.autoInstallUpdates, isTrue);
     expect(loaded.updateDownloadMode, UpdateDownloadMode.manual);
     expect(loaded.updateManualProxyUrl, 'http://127.0.0.1:7890');
-    expect(database.countRows('settings'), 22);
+    expect(database.countRows('settings'), 32);
   });
 
   test('记录图片生成任务结果', () async {

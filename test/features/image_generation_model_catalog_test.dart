@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
 
 void main() {
   test('模型目录按服务商和系列完整分组且模型 id 唯一', () {

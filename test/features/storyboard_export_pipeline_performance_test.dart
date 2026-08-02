@@ -4,8 +4,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/features/exporter/data/storyboard_export_service.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/features/exporter/data/storyboard_export_service.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

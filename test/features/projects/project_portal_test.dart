@@ -3,13 +3,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/providers/app_providers.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/projects/application/project_service.dart';
-import 'package:storyboard_grid_app/features/projects/application/project_workspace_controller.dart';
-import 'package:storyboard_grid_app/features/projects/data/project_catalog_repository.dart';
-import 'package:storyboard_grid_app/features/projects/presentation/project_portal.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/providers/app_providers.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/projects/application/project_service.dart';
+import 'package:filmstoryboard/features/projects/application/project_workspace_controller.dart';
+import 'package:filmstoryboard/features/projects/data/project_catalog_repository.dart';
+import 'package:filmstoryboard/features/projects/presentation/project_portal.dart';
 
 void main() {
   test('工程门户组件可以加载', () {

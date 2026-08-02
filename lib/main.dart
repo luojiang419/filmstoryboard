@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app/app_theme.dart';
@@ -15,6 +16,7 @@ import 'features/updater/presentation/app_updater_page.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   final updaterSession = UpdaterService.parseInstallSessionArgs(args);
   if (updaterSession != null) {
     await _runUpdaterSessionApp(updaterSession);
@@ -67,7 +69,7 @@ Future<void> _runUpdaterSessionApp(UpdaterInstallSession session) async {
     size: Size(760, 500),
     minimumSize: Size(640, 460),
     center: true,
-    title: '故事板正在更新',
+    title: 'filmstoryboard 正在更新',
     titleBarStyle: TitleBarStyle.normal,
   );
 
@@ -79,7 +81,7 @@ Future<void> _runUpdaterSessionApp(UpdaterInstallSession session) async {
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: '故事板正在更新',
+      title: 'filmstoryboard 正在更新',
       theme: AppTheme.dark(),
       home: AppUpdaterPage(session: session, service: service),
     ),

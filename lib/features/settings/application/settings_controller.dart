@@ -25,6 +25,60 @@ class SettingsController extends ValueNotifier<AppSettings> {
     value = next;
   }
 
+  Future<void> setNavigationPosition(AppNavigationPosition position) async {
+    final next = value.copyWith(navigationPosition: position);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setVideoAnalysisSettings({
+    required String ffmpegExecutable,
+    required String ffprobeExecutable,
+    required VideoFrameExtractionStrategy extractionStrategy,
+    required double frameIntervalSeconds,
+    required double sceneThreshold,
+    required double minimumSharpness,
+    required bool thinkingEnabled,
+  }) async {
+    final next = value.copyWith(
+      ffmpegExecutable: ffmpegExecutable.trim().isEmpty
+          ? 'ffmpeg'
+          : ffmpegExecutable.trim(),
+      ffprobeExecutable: ffprobeExecutable.trim().isEmpty
+          ? 'ffprobe'
+          : ffprobeExecutable.trim(),
+      videoFrameExtractionStrategy: extractionStrategy,
+      videoFrameIntervalSeconds: frameIntervalSeconds.clamp(0.1, 60).toDouble(),
+      videoSceneThreshold: sceneThreshold.clamp(0.05, 0.95).toDouble(),
+      videoMinimumSharpness: minimumSharpness.clamp(0, 1).toDouble(),
+      videoAnalysisThinkingEnabled: thinkingEnabled,
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setVideoAnalysisThinkingEnabled(bool enabled) async {
+    final next = value.copyWith(videoAnalysisThinkingEnabled: enabled);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setReplicatePromptDefaults({
+    required String globalStyle,
+    required String constraints,
+  }) async {
+    final next = value.copyWith(
+      replicateDefaultGlobalStyle: globalStyle.trim().isEmpty
+          ? AppSettings.defaultReplicateGlobalStyle
+          : globalStyle.trim(),
+      replicateDefaultConstraints: constraints.trim().isEmpty
+          ? AppSettings.defaultReplicateConstraints
+          : constraints.trim(),
+    );
+    _repository.save(next);
+    value = next;
+  }
+
   Future<void> setCutImageNumberEnabled(bool enabled) async {
     final next = value.copyWith(cutImageNumberEnabled: enabled);
     _repository.save(next);

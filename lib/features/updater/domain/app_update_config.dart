@@ -1,12 +1,12 @@
 class AppUpdateConfig {
   const AppUpdateConfig._();
 
-  static const appName = '故事板';
-  static const userAgent = 'StoryboardGridApp';
-  static const currentVersion = '1.0.0.106';
-  static const currentVersionTag = 'v1.0.0.106';
+  static const appName = 'filmstoryboard';
+  static const userAgent = 'filmstoryboard';
+  static const currentVersion = '1.0.0.113';
+  static const currentVersionTag = 'v1.0.0.113';
   static const windowTitle = '$appName $currentVersionTag';
-  static const installerBaseName = 'StoryboardGridApp-Setup';
+  static const installerBaseName = 'filmstoryboard-Setup';
   static const defaultReleaseRepositoryUrl =
       'https://github.com/luojiang419/storyboard-grid-app-releases';
   static const defaultReleaseApiUrl = defaultReleaseRepositoryUrl;

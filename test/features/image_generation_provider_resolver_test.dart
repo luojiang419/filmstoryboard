@@ -1,6 +1,6 @@
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/image_generation_model_catalog.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/image_generation_provider_resolver.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/storyboard/domain/image_generation_model_catalog.dart';
+import 'package:filmstoryboard/features/storyboard/domain/image_generation_provider_resolver.dart';
 import 'package:test/test.dart';
 
 void main() {

@@ -10,12 +10,17 @@ import '../features/grid_cut/presentation/grid_cut_page.dart';
 import '../features/onboarding/application/onboarding_controller.dart';
 import '../features/onboarding/data/onboarding_repository.dart';
 import '../features/onboarding/presentation/onboarding_overlay.dart';
+import '../features/settings/application/settings_controller.dart';
+import '../features/settings/domain/app_settings.dart';
 import '../features/settings/presentation/settings_page.dart';
+import '../features/replicate/presentation/replicate_page.dart';
+import '../features/shooting_script/presentation/shooting_script_page.dart';
 import '../features/story_design/presentation/story_design_page.dart';
 import '../features/storyboard/application/storyboard_controller.dart';
 import '../features/storyboard/presentation/storyboard_page.dart';
 import '../features/updater/application/updater_controller.dart';
 import '../features/updater/domain/app_update_config.dart';
+import '../features/video_analysis/presentation/video_analysis_page.dart';
 import 'window_title_bar.dart';
 
 class AppShell extends ConsumerStatefulWidget {
@@ -39,21 +44,24 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell> {
   static const _selectedTabIndexKey = 'appShellSelectedTabIndex';
   static const _selectedTabIndexVersionKey = 'appShellSelectedTabIndexVersion';
-  static const _selectedTabIndexVersion = 2;
+  static const _selectedTabIndexVersion = 3;
 
   late int _tabIndex;
   late final UpdaterController _updaterController;
   late final OnboardingController _onboardingController;
   late final StoryboardController _storyboardController;
+  late final SettingsController _settingsController;
   bool _updatePromptVisible = false;
   bool _assetNormalizationPromptVisible = false;
   bool _assetNormalizationDeferred = false;
 
   static const _tabs = <_ShellTab>[
     _ShellTab('设计分镜图', Icons.draw_rounded),
-    _ShellTab('多宫格裁切', Icons.grid_view_rounded),
-    _ShellTab('故事板拼图', Icons.dashboard_customize_rounded),
-    _ShellTab('导出故事板', Icons.ios_share_rounded),
+    _ShellTab('视频解析', Icons.video_file_rounded),
+    _ShellTab('故事板', Icons.dashboard_customize_rounded),
+    _ShellTab('拍摄脚本', Icons.table_chart_rounded),
+    _ShellTab('一键复刻', Icons.auto_awesome_rounded),
+    _ShellTab('导出', Icons.ios_share_rounded),
     _ShellTab('设置', Icons.tune_rounded),
   ];
 
@@ -67,6 +75,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     )..addListener(_handleOnboardingChanged);
     _storyboardController = ref.read(storyboardControllerProvider)
       ..addListener(_handleAssetNormalizationStateChanged);
+    _settingsController = ref.read(settingsControllerProvider)
+      ..addListener(_handleSettingsChanged);
     _tabIndex =
         _loadSavedTabIndex() ??
         widget.initialTabIndex.clamp(0, _tabs.length - 1).toInt();
@@ -88,6 +98,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     _onboardingController.removeListener(_handleOnboardingChanged);
     _onboardingController.dispose();
     _storyboardController.removeListener(_handleAssetNormalizationStateChanged);
+    _settingsController.removeListener(_handleSettingsChanged);
     _updaterController.removeListener(_handleUpdaterStateChanged);
     super.dispose();
   }
@@ -121,36 +132,32 @@ class _AppShellState extends ConsumerState<AppShell> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Column(
-                    children: [
-                      Expanded(
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 220),
-                          switchInCurve: Curves.easeOutCubic,
-                          switchOutCurve: Curves.easeInCubic,
-                          child: KeyedSubtree(
-                            key: ValueKey(_tabIndex),
-                            child: switch (_tabIndex) {
-                              0 => StoryDesignPage(
-                                onOpenGridCutPage: () => _selectTab(1),
-                              ),
-                              1 => const GridCutPage(),
-                              2 => const StoryboardPage(),
-                              3 => const ExporterPage(),
-                              _ => const SettingsPage(),
-                            },
-                          ),
+                  _settingsController.value.navigationPosition ==
+                          AppNavigationPosition.left
+                      ? Row(
+                          children: [
+                            _SideTabs(
+                              tabs: _tabs,
+                              selectedIndex: _tabIndex,
+                              onSelected: _selectTab,
+                              projectName: widget.projectName,
+                              onCloseProject: widget.onCloseProject,
+                            ),
+                            Expanded(child: _buildPageSwitcher()),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            Expanded(child: _buildPageSwitcher()),
+                            _BottomTabs(
+                              tabs: _tabs,
+                              selectedIndex: _tabIndex,
+                              onSelected: _selectTab,
+                              projectName: widget.projectName,
+                              onCloseProject: widget.onCloseProject,
+                            ),
+                          ],
                         ),
-                      ),
-                      _BottomTabs(
-                        tabs: _tabs,
-                        selectedIndex: _tabIndex,
-                        onSelected: _selectTab,
-                        projectName: widget.projectName,
-                        onCloseProject: widget.onCloseProject,
-                      ),
-                    ],
-                  ),
                   if (_onboardingController.visible)
                     OnboardingOverlay(controller: _onboardingController),
                 ],
@@ -158,6 +165,26 @@ class _AppShellState extends ConsumerState<AppShell> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildPageSwitcher() {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      child: KeyedSubtree(
+        key: ValueKey(_tabIndex),
+        child: switch (_tabIndex) {
+          0 => StoryDesignPage(onOpenGridCutPage: _showLegacyGridCutPage),
+          1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
+          2 => const StoryboardPage(),
+          3 => const ShootingScriptPage(),
+          4 => ReplicatePage(onOpenShootingScript: () => _selectTab(3)),
+          5 => const ExporterPage(),
+          _ => const SettingsPage(),
+        },
       ),
     );
   }
@@ -174,9 +201,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       final version = ref
           .read(appDatabaseProvider)
           .getSetting(_selectedTabIndexVersionKey);
-      final migratedIndex = version == '$_selectedTabIndexVersion'
-          ? index
-          : index + 1;
+      final migratedIndex = _migrateSavedTabIndex(index, version);
       final clamped = migratedIndex.clamp(0, _tabs.length - 1).toInt();
       if (version != '$_selectedTabIndexVersion') {
         ref
@@ -193,6 +218,27 @@ class _AppShellState extends ConsumerState<AppShell> {
     } catch (_) {
       return null;
     }
+  }
+
+  int _migrateSavedTabIndex(int index, String? version) {
+    if (version == '$_selectedTabIndexVersion') {
+      return index;
+    }
+    if (version == '2') {
+      return switch (index) {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 => 5,
+        _ => 6,
+      };
+    }
+    return switch (index) {
+      0 => 1,
+      1 => 2,
+      2 => 5,
+      _ => 6,
+    };
   }
 
   AppDatabase _globalDatabase() {
@@ -234,6 +280,32 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   void _showOnboarding() {
     _onboardingController.start(originTabIndex: _tabIndex);
+  }
+
+  void _handleSettingsChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _showLegacyGridCutPage() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog.fullscreen(
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('图片多宫格裁切（兼容工具）'),
+            leading: IconButton(
+              key: const ValueKey('close-legacy-grid-cut'),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              icon: const Icon(Icons.close_rounded),
+              tooltip: '返回设计分镜图',
+            ),
+          ),
+          body: const GridCutPage(),
+        ),
+      ),
+    );
   }
 
   void _handleOnboardingChanged() {
@@ -515,7 +587,7 @@ class _BottomTabs extends StatelessWidget {
     final hasProjectEntry = projectName != null || onCloseProject != null;
     final tabsWidget = Container(
       key: const ValueKey('app-shell-bottom-tabs'),
-      constraints: const BoxConstraints(maxWidth: 920),
+      constraints: const BoxConstraints(maxWidth: 1240),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: 0.94),
@@ -554,6 +626,71 @@ class _BottomTabs extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
       child: Center(child: tabsWidget),
+    );
+  }
+}
+
+class _SideTabs extends StatelessWidget {
+  const _SideTabs({
+    required this.tabs,
+    required this.selectedIndex,
+    required this.onSelected,
+    this.projectName,
+    this.onCloseProject,
+  });
+
+  final List<_ShellTab> tabs;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+  final String? projectName;
+  final Future<void> Function()? onCloseProject;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final hasProjectEntry = projectName != null || onCloseProject != null;
+    return Container(
+      key: const ValueKey('app-shell-left-tabs'),
+      width: 216,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(alpha: 0.94),
+        border: Border(
+          right: BorderSide(
+            color: scheme.outlineVariant.withValues(alpha: 0.42),
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (hasProjectEntry) ...[
+            _ProjectShortcut(
+              projectName: projectName,
+              onCloseProject: onCloseProject,
+            ),
+            const SizedBox(height: 12),
+          ],
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < tabs.length; i++) ...[
+                    _TabButton(
+                      tab: tabs[i],
+                      selected: i == selectedIndex,
+                      onTap: () => onSelected(i),
+                      expand: true,
+                    ),
+                    if (i != tabs.length - 1) const SizedBox(height: 6),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -619,11 +756,13 @@ class _TabButton extends StatelessWidget {
     required this.tab,
     required this.selected,
     required this.onTap,
+    this.expand = false,
   });
 
   final _ShellTab tab;
   final bool selected;
   final VoidCallback onTap;
+  final bool expand;
 
   @override
   Widget build(BuildContext context) {
@@ -638,6 +777,7 @@ class _TabButton extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
+          width: expand ? double.infinity : null,
           height: 40,
           padding: const EdgeInsets.symmetric(horizontal: 13),
           decoration: BoxDecoration(
@@ -661,7 +801,7 @@ class _TabButton extends StatelessWidget {
                 : null,
           ),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
             children: [
               Icon(
                 tab.icon,

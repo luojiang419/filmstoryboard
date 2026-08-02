@@ -55,6 +55,9 @@ final storyboardControllerProvider = Provider<StoryboardController>(
   ],
 );
 
+const _storyDesignFolderId = 'design-storyboards';
+const _storyDesignFolderName = '分镜图';
+
 class StoryboardController extends ValueNotifier<StoryboardState> {
   StoryboardController({
     required AppDatabase database,
@@ -784,6 +787,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           _AssetScanEntry(id: record.id, path: _toRuntimePath(record.path)),
       ],
       storyboardFoldersPath: _directories?.storyboardFolders.path,
+      storyDesignImagesPath: _directories == null
+          ? null
+          : p.join(_directories.generatedImages.path, 'design'),
       cutsPath: _directories?.cuts.path,
     );
     final scanResult = await compute(
@@ -1500,6 +1506,177 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         message: '已创建 ${board.name}',
       ),
     );
+  }
+
+  Future<String?> createOrReplaceBoardFromExternalImages({
+    required String sourceId,
+    required String boardName,
+    required List<StoryboardExternalImage> images,
+    StoryboardSummary? summary,
+  }) async {
+    final normalizedSourceId = sourceId.trim();
+    final normalizedBoardName = boardName.trim().replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
+    if (normalizedSourceId.isEmpty || normalizedBoardName.isEmpty) {
+      value = value.copyWith(message: '故事板来源和名称不能为空');
+      return null;
+    }
+    if (images.isEmpty) {
+      value = value.copyWith(message: '没有可生成故事板的焦点帧');
+      return null;
+    }
+    if (images.length > _maxSlotCount) {
+      value = value.copyWith(message: '单个故事板最多支持 $_maxSlotCount 个镜头，请减少焦点帧后重试');
+      return null;
+    }
+
+    final validImages = <StoryboardExternalImage>[];
+    final stableIds = <String>{};
+    for (final image in images) {
+      final stableId = image.stableId.trim();
+      final file = File(image.path);
+      if (stableId.isEmpty ||
+          !stableIds.add(stableId) ||
+          !file.existsSync() ||
+          !_isSupportedImage(file.path) ||
+          image.width <= 0 ||
+          image.height <= 0) {
+        continue;
+      }
+      validImages.add(image);
+    }
+    if (validImages.isEmpty) {
+      value = value.copyWith(message: '焦点帧文件不存在或格式无效，未生成故事板');
+      return null;
+    }
+    if (validImages.length != images.length) {
+      value = value.copyWith(message: '部分焦点帧文件无效，请修复后重试');
+      return null;
+    }
+
+    final boardId = 'external-board:$normalizedSourceId';
+    final existingBoard = value.boards.cast<StoryboardBoard?>().firstWhere(
+      (board) => board?.id == boardId,
+      orElse: () => null,
+    );
+    if (existingBoard?.locked == true) {
+      value = value.copyWith(message: '${existingBoard!.name} 已锁定，请先解锁后再更新');
+      return null;
+    }
+
+    final imageId = 'external-image:$normalizedSourceId';
+    final taskId = 'external-task:$normalizedSourceId';
+    final now = DateTime.now().toIso8601String();
+    final first = validImages.first;
+    final firstStoredPath = _toStoredPath(first.path);
+    _database
+      ..upsertImportedImage(
+        id: imageId,
+        originalPath: firstStoredPath,
+        originalName: first.sourceName,
+        storedPath: firstStoredPath,
+        width: first.width,
+        height: first.height,
+        createdAt: now,
+      )
+      ..upsertCutTask(
+        id: taskId,
+        imageId: imageId,
+        status: 'external-storyboard',
+        rows: 1,
+        columns: validImages.length,
+        confidence: 1,
+      )
+      ..deleteCutResultsForTask(taskId);
+    for (var index = 0; index < validImages.length; index++) {
+      final image = validImages[index];
+      _database.insertCutResult(
+        id: 'external-cut:${image.stableId}',
+        taskId: taskId,
+        imageId: imageId,
+        indexNo: index + 1,
+        path: _toStoredPath(image.path),
+        x: 0,
+        y: 0,
+        width: image.width,
+        height: image.height,
+        selected: true,
+      );
+    }
+
+    await _reloadAssets(
+      message: '正在生成 $normalizedBoardName',
+      ensureLatest: true,
+    );
+    final assetsById = {for (final asset in value.assets) asset.id: asset};
+    final items = <StoryboardItem>[];
+    for (var index = 0; index < validImages.length; index++) {
+      final image = validImages[index];
+      final asset = assetsById['external-cut:${image.stableId}'];
+      if (asset == null) {
+        value = value.copyWith(message: '焦点帧资源注册失败，请重试');
+        return null;
+      }
+      items.add(
+        StoryboardItem(
+          asset: asset,
+          caption: image.caption.trim(),
+          slotIndex: index,
+        ),
+      );
+    }
+
+    final baseBoard =
+        existingBoard ??
+        StoryboardBoard(
+          id: boardId,
+          name: normalizedBoardName,
+          width: 1920,
+          height: StoryboardBoard.heightForLayout(
+            width: 1920,
+            rows: 3,
+            columns: 3,
+          ),
+          rows: 3,
+          columns: 3,
+          gap: 18,
+          items: const [],
+          rowCaptions: const ['', '', ''],
+        );
+    final nextBoard = _boardWithAdaptiveHeight(
+      _boardWithGridForItemCount(
+        baseBoard.copyWith(
+          name: normalizedBoardName,
+          items: items,
+          summary: summary,
+          clearSummary: summary == null,
+        ),
+        itemCount: items.length,
+      ),
+    );
+    final alreadyExists = existingBoard != null;
+    final nextBoards = [
+      for (final board in value.boards)
+        if (board.id == boardId) nextBoard else board,
+      if (!alreadyExists) nextBoard,
+    ];
+    final nextOpenBoardIds = value.openBoardIds.contains(boardId)
+        ? value.openBoardIds
+        : [...value.openBoardIds, boardId];
+    _setState(
+      value.copyWith(
+        boards: nextBoards,
+        openBoardIds: nextOpenBoardIds,
+        selectedBoardId: boardId,
+        message: alreadyExists
+            ? '已更新 $normalizedBoardName，共 ${items.length} 个镜头'
+            : '已生成 $normalizedBoardName，共 ${items.length} 个镜头',
+      ),
+    );
+    flushWorkspaceSnapshot();
+    return boardId;
   }
 
   void closeBoard(String boardId) {
@@ -3517,6 +3694,34 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     setGrid(board.effectiveConfiguredRows, columns);
   }
 
+  void setRowsAndAdaptColumns(int rows) {
+    final board = value.selectedBoard;
+    if (board == null) {
+      return;
+    }
+    final nextRows = rows.clamp(1, _maxGridExtent).toInt();
+    final itemCount = board.visibleItemCount.clamp(1, _maxSlotCount).toInt();
+    final nextColumns = (itemCount / nextRows)
+        .ceil()
+        .clamp(1, _maxGridExtent)
+        .toInt();
+    setGrid(nextRows, nextColumns);
+  }
+
+  void setColumnsAndAdaptRows(int columns) {
+    final board = value.selectedBoard;
+    if (board == null) {
+      return;
+    }
+    final nextColumns = columns.clamp(1, _maxGridExtent).toInt();
+    final itemCount = board.visibleItemCount.clamp(1, _maxSlotCount).toInt();
+    final nextRows = (itemCount / nextColumns)
+        .ceil()
+        .clamp(1, _maxGridExtent)
+        .toInt();
+    setGrid(nextRows, nextColumns);
+  }
+
   void setGap(double gap) {
     final board = value.selectedBoard;
     if (board == null) {
@@ -4984,20 +5189,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return (rows: safeRows, columns: safeColumns);
     }
 
-    final presetIndex = StoryboardGridPreset.values.indexWhere(
-      (preset) => preset.rows == safeRows && preset.columns == safeColumns,
-    );
-    if (presetIndex >= 0) {
-      for (
-        var i = presetIndex + 1;
-        i < StoryboardGridPreset.values.length;
-        i++
-      ) {
-        final preset = StoryboardGridPreset.values[i];
-        if (preset.count >= requiredCount) {
-          return (rows: preset.rows, columns: preset.columns);
-        }
-      }
+    final columnsForConfiguredRows = (requiredCount / safeRows).ceil();
+    if (columnsForConfiguredRows <= _maxGridExtent) {
+      return (rows: safeRows, columns: columnsForConfiguredRows);
     }
 
     final targetAspect = safeRows / safeColumns;
@@ -5581,11 +5775,13 @@ class _AssetScanRequest {
   const _AssetScanRequest({
     required this.cutResults,
     required this.storyboardFoldersPath,
+    required this.storyDesignImagesPath,
     required this.cutsPath,
   });
 
   final List<_AssetScanEntry> cutResults;
   final String? storyboardFoldersPath;
+  final String? storyDesignImagesPath;
   final String? cutsPath;
 }
 
@@ -5666,6 +5862,44 @@ _AssetScanResult _scanStoryboardAssets(_AssetScanRequest request) {
           files: paths,
         ),
       );
+    }
+  }
+
+  final designPath = request.storyDesignImagesPath;
+  if (designPath != null) {
+    final designDirectory = Directory(designPath);
+    if (designDirectory.existsSync()) {
+      final files =
+          designDirectory
+              .listSync(followLinks: false)
+              .whereType<File>()
+              .where((file) => _isSupportedStoryboardImage(file.path))
+              .toList()
+            ..sort(
+              (a, b) => a.statSync().modified.compareTo(b.statSync().modified),
+            );
+      final paths = <String>[];
+      for (final file in files) {
+        final fileName = p.basename(file.path);
+        final sourceId = 'folder:$_storyDesignFolderId:$fileName';
+        final signature = _readAssetFileSignature(file.path, sourceId);
+        if (signature == null) {
+          continue;
+        }
+        paths.add(file.path);
+        fileSignatures[file.path] = signature;
+      }
+      if (paths.isNotEmpty) {
+        folders.insert(
+          0,
+          _ScannedStoryboardFolder(
+            id: _storyDesignFolderId,
+            name: _storyDesignFolderName,
+            path: designDirectory.path,
+            files: paths,
+          ),
+        );
+      }
     }
   }
 

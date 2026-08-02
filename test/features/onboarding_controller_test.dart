@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/features/onboarding/application/onboarding_controller.dart';
-import 'package:storyboard_grid_app/features/onboarding/data/onboarding_repository.dart';
-import 'package:storyboard_grid_app/features/onboarding/domain/onboarding_step.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/features/onboarding/application/onboarding_controller.dart';
+import 'package:filmstoryboard/features/onboarding/data/onboarding_repository.dart';
+import 'package:filmstoryboard/features/onboarding/domain/onboarding_step.dart';
 
 void main() {
   late Directory root;

@@ -8176,59 +8176,33 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                       ? '设置 ${board.effectiveConfiguredRows} x ${board.effectiveConfiguredColumns} · 当前 ${board.rows} x ${board.columns} · ${board.slotCount} 格'
                       : '${board.rows} x ${board.columns} · ${board.slotCount} 格',
                 ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final preset in StoryboardGridPreset.values)
-                      _PresetButton(
-                        label: preset.label,
-                        onTap: locked || board.portraitMode
-                            ? null
-                            : () => widget.controller.setGrid(
-                                preset.rows,
-                                preset.columns,
-                              ),
-                      ),
-                  ],
-                ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
                       child: TextField(
+                        key: const ValueKey('storyboard-layout-rows-field'),
                         controller: _rowsController,
                         enabled: !locked && !board.portraitMode,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(labelText: '行数'),
+                        onChanged: _applyRowsAndAdaptColumns,
+                        onSubmitted: _applyRowsAndAdaptColumns,
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: TextField(
+                        key: const ValueKey('storyboard-layout-columns-field'),
                         controller: _columnsController,
                         enabled: !locked && !board.portraitMode,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(labelText: '列数'),
+                        onChanged: _applyColumnsAndAdaptRows,
+                        onSubmitted: _applyColumnsAndAdaptRows,
                       ),
                     ),
                   ],
-                ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: locked || board.portraitMode
-                      ? null
-                      : () {
-                          widget.controller.setGrid(
-                            int.tryParse(_rowsController.text) ??
-                                board.effectiveConfiguredRows,
-                            int.tryParse(_columnsController.text) ??
-                                board.effectiveConfiguredColumns,
-                          );
-                        },
-                  icon: const Icon(Icons.grid_view_rounded),
-                  label: const Text('应用宫格布局'),
                 ),
               ],
             ),
@@ -8465,6 +8439,22 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
 
   bool _sectionExpanded(_StoryboardInspectorSection section) {
     return widget.expandedSections.contains(section);
+  }
+
+  void _applyRowsAndAdaptColumns(String value) {
+    final rows = int.tryParse(value);
+    if (rows == null) {
+      return;
+    }
+    widget.controller.setRowsAndAdaptColumns(rows);
+  }
+
+  void _applyColumnsAndAdaptRows(String value) {
+    final columns = int.tryParse(value);
+    if (columns == null) {
+      return;
+    }
+    widget.controller.setColumnsAndAdaptRows(columns);
   }
 
   Future<void> _exportBoardImages(StoryboardBoard board) async {

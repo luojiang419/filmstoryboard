@@ -239,8 +239,10 @@ extension on OnboardingSection {
   IconData get icon => switch (this) {
     OnboardingSection.overview => Icons.auto_awesome_rounded,
     OnboardingSection.design => Icons.draw_rounded,
-    OnboardingSection.gridCut => Icons.grid_view_rounded,
+    OnboardingSection.videoAnalysis => Icons.video_file_rounded,
     OnboardingSection.storyboard => Icons.dashboard_customize_rounded,
+    OnboardingSection.shootingScript => Icons.table_chart_rounded,
+    OnboardingSection.replicate => Icons.auto_awesome_rounded,
     OnboardingSection.exporter => Icons.ios_share_rounded,
     OnboardingSection.settings => Icons.tune_rounded,
   };

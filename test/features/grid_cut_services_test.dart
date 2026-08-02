@@ -3,9 +3,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
-import 'package:storyboard_grid_app/features/grid_cut/data/grid_crop_service.dart';
-import 'package:storyboard_grid_app/features/grid_cut/data/grid_detection_service.dart';
-import 'package:storyboard_grid_app/features/grid_cut/domain/grid_cut_models.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_crop_service.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dart';
+import 'package:filmstoryboard/features/grid_cut/domain/grid_cut_models.dart';
 import 'package:test/test.dart';
 
 void main() {

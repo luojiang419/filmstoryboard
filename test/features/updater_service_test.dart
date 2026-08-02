@@ -1,10 +1,10 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/updater/data/updater_service.dart';
-import 'package:storyboard_grid_app/features/updater/domain/app_update_config.dart';
-import 'package:storyboard_grid_app/features/updater/domain/update_models.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/updater/data/updater_service.dart';
+import 'package:filmstoryboard/features/updater/domain/app_update_config.dart';
+import 'package:filmstoryboard/features/updater/domain/update_models.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -20,7 +20,7 @@ void main() {
           '${pubspecVersion!.group(1)}.${pubspecVersion.group(2)}';
 
       final installerScript = File(
-        p.join('installer', 'storyboard_grid_app.iss'),
+        p.join('installer', 'filmstoryboard.iss'),
       ).readAsStringSync();
       final installerVersion = RegExp(
         r'#define\s+MyAppVersion\s+"([^"]+)"',
@@ -55,8 +55,8 @@ void main() {
       expect(
         UpdaterService.expectedInstallerNames('v1.2.3', platformKey: 'windows'),
         [
-          'StoryboardGridApp-Setup-v1.2.3.exe',
-          'StoryboardGridApp-Setup-1.2.3.exe',
+          'filmstoryboard-Setup-v1.2.3.exe',
+          'filmstoryboard-Setup-1.2.3.exe',
         ],
       );
       expect(
@@ -65,8 +65,8 @@ void main() {
           platformKey: 'windows',
         ),
         [
-          'StoryboardGridApp-Setup-v1.2.3.4.exe',
-          'StoryboardGridApp-Setup-1.2.3.4.exe',
+          'filmstoryboard-Setup-v1.2.3.4.exe',
+          'filmstoryboard-Setup-1.2.3.4.exe',
         ],
       );
     });
@@ -108,7 +108,7 @@ void main() {
         "tag_name": "v1.2.3",
         "assets": [
           {
-            "name": "StoryboardGridApp-Setup-v1.2.3.exe",
+            "name": "filmstoryboard-Setup-v1.2.3.exe",
             "browser_download_url": "https://example.com/setup.exe",
             "size": 123456
           }
@@ -122,7 +122,7 @@ void main() {
       );
 
       expect(release.versionTag, 'v1.2.3');
-      expect(release.installerName, 'StoryboardGridApp-Setup-v1.2.3.exe');
+      expect(release.installerName, 'filmstoryboard-Setup-v1.2.3.exe');
       expect(release.installerUrl, 'https://example.com/setup.exe');
       expect(release.installerSize, 123456);
     });
@@ -133,7 +133,7 @@ void main() {
         "tag_name": "v1.2.3",
         "assets": [
           {
-            "name": "StoryboardGridApp-Setup-1.2.3.exe",
+            "name": "filmstoryboard-Setup-1.2.3.exe",
             "browser_download_url": "https://example.com/setup.exe",
             "size": 456
           }
@@ -146,7 +146,7 @@ void main() {
         platformKey: 'windows',
       );
 
-      expect(release.installerName, 'StoryboardGridApp-Setup-1.2.3.exe');
+      expect(release.installerName, 'filmstoryboard-Setup-1.2.3.exe');
       expect(release.installerSize, 456);
     });
 
@@ -156,7 +156,7 @@ void main() {
         "tag_name": "v1.2.3.4",
         "assets": [
           {
-            "name": "StoryboardGridApp-Setup-1.2.3.4.exe",
+            "name": "filmstoryboard-Setup-1.2.3.4.exe",
             "browser_download_url": "https://example.com/setup.exe",
             "size": 789
           }
@@ -170,7 +170,7 @@ void main() {
       );
 
       expect(release.versionTag, 'v1.2.3.4');
-      expect(release.installerName, 'StoryboardGridApp-Setup-1.2.3.4.exe');
+      expect(release.installerName, 'filmstoryboard-Setup-1.2.3.4.exe');
       expect(release.installerSize, 789);
     });
 
@@ -294,7 +294,7 @@ void main() {
         executableDirectory: Directory(p.join(root.path, 'app')),
       );
       final installerFile = File(
-        p.join(root.path, 'StoryboardGridApp-Setup-1.2.3.exe'),
+        p.join(root.path, 'filmstoryboard-Setup-1.2.3.exe'),
       );
       await installerFile.writeAsString('installer');
 

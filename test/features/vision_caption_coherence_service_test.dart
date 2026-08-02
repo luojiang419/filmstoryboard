@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:storyboard_grid_app/features/storyboard/data/vision_caption_coherence_service.dart';
+import 'package:filmstoryboard/features/storyboard/data/vision_caption_coherence_service.dart';
 import 'package:test/test.dart';
 
 void main() {

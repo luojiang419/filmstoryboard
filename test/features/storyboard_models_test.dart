@@ -1,27 +1,8 @@
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('故事板常用宫格预设映射正确', () {
-    expect(StoryboardGridPreset.values.map((preset) => preset.label).toList(), [
-      '9宫格',
-      '12宫格',
-      '16宫格',
-      '24宫格',
-    ]);
-    expect(StoryboardGridPreset.values.map((preset) => preset.rows).toList(), [
-      3,
-      3,
-      4,
-      4,
-    ]);
-    expect(
-      StoryboardGridPreset.values.map((preset) => preset.columns).toList(),
-      [3, 4, 4, 6],
-    );
-  });
-
   test('手动 5x5 布局生成 25 个格位并在顶部保留标题栏', () {
     final titleHeight = StoryboardBoard.titleHeightFor(22);
     final board = StoryboardBoard(

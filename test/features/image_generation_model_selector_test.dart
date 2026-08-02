@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/features/storyboard/presentation/widgets/image_generation_model_selector.dart';
+import 'package:filmstoryboard/features/storyboard/presentation/widgets/image_generation_model_selector.dart';
 
 void main() {
   testWidgets('服务商和模型系列抽屉均保持同级单开', (tester) async {

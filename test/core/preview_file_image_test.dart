@@ -1,6 +1,6 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/core/widgets/preview_file_image.dart';
+import 'package:filmstoryboard/core/widgets/preview_file_image.dart';
 
 void main() {
   test('预览图片解码宽度按固定区间复用缓存键', () {

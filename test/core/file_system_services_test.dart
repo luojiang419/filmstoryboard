@@ -1,8 +1,8 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/services/empty_directory_cleaner.dart';
-import 'package:storyboard_grid_app/core/services/file_explorer_service.dart';
+import 'package:filmstoryboard/core/services/empty_directory_cleaner.dart';
+import 'package:filmstoryboard/core/services/file_explorer_service.dart';
 import 'package:test/test.dart';
 
 void main() {

@@ -11,13 +11,22 @@ if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
 }
 
 $flutterVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3])+$($Matches[4])"
-$appPath = Join-Path $Root 'build\windows\x64\runner\Release\storyboard_grid_app.exe'
-$assetName = "StoryboardGridApp-Setup-$Version.exe"
+$appPath = Join-Path $Root 'build\windows\x64\runner\Release\filmstoryboard.exe'
+$bundledFfmpegPath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffmpeg.exe'
+$bundledFfprobePath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffprobe.exe'
+$assetName = "filmstoryboard-Setup-$Version.exe"
 $assetPath = Join-Path $Root "dist\installer\$assetName"
 
-foreach ($requiredPath in @($appPath, $assetPath)) {
+foreach ($requiredPath in @($appPath, $bundledFfmpegPath, $bundledFfprobePath, $assetPath)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Missing release artifact: $requiredPath"
+    }
+}
+
+foreach ($toolPath in @($bundledFfmpegPath, $bundledFfprobePath)) {
+    $tool = Get-Item -LiteralPath $toolPath
+    if ($tool.Length -lt 1MB) {
+        throw "Bundled FFmpeg tool is unexpectedly small: $toolPath"
     }
 }
 

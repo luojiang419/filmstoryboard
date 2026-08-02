@@ -2,15 +2,15 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/settings/application/settings_controller.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
-import 'package:storyboard_grid_app/features/updater/application/updater_controller.dart';
-import 'package:storyboard_grid_app/features/updater/data/updater_service.dart';
-import 'package:storyboard_grid_app/features/updater/domain/app_update_config.dart';
-import 'package:storyboard_grid_app/features/updater/domain/update_models.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/updater/application/updater_controller.dart';
+import 'package:filmstoryboard/features/updater/data/updater_service.dart';
+import 'package:filmstoryboard/features/updater/domain/app_update_config.dart';
+import 'package:filmstoryboard/features/updater/domain/update_models.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +22,7 @@ void main() {
     final harness = await _createHarness(root);
     final release = const UpdateReleaseInfo(
       versionTag: 'v9.9.9',
-      installerName: 'StoryboardGridApp-Setup-9.9.9.exe',
+      installerName: 'filmstoryboard-Setup-9.9.9.exe',
       installerUrl: 'https://example.com/setup.exe',
       installerSize: 9,
     );
@@ -66,7 +66,7 @@ void main() {
     final harness = await _createHarness(root);
     final release = const UpdateReleaseInfo(
       versionTag: 'v9.9.9',
-      installerName: 'StoryboardGridApp-Setup-9.9.9.exe',
+      installerName: 'filmstoryboard-Setup-9.9.9.exe',
       installerUrl: 'https://example.com/setup.exe',
       installerSize: 9,
     );
@@ -105,7 +105,7 @@ void main() {
     final harness = await _createHarness(root);
     final release = const UpdateReleaseInfo(
       versionTag: 'v9.9.9',
-      installerName: 'StoryboardGridApp-Setup-9.9.9.exe',
+      installerName: 'filmstoryboard-Setup-9.9.9.exe',
       installerUrl: 'https://example.com/setup.exe',
       installerSize: 9,
     );
@@ -143,7 +143,7 @@ void main() {
     await harness.settingsController.setAutoInstallUpdates(true);
     final release = const UpdateReleaseInfo(
       versionTag: 'v9.9.9',
-      installerName: 'StoryboardGridApp-Setup-9.9.9.exe',
+      installerName: 'filmstoryboard-Setup-9.9.9.exe',
       installerUrl: 'https://example.com/setup.exe',
       installerSize: 9,
     );
@@ -172,7 +172,7 @@ void main() {
     expect(service.launchedVersionTag, 'v9.9.9');
     expect(
       p.basename(service.launchedInstallerPath!),
-      'StoryboardGridApp-Setup-9.9.9.exe',
+      'filmstoryboard-Setup-9.9.9.exe',
     );
     expect(controller.shouldShowReadyPrompt, isFalse);
     expect(controller.value.statusMessage, '更新进度窗口已打开，正在退出旧版本：v9.9.9');
@@ -188,7 +188,7 @@ void main() {
       p.join(
         harness.directories.updates.path,
         'windows',
-        'StoryboardGridApp-Setup-9.9.8.exe',
+        'filmstoryboard-Setup-9.9.8.exe',
       ),
     );
     await oldInstaller.parent.create(recursive: true);
@@ -201,7 +201,7 @@ void main() {
 
     final release = const UpdateReleaseInfo(
       versionTag: 'v9.9.9',
-      installerName: 'StoryboardGridApp-Setup-9.9.9.exe',
+      installerName: 'filmstoryboard-Setup-9.9.9.exe',
       installerUrl: 'https://example.com/setup.exe',
       installerSize: 9,
     );
@@ -251,7 +251,7 @@ void main() {
     final harness = await _createHarness(root);
     final release = const UpdateReleaseInfo(
       versionTag: 'v9.9.9',
-      installerName: 'StoryboardGridApp-Setup-9.9.9.exe',
+      installerName: 'filmstoryboard-Setup-9.9.9.exe',
       installerUrl: 'https://example.com/setup.exe',
       installerSize: 9,
     );
@@ -295,7 +295,7 @@ void main() {
     expect(service.launchedVersionTag, 'v9.9.9');
     expect(
       p.basename(service.launchedInstallerPath!),
-      'StoryboardGridApp-Setup-9.9.9.exe',
+      'filmstoryboard-Setup-9.9.9.exe',
     );
     expect(controller.shouldShowReadyPrompt, isFalse);
     expect(controller.value.statusMessage, '更新进度窗口已打开，正在退出旧版本：v9.9.9');

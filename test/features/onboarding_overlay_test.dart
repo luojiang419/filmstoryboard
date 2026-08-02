@@ -4,11 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/app/app_theme.dart';
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/features/onboarding/application/onboarding_controller.dart';
-import 'package:storyboard_grid_app/features/onboarding/data/onboarding_repository.dart';
-import 'package:storyboard_grid_app/features/onboarding/presentation/onboarding_overlay.dart';
+import 'package:filmstoryboard/app/app_theme.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/features/onboarding/application/onboarding_controller.dart';
+import 'package:filmstoryboard/features/onboarding/data/onboarding_repository.dart';
+import 'package:filmstoryboard/features/onboarding/presentation/onboarding_overlay.dart';
 
 void main() {
   testWidgets('引导遮罩支持按钮、方向键和 Esc 跳过', (tester) async {
@@ -57,8 +57,8 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const ValueKey('onboarding-overlay')), findsOneWidget);
-    expect(find.text('从一个创意，到完整故事板'), findsOneWidget);
-    expect(find.text('1 / 6'), findsOneWidget);
+    expect(find.text('从参考视频，到可执行的复刻方案'), findsOneWidget);
+    expect(find.text('1 / 8'), findsOneWidget);
     expect(
       tester
           .widget<TextButton>(find.byKey(const ValueKey('onboarding-previous')))
@@ -69,11 +69,11 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 220));
     expect(find.text('先把创意变成连贯镜头'), findsOneWidget);
-    expect(find.text('2 / 6'), findsOneWidget);
+    expect(find.text('2 / 8'), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pump(const Duration(milliseconds: 220));
-    expect(find.text('把组合图拆成独立镜头'), findsOneWidget);
+    expect(find.text('把参考视频拆成可追溯镜头'), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await tester.pump(const Duration(milliseconds: 220));

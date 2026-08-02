@@ -1,3 +1,9 @@
-url:115.231.35.105:12345
-key:sk-lm-MvJSRWnN:66aJMecNwCNJisNpKTSL
-模型：qwen3.5-9b-vlm
+# 视觉模型本机配置说明
+
+请在应用“设置 → 视觉模型 API”中填写兼容 OpenAI `/chat/completions` 的接口地址、API Key 和模型名称。
+
+安全要求：
+
+- API Key 只能保存在本机设置数据库或系统环境变量中。
+- 不要把真实 API Key 写入本文档、源代码、测试夹具、日志或 Git 历史。
+- 示例、截图和错误报告必须使用脱敏值。

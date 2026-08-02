@@ -1,4 +1,4 @@
-# 故事板（Storyboard Grid App）
+# filmstoryboard
 
 面向 Windows 的 Flutter 桌面故事板工具，包含多宫格裁切、故事板编排、画板管理、视觉解析、分镜设计与导出功能。
 

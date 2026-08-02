@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/database/app_database.dart';
+import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 
 String shootingScriptExportFileName({
@@ -27,6 +28,11 @@ String shootingScriptExportFileName({
   final dateText = DateFormat('yyyyMMdd').format(date ?? DateTime.now());
   return '$safeBoardName-拍摄脚本-$dateText.xlsx';
 }
+
+String shootingScriptEntityExportFileName({
+  required String scriptName,
+  DateTime? date,
+}) => shootingScriptExportFileName(boardName: scriptName, date: date);
 
 class ShootingScriptExportService {
   const ShootingScriptExportService();
@@ -86,7 +92,7 @@ class ShootingScriptExportService {
         final shot = sheet.shots[shotIndex];
         final imageName = 'image$nextImageNumber.png';
         nextImageNumber++;
-        entries['xl/media/$imageName'] = shot.pngBytes;
+        entries['xl/media/$imageName'] = shot.pngBytes!;
         imageRefs.add(
           _EmbeddedImage(
             relationshipId: 'rId${shotIndex + 1}',
@@ -104,6 +110,7 @@ class ShootingScriptExportService {
           sheet.shots,
           dataEndRow,
           hasImages: imageRefs.isNotEmpty,
+          title: sheet.board.name,
         ),
       );
       if (imageRefs.isNotEmpty) {
@@ -125,6 +132,95 @@ class ShootingScriptExportService {
     );
     entries['[Content_Types].xml'] = utf8.encode(
       _contentTypesXml(contentTypesXml, sheets),
+    );
+
+    final output = Archive();
+    for (final entry in entries.entries) {
+      output.addFile(ArchiveFile.bytes(entry.key, entry.value));
+    }
+    final file = File(_ensureXlsxExtension(outputPath));
+    if (!file.parent.existsSync()) {
+      await file.parent.create(recursive: true);
+    }
+    await file.writeAsBytes(ZipEncoder().encodeBytes(output), flush: true);
+    return file;
+  }
+
+  Future<File> exportScript({
+    required ShootingScript script,
+    required List<ScriptShot> shots,
+    required String outputPath,
+  }) async {
+    final templateData = await rootBundle.load(_templateAsset);
+    final entries = _readArchive(
+      templateData.buffer.asUint8List(
+        templateData.offsetInBytes,
+        templateData.lengthInBytes,
+      ),
+    );
+    final templateSheet = _textEntry(entries, 'xl/worksheets/sheet1.xml');
+    final workbookXml = _textEntry(entries, 'xl/workbook.xml');
+    final workbookRelsXml = _textEntry(entries, 'xl/_rels/workbook.xml.rels');
+    final contentTypesXml = _textEntry(entries, '[Content_Types].xml');
+    final preparedShots = <_ShootingScriptShot>[];
+    for (final shot in shots) {
+      preparedShots.add(await _ShootingScriptShot.fromScriptShot(shot));
+    }
+    final dataEndRow = math.max(
+      _templateLastDataRow,
+      _firstDataRow + preparedShots.length - 1,
+    );
+    final imageRefs = <_EmbeddedImage>[];
+    var nextImageNumber = 1;
+    for (var index = 0; index < preparedShots.length; index++) {
+      final shot = preparedShots[index];
+      final pngBytes = shot.pngBytes;
+      if (pngBytes == null) {
+        continue;
+      }
+      final imageName = 'image$nextImageNumber.png';
+      nextImageNumber++;
+      entries['xl/media/$imageName'] = pngBytes;
+      imageRefs.add(
+        _EmbeddedImage(
+          relationshipId: 'rId${imageRefs.length + 1}',
+          imageName: imageName,
+          row: _firstDataRow + index,
+          width: shot.displayWidth,
+          height: shot.displayHeight,
+        ),
+      );
+    }
+
+    entries['xl/worksheets/sheet1.xml'] = utf8.encode(
+      _buildSheetXml(
+        templateSheet,
+        preparedShots,
+        dataEndRow,
+        hasImages: imageRefs.isNotEmpty,
+        title: script.name,
+      ),
+    );
+    entries['xl/worksheets/sheet2.xml'] = utf8.encode(
+      _buildAdditionalSheetXml(templateSheet, script, shots),
+    );
+    if (imageRefs.isNotEmpty) {
+      entries['xl/worksheets/_rels/sheet1.xml.rels'] = utf8.encode(
+        _worksheetRelationshipsXml(1),
+      );
+      entries['xl/drawings/drawing1.xml'] = utf8.encode(_drawingXml(imageRefs));
+      entries['xl/drawings/_rels/drawing1.xml.rels'] = utf8.encode(
+        _drawingRelationshipsXml(imageRefs),
+      );
+    }
+    entries['xl/workbook.xml'] = utf8.encode(
+      _workbookXmlForNames(workbookXml, const ['LV1', '附加信息']),
+    );
+    entries['xl/_rels/workbook.xml.rels'] = utf8.encode(
+      _workbookRelationshipsXml(workbookRelsXml, 2),
+    );
+    entries['[Content_Types].xml'] = utf8.encode(
+      _scriptContentTypesXml(contentTypesXml, hasImages: imageRefs.isNotEmpty),
     );
 
     final output = Archive();
@@ -168,6 +264,7 @@ class ShootingScriptExportService {
     List<_ShootingScriptShot> shots,
     int dataEndRow, {
     required bool hasImages,
+    required String title,
   }) {
     final dataMatch = RegExp(
       r'<sheetData>.*?</sheetData>',
@@ -203,6 +300,8 @@ class ShootingScriptExportService {
     );
     result = result.replaceAll('D3:D15', 'D3:D$dataEndRow');
     result = result.replaceAll('E3:E15', 'E3:E$dataEndRow');
+    result = _replaceCell(result, 'A', 1, '内容：$title');
+    result = _replaceCell(result, 'J', 1, null);
     if (hasImages && !result.contains('<drawing ')) {
       final pageMargins = RegExp(r'<pageMargins\b[^>]*/>').firstMatch(result);
       if (pageMargins == null) {
@@ -214,6 +313,97 @@ class ShootingScriptExportService {
         '${pageMargins.group(0)}<drawing r:id="rId1"/>',
       );
     }
+    return result;
+  }
+
+  String _buildAdditionalSheetXml(
+    String template,
+    ShootingScript script,
+    List<ScriptShot> shots,
+  ) {
+    final dataMatch = RegExp(
+      r'<sheetData>.*?</sheetData>',
+      dotAll: true,
+    ).firstMatch(template);
+    if (dataMatch == null) {
+      throw const FormatException('拍摄脚本模板缺少数据行');
+    }
+    final sheetData = dataMatch.group(0)!;
+    var titleRow = _extractRow(sheetData, 1);
+    titleRow = _replaceCell(titleRow, 'A', 1, '脚本附加信息：${script.name}');
+    titleRow = _replaceCell(titleRow, 'J', 1, null);
+    var headerRow = _extractRow(sheetData, 2);
+    const headers = ['镜号', '时长（秒）', '对白/旁白', '音效', '最终提示词', '原图路径'];
+    for (var column = 0; column < 10; column++) {
+      headerRow = _replaceCell(
+        headerRow,
+        String.fromCharCode('A'.codeUnitAt(0) + column),
+        2,
+        column < headers.length ? headers[column] : null,
+      );
+    }
+    final dataEndRow = math.max(
+      _templateLastDataRow,
+      _firstDataRow + shots.length - 1,
+    );
+    final rows = StringBuffer()
+      ..write(titleRow)
+      ..write(headerRow);
+    for (var row = _firstDataRow; row <= dataEndRow; row++) {
+      final sourceRow = math.min(row, _templateLastDataRow);
+      var rowXml = _renumberRow(
+        _extractRow(sheetData, sourceRow),
+        sourceRow,
+        row,
+      );
+      final shotIndex = row - _firstDataRow;
+      final shot = shotIndex < shots.length ? shots[shotIndex] : null;
+      rowXml = _replaceCell(
+        rowXml,
+        'A',
+        row,
+        shot?.shotNumber.toString(),
+        numeric: true,
+      );
+      rowXml = _replaceCell(
+        rowXml,
+        'B',
+        row,
+        shot?.durationSeconds.toStringAsFixed(2),
+        numeric: true,
+      );
+      rowXml = _replaceCell(rowXml, 'C', row, shot?.dialogue);
+      rowXml = _replaceCell(rowXml, 'D', row, shot?.sound);
+      rowXml = _replaceCell(rowXml, 'E', row, shot?.prompt);
+      rowXml = _replaceCell(rowXml, 'F', row, shot?.framePath);
+      for (final column in const ['G', 'H', 'I', 'J']) {
+        rowXml = _replaceCell(rowXml, column, row, null);
+      }
+      rows.write(rowXml);
+    }
+    var result = template.replaceRange(
+      dataMatch.start,
+      dataMatch.end,
+      '<sheetData>${rows.toString()}</sheetData>',
+    );
+    result = result.replaceFirst(
+      RegExp(r'<dimension ref="A1:Y\d+"/>'),
+      '<dimension ref="A1:Y$dataEndRow"/>',
+    );
+    result = result.replaceAll(
+      RegExp(r'<dataValidations\b.*?</dataValidations>', dotAll: true),
+      '',
+    );
+    result = result.replaceAll(RegExp(r'<drawing\b[^>]*/>'), '');
+    return result;
+  }
+
+  String _renumberRow(String source, int sourceRow, int targetRow) {
+    var result = source.replaceFirst('r="$sourceRow"', 'r="$targetRow"');
+    result = result.replaceAllMapped(
+      RegExp('r="([A-Z]+)$sourceRow"'),
+      (match) => 'r="${match.group(1)}$targetRow"',
+    );
     return result;
   }
 
@@ -234,11 +424,7 @@ class ShootingScriptExportService {
     int row,
     _ShootingScriptShot? shot,
   ) {
-    var result = source.replaceFirst('r="$sourceRow"', 'r="$row"');
-    result = result.replaceAllMapped(
-      RegExp('r="([A-Z]+)$sourceRow"'),
-      (match) => 'r="${match.group(1)}$row"',
-    );
+    var result = _renumberRow(source, sourceRow, row);
     result = _replaceCell(
       result,
       'A',
@@ -248,7 +434,12 @@ class ShootingScriptExportService {
     );
     result = _replaceCell(result, 'C', row, shot?.content);
     result = _replaceCell(result, 'D', row, shot?.shotSize);
-    return _replaceCell(result, 'E', row, shot?.cameraMovement);
+    result = _replaceCell(result, 'E', row, shot?.cameraMovement);
+    result = _replaceCell(result, 'F', row, shot?.cameraNotes);
+    result = _replaceCell(result, 'G', row, shot?.scene);
+    result = _replaceCell(result, 'H', row, shot?.productCode);
+    result = _replaceCell(result, 'I', row, shot?.imageText);
+    return _replaceCell(result, 'J', row, shot?.productStyling);
   }
 
   String _replaceCell(
@@ -266,7 +457,10 @@ class ShootingScriptExportService {
     if (match == null) {
       throw FormatException('拍摄脚本模板缺少 $column$row 单元格');
     }
-    final attributes = match.group(1) ?? match.group(2) ?? '';
+    final attributes = (match.group(1) ?? match.group(2) ?? '').replaceAll(
+      RegExp(r'\s+t="[^"]*"'),
+      '',
+    );
     final trimmed = value?.trim() ?? '';
     final replacement = trimmed.isEmpty
         ? '<c r="$column$row"$attributes/>'
@@ -277,12 +471,18 @@ class ShootingScriptExportService {
   }
 
   String _workbookXml(String template, List<_ShootingScriptSheet> sheets) {
+    return _workbookXmlForNames(template, [
+      for (final sheet in sheets) sheet.name,
+    ]);
+  }
+
+  String _workbookXmlForNames(String template, List<String> names) {
     final sheetTags = StringBuffer();
-    for (var index = 0; index < sheets.length; index++) {
+    for (var index = 0; index < names.length; index++) {
       final sheetId = index + 2;
       final relationshipId = index == 0 ? 'rId1' : 'rId${index + 4}';
       sheetTags.write(
-        '<sheet name="${_xmlEscape(sheets[index].name)}" sheetId="$sheetId" r:id="$relationshipId"/>',
+        '<sheet name="${_xmlEscape(names[index])}" sheetId="$sheetId" r:id="$relationshipId"/>',
       );
     }
     return template.replaceFirst(
@@ -317,6 +517,22 @@ class ShootingScriptExportService {
           '<Override PartName="/xl/drawings/drawing$sheetNumber.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>',
         );
       }
+    }
+    return template.replaceFirst('</Types>', '$extras</Types>');
+  }
+
+  String _scriptContentTypesXml(String template, {required bool hasImages}) {
+    final extras = StringBuffer();
+    if (!template.contains('Extension="png"')) {
+      extras.write('<Default Extension="png" ContentType="image/png"/>');
+    }
+    extras.write(
+      '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>',
+    );
+    if (hasImages) {
+      extras.write(
+        '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>',
+      );
     }
     return template.replaceFirst('</Types>', '$extras</Types>');
   }
@@ -435,6 +651,11 @@ class _ShootingScriptShot {
     required this.content,
     required this.shotSize,
     required this.cameraMovement,
+    required this.cameraNotes,
+    required this.scene,
+    required this.productCode,
+    required this.imageText,
+    required this.productStyling,
     required this.pngBytes,
     required this.displayWidth,
     required this.displayHeight,
@@ -444,7 +665,12 @@ class _ShootingScriptShot {
   final String content;
   final String shotSize;
   final String cameraMovement;
-  final Uint8List pngBytes;
+  final String cameraNotes;
+  final String scene;
+  final String productCode;
+  final String imageText;
+  final String productStyling;
+  final Uint8List? pngBytes;
   final int displayWidth;
   final int displayHeight;
 
@@ -481,9 +707,55 @@ class _ShootingScriptShot {
       ]),
       shotSize: _templateShotSize(analysis?.shotSize ?? ''),
       cameraMovement: _templateCameraMovement(analysis?.cameraMovement ?? ''),
+      cameraNotes: '',
+      scene: '',
+      productCode: '',
+      imageText: '',
+      productStyling: '',
       pngBytes: prepared['pngBytes']! as Uint8List,
       displayWidth: prepared['displayWidth']! as int,
       displayHeight: prepared['displayHeight']! as int,
+    );
+  }
+
+  static Future<_ShootingScriptShot> fromScriptShot(ScriptShot shot) async {
+    Uint8List? pngBytes;
+    var displayWidth = 1;
+    var displayHeight = 1;
+    final sourcePath = shot.framePath.trim();
+    if (sourcePath.isNotEmpty && File(sourcePath).existsSync()) {
+      final transferable = TransferableTypedData.fromList([
+        await File(sourcePath).readAsBytes(),
+      ]);
+      late final Map<String, Object> prepared;
+      try {
+        prepared = await Isolate.run(
+          () => _prepareShootingScriptImage(
+            transferable,
+            flipHorizontal: false,
+            flipVertical: false,
+          ),
+        );
+      } on FormatException {
+        throw FormatException('镜号 ${shot.shotNumber} 的画面无法读取：$sourcePath');
+      }
+      pngBytes = prepared['pngBytes']! as Uint8List;
+      displayWidth = prepared['displayWidth']! as int;
+      displayHeight = prepared['displayHeight']! as int;
+    }
+    return _ShootingScriptShot(
+      number: shot.shotNumber,
+      content: shot.content,
+      shotSize: _templateShotSize(shot.shotSize),
+      cameraMovement: _templateCameraMovement(shot.cameraMovement),
+      cameraNotes: shot.cameraNotes,
+      scene: shot.scene,
+      productCode: shot.productCode,
+      imageText: shot.visual,
+      productStyling: shot.productStyling,
+      pngBytes: pngBytes,
+      displayWidth: displayWidth,
+      displayHeight: displayHeight,
     );
   }
 }

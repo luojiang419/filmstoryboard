@@ -16,6 +16,13 @@ class ProjectDirectories implements WorkspaceDirectories {
     required this.database,
     required this.temp,
     required this.logs,
+    required this.videos,
+    required this.frames,
+    required this.analyses,
+    required this.reports,
+    required this.scripts,
+    required this.assets,
+    required this.prompts,
   });
 
   final Directory root;
@@ -37,6 +44,20 @@ class ProjectDirectories implements WorkspaceDirectories {
   final Directory temp;
   @override
   final Directory logs;
+  @override
+  final Directory videos;
+  @override
+  final Directory frames;
+  @override
+  final Directory analyses;
+  @override
+  final Directory reports;
+  @override
+  final Directory scripts;
+  @override
+  final Directory assets;
+  @override
+  final Directory prompts;
 
   @override
   Directory get workspaceRoot => root;
@@ -56,6 +77,13 @@ class ProjectDirectories implements WorkspaceDirectories {
     exports,
     temp,
     logs,
+    videos,
+    frames,
+    analyses,
+    reports,
+    scripts,
+    assets,
+    prompts,
   ];
 
   factory ProjectDirectories.fromRoot(Directory root) {
@@ -71,6 +99,13 @@ class ProjectDirectories implements WorkspaceDirectories {
       database: Directory(p.join(root.path, 'database')),
       temp: Directory(p.join(root.path, 'temp')),
       logs: Directory(p.join(root.path, 'logs')),
+      videos: Directory(p.join(root.path, 'videos')),
+      frames: Directory(p.join(root.path, 'frames')),
+      analyses: Directory(p.join(root.path, 'analyses')),
+      reports: Directory(p.join(root.path, 'reports')),
+      scripts: Directory(p.join(root.path, 'scripts')),
+      assets: Directory(p.join(root.path, 'assets')),
+      prompts: Directory(p.join(root.path, 'prompts')),
     );
   }
 

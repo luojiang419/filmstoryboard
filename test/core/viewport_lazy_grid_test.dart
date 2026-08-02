@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/core/widgets/viewport_lazy_grid.dart';
+import 'package:filmstoryboard/core/widgets/viewport_lazy_grid.dart';
 
 void main() {
   testWidgets('大量缩略图只构建父滚动视口附近的行', (tester) async {

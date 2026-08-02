@@ -15,6 +15,9 @@ import '../../settings/domain/app_settings.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_canvas_style.dart';
 import '../../storyboard/domain/storyboard_models.dart';
+import '../../video_analysis/data/analysis_report_export_service.dart';
+import '../../video_analysis/data/video_analysis_repository.dart';
+import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/shooting_script_export_service.dart';
 import '../data/storyboard_export_service.dart';
 
@@ -50,6 +53,10 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
   Widget build(BuildContext context) {
     final storyboardController = ref.watch(storyboardControllerProvider);
     final settingsController = ref.watch(settingsControllerProvider);
+    final videoRepository = VideoAnalysisRepository(
+      ref.watch(appDatabaseProvider),
+    );
+    final reportVideo = _latestReportVideo(videoRepository);
 
     return ListenableBuilder(
       listenable: storyboardController,
@@ -103,6 +110,14 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
                             settingsController.value,
                           )
                         : null,
+                    videoReportName: reportVideo?.fileName,
+                    onExportVideoAnalysisReport: reportVideo == null
+                        ? null
+                        : () => _exportVideoAnalysisReport(
+                            repository: videoRepository,
+                            video: reportVideo,
+                            settings: settingsController.value,
+                          ),
                     onOpenDefaultExportDirectory: () =>
                         _openDefaultExportDirectory(
                           settingsController.value.exportDirectory,
@@ -408,6 +423,97 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     }
   }
 
+  SourceVideo? _latestReportVideo(VideoAnalysisRepository repository) {
+    for (final video in repository.listSourceVideos()) {
+      if (repository.getVideoSummary(video.id) != null) {
+        return video;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _exportVideoAnalysisReport({
+    required VideoAnalysisRepository repository,
+    required SourceVideo video,
+    required AppSettings settings,
+  }) async {
+    final format = await _chooseAnalysisReportFormat();
+    if (format == null) {
+      return;
+    }
+    final summary = repository.getVideoSummary(video.id);
+    if (summary == null) {
+      setState(() => _message = '该视频还没有可导出的多维度解析报告');
+      return;
+    }
+    setState(() {
+      _isExporting = true;
+      _message = '正在导出 ${_shortVideoName(video.fileName)} 多维度解析报告...';
+    });
+    try {
+      final result = await const AnalysisReportExportService().export(
+        format: format,
+        outputDirectory: Directory(settings.exportDirectory),
+        video: video,
+        frames: repository.listVideoFrames(video.id),
+        frameAnalyses: repository.listVideoFrameAnalyses(video.id),
+        summary: summary,
+        marketingAnalyses: repository.listMarketingAnalyses(video.id),
+      );
+      if (mounted) {
+        setState(
+          () => _message =
+              '多维度解析报告已导出：${result.files.map((file) => p.basename(file.path)).join('、')}',
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = '导出多维度解析报告失败：$error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isExporting = false);
+      }
+    }
+  }
+
+  Future<AnalysisReportFormat?> _chooseAnalysisReportFormat() {
+    return showDialog<AnalysisReportFormat>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('选择多维度解析报告格式'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final item in AnalysisReportFormat.values)
+              ListTile(
+                leading: Icon(switch (item) {
+                  AnalysisReportFormat.xlsx => Icons.table_view_rounded,
+                  AnalysisReportFormat.pdf => Icons.picture_as_pdf_rounded,
+                  AnalysisReportFormat.png => Icons.image_rounded,
+                  AnalysisReportFormat.jpg => Icons.photo_rounded,
+                }),
+                title: Text(item.label),
+                subtitle: Text(switch (item) {
+                  AnalysisReportFormat.xlsx => '四个工作表，可继续编辑',
+                  AnalysisReportFormat.pdf => '多页视觉报告',
+                  AnalysisReportFormat.png => '按报告页输出无损图片',
+                  AnalysisReportFormat.jpg => '按报告页输出高质量图片',
+                }),
+                onTap: () => Navigator.of(context).pop(item),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _exportBoardImages(
     List<StoryboardBoard> boards,
     String outputDirectory,
@@ -661,6 +767,8 @@ class _ExportSidebar extends StatelessWidget {
     required this.onExportDefault,
     required this.onExportBoardImages,
     required this.onExportShootingScript,
+    required this.videoReportName,
+    required this.onExportVideoAnalysisReport,
     required this.onOpenDefaultExportDirectory,
   });
 
@@ -678,6 +786,8 @@ class _ExportSidebar extends StatelessWidget {
   final VoidCallback? onExportDefault;
   final VoidCallback? onExportBoardImages;
   final VoidCallback? onExportShootingScript;
+  final String? videoReportName;
+  final VoidCallback? onExportVideoAnalysisReport;
   final VoidCallback onOpenDefaultExportDirectory;
 
   @override
@@ -823,6 +933,16 @@ class _ExportSidebar extends StatelessWidget {
               onPressed: isExporting ? null : onExportShootingScript,
               icon: const Icon(Icons.description_outlined),
               label: const Text('导出拍摄脚本'),
+            ),
+            const SizedBox(height: 9),
+            OutlinedButton.icon(
+              onPressed: isExporting ? null : onExportVideoAnalysisReport,
+              icon: const Icon(Icons.analytics_outlined),
+              label: Text(
+                videoReportName == null
+                    ? '导出视频多维度报告'
+                    : '导出 ${_shortVideoName(videoReportName!)} 多维度报告',
+              ),
             ),
             const SizedBox(height: 9),
             OutlinedButton.icon(
@@ -1747,4 +1867,9 @@ double _previewCaptionMinHeight(double fontSize) {
 int _previewCaptionMaxLines(double height, double fontSize) {
   final lineHeight = math.max(1.0, fontSize * 1.2);
   return math.max(1, (height / lineHeight).floor());
+}
+
+String _shortVideoName(String value) {
+  final dot = value.lastIndexOf('.');
+  return dot <= 0 ? value : value.substring(0, dot);
 }

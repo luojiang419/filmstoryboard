@@ -28,6 +28,24 @@ class StoryboardCutAsset {
   }
 }
 
+class StoryboardExternalImage {
+  const StoryboardExternalImage({
+    required this.stableId,
+    required this.sourceName,
+    required this.path,
+    required this.width,
+    required this.height,
+    this.caption = '',
+  });
+
+  final String stableId;
+  final String sourceName;
+  final String path;
+  final int width;
+  final int height;
+  final String caption;
+}
+
 class StoryboardFolder {
   const StoryboardFolder({
     required this.id,
@@ -166,27 +184,6 @@ class StoryboardItem {
       flipVertical: flipVertical ?? this.flipVertical,
     );
   }
-}
-
-class StoryboardGridPreset {
-  const StoryboardGridPreset({
-    required this.label,
-    required this.rows,
-    required this.columns,
-  });
-
-  final String label;
-  final int rows;
-  final int columns;
-
-  int get count => rows * columns;
-
-  static const values = [
-    StoryboardGridPreset(label: '9宫格', rows: 3, columns: 3),
-    StoryboardGridPreset(label: '12宫格', rows: 3, columns: 4),
-    StoryboardGridPreset(label: '16宫格', rows: 4, columns: 4),
-    StoryboardGridPreset(label: '24宫格', rows: 4, columns: 6),
-  ];
 }
 
 enum StoryboardDividerStyle {

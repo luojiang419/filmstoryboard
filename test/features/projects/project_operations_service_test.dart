@@ -4,12 +4,12 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/features/projects/application/project_service.dart';
-import 'package:storyboard_grid_app/features/projects/data/project_catalog_repository.dart';
-import 'package:storyboard_grid_app/features/projects/data/project_operations_service.dart';
-import 'package:storyboard_grid_app/features/projects/domain/project_models.dart';
-import 'package:storyboard_grid_app/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/features/projects/application/project_service.dart';
+import 'package:filmstoryboard/features/projects/data/project_catalog_repository.dart';
+import 'package:filmstoryboard/features/projects/data/project_operations_service.dart';
+import 'package:filmstoryboard/features/projects/domain/project_models.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 
 void main() {
   late Directory root;

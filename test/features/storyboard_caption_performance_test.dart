@@ -4,11 +4,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/app/app_theme.dart';
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/features/storyboard/application/storyboard_controller.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_models.dart';
-import 'package:storyboard_grid_app/features/storyboard/presentation/storyboard_page.dart';
+import 'package:filmstoryboard/app/app_theme.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/features/storyboard/presentation/storyboard_page.dart';
 
 const _onePixelPng =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';

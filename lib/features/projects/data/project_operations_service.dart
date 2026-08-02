@@ -342,6 +342,13 @@ class ProjectOperationsService {
       'storyboards',
       'generated_images',
       'exports',
+      'videos',
+      'frames',
+      'analyses',
+      'reports',
+      'scripts',
+      'assets',
+      'prompts',
     };
     for (var index = 0; index < parts.length; index++) {
       if (!managedRoots.contains(parts[index].toLowerCase())) {

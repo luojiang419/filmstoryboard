@@ -147,7 +147,7 @@ class _AppUpdaterPageState extends State<AppUpdaterPage> {
                               ? '更新失败'
                               : _isSuccess
                               ? '更新完成'
-                              : '故事板正在更新',
+                              : 'filmstoryboard 正在更新',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 24,

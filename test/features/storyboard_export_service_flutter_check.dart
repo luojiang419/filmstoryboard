@@ -4,11 +4,11 @@ import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/app/app_theme.dart';
-import 'package:storyboard_grid_app/features/exporter/data/storyboard_export_service.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_canvas_style.dart';
-import 'package:storyboard_grid_app/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/app/app_theme.dart';
+import 'package:filmstoryboard/features/exporter/data/storyboard_export_service.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_canvas_style.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

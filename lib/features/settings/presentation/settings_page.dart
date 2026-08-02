@@ -27,6 +27,8 @@ enum _SettingsSection {
   exportDirectory,
   storyboardExport,
   visionApi,
+  videoAnalysis,
+  promptDefaults,
   imageGenerationApi,
   updater,
   dataDirectories,
@@ -40,6 +42,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   late final TextEditingController _visionApiBaseUrlController;
   late final TextEditingController _visionApiKeyController;
   late final TextEditingController _visionModelController;
+  late final TextEditingController _ffmpegExecutableController;
+  late final TextEditingController _ffprobeExecutableController;
+  late final TextEditingController _videoFrameIntervalController;
+  late final TextEditingController _videoSceneThresholdController;
+  late final TextEditingController _videoMinimumSharpnessController;
+  late final TextEditingController _replicateGlobalStyleController;
+  late final TextEditingController _replicateConstraintsController;
   late final TextEditingController _imageGenerationApiBaseUrlController;
   late final TextEditingController _imageGenerationApiKeyController;
   late final TextEditingController _imageGenerationGeminiApiBaseUrlController;
@@ -52,6 +61,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _imageGenerationApiKeyObscured = true;
   bool _imageGenerationGeminiApiKeyObscured = true;
   bool _imageGenerationApiMartApiKeyObscured = true;
+  late VideoFrameExtractionStrategy _videoExtractionStrategy;
   final _expandedSections = <_SettingsSection>{};
 
   @override
@@ -71,6 +81,28 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _visionModelController = TextEditingController(
       text: controller.value.visionModel,
     );
+    _ffmpegExecutableController = TextEditingController(
+      text: controller.value.ffmpegExecutable,
+    );
+    _ffprobeExecutableController = TextEditingController(
+      text: controller.value.ffprobeExecutable,
+    );
+    _videoFrameIntervalController = TextEditingController(
+      text: controller.value.videoFrameIntervalSeconds.toStringAsFixed(2),
+    );
+    _videoSceneThresholdController = TextEditingController(
+      text: controller.value.videoSceneThreshold.toStringAsFixed(2),
+    );
+    _videoMinimumSharpnessController = TextEditingController(
+      text: controller.value.videoMinimumSharpness.toStringAsFixed(2),
+    );
+    _replicateGlobalStyleController = TextEditingController(
+      text: controller.value.replicateDefaultGlobalStyle,
+    );
+    _replicateConstraintsController = TextEditingController(
+      text: controller.value.replicateDefaultConstraints,
+    );
+    _videoExtractionStrategy = controller.value.videoFrameExtractionStrategy;
     _imageGenerationApiBaseUrlController = TextEditingController(
       text: controller.value.imageGenerationApiBaseUrl,
     );
@@ -106,6 +138,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _visionApiBaseUrlController.dispose();
     _visionApiKeyController.dispose();
     _visionModelController.dispose();
+    _ffmpegExecutableController.dispose();
+    _ffprobeExecutableController.dispose();
+    _videoFrameIntervalController.dispose();
+    _videoSceneThresholdController.dispose();
+    _videoMinimumSharpnessController.dispose();
+    _replicateGlobalStyleController.dispose();
+    _replicateConstraintsController.dispose();
     _imageGenerationApiBaseUrlController.dispose();
     _imageGenerationApiKeyController.dispose();
     _imageGenerationGeminiApiBaseUrlController.dispose();
@@ -131,6 +170,35 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (_visionModelController.text != settings.visionModel) {
       _visionModelController.text = settings.visionModel;
     }
+    if (_ffmpegExecutableController.text != settings.ffmpegExecutable) {
+      _ffmpegExecutableController.text = settings.ffmpegExecutable;
+    }
+    if (_ffprobeExecutableController.text != settings.ffprobeExecutable) {
+      _ffprobeExecutableController.text = settings.ffprobeExecutable;
+    }
+    final frameInterval = settings.videoFrameIntervalSeconds.toStringAsFixed(2);
+    if (_videoFrameIntervalController.text != frameInterval) {
+      _videoFrameIntervalController.text = frameInterval;
+    }
+    final sceneThreshold = settings.videoSceneThreshold.toStringAsFixed(2);
+    if (_videoSceneThresholdController.text != sceneThreshold) {
+      _videoSceneThresholdController.text = sceneThreshold;
+    }
+    final minimumSharpness = settings.videoMinimumSharpness.toStringAsFixed(2);
+    if (_videoMinimumSharpnessController.text != minimumSharpness) {
+      _videoMinimumSharpnessController.text = minimumSharpness;
+    }
+    if (_replicateGlobalStyleController.text !=
+        settings.replicateDefaultGlobalStyle) {
+      _replicateGlobalStyleController.text =
+          settings.replicateDefaultGlobalStyle;
+    }
+    if (_replicateConstraintsController.text !=
+        settings.replicateDefaultConstraints) {
+      _replicateConstraintsController.text =
+          settings.replicateDefaultConstraints;
+    }
+    _videoExtractionStrategy = settings.videoFrameExtractionStrategy;
     if (_imageGenerationApiBaseUrlController.text !=
         settings.imageGenerationApiBaseUrl) {
       _imageGenerationApiBaseUrlController.text =
@@ -173,6 +241,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       baseUrl: _visionApiBaseUrlController.text,
       apiKey: _visionApiKeyController.text,
       model: _visionModelController.text,
+    );
+  }
+
+  Future<void> _saveVideoAnalysisSettings(SettingsController controller) async {
+    await controller.setVideoAnalysisSettings(
+      ffmpegExecutable: _ffmpegExecutableController.text,
+      ffprobeExecutable: _ffprobeExecutableController.text,
+      extractionStrategy: _videoExtractionStrategy,
+      frameIntervalSeconds:
+          double.tryParse(_videoFrameIntervalController.text) ?? 1,
+      sceneThreshold:
+          double.tryParse(_videoSceneThresholdController.text) ?? 0.3,
+      minimumSharpness:
+          double.tryParse(_videoMinimumSharpnessController.text) ?? 0.08,
+      thinkingEnabled: controller.value.videoAnalysisThinkingEnabled,
     );
   }
 
@@ -388,27 +471,61 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           children: [
             _Section(
               title: '外观',
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: SegmentedButton<AppThemePreference>(
-                  segments: [
-                    for (final preference in AppThemePreference.values)
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('主题', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  SegmentedButton<AppThemePreference>(
+                    segments: [
+                      for (final preference in AppThemePreference.values)
+                        ButtonSegment(
+                          value: preference,
+                          label: Text(preference.label),
+                          icon: Icon(switch (preference) {
+                            AppThemePreference.system =>
+                              Icons.brightness_auto_rounded,
+                            AppThemePreference.light =>
+                              Icons.light_mode_rounded,
+                            AppThemePreference.dark => Icons.dark_mode_rounded,
+                          }),
+                        ),
+                    ],
+                    selected: {settings.themePreference},
+                    onSelectionChanged: (selection) {
+                      settingsController.setThemePreference(selection.first);
+                    },
+                  ),
+                  const SizedBox(height: 18),
+                  Text('功能菜单位置', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 4),
+                  Text(
+                    '切换后立即生效，下次启动会继续使用当前布局。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SegmentedButton<AppNavigationPosition>(
+                    key: const ValueKey('navigation-position-selector'),
+                    segments: const [
                       ButtonSegment(
-                        value: preference,
-                        label: Text(preference.label),
-                        icon: Icon(switch (preference) {
-                          AppThemePreference.system =>
-                            Icons.brightness_auto_rounded,
-                          AppThemePreference.light => Icons.light_mode_rounded,
-                          AppThemePreference.dark => Icons.dark_mode_rounded,
-                        }),
+                        value: AppNavigationPosition.bottom,
+                        label: Text('底部'),
+                        icon: Icon(Icons.vertical_align_bottom_rounded),
                       ),
-                  ],
-                  selected: {settings.themePreference},
-                  onSelectionChanged: (selection) {
-                    settingsController.setThemePreference(selection.first);
-                  },
-                ),
+                      ButtonSegment(
+                        value: AppNavigationPosition.left,
+                        label: Text('左侧'),
+                        icon: Icon(Icons.vertical_align_center_rounded),
+                      ),
+                    ],
+                    selected: {settings.navigationPosition},
+                    onSelectionChanged: (selection) {
+                      settingsController.setNavigationPosition(selection.first);
+                    },
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 14),
@@ -565,6 +682,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     onSubmitted: settingsController.setVisionModel,
                   ),
                   const SizedBox(height: 12),
+                  SwitchListTile(
+                    key: const ValueKey('video-analysis-thinking-switch'),
+                    value: settings.videoAnalysisThinkingEnabled,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('视频解析 thinking 模式'),
+                    subtitle: const Text('高级开关；开启后复杂视频会允许视觉模型思考，可能增加耗时和格式波动'),
+                    onChanged:
+                        settingsController.setVideoAnalysisThinkingEnabled,
+                  ),
+                  const SizedBox(height: 12),
                   Align(
                     alignment: Alignment.centerLeft,
                     child: FilledButton.icon(
@@ -572,6 +699,167 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       icon: const Icon(Icons.save_rounded),
                       label: const Text('保存视觉模型配置'),
                     ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            _CollapsibleSection(
+              title: 'FFmpeg 与视频抽帧',
+              expanded: _sectionExpanded(_SettingsSection.videoAnalysis),
+              onToggle: () => _toggleSection(_SettingsSection.videoAnalysis),
+              child: Column(
+                children: [
+                  TextField(
+                    key: const ValueKey('ffmpeg-executable-field'),
+                    controller: _ffmpegExecutableController,
+                    decoration: const InputDecoration(
+                      labelText: 'FFmpeg 可执行文件',
+                      helperText: '可填写命令名或本机完整路径',
+                      prefixIcon: Icon(Icons.movie_filter_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('ffprobe-executable-field'),
+                    controller: _ffprobeExecutableController,
+                    decoration: const InputDecoration(
+                      labelText: 'FFprobe 可执行文件',
+                      helperText: '通常与 FFmpeg 位于同一目录',
+                      prefixIcon: Icon(Icons.info_outline_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<VideoFrameExtractionStrategy>(
+                    key: const ValueKey('video-extraction-strategy-field'),
+                    initialValue: _videoExtractionStrategy,
+                    decoration: const InputDecoration(
+                      labelText: '抽帧策略',
+                      prefixIcon: Icon(Icons.filter_frames_rounded),
+                    ),
+                    items: [
+                      for (final strategy
+                          in VideoFrameExtractionStrategy.values)
+                        DropdownMenuItem(
+                          value: strategy,
+                          child: Text(strategy.label),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _videoExtractionStrategy = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          key: const ValueKey('video-frame-interval-field'),
+                          controller: _videoFrameIntervalController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: '抽帧间隔（秒）',
+                            helperText: '逐帧模式会忽略此项',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          key: const ValueKey('video-scene-threshold-field'),
+                          controller: _videoSceneThresholdController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: '场景阈值（0.05–0.95）',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          key: const ValueKey(
+                            'video-sharpness-threshold-field',
+                          ),
+                          controller: _videoMinimumSharpnessController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: '清晰度阈值（0–1）',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      key: const ValueKey('save-video-analysis-settings'),
+                      onPressed: () =>
+                          _saveVideoAnalysisSettings(settingsController),
+                      icon: const Icon(Icons.save_rounded),
+                      label: const Text('保存视频解析配置'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            _CollapsibleSection(
+              title: 'Seedance 提示词默认规则',
+              expanded: _sectionExpanded(_SettingsSection.promptDefaults),
+              onToggle: () => _toggleSection(_SettingsSection.promptDefaults),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '新建复刻任务会复制这里的规则；已创建任务保留自己的版本，不会被静默覆盖。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('replicate-global-style-field'),
+                    controller: _replicateGlobalStyleController,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: '默认全局风格',
+                      prefixIcon: Icon(Icons.palette_outlined),
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('replicate-constraints-field'),
+                    controller: _replicateConstraintsController,
+                    minLines: 3,
+                    maxLines: 6,
+                    decoration: const InputDecoration(
+                      labelText: '默认整体约束',
+                      helperText: '建议保留无字幕、无 Logo、无水印等成片约束',
+                      prefixIcon: Icon(Icons.rule_rounded),
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    key: const ValueKey('save-replicate-prompt-defaults'),
+                    onPressed: () =>
+                        settingsController.setReplicatePromptDefaults(
+                          globalStyle: _replicateGlobalStyleController.text,
+                          constraints: _replicateConstraintsController.text,
+                        ),
+                    icon: const Icon(Icons.save_rounded),
+                    label: const Text('保存提示词默认规则'),
                   ),
                 ],
               ),

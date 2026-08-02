@@ -4,8 +4,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
-import 'package:storyboard_grid_app/features/storyboard/data/vision_storyboard_service.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -108,6 +108,7 @@ void main() {
     expect(result.narrativeFunction, '推进');
     expect(result.transitionHint, '适合承接开场后切向窗外目标');
     expect(result.hasStoryboardOrderingCues, isTrue);
+    expect(requests.single, isNot(contains('max_tokens')));
     final content = requests.single['messages'][0]['content'] as List<dynamic>;
     final prompt = (content.first as Map<String, dynamic>)['text'] as String;
     expect(prompt, contains('镜头画面感'));
@@ -135,6 +136,75 @@ void main() {
       (imagePart['image_url'] as Map<String, dynamic>)['url'],
       startsWith('data:image/png;base64,'),
     );
+  });
+
+  test('Qwen3 视觉请求会显式关闭思考模式', () async {
+    final requests = <Map<String, dynamic>>[];
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requests.add(jsonDecode(request.body) as Map<String, dynamic>);
+        return _chatResponse(
+          jsonEncode({'caption': '画面主体居中', 'detail': '画面中主体位于中央位置。'}),
+        );
+      }),
+    );
+    addTearDown(service.close);
+    final image = await _testImage('vision_qwen_no_think_');
+    addTearDown(() => image.parent.delete(recursive: true));
+
+    await service.analyzeImage(
+      settings: _settings(visionModel: 'qwen3.5-9b-vlm'),
+      imageFile: image,
+      sequenceNo: 1,
+      rowIndex: 0,
+      columnIndex: 0,
+    );
+
+    final request = requests.single;
+    expect(request, isNot(contains('max_tokens')));
+    expect(request['enable_thinking'], isFalse);
+    expect(
+      request['chat_template_kwargs'],
+      isA<Map>().having((value) => value['enable_thinking'], 'enable', isFalse),
+    );
+    final content = request['messages'][0]['content'] as List<dynamic>;
+    final prompt = (content.first as Map<String, dynamic>)['text'] as String;
+    expect(prompt, startsWith('/no_think\n'));
+  });
+
+  test('Qwen3 视觉请求允许手动开启思考模式', () async {
+    final requests = <Map<String, dynamic>>[];
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requests.add(jsonDecode(request.body) as Map<String, dynamic>);
+        return _chatResponse(
+          jsonEncode({'caption': '画面主体居中', 'detail': '画面中主体位于中央位置。'}),
+        );
+      }),
+    );
+    addTearDown(service.close);
+    final image = await _testImage('vision_qwen_think_');
+    addTearDown(() => image.parent.delete(recursive: true));
+
+    await service.analyzeImage(
+      settings: _settings(visionModel: 'qwen3.5-9b-vlm'),
+      imageFile: image,
+      sequenceNo: 1,
+      rowIndex: 0,
+      columnIndex: 0,
+      allowThinking: true,
+    );
+
+    final request = requests.single;
+    expect(request, isNot(contains('max_tokens')));
+    expect(request['enable_thinking'], isTrue);
+    expect(
+      request['chat_template_kwargs'],
+      isA<Map>().having((value) => value['enable_thinking'], 'enable', isTrue),
+    );
+    final content = request['messages'][0]['content'] as List<dynamic>;
+    final prompt = (content.first as Map<String, dynamic>)['text'] as String;
+    expect(prompt, startsWith('/think\n'));
   });
 
   test('单图解析兼容数组和嵌套文本字段', () async {
@@ -983,8 +1053,8 @@ Future<File> _testImage(String prefix) async {
   return image;
 }
 
-AppSettings _settings() {
-  return const AppSettings(
+AppSettings _settings({String visionModel = 'test-vlm'}) {
+  return AppSettings(
     exportDirectory: 'exports',
     themePreference: AppThemePreference.system,
     cutImageNumberEnabled: false,
@@ -995,7 +1065,7 @@ AppSettings _settings() {
     storyboardSummaryPageEnabled: true,
     visionApiBaseUrl: '127.0.0.1:12345',
     visionApiKey: 'test-key',
-    visionModel: 'test-vlm',
+    visionModel: visionModel,
     imageGenerationApiBaseUrl: 'https://grsai.dakka.com.cn',
     imageGenerationApiKey: 'test-image-key',
     imageGenerationGeminiApiKey: 'test-gemini-key',

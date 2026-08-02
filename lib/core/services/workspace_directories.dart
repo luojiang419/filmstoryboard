@@ -11,5 +11,12 @@ abstract interface class WorkspaceDirectories {
   Directory get database;
   Directory get temp;
   Directory get logs;
+  Directory get videos;
+  Directory get frames;
+  Directory get analyses;
+  Directory get reports;
+  Directory get scripts;
+  Directory get assets;
+  Directory get prompts;
   File get databaseFile;
 }

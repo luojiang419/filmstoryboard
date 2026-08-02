@@ -1,13 +1,110 @@
 import 'dart:io';
 
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/settings/application/settings_controller.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('功能菜单位置会持久化且默认使用底部布局', () async {
+    final root = await Directory.systemTemp.createTemp('settings_navigation_');
+    addTearDown(() => root.delete(recursive: true));
+
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    expect(controller.value.navigationPosition, AppNavigationPosition.bottom);
+
+    await controller.setNavigationPosition(AppNavigationPosition.left);
+
+    expect(controller.value.navigationPosition, AppNavigationPosition.left);
+    expect(repository.load().navigationPosition, AppNavigationPosition.left);
+    expect(database.getSetting('navigationPosition'), 'left');
+  });
+
+  test('视频抽帧配置会校验范围并持久化', () async {
+    final root = await Directory.systemTemp.createTemp('settings_video_');
+    addTearDown(() => root.delete(recursive: true));
+
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.setVideoAnalysisSettings(
+      ffmpegExecutable: r'D:\tools\ffmpeg.exe',
+      ffprobeExecutable: r'D:\tools\ffprobe.exe',
+      extractionStrategy: VideoFrameExtractionStrategy.perFrame,
+      frameIntervalSeconds: 0,
+      sceneThreshold: 2,
+      minimumSharpness: -1,
+      thinkingEnabled: true,
+    );
+
+    final restored = repository.load();
+    expect(restored.ffmpegExecutable, r'D:\tools\ffmpeg.exe');
+    expect(
+      restored.videoFrameExtractionStrategy,
+      VideoFrameExtractionStrategy.perFrame,
+    );
+    expect(restored.videoFrameIntervalSeconds, 0.1);
+    expect(restored.videoSceneThreshold, 0.95);
+    expect(restored.videoMinimumSharpness, 0);
+    expect(restored.videoAnalysisThinkingEnabled, isTrue);
+  });
+
+  test('Seedance 提示词默认规则会持久化且空值恢复安全默认值', () async {
+    final root = await Directory.systemTemp.createTemp('settings_replicate_');
+    addTearDown(() => root.delete(recursive: true));
+
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.setReplicatePromptDefaults(
+      globalStyle: '商业电影质感，低饱和暖色调',
+      constraints: '无字幕、无 Logo、无水印，主体一致',
+    );
+
+    var restored = repository.load();
+    expect(restored.replicateDefaultGlobalStyle, '商业电影质感，低饱和暖色调');
+    expect(restored.replicateDefaultConstraints, '无字幕、无 Logo、无水印，主体一致');
+
+    await controller.setReplicatePromptDefaults(
+      globalStyle: ' ',
+      constraints: '',
+    );
+    restored = repository.load();
+    expect(
+      restored.replicateDefaultGlobalStyle,
+      AppSettings.defaultReplicateGlobalStyle,
+    );
+    expect(
+      restored.replicateDefaultConstraints,
+      AppSettings.defaultReplicateConstraints,
+    );
+  });
+
   test('编号滑块预览只更新内存且拖动结束值才持久化', () async {
     final root = await Directory.systemTemp.createTemp('settings_controller_');
     addTearDown(() => root.delete(recursive: true));

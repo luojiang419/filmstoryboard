@@ -48,7 +48,7 @@ jobs:
             Accept = 'application/vnd.github+json'
             Authorization = "Bearer $env:GH_TOKEN"
             'X-GitHub-Api-Version' = '2022-11-28'
-            'User-Agent' = 'StoryboardGridAppReleaseWorkflow'
+            'User-Agent' = 'filmstoryboardReleaseWorkflow'
           }
           $api = "https://api.github.com/repos/$env:RELEASE_REPO"
           $releases = @(Invoke-RestMethod -Headers $headers -Uri "$api/releases?per_page=100")
@@ -135,7 +135,7 @@ jobs:
       - name: Build installer
         if: steps.version.outputs.skip != 'true'
         shell: pwsh
-        run: ISCC.exe installer/storyboard_grid_app.iss
+        run: ISCC.exe installer/filmstoryboard.iss
 
       - name: Verify installer contract
         if: steps.version.outputs.skip != 'true'

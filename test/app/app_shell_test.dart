@@ -3,24 +3,25 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:storyboard_grid_app/app/app_shell.dart';
-import 'package:storyboard_grid_app/app/app_theme.dart';
+import 'package:filmstoryboard/app/app_shell.dart';
+import 'package:filmstoryboard/app/app_theme.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/database/app_database.dart';
-import 'package:storyboard_grid_app/core/providers/app_providers.dart';
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
-import 'package:storyboard_grid_app/features/onboarding/data/onboarding_repository.dart';
-import 'package:storyboard_grid_app/features/settings/application/settings_controller.dart';
-import 'package:storyboard_grid_app/features/settings/data/settings_repository.dart';
-import 'package:storyboard_grid_app/features/storyboard/application/storyboard_controller.dart';
-import 'package:storyboard_grid_app/features/updater/application/updater_controller.dart';
-import 'package:storyboard_grid_app/features/updater/data/updater_service.dart';
-import 'package:storyboard_grid_app/features/updater/domain/app_update_config.dart';
+import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/providers/app_providers.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/onboarding/data/onboarding_repository.dart';
+import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
+import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/features/updater/application/updater_controller.dart';
+import 'package:filmstoryboard/features/updater/data/updater_service.dart';
+import 'package:filmstoryboard/features/updater/domain/app_update_config.dart';
 
 void main() {
-  testWidgets('新增设计分镜图后会迁移旧保存页签索引', (tester) async {
-    tester.view.physicalSize = const Size(1600, 900);
+  testWidgets('旧裁切页签索引会迁移到视频解析', (tester) async {
+    tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -71,33 +72,33 @@ void main() {
     await tester.pump();
 
     expect(find.text('设计分镜图'), findsOneWidget);
-    expect(find.text('图片任务'), findsOneWidget);
+    expect(find.byKey(const ValueKey('video-analysis-page')), findsOneWidget);
+    expect(find.text('多宫格裁切'), findsNothing);
     expect(find.byKey(const ValueKey('app-shell-bottom-tabs')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('grid-cut-inspector-actions')),
-      findsOneWidget,
-    );
     final bottomTabsCenter = tester.getCenter(
       find.byKey(const ValueKey('app-shell-bottom-tabs')),
-    );
-    final bottomTabsRect = tester.getRect(
-      find.byKey(const ValueKey('app-shell-bottom-tabs')),
-    );
-    final cutActionsRect = tester.getRect(
-      find.byKey(const ValueKey('grid-cut-inspector-actions')),
     );
     final logicalWidth =
         tester.view.physicalSize.width / tester.view.devicePixelRatio;
     expect(bottomTabsCenter.dx, closeTo(logicalWidth / 2, 0.5));
-    expect(cutActionsRect.bottom, lessThan(bottomTabsRect.top));
     expect(database.getSetting('appShellSelectedTabIndex'), '1');
-    expect(database.getSetting('appShellSelectedTabIndexVersion'), '2');
+    expect(database.getSetting('appShellSelectedTabIndexVersion'), '3');
+
+    await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('create-empty-shooting-script')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-设置')));
     await tester.pumpAndSettle();
 
     expect(find.text('外观'), findsOneWidget);
-    expect(database.getSetting('appShellSelectedTabIndex'), '4');
+    expect(database.getSetting('appShellSelectedTabIndex'), '6');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -180,9 +181,19 @@ void main() {
 
     expect(closeInvoked, isTrue);
 
-    final regularHeight = tester
-        .getSize(find.byKey(const ValueKey('app-shell-bottom-tabs')))
-        .height;
+    await settingsController.setNavigationPosition(AppNavigationPosition.left);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('app-shell-left-tabs')), findsOneWidget);
+    expect(find.byKey(const ValueKey('app-shell-bottom-tabs')), findsNothing);
+    expect(database.getSetting('navigationPosition'), 'left');
+    expect(find.byKey(const ValueKey('app-shell-tab-视频解析')), findsOneWidget);
+
+    await settingsController.setNavigationPosition(
+      AppNavigationPosition.bottom,
+    );
+    await tester.pumpAndSettle();
+
     tester.view.physicalSize = const Size(720, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -190,12 +201,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(
-      tester
-          .getSize(find.byKey(const ValueKey('app-shell-bottom-tabs')))
-          .height,
-      greaterThan(regularHeight),
-    );
+    expect(find.byKey(const ValueKey('app-shell-bottom-tabs')), findsOneWidget);
   });
 
   testWidgets('首次进入工程显示引导且重播不会污染页面记忆', (tester) async {
@@ -253,14 +259,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byKey(const ValueKey('onboarding-overlay')), findsOneWidget);
-    expect(find.text('从一个创意，到完整故事板'), findsOneWidget);
+    expect(find.text('从参考视频，到可执行的复刻方案'), findsOneWidget);
     expect(database.getSetting('appShellSelectedTabIndex'), isNull);
 
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 240));
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(find.text('把组合图拆成独立镜头'), findsOneWidget);
+    expect(find.text('把参考视频拆成可追溯镜头'), findsOneWidget);
     expect(database.getSetting('appShellSelectedTabIndex'), isNull);
 
     await tester.tap(find.byKey(const ValueKey('onboarding-skip')));
@@ -271,9 +277,9 @@ void main() {
       '${OnboardingRepository.currentVersion}',
     );
 
-    await tester.tap(find.byKey(const ValueKey('app-shell-tab-导出故事板')));
+    await tester.tap(find.byKey(const ValueKey('app-shell-tab-导出')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(database.getSetting('appShellSelectedTabIndex'), '3');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.tap(find.byKey(const ValueKey('show-onboarding-help')));
     await tester.pump(const Duration(milliseconds: 100));
@@ -281,12 +287,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(database.getSetting('appShellSelectedTabIndex'), '3');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.tap(find.byKey(const ValueKey('onboarding-skip')));
     await tester.pump(const Duration(milliseconds: 240));
     expect(find.byKey(const ValueKey('onboarding-overlay')), findsNothing);
-    expect(database.getSetting('appShellSelectedTabIndex'), '3');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

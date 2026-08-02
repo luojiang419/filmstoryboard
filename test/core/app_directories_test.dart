@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:storyboard_grid_app/core/services/app_directories.dart';
+import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:test/test.dart';
 
 void main() {

@@ -23,6 +23,18 @@ class SettingsRepository {
 
   static const _exportDirectoryKey = 'exportDirectory';
   static const _themePreferenceKey = 'themePreference';
+  static const _navigationPositionKey = 'navigationPosition';
+  static const _ffmpegExecutableKey = 'ffmpegExecutable';
+  static const _ffprobeExecutableKey = 'ffprobeExecutable';
+  static const _videoFrameExtractionStrategyKey =
+      'videoFrameExtractionStrategy';
+  static const _videoFrameIntervalSecondsKey = 'videoFrameIntervalSeconds';
+  static const _videoSceneThresholdKey = 'videoSceneThreshold';
+  static const _videoMinimumSharpnessKey = 'videoMinimumSharpness';
+  static const _videoAnalysisThinkingEnabledKey =
+      'videoAnalysisThinkingEnabled';
+  static const _replicateDefaultGlobalStyleKey = 'replicateDefaultGlobalStyle';
+  static const _replicateDefaultConstraintsKey = 'replicateDefaultConstraints';
   static const _cutImageNumberEnabledKey = 'cutImageNumberEnabled';
   static const _cutImageNumberPositionKey = 'cutImageNumberPosition';
   static const _cutImageNumberBackgroundOpacityKey =
@@ -65,6 +77,46 @@ class SettingsRepository {
       themePreference: AppThemePreference.fromName(
         _database.getSetting(_themePreferenceKey),
       ),
+      navigationPosition: AppNavigationPosition.fromName(
+        _database.getSetting(_navigationPositionKey),
+      ),
+      ffmpegExecutable:
+          _database.getSetting(_ffmpegExecutableKey)?.trim().isNotEmpty == true
+          ? _database.getSetting(_ffmpegExecutableKey)!.trim()
+          : 'ffmpeg',
+      ffprobeExecutable:
+          _database.getSetting(_ffprobeExecutableKey)?.trim().isNotEmpty == true
+          ? _database.getSetting(_ffprobeExecutableKey)!.trim()
+          : 'ffprobe',
+      videoFrameExtractionStrategy: VideoFrameExtractionStrategy.fromName(
+        _database.getSetting(_videoFrameExtractionStrategyKey),
+      ),
+      videoFrameIntervalSeconds: _getDoubleSetting(
+        _videoFrameIntervalSecondsKey,
+        1,
+        min: 0.1,
+        max: 60,
+      ),
+      videoSceneThreshold: _getDoubleSetting(
+        _videoSceneThresholdKey,
+        0.3,
+        min: 0.05,
+        max: 0.95,
+      ),
+      videoMinimumSharpness: _getDoubleSetting(
+        _videoMinimumSharpnessKey,
+        0.08,
+        min: 0,
+        max: 1,
+      ),
+      videoAnalysisThinkingEnabled:
+          _database.getSetting(_videoAnalysisThinkingEnabledKey) == 'true',
+      replicateDefaultGlobalStyle:
+          _database.getSetting(_replicateDefaultGlobalStyleKey) ??
+          AppSettings.defaultReplicateGlobalStyle,
+      replicateDefaultConstraints:
+          _database.getSetting(_replicateDefaultConstraintsKey) ??
+          AppSettings.defaultReplicateConstraints,
       cutImageNumberEnabled:
           _database.getSetting(_cutImageNumberEnabledKey) == 'true',
       cutImageNumberPosition: CutImageNumberPosition.fromName(
@@ -136,6 +188,37 @@ class SettingsRepository {
     _database
       ..setSetting(_exportDirectoryKey, settings.exportDirectory)
       ..setSetting(_themePreferenceKey, settings.themePreference.name)
+      ..setSetting(_navigationPositionKey, settings.navigationPosition.name)
+      ..setSetting(_ffmpegExecutableKey, settings.ffmpegExecutable)
+      ..setSetting(_ffprobeExecutableKey, settings.ffprobeExecutable)
+      ..setSetting(
+        _videoFrameExtractionStrategyKey,
+        settings.videoFrameExtractionStrategy.name,
+      )
+      ..setSetting(
+        _videoFrameIntervalSecondsKey,
+        settings.videoFrameIntervalSeconds.toStringAsFixed(2),
+      )
+      ..setSetting(
+        _videoSceneThresholdKey,
+        settings.videoSceneThreshold.toStringAsFixed(2),
+      )
+      ..setSetting(
+        _videoMinimumSharpnessKey,
+        settings.videoMinimumSharpness.toStringAsFixed(2),
+      )
+      ..setSetting(
+        _videoAnalysisThinkingEnabledKey,
+        settings.videoAnalysisThinkingEnabled.toString(),
+      )
+      ..setSetting(
+        _replicateDefaultGlobalStyleKey,
+        settings.replicateDefaultGlobalStyle,
+      )
+      ..setSetting(
+        _replicateDefaultConstraintsKey,
+        settings.replicateDefaultConstraints,
+      )
       ..setSetting(
         _cutImageNumberEnabledKey,
         settings.cutImageNumberEnabled.toString(),
@@ -200,6 +283,17 @@ class SettingsRepository {
     return AppSettings(
       exportDirectory: _directories.exports.path,
       themePreference: AppThemePreference.system,
+      navigationPosition: AppNavigationPosition.bottom,
+      ffmpegExecutable: 'ffmpeg',
+      ffprobeExecutable: 'ffprobe',
+      videoFrameExtractionStrategy:
+          VideoFrameExtractionStrategy.sceneAndInterval,
+      videoFrameIntervalSeconds: 1,
+      videoSceneThreshold: 0.3,
+      videoMinimumSharpness: 0.08,
+      videoAnalysisThinkingEnabled: false,
+      replicateDefaultGlobalStyle: AppSettings.defaultReplicateGlobalStyle,
+      replicateDefaultConstraints: AppSettings.defaultReplicateConstraints,
       cutImageNumberEnabled: false,
       cutImageNumberPosition: CutImageNumberPosition.topLeft,
       cutImageNumberBackgroundOpacity:
