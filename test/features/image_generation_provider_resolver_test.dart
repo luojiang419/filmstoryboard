@@ -1,4 +1,5 @@
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/settings/domain/image_generation_api_config.dart';
 import 'package:filmstoryboard/features/storyboard/domain/image_generation_model_catalog.dart';
 import 'package:filmstoryboard/features/storyboard/domain/image_generation_provider_resolver.dart';
 import 'package:test/test.dart';
@@ -72,5 +73,25 @@ void main() {
       ),
       throwsA(isA<FormatException>()),
     );
+  });
+
+  test('选中的图片生成 API 卡片会覆盖旧供应商配置', () {
+    const activeConfig = ImageGenerationApiConfig(
+      id: 'selected-grsai',
+      name: '备用 GRSai',
+      baseUrl: 'https://selected.example',
+      apiKey: 'selected-key',
+      model: 'nano-banana-pro',
+    );
+    final connection = ImageGenerationProviderResolver.resolve(
+      settings: settings.copyWith(
+        imageGenerationApiConfigs: const [activeConfig],
+        activeImageGenerationApiConfigId: activeConfig.id,
+      ),
+      model: 'nano-banana-pro',
+    );
+
+    expect(connection.apiBaseUrl, activeConfig.baseUrl);
+    expect(connection.apiKey, activeConfig.apiKey);
   });
 }

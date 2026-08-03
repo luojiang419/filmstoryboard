@@ -286,10 +286,22 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     return script;
   }
 
-  ShootingScript? createFromStoryboard(StoryboardBoard? board) {
-    if (board == null || board.items.isEmpty) {
-      value = value.copyWith(message: '', errorMessage: '当前故事板没有可生成脚本的镜头');
-      return null;
+  ShootingScript createForStoryboard(
+    StoryboardBoard board, {
+    String? sourceVideoId,
+  }) {
+    var existing = _primaryScriptForStoryboard(board.id);
+    if (existing != null) {
+      if (sourceVideoId != null && existing.sourceVideoId != sourceVideoId) {
+        existing = existing.copyWith(
+          sourceVideoId: sourceVideoId,
+          version: existing.version + 1,
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _repository.upsertScript(existing);
+      }
+      syncFromStoryboard(board);
+      return existing;
     }
     final items = board.items.toList()
       ..sort((first, second) => first.slotIndex.compareTo(second.slotIndex));
@@ -298,7 +310,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       id: _uuid.v4(),
       name: _uniqueScriptName('${board.name} · 拍摄脚本'),
       sourceStoryboardId: board.id,
-      sourceVideoId: null,
+      sourceVideoId: sourceVideoId,
       status: ShootingScriptStatus.draft,
       version: 1,
       createdAt: now,
@@ -307,6 +319,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     final shots = [
       for (var index = 0; index < items.length; index++)
         _blankShot(script.id, index + 1, now).copyWith(
+          sourceStoryboardAssetId: items[index].asset.id,
           framePath: items[index].asset.path,
           content: items[index].caption,
           status: ProcessingStatus.completed,
@@ -316,10 +329,100 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     _repository.replaceShots(script.id, shots);
     refresh(selectScriptId: script.id);
     value = value.copyWith(
-      message: '已从故事板生成 ${shots.length} 个脚本镜头',
+      message: shots.isEmpty
+          ? '已为 ${board.name} 创建空拍摄脚本'
+          : '已从故事板生成 ${shots.length} 个脚本镜头',
       errorMessage: '',
     );
     return script;
+  }
+
+  ShootingScript? createFromStoryboard(StoryboardBoard? board) {
+    if (board == null || board.items.isEmpty) {
+      value = value.copyWith(message: '', errorMessage: '当前故事板没有可生成脚本的镜头');
+      return null;
+    }
+    return createForStoryboard(board);
+  }
+
+  bool syncFromStoryboard(
+    StoryboardBoard board, {
+    StoryboardBoard? previousBoard,
+  }) {
+    final script = _primaryScriptForStoryboard(board.id);
+    if (script == null) {
+      return false;
+    }
+    final existingShots = _repository.listShots(script.id);
+    final mappedShots = <String, ScriptShot>{
+      for (final shot in existingShots)
+        if (shot.sourceStoryboardAssetId != null)
+          shot.sourceStoryboardAssetId!: shot,
+    };
+    final legacyShots = existingShots
+        .where(
+          (shot) =>
+              shot.sourceStoryboardAssetId == null &&
+              shot.framePath.trim().isNotEmpty,
+        )
+        .toList();
+    final now = DateTime.now().toUtc();
+    final synchronizedShots = <ScriptShot>[];
+    final usedShotIds = <String>{};
+    final orderedItems = board.items.toList()
+      ..sort((first, second) => first.slotIndex.compareTo(second.slotIndex));
+    for (var index = 0; index < orderedItems.length; index++) {
+      final item = orderedItems[index];
+      var shot = mappedShots[item.asset.id];
+      final replacedAssetId = previousBoard
+          ?.itemAtSlot(item.slotIndex)
+          ?.asset
+          .id;
+      if (shot == null && replacedAssetId != null) {
+        shot = mappedShots[replacedAssetId];
+      }
+      shot ??= legacyShots.cast<ScriptShot?>().firstWhere(
+        (candidate) =>
+            candidate?.framePath == item.asset.path &&
+            !usedShotIds.contains(candidate?.id),
+        orElse: () => null,
+      );
+      shot ??= _blankShot(script.id, index + 1, now);
+      usedShotIds.add(shot.id);
+      synchronizedShots.add(
+        shot.copyWith(
+          sourceStoryboardAssetId: item.asset.id,
+          shotNumber: index + 1,
+          framePath: item.asset.path,
+          content: item.caption,
+          status: ProcessingStatus.completed,
+          updatedAt: now,
+        ),
+      );
+    }
+    synchronizedShots.addAll(
+      existingShots.where(
+        (shot) =>
+            shot.sourceStoryboardAssetId == null &&
+            !usedShotIds.contains(shot.id),
+      ),
+    );
+    _saveShots(
+      script,
+      synchronizedShots,
+      selectShotId: value.selectedScriptId == script.id
+          ? value.selectedShotId
+          : '',
+      message: '',
+      selectScript: value.selectedScriptId == script.id,
+    );
+    return true;
+  }
+
+  bool isPrimaryStoryboardScript(ShootingScript script) {
+    final boardId = script.sourceStoryboardId;
+    return boardId != null &&
+        _primaryScriptForStoryboard(boardId)?.id == script.id;
   }
 
   ShootingScript? duplicateSelectedScript() {
@@ -331,49 +434,44 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     final duplicate = ShootingScript(
       id: _uuid.v4(),
       name: _uniqueScriptName('${source.name} 副本'),
-      sourceStoryboardId: source.sourceStoryboardId,
+      sourceStoryboardId: null,
       sourceVideoId: source.sourceVideoId,
       status: ShootingScriptStatus.draft,
       version: 1,
       createdAt: now,
       updatedAt: now,
     );
-    final shots = [
-      for (var index = 0; index < value.shots.length; index++)
-        value.shots[index].copyWith(
-          scriptId: duplicate.id,
-          shotNumber: index + 1,
-          updatedAt: now,
-        ),
-    ];
     final copiedShots = [
-      for (final shot in shots)
-        ScriptShot(
-          id: _uuid.v4(),
-          scriptId: shot.scriptId,
-          shotNumber: shot.shotNumber,
-          durationSeconds: shot.durationSeconds,
-          framePath: shot.framePath,
-          visual: shot.visual,
-          content: shot.content,
-          shotSize: shot.shotSize,
-          cameraMovement: shot.cameraMovement,
-          cameraNotes: shot.cameraNotes,
-          composition: shot.composition,
-          cameraAngle: shot.cameraAngle,
-          lightingMood: shot.lightingMood,
-          colorPalette: shot.colorPalette,
-          visualFocus: shot.visualFocus,
-          transitionHint: shot.transitionHint,
-          scene: shot.scene,
-          productCode: shot.productCode,
-          productStyling: shot.productStyling,
-          dialogue: shot.dialogue,
-          sound: shot.sound,
-          prompt: shot.prompt,
-          status: shot.status,
-          updatedAt: now,
-        ),
+      for (var index = 0; index < value.shots.length; index++)
+        () {
+          final shot = value.shots[index];
+          return ScriptShot(
+            id: _uuid.v4(),
+            scriptId: duplicate.id,
+            shotNumber: index + 1,
+            durationSeconds: shot.durationSeconds,
+            framePath: shot.framePath,
+            visual: shot.visual,
+            content: shot.content,
+            shotSize: shot.shotSize,
+            cameraMovement: shot.cameraMovement,
+            cameraNotes: shot.cameraNotes,
+            composition: shot.composition,
+            cameraAngle: shot.cameraAngle,
+            lightingMood: shot.lightingMood,
+            colorPalette: shot.colorPalette,
+            visualFocus: shot.visualFocus,
+            transitionHint: shot.transitionHint,
+            scene: shot.scene,
+            productCode: shot.productCode,
+            productStyling: shot.productStyling,
+            dialogue: shot.dialogue,
+            sound: shot.sound,
+            prompt: shot.prompt,
+            status: shot.status,
+            updatedAt: now,
+          );
+        }(),
     ];
     _repository.upsertScript(duplicate);
     _repository.replaceShots(duplicate.id, copiedShots);
@@ -746,6 +844,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     List<ScriptShot> shots, {
     required String selectShotId,
     required String message,
+    bool selectScript = true,
   }) {
     final now = DateTime.now().toUtc();
     final normalized = [
@@ -758,7 +857,10 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     );
     _repository.upsertScript(updatedScript);
     _repository.replaceShots(script.id, normalized);
-    refresh(selectScriptId: script.id, selectShotId: selectShotId);
+    refresh(
+      selectScriptId: selectScript ? script.id : value.selectedScriptId,
+      selectShotId: selectScript ? selectShotId : value.selectedShotId,
+    );
     value = value.copyWith(message: message, errorMessage: '');
   }
 
@@ -783,6 +885,18 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
         status: ProcessingStatus.pending,
         updatedAt: now,
       );
+
+  ShootingScript? _primaryScriptForStoryboard(String boardId) {
+    final matches =
+        _repository
+            .listScripts()
+            .where((script) => script.sourceStoryboardId == boardId)
+            .toList()
+          ..sort(
+            (first, second) => first.createdAt.compareTo(second.createdAt),
+          );
+    return matches.isEmpty ? null : matches.first;
+  }
 
   String _uniqueScriptName(String requested, {String? excludingId}) {
     final base = requested.trim().isEmpty ? '新建脚本' : requested.trim();

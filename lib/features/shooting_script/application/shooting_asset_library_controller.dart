@@ -73,32 +73,64 @@ class ShootingAssetLibraryController
     String name = '',
     String description = '',
   }) async {
-    value = value.copyWith(isBusy: true, message: '正在添加资产…', errorMessage: '');
-    try {
-      final normalizedType = _normalizedTypeForPath(type, sourcePath);
-      final item = await _repository.importItem(
+    final items = await importItems([
+      (
         sourcePath: sourcePath,
-        type: normalizedType,
+        type: type,
         name: name,
         description: description,
-      );
-      if (item == null) {
+      ),
+    ]);
+    return items.firstOrNull;
+  }
+
+  Future<List<ShootingAssetLibraryItem>> importItems(
+    Iterable<
+      ({
+        String sourcePath,
+        ReplicateAssetType type,
+        String name,
+        String description,
+      })
+    >
+    requests,
+  ) async {
+    final normalizedRequests = [
+      for (final request in requests)
+        if (request.sourcePath.trim().isNotEmpty)
+          (
+            sourcePath: request.sourcePath,
+            type: _normalizedTypeForPath(request.type, request.sourcePath),
+            name: request.name,
+            description: request.description,
+          ),
+    ];
+    if (normalizedRequests.isEmpty) {
+      return const [];
+    }
+    value = value.copyWith(isBusy: true, message: '正在添加资产…', errorMessage: '');
+    try {
+      final imported = await _repository.importItems(normalizedRequests);
+      if (imported.isEmpty) {
         throw const FileSystemException('资产文件不存在');
       }
+      final items = _repository.listItems();
       value = value.copyWith(
-        items: _repository.listItems(),
+        items: items,
         isBusy: false,
-        message: '已添加 ${item.name}',
+        message: imported.length == 1
+            ? '已添加 ${imported.single.name}'
+            : '已添加 ${imported.length} 个资产',
         errorMessage: '',
       );
-      return item;
+      return imported;
     } catch (error) {
       value = value.copyWith(
         isBusy: false,
         message: '',
         errorMessage: '添加资产失败：$error',
       );
-      return null;
+      return const [];
     }
   }
 

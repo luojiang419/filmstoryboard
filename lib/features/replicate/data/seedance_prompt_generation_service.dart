@@ -30,6 +30,7 @@ class SeedancePromptGenerationService {
     required String constraints,
     ScriptShot? previousShot,
     ScriptShot? nextShot,
+    String? videoReferenceInstruction,
   }) {
     final readyAssets =
         assets.where((asset) => asset.path.trim().isNotEmpty).toList()
@@ -107,6 +108,8 @@ class SeedancePromptGenerationService {
         : clean(constraints);
     final sections = <String>[
       if (definitions.isNotEmpty) '主体与素材定义：${definitions.join('；')}。',
+      if (clean(videoReferenceInstruction ?? '').isNotEmpty)
+        clean(videoReferenceInstruction ?? ''),
       '镜头${shot.shotNumber}：${body.join('；')}。',
       '全局风格：$style。',
       '整体约束：$constraintText。',
@@ -126,6 +129,7 @@ class SeedancePromptGenerationService {
     required String constraints,
     ScriptShot? previousShot,
     ScriptShot? nextShot,
+    String? videoReferenceInstruction,
   }) {
     final promptAssets = [
       for (final asset in assets)
@@ -149,6 +153,7 @@ class SeedancePromptGenerationService {
       constraints: constraints,
       previousShot: previousShot,
       nextShot: nextShot,
+      videoReferenceInstruction: videoReferenceInstruction,
     );
   }
 

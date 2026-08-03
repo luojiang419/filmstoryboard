@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:uuid/uuid.dart';
 
+import '../../../core/services/vision_request_rate_limiter.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../storyboard/data/vision_storyboard_service.dart';
 import '../data/video_analysis_repository.dart';
@@ -62,6 +63,11 @@ class VideoAnalysisService {
   final VisionStoryboardService visionService;
   final Uuid _uuid;
 
+  /// 仅 MiniMax-M3 使用其允许的高并发额度；其他服务保持串行，避免限流。
+  static int maxConcurrentFrameRequestsFor(AppSettings settings) {
+    return VisionRequestRateLimiter.maxConcurrentRequestsFor(settings);
+  }
+
   Future<VideoAnalysisRunResult> analyzeFrames({
     required AppSettings settings,
     required SourceVideo video,
@@ -73,84 +79,91 @@ class VideoAnalysisService {
   }) async {
     var completed = 0;
     var failed = 0;
-    for (var index = 0; index < frames.length; index++) {
-      if (shouldContinue?.call() == false) {
-        return VideoAnalysisRunResult(
-          completedCount: completed,
-          failedCount: failed,
-          summary: repository.getVideoSummary(video.id),
-          interrupted: true,
-        );
-      }
-      final frame = frames[index];
-      final now = DateTime.now().toUtc();
-      try {
-        final analysis = await visionService.analyzeImage(
-          settings: settings,
-          imageFile: resolveFrame?.call(frame) ?? File(frame.path),
-          sequenceNo: index + 1,
-          rowIndex: 0,
-          columnIndex: index,
-          allowThinking: settings.videoAnalysisThinkingEnabled,
-        );
-        final record = VideoFrameAnalysis(
-          id: '${video.id}-${frame.id}',
-          videoId: video.id,
-          frameId: frame.id,
-          sequenceNo: frame.index + 1,
-          dimensions: VideoFrameAnalysisFieldMapper.fromVision(analysis),
-          rawResponse: analysis.rawResponse,
-          status: ProcessingStatus.completed,
-          errorMessage: '',
-          createdAt: now,
-          updatedAt: DateTime.now().toUtc(),
-        );
-        repository
-          ..upsertVideoFrameAnalysis(record)
-          ..upsertVideoFrame(
-            frame.copyWith(
-              status: ProcessingStatus.completed,
-              errorMessage: '',
-            ),
-          );
-        onFrameCompleted?.call(record);
-        completed++;
-      } catch (error) {
+    var processed = 0;
+    var nextIndex = 0;
+    var interrupted = false;
+
+    Future<void> processFrames() async {
+      while (nextIndex < frames.length) {
         if (shouldContinue?.call() == false) {
-          return VideoAnalysisRunResult(
-            completedCount: completed,
-            failedCount: failed,
-            summary: repository.getVideoSummary(video.id),
-            interrupted: true,
-          );
+          interrupted = true;
+          return;
         }
-        failed++;
-        final record = VideoFrameAnalysis(
-          id: '${video.id}-${frame.id}',
-          videoId: video.id,
-          frameId: frame.id,
-          sequenceNo: frame.index + 1,
-          dimensions: const {},
-          rawResponse: '',
-          status: ProcessingStatus.failed,
-          errorMessage: '$error',
-          createdAt: now,
-          updatedAt: DateTime.now().toUtc(),
-        );
-        repository
-          ..upsertVideoFrameAnalysis(record)
-          ..upsertVideoFrame(
-            frame.copyWith(
-              status: ProcessingStatus.failed,
-              errorMessage: '$error',
-            ),
+        final index = nextIndex++;
+        final frame = frames[index];
+        final now = DateTime.now().toUtc();
+        try {
+          final analysis = await visionService.analyzeImage(
+            settings: settings,
+            imageFile: resolveFrame?.call(frame) ?? File(frame.path),
+            sequenceNo: index + 1,
+            rowIndex: 0,
+            columnIndex: index,
+            allowThinking: settings.videoAnalysisThinkingEnabled,
           );
-        onFrameCompleted?.call(record);
+          final record = VideoFrameAnalysis(
+            id: '${video.id}-${frame.id}',
+            videoId: video.id,
+            frameId: frame.id,
+            sequenceNo: frame.index + 1,
+            dimensions: VideoFrameAnalysisFieldMapper.fromVision(analysis),
+            rawResponse: analysis.rawResponse,
+            status: ProcessingStatus.completed,
+            errorMessage: '',
+            createdAt: now,
+            updatedAt: DateTime.now().toUtc(),
+          );
+          repository
+            ..upsertVideoFrameAnalysis(record)
+            ..upsertVideoFrame(
+              frame.copyWith(
+                status: ProcessingStatus.completed,
+                errorMessage: '',
+              ),
+            );
+          onFrameCompleted?.call(record);
+          completed++;
+        } catch (error) {
+          if (shouldContinue?.call() == false) {
+            interrupted = true;
+            return;
+          }
+          failed++;
+          final record = VideoFrameAnalysis(
+            id: '${video.id}-${frame.id}',
+            videoId: video.id,
+            frameId: frame.id,
+            sequenceNo: frame.index + 1,
+            dimensions: const {},
+            rawResponse: '',
+            errorMessage: '$error',
+            status: ProcessingStatus.failed,
+            createdAt: now,
+            updatedAt: DateTime.now().toUtc(),
+          );
+          repository
+            ..upsertVideoFrameAnalysis(record)
+            ..upsertVideoFrame(
+              frame.copyWith(
+                status: ProcessingStatus.failed,
+                errorMessage: '$error',
+              ),
+            );
+          onFrameCompleted?.call(record);
+        }
+        processed++;
+        onProgress?.call(processed, frames.length);
       }
-      onProgress?.call(index + 1, frames.length);
     }
 
-    if (shouldContinue?.call() == false) {
+    final workerCount = maxConcurrentFrameRequestsFor(
+      settings,
+    ).clamp(1, frames.isEmpty ? 1 : frames.length);
+    await Future.wait([
+      for (var worker = 0; worker < workerCount; worker++) processFrames(),
+    ]);
+
+    if (interrupted || shouldContinue?.call() == false) {
       return VideoAnalysisRunResult(
         completedCount: completed,
         failedCount: failed,
@@ -234,9 +247,7 @@ class VideoAnalysisService {
     final analysisByFrame = {for (final item in analyses) item.frameId: item};
     final focusFrames = frames
         .where(
-          (frame) =>
-              (frame.isFocus || frame.isSelected) &&
-              analysisByFrame.containsKey(frame.id),
+          (frame) => frame.isFocus && analysisByFrame.containsKey(frame.id),
         )
         .toList();
     repository.deleteVideoShots(video.id);

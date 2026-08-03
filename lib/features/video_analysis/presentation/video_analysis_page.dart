@@ -31,93 +31,117 @@ class VideoAnalysisPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.watch(videoAnalysisControllerProvider);
     final storyboardController = ref.watch(storyboardControllerProvider);
-    return ValueListenableBuilder<VideoAnalysisState>(
-      valueListenable: controller,
-      builder: (context, state, _) => ValueListenableBuilder<StoryboardState>(
-        valueListenable: storyboardController,
-        builder: (context, storyboardState, _) => ColoredBox(
-          key: const ValueKey('video-analysis-page'),
-          color: Colors.transparent,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                _Toolbar(
-                  controller: controller,
-                  state: state,
-                  storyboardBusy: storyboardState.isAnalyzing,
-                  onImport: () => _pickVideo(context, controller),
-                  onReanalyze: state.summary == null
-                      ? null
-                      : () => _confirmReanalyze(context, controller),
-                  onExport: state.summary == null
-                      ? null
-                      : () => _chooseReportFormat(context, controller),
-                  onGenerateStoryboard:
-                      state.frameAnalyses.any(
-                        (analysis) =>
-                            analysis.status == ProcessingStatus.completed,
-                      )
-                      ? () => _generateStoryboard(context, ref, state)
-                      : null,
-                ),
-                if (state.isBusy ||
-                    state.isPaused ||
-                    storyboardState.isAnalyzing) ...[
-                  const SizedBox(height: 10),
-                  LinearProgressIndicator(
-                    value:
-                        storyboardState.isAnalyzing || state.totalProgress <= 0
-                        ? null
-                        : state.completedProgress / state.totalProgress,
-                  ),
-                ],
-                if (state.message.isNotEmpty ||
-                    state.errorMessage.isNotEmpty ||
-                    storyboardState.isAnalyzing) ...[
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      storyboardState.isAnalyzing
-                          ? storyboardState.message
-                          : state.errorMessage.isNotEmpty
-                          ? state.errorMessage
-                          : state.message,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: state.errorMessage.isNotEmpty
-                            ? Theme.of(context).colorScheme.error
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+            controller.undoFrameRemoval,
+        const SingleActivator(
+          LogicalKeyboardKey.keyZ,
+          control: true,
+          shift: true,
+        ): controller.redoFrameRemoval,
+        const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+            controller.redoFrameRemoval,
+      },
+      child: Focus(
+        autofocus: true,
+        child: ValueListenableBuilder<VideoAnalysisState>(
+          valueListenable: controller,
+          builder: (context, state, _) =>
+              ValueListenableBuilder<StoryboardState>(
+                valueListenable: storyboardController,
+                builder: (context, storyboardState, _) => ColoredBox(
+                  key: const ValueKey('video-analysis-page'),
+                  color: Colors.transparent,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        _Toolbar(
+                          controller: controller,
+                          state: state,
+                          storyboardBusy: storyboardState.isAnalyzing,
+                          onImport: () => _pickVideo(context, controller),
+                          onStartAnalysis: () =>
+                              _chooseAnalysisMode(context, controller),
+                          onReanalyze: state.summary == null
+                              ? null
+                              : () => _confirmReanalyze(context, controller),
+                          onExport: state.summary == null
+                              ? null
+                              : () => _chooseReportFormat(context, controller),
+                          onGenerateStoryboard:
+                              state.frameAnalyses.any(
+                                (analysis) =>
+                                    analysis.status ==
+                                    ProcessingStatus.completed,
+                              )
+                              ? () => _generateStoryboard(context, ref, state)
+                              : null,
+                        ),
+                        if (state.isBusy ||
+                            state.isPaused ||
+                            storyboardState.isAnalyzing) ...[
+                          const SizedBox(height: 10),
+                          LinearProgressIndicator(
+                            value:
+                                storyboardState.isAnalyzing ||
+                                    state.totalProgress <= 0
+                                ? null
+                                : state.completedProgress / state.totalProgress,
+                          ),
+                        ],
+                        if (state.message.isNotEmpty ||
+                            state.errorMessage.isNotEmpty ||
+                            storyboardState.isAnalyzing) ...[
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              storyboardState.isAnalyzing
+                                  ? storyboardState.message
+                                  : state.errorMessage.isNotEmpty
+                                  ? state.errorMessage
+                                  : state.message,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: state.errorMessage.isNotEmpty
+                                    ? Theme.of(context).colorScheme.error
+                                    : Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child: state.videos.isEmpty
+                              ? _EmptyState(
+                                  onImport: () =>
+                                      _pickVideo(context, controller),
+                                )
+                              : LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    if (constraints.maxWidth < 900) {
+                                      return _CompactWorkspace(
+                                        controller: controller,
+                                        state: state,
+                                      );
+                                    }
+                                    return _WideWorkspace(
+                                      controller: controller,
+                                      state: state,
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-                const SizedBox(height: 12),
-                Expanded(
-                  child: state.videos.isEmpty
-                      ? _EmptyState(
-                          onImport: () => _pickVideo(context, controller),
-                        )
-                      : LayoutBuilder(
-                          builder: (context, constraints) {
-                            if (constraints.maxWidth < 900) {
-                              return _CompactWorkspace(
-                                controller: controller,
-                                state: state,
-                              );
-                            }
-                            return _WideWorkspace(
-                              controller: controller,
-                              state: state,
-                            );
-                          },
-                        ),
                 ),
-              ],
-            ),
-          ),
+              ),
         ),
       ),
     );
@@ -127,47 +151,50 @@ class VideoAnalysisPage extends ConsumerWidget {
     BuildContext context,
     VideoAnalysisController controller,
   ) async {
-    final result = await openFile(acceptedTypeGroups: const [_videoTypes]);
-    if (result == null) {
+    final results = await openFiles(acceptedTypeGroups: const [_videoTypes]);
+    if (results.isEmpty) {
       return;
     }
-    final file = File(result.path);
-    final preview = await controller.inspectVideo(file);
-    if (preview == null || !context.mounted) {
-      return;
-    }
-    final confirmed = await showDialog<bool>(
+    await controller.importVideos(
+      results.map((result) => File(result.path)).toList(),
+    );
+  }
+
+  Future<void> _chooseAnalysisMode(
+    BuildContext context,
+    VideoAnalysisController controller,
+  ) async {
+    final action = await showDialog<_AnalysisStartAction>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('确认提取候选帧'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('文件：${result.name}'),
-            const SizedBox(height: 8),
-            Text('时长：${_formatDuration(preview.metadata.durationMs)}'),
-            Text('分辨率：${preview.metadata.width} × ${preview.metadata.height}'),
-            Text('帧率：${preview.metadata.frameRate.toStringAsFixed(2)}'),
-            Text('音轨：${preview.metadata.hasAudio ? '有' : '无'}'),
-            const SizedBox(height: 8),
-            Text('预计至少提取 ${preview.estimatedCandidateFrames} 帧；场景变化可能增加实际数量。'),
-          ],
-        ),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('开始视频解析'),
+        content: const Text('解析全部已添加视频会逐个重新处理每个视频的全部帧；继续解析未完成仅处理当前视频尚未完成的帧。'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
+            onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('取消'),
           ),
+          OutlinedButton(
+            onPressed: () => Navigator.of(
+              dialogContext,
+            ).pop(_AnalysisStartAction.unfinished),
+            child: const Text('继续解析未完成'),
+          ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('开始提取'),
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(_AnalysisStartAction.all),
+            child: const Text('解析全部已添加视频'),
           ),
         ],
       ),
     );
-    if (confirmed == true) {
-      await controller.importVideo(file);
+    switch (action) {
+      case _AnalysisStartAction.all:
+        await controller.startAnalysis(forceAll: true, allVideos: true);
+      case _AnalysisStartAction.unfinished:
+        await controller.startAnalysis();
+      case null:
+        return;
     }
   }
 
@@ -178,7 +205,7 @@ class VideoAnalysisPage extends ConsumerWidget {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('重新解析已保留帧？'),
+        title: const Text('重新解析全部视频帧？'),
         content: const Text('已有帧级、镜头级和视频级结果会被新结果更新，原始视频帧不会删除。'),
         actions: [
           TextButton(
@@ -266,9 +293,6 @@ class VideoAnalysisPage extends ConsumerWidget {
           images: storyboard.images,
           summary: storyboard.summary,
         );
-    if (boardId != null) {
-      await storyboardController.analyzeSelectedBoardWithVision();
-    }
     if (!context.mounted) {
       return;
     }
@@ -278,12 +302,15 @@ class VideoAnalysisPage extends ConsumerWidget {
   }
 }
 
+enum _AnalysisStartAction { all, unfinished }
+
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.controller,
     required this.state,
     required this.storyboardBusy,
     required this.onImport,
+    required this.onStartAnalysis,
     required this.onReanalyze,
     required this.onExport,
     required this.onGenerateStoryboard,
@@ -293,6 +320,7 @@ class _Toolbar extends StatelessWidget {
   final VideoAnalysisState state;
   final bool storyboardBusy;
   final VoidCallback onImport;
+  final VoidCallback onStartAnalysis;
   final VoidCallback? onReanalyze;
   final VoidCallback? onExport;
   final VoidCallback? onGenerateStoryboard;
@@ -313,7 +341,9 @@ class _Toolbar extends StatelessWidget {
                 ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
               ),
               Text(
-                video == null ? '导入参考视频后开始提取与解析' : '参考视频：${video.fileName}',
+                video == null
+                    ? '导入参考视频后提取候选帧，再选择解析范围'
+                    : '参考视频：${video.fileName}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -330,11 +360,27 @@ class _Toolbar extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
+              IconButton(
+                key: const ValueKey('video-analysis-undo'),
+                tooltip: '撤销移除视频帧 (Ctrl+Z)',
+                onPressed: state.isBusy || !controller.canUndoFrameRemoval
+                    ? null
+                    : controller.undoFrameRemoval,
+                icon: const Icon(Icons.undo_rounded),
+              ),
+              IconButton(
+                key: const ValueKey('video-analysis-redo'),
+                tooltip: '恢复移除视频帧 (Ctrl+Y / Ctrl+Shift+Z)',
+                onPressed: state.isBusy || !controller.canRedoFrameRemoval
+                    ? null
+                    : controller.redoFrameRemoval,
+                icon: const Icon(Icons.redo_rounded),
+              ),
               OutlinedButton.icon(
                 key: const ValueKey('import-video'),
                 onPressed: state.isBusy ? null : onImport,
                 icon: const Icon(Icons.video_file_rounded),
-                label: const Text('导入视频'),
+                label: const Text('添加视频'),
               ),
               FilledButton.icon(
                 key: const ValueKey('start-video-analysis'),
@@ -344,7 +390,7 @@ class _Toolbar extends StatelessWidget {
                           : null
                     : state.isPaused
                     ? controller.resumeAnalysis
-                    : controller.startAnalysis,
+                    : onStartAnalysis,
                 icon: Icon(
                   state.isAnalyzing
                       ? Icons.stop_circle_rounded
@@ -816,20 +862,6 @@ class _FrameWorkspace extends StatelessWidget {
                           controller.setSceneFilter(scene ?? ''),
                     ),
                   ),
-                IconButton(
-                  onPressed: frames.isEmpty
-                      ? null
-                      : () => controller.setVisibleFramesSelected(true),
-                  icon: const Icon(Icons.playlist_add_check_rounded),
-                  tooltip: '保留当前可见帧',
-                ),
-                IconButton(
-                  onPressed: frames.isEmpty
-                      ? null
-                      : () => controller.setVisibleFramesSelected(false),
-                  icon: const Icon(Icons.playlist_remove_rounded),
-                  tooltip: '跳过当前可见帧',
-                ),
               ],
             ),
           ),
@@ -947,12 +979,18 @@ class _FrameCard extends StatelessWidget {
                     child: _StatusBadge(status: frame.status),
                   ),
                   Positioned(
-                    right: 2,
-                    top: 2,
-                    child: Checkbox(
-                      value: frame.isSelected,
-                      onChanged: (_) =>
-                          controller.toggleFrameSelected(frame.id),
+                    right: 4,
+                    top: 4,
+                    child: IconButton.filledTonal(
+                      key: ValueKey('remove-video-frame-${frame.id}'),
+                      tooltip: '移除视频帧',
+                      onPressed: () => controller.removeFrame(frame.id),
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
                     ),
                   ),
                 ],
@@ -1526,7 +1564,6 @@ String _statusLabel(ProcessingStatus status) => switch (status) {
 String _filterLabel(VideoFrameFilter filter) => switch (filter) {
   VideoFrameFilter.all => '全部',
   VideoFrameFilter.focus => '焦点帧',
-  VideoFrameFilter.selected => '已保留',
   VideoFrameFilter.pending => '待解析',
   VideoFrameFilter.failed => '失败',
 };

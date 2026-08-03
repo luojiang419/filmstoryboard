@@ -104,6 +104,62 @@ void main() {
     expect(result.summary?.outline, '开场到产品展示');
   });
 
+  test('长视频的全部解析镜头会生成同一张故事板', () {
+    final now = DateTime.utc(2026, 8, 3);
+    final video = SourceVideo(
+      id: 'long-video',
+      originalPath: 'long-video.mp4',
+      fileName: 'long-video.mp4',
+      storedPath: 'videos/long-video.mp4',
+      durationMs: 101000,
+      frameRate: 24,
+      width: 1920,
+      height: 1080,
+      hasAudio: true,
+      frameCount: 101,
+      successfulFrames: 101,
+      failedFrames: 0,
+      status: ProcessingStatus.completed,
+      errorMessage: '',
+      createdAt: now,
+      updatedAt: now,
+    );
+    final frames = [
+      for (var index = 0; index < 101; index++)
+        _videoFrame(
+          id: 'long-frame-$index',
+          videoId: video.id,
+          index: index,
+          now: now,
+        ),
+    ];
+    final analyses = [
+      for (var index = 0; index < 101; index++)
+        _frameAnalysis(
+          id: 'long-analysis-$index',
+          videoId: video.id,
+          frameId: 'long-frame-$index',
+          sequenceNo: index + 1,
+          caption: '镜头 ${index + 1}',
+          now: now,
+        ),
+    ];
+
+    final boards = VideoStoryboardBridge.buildSegments(
+      video: video,
+      frames: frames,
+      frameAnalyses: analyses,
+      shots: const [],
+      summary: null,
+      resolveFramePath: (frame) => 'resolved/${frame.id}.jpg',
+    );
+
+    expect(boards, hasLength(1));
+    expect(boards.single.images, hasLength(101));
+    expect(boards.single.sourceId, 'video:long-video');
+    expect(boards.single.boardName, 'long-video · 视频解析故事板');
+  });
+
   test('视频故事板生成后可触发多模态解析并写入连贯文本', () async {
     final root = await Directory.systemTemp.createTemp(
       'video_storyboard_vision_',

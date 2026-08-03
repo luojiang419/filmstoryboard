@@ -16,7 +16,9 @@ import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/data/shooting_script_workflow_repository.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../../storyboard/data/image_generation_service.dart';
+import '../../storyboard/data/vision_storyboard_service.dart';
 import '../../storyboard/domain/image_generation_provider_resolver.dart';
+import '../../story_design/domain/gemini_storyboard_prompt.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
@@ -129,6 +131,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     SeedancePromptGenerationService promptService =
         const SeedancePromptGenerationService(),
     ImageGenerationService? imageGenerationService,
+    VisionStoryboardService? visionService,
     Uuid uuid = const Uuid(),
   }) : _repository = repository,
        _shootingScriptController = shootingScriptController,
@@ -140,6 +143,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _imageGenerationService =
            imageGenerationService ?? ImageGenerationService(),
        _ownsImageGenerationService = imageGenerationService == null,
+       _visionService = visionService ?? VisionStoryboardService(),
+       _ownsVisionService = visionService == null,
        _uuid = uuid,
        super(const ReplicateState()) {
     _shootingScriptController.addListener(_handleShootingScriptChanged);
@@ -158,6 +163,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final SeedancePromptGenerationService _promptService;
   final ImageGenerationService _imageGenerationService;
   final bool _ownsImageGenerationService;
+  final VisionStoryboardService _visionService;
+  final bool _ownsVisionService;
   final Uuid _uuid;
   bool _disposed = false;
   bool _replicationBatchActive = false;
@@ -170,6 +177,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (_ownsImageGenerationService) {
       _imageGenerationService.close();
     }
+    if (_ownsVisionService) {
+      _visionService.close();
+    }
     super.dispose();
   }
 
@@ -179,6 +189,48 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     _shootingScriptController.selectScript(scriptId);
     _restoreFromShootingScript(selectScriptId: scriptId);
+  }
+
+  /// 保存当前复刻任务的默认出图参数；一键复刻和一键替换产品共用。
+  void updateGenerationDefaults({
+    String? model,
+    String? aspectRatio,
+    String? imageSize,
+    String? quality,
+  }) {
+    final run = value.run;
+    if (run == null) return;
+    final requestedModel = (model ?? run.generationModel).trim();
+    final selectedModel = requestedModel.isEmpty
+        ? _settingsController.value.imageGenerationModel
+        : requestedModel;
+    final descriptor = ImageGenerationCatalog.descriptorFor(selectedModel);
+    if (descriptor == null) return;
+    final selectedAspectRatio = _catalogOption(
+      aspectRatio ?? run.generationAspectRatio,
+      descriptor.aspectRatios,
+      preferred: '16:9',
+    );
+    final selectedImageSize = _catalogOption(
+      imageSize ?? run.generationImageSize,
+      ImageGenerationCatalog.resolutionsFor(selectedModel, selectedAspectRatio),
+      preferred: '2K',
+    );
+    final selectedQuality = _catalogOption(
+      quality ?? run.generationQuality,
+      descriptor.qualities,
+      preferred: 'high',
+    );
+    _persistRun(
+      run.copyWith(
+        generationModel: selectedModel,
+        generationAspectRatio: selectedAspectRatio,
+        generationImageSize: selectedImageSize,
+        generationQuality: selectedQuality,
+        updatedAt: DateTime.now().toUtc(),
+      ),
+      message: '已保存一键复刻默认生成参数',
+    );
   }
 
   void refresh() => _restoreFromShootingScript();
@@ -643,7 +695,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final references = _replacementReferences(shot.id);
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
-    final model = _settingsController.value.imageGenerationModel;
+    final model = _resolvedGenerationModel(run);
     var record = ReplicatedShotImage(
       id: existing?.id ?? _replicatedImageId(run.id, shot.id),
       runId: run.id,
@@ -652,7 +704,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       originalFramePath: shot.framePath,
       generatedFramePath: existing?.generatedFramePath ?? '',
       assetIds: [for (final reference in references) reference.id],
-      prompt: _replacementPrompt(shot, references),
+      prompt: _generationPrompt(shot, references, model),
       model: model,
       rawResponse: '',
       status: ProcessingStatus.running,
@@ -672,7 +724,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (references.isEmpty) {
       record = record.copyWith(
         status: ProcessingStatus.failed,
-        errorMessage: '当前镜头没有已确认的图片资产',
+        errorMessage: '当前镜头没有已绑定且可用的图片资产',
         updatedAt: DateTime.now().toUtc(),
       );
       _saveReplicatedImage(record);
@@ -680,24 +732,41 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     _saveReplicatedImage(record);
     try {
+      if (!_disposed) {
+        value = value.copyWith(
+          message: '正在用视觉模型解析镜头 ${shot.shotNumber} 的画面维度…',
+        );
+      }
+      final prompt = await _buildVisionEnhancedGenerationPrompt(
+        shot: shot,
+        references: references,
+        model: model,
+        original: original,
+      );
+      record = record.copyWith(
+        prompt: prompt,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
       final descriptor = ImageGenerationCatalog.descriptorFor(model);
       if (descriptor == null) {
         throw FormatException('不支持的图片生成模型：$model');
       }
-      final aspectRatio = descriptor.aspectRatios.contains('16:9')
-          ? '16:9'
-          : descriptor.aspectRatios.first;
-      final resolutions = ImageGenerationCatalog.resolutionsFor(
-        model,
-        aspectRatio,
+      final aspectRatio = _catalogOption(
+        run.generationAspectRatio,
+        descriptor.aspectRatios,
+        preferred: '16:9',
       );
-      final imageSize = resolutions.firstWhere(
-        (item) => item != 'auto',
-        orElse: () => resolutions.first,
+      final imageSize = _catalogOption(
+        run.generationImageSize,
+        ImageGenerationCatalog.resolutionsFor(model, aspectRatio),
+        preferred: '2K',
       );
-      final quality = descriptor.qualities.contains('high')
-          ? 'high'
-          : descriptor.qualities.first;
+      final quality = _catalogOption(
+        run.generationQuality,
+        descriptor.qualities,
+        preferred: 'high',
+      );
       final outputDirectory = Directory(
         p.join(
           _directories.generatedImages.path,
@@ -748,6 +817,44 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _saveReplicatedImage(record);
       return false;
     }
+  }
+
+  Future<String> _buildVisionEnhancedGenerationPrompt({
+    required ScriptShot shot,
+    required List<_ReplacementReference> references,
+    required String model,
+    required File original,
+  }) async {
+    try {
+      final analysis = await _visionService.analyzeImage(
+        settings: _settingsController.value,
+        imageFile: original,
+        sequenceNo: shot.shotNumber,
+        rowIndex: 0,
+        columnIndex: shot.shotNumber - 1,
+        allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
+      );
+      return _generationPrompt(shot, references, model, analysis: analysis);
+    } catch (_) {
+      // 视觉模型不可用、超时或返回格式异常时，保留原有一键生成能力。
+      return _generationPrompt(shot, references, model);
+    }
+  }
+
+  String _generationPrompt(
+    ScriptShot shot,
+    List<_ReplacementReference> references,
+    String model, {
+    VisionImageAnalysis? analysis,
+  }) {
+    final base = _replacementPrompt(shot, references, analysis: analysis);
+    return usesGemini3ImagePrompting(model)
+        ? buildGeminiStoryboardPrompt(
+            base,
+            hasReferenceImages: references.isNotEmpty,
+            preserveReferenceComposition: true,
+          )
+        : base;
   }
 
   Future<String> _persistGeneratedFrame({
@@ -1015,6 +1122,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         scriptId: scriptId,
         globalStyle: _settingsController.value.replicateDefaultGlobalStyle,
         constraints: _settingsController.value.replicateDefaultConstraints,
+        generationModel: _settingsController.value.imageGenerationModel,
+        generationAspectRatio: _defaultAspectRatio(
+          _settingsController.value.imageGenerationModel,
+        ),
+        generationImageSize: _defaultImageSize(
+          _settingsController.value.imageGenerationModel,
+        ),
+        generationQuality: _defaultQuality(
+          _settingsController.value.imageGenerationModel,
+        ),
         currentStep: ReplicateStep.confirmShots,
         status: ProcessingStatus.pending,
         confirmShotsStatus: ProcessingStatus.pending,
@@ -1338,7 +1455,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   List<_ReplacementReference> _replacementReferences(String shotId) {
     final linked = _confirmedScriptAssets(shotId);
-    if (linked.isNotEmpty) {
+    if (_workflowRepository != null) {
       return [
         for (final asset in linked)
           if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
@@ -1370,10 +1487,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   String _replacementPrompt(
     ScriptShot shot,
-    List<_ReplacementReference> references,
-  ) {
+    List<_ReplacementReference> references, {
+    VisionImageAnalysis? analysis,
+  }) {
     final definitions = <String>[];
-    final operations = <String>[];
+    final assetRequirements = <String>[];
     for (var index = 0; index < references.length; index++) {
       final reference = references[index];
       final imageLabel = '图片${index + 2}';
@@ -1383,23 +1501,31 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       definitions.add(
         '$imageLabel 是${_replacementTypeLabel(reference.type)}“${reference.name}”$description。',
       );
-      operations.add(switch (reference.type) {
+      assetRequirements.add(switch (reference.type) {
         ReplicateAssetType.character =>
-          '将图片1中与“${reference.name}”对应的人物身份、脸部、发型、服装和外观替换为$imageLabel，保留原人物姿态、表情、视线和动作阶段。',
+          '人物必须使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型、服装和外观；'
+              '图片1中的原人物只可作为姿态、表情、视线和动作阶段基准，严禁复用其身份或外观。',
         ReplicateAssetType.product =>
-          '将图片1中对应产品替换为$imageLabel 的“${reference.name}”，准确保留品牌结构、包装、材质和比例，并保持原来的手部接触与摆放关系。',
+          '产品必须使用$imageLabel 中“${reference.name}”的真实结构、包装、图案、纹理、材质、反光、比例和品牌特征；'
+              '产品主体必须清晰可辨，边缘、表面细节和包装信息不得模糊、变形或被不合理遮挡；'
+              '图片1中的原产品只可作为穿着方式、手部接触或摆放关系基准，严禁复用其外观。',
         ReplicateAssetType.scene =>
-          '将图片1中对应场景替换为$imageLabel 的“${reference.name}”，保持原镜位、透视、主体位置和空间层次。',
+          '场景必须使用$imageLabel 中“${reference.name}”的环境元素；以图片1相同的镜位、透视、主体位置和空间层次重新搭建场景。',
         ReplicateAssetType.prop =>
-          '将图片1中对应道具替换为$imageLabel 的“${reference.name}”，保持原来的尺寸、朝向、遮挡与交互关系。',
-        _ => '使用$imageLabel 的“${reference.name}”替换图片1中的对应视觉元素。',
+          '道具必须使用$imageLabel 中“${reference.name}”的外观；保持图片1里的尺寸、朝向、遮挡和交互关系。',
+        _ => '将$imageLabel 中“${reference.name}”作为新分镜的指定视觉元素使用。',
       });
     }
     return [
-      '这是逐镜头参考图替换任务。图片1是原视频镜头 ${shot.shotNumber} 的构图与动作基准。',
+      '任务类型：基于参考重新创作一张清晰、可拍摄的全新分镜图，不是图片修复或高清重绘。',
+      '图片1是原视频镜头 ${shot.shotNumber} 的语义蓝图，只用于分析画面元素、镜头语言、动作和空间关系；禁止把图片1当作底图、像素来源或纹理来源。',
       ...definitions,
-      ...operations,
-      '严格保持图片1的画幅、景别、机位、构图、透视、主体数量、动作、表情、视线、遮挡、光源方向、色温、景深和叙事时刻；除上述已匹配元素外，不新增、删除或改动其他内容。',
+      ...assetRequirements,
+      '绑定资产硬约束：图片2起的每一张图片都是当前镜头明确绑定的指定素材，必须按其人物、产品、场景或道具角色使用；禁止遗漏任一绑定素材，也禁止以图片1中的同类人物、产品、场景或道具替代。',
+      '从零开始生成新的高质量画面：重新渲染全部人物、服装、产品、背景、光影和细节。输出必须清晰锐利、细节完整、主体边缘干净、没有压缩噪点、运动模糊或低清纹理。',
+      '严格复现图片1的画幅、景别、机位、构图、透视、主体数量、动作、表情、视线、遮挡、光源方向、色温、景深和叙事时刻。若同时提供人物、产品和场景参考，必须让该人物在该场景中穿着或使用该产品，并做出图片1相同动作。',
+      '色彩硬约束：以图片1的色彩风格、色温、明暗关系、对比度、光影层次和电影调色为唯一基准；新人物、产品、场景和道具必须融入该原帧色彩风格，任何通用风格描述都不得覆盖这一要求。',
+      '绝对不要：超分辨率、锐化、去噪、修复、放大、以图生图描摹、保留原帧像素、复制原帧的模糊或瑕疵；不要生成字幕、水印、额外 Logo 或无关文字。',
       if (shot.content.trim().isNotEmpty) '镜头内容：${shot.content.trim()}。',
       if (shot.shotSize.trim().isNotEmpty) '景别：${shot.shotSize.trim()}。',
       if (shot.composition.trim().isNotEmpty) '构图：${shot.composition.trim()}。',
@@ -1414,9 +1540,74 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         '剪辑衔接：${shot.transitionHint.trim()}。',
       if (shot.cameraNotes.trim().isNotEmpty)
         '摄影备注：${shot.cameraNotes.trim()}。',
-      '输出一张自然、真实、细节一致的复刻版分镜图，不生成字幕、水印、额外 Logo 或无关文字。',
+      if (analysis != null) ..._visualAnalysisInstructions(analysis),
+      '最终交付：一张自然真实、专业清晰、与原视频帧叙事和镜头语言一致，但从头新生成的复刻分镜图。',
     ].join('\n');
   }
+
+  List<String> _visualAnalysisInstructions(VisionImageAnalysis analysis) => [
+    '【视觉模型对原帧的关键维度解析】以下内容是对图片1可见事实的补充，必须用于锁定新分镜的镜头语言和画面关系，不要擅自改变。',
+    _visionInstruction('叙事画面', analysis.caption),
+    _visionInstruction('画面细节', analysis.detail),
+    _visionInstruction(
+      '场景与空间',
+      _joinVisionValues([analysis.scene, analysis.spatialRelation]),
+    ),
+    _visionInstruction(
+      '人物、神态与动作',
+      _joinVisionValues([
+        analysis.people,
+        analysis.expression,
+        analysis.bodyAction,
+        analysis.actionStage,
+        analysis.movementTrend,
+      ]),
+    ),
+    _visionInstruction(
+      '镜头与构图',
+      _joinVisionValues([
+        analysis.shotSize,
+        analysis.cameraAngle,
+        analysis.cameraMovement,
+        analysis.composition,
+      ]),
+    ),
+    _visionInstruction(
+      '朝向、视线与遮挡关系',
+      _joinVisionValues([
+        analysis.subjectDirection,
+        analysis.gazeDirection,
+        analysis.spatialRelation,
+      ]),
+    ),
+    _visionInstruction(
+      '视觉焦点与道具',
+      _joinVisionValues([analysis.visualFocus, analysis.props]),
+    ),
+    _visionInstruction(
+      '光影与色彩',
+      _joinVisionValues([analysis.lightingMood, analysis.colorPalette]),
+    ),
+    _visionInstruction(
+      '叙事时刻与镜头承接',
+      _joinVisionValues([
+        analysis.narrativeFunction,
+        analysis.chronologyCue,
+        analysis.transitionHint,
+      ]),
+    ),
+  ].where((instruction) => instruction.isNotEmpty).toList(growable: false);
+
+  static String _visionInstruction(String label, String value) {
+    final normalized = value.trim();
+    return normalized.isEmpty ? '' : '$label：$normalized。';
+  }
+
+  static String _joinVisionValues(Iterable<String> values) => values
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toSet()
+      .join('；');
 
   static String _replacementTypeLabel(ReplicateAssetType type) =>
       switch (type) {
@@ -1426,6 +1617,52 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         ReplicateAssetType.prop => '道具参考',
         _ => '视觉参考',
       };
+
+  String _resolvedGenerationModel(ReplicateRun run) {
+    final configured = run.generationModel.trim();
+    return configured.isEmpty
+        ? _settingsController.value.imageGenerationModel
+        : configured;
+  }
+
+  static String _defaultAspectRatio(String model) {
+    final descriptor = ImageGenerationCatalog.descriptorFor(model);
+    if (descriptor == null || descriptor.aspectRatios.isEmpty) return '16:9';
+    return _catalogOption(
+      descriptor.aspectRatios.contains('16:9') ? '16:9' : '',
+      descriptor.aspectRatios,
+      preferred: '16:9',
+    );
+  }
+
+  static String _defaultImageSize(String model) {
+    final aspectRatio = _defaultAspectRatio(model);
+    return _catalogOption(
+      '',
+      ImageGenerationCatalog.resolutionsFor(model, aspectRatio),
+      preferred: '2K',
+    );
+  }
+
+  static String _defaultQuality(String model) {
+    final descriptor = ImageGenerationCatalog.descriptorFor(model);
+    return _catalogOption(
+      '',
+      descriptor?.qualities ?? const [],
+      preferred: 'high',
+    );
+  }
+
+  static String _catalogOption(
+    String candidate,
+    List<String> options, {
+    required String preferred,
+  }) {
+    if (options.isEmpty) return '';
+    if (options.contains(candidate)) return candidate;
+    if (options.contains(preferred)) return preferred;
+    return options.first;
+  }
 
   Future<Directory> _assetDirectory(String runId) async {
     final directory = Directory(

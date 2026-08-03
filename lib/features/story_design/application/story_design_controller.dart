@@ -15,6 +15,7 @@ import '../../storyboard/data/image_generation_diagnostic_logger.dart';
 import '../../storyboard/domain/image_generation_provider_resolver.dart';
 import '../data/story_design_preferences_repository.dart';
 import '../data/story_design_result_repository.dart';
+import '../domain/gemini_storyboard_prompt.dart';
 import '../domain/story_design_grid_prompt.dart';
 import '../domain/story_design_models.dart';
 
@@ -322,11 +323,20 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     final request = ImageGenerationRequest(
       provider: provider,
       model: model,
-      prompt: buildGridPrompt(
-        prompt,
-        value.gridCount,
-        portraitGrid: value.portraitGrid,
-      ),
+      prompt: usesGemini3ImagePrompting(model)
+          ? buildGeminiStoryboardPrompt(
+              buildGridPrompt(
+                prompt,
+                value.gridCount,
+                portraitGrid: value.portraitGrid,
+              ),
+              hasReferenceImages: value.referenceImagePaths.isNotEmpty,
+            )
+          : buildGridPrompt(
+              prompt,
+              value.gridCount,
+              portraitGrid: value.portraitGrid,
+            ),
       aspectRatio: value.aspectRatio,
       imageSize: value.imageSize,
       quality: value.quality,

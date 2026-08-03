@@ -358,6 +358,22 @@ void main() {
     expect(board.configuredColumns, 2);
   });
 
+  test('超过默认 12×12 的镜头会保留在同一张自动扩展画板', () async {
+    final fixture = await _createFixture();
+    final controller = fixture.controller;
+    final assets = [for (var index = 1; index <= 145; index++) _asset(index)];
+
+    controller.setAssetsUsed(assets, true);
+
+    final board = controller.value.selectedBoard!;
+    expect(board.items, hasLength(145));
+    expect(board.rows * board.columns, greaterThanOrEqualTo(145));
+    expect(board.rows, greaterThan(12));
+    expect(board.columns, greaterThan(12));
+    expect(board.configuredRows, 3);
+    expect(board.configuredColumns, 3);
+  });
+
   test('描述更新按宫格位匹配图片', () async {
     final fixture = await _createFixture();
     final controller = fixture.controller;
@@ -832,16 +848,24 @@ void main() {
     expect(controller.value.selectedBoard?.id, thirdBoardId);
   });
 
-  test('只剩一个画板时不能删除', () async {
+  test('删除最后一个画板后不保留空白画板且可恢复空状态', () async {
     final fixture = await _createFixture();
     final controller = fixture.controller;
     final boardId = controller.value.selectedBoard!.id;
 
     controller.deleteBoard(boardId);
 
-    expect(controller.value.boards, hasLength(1));
-    expect(controller.value.selectedBoard?.id, boardId);
-    expect(controller.value.message, '至少保留一个画板');
+    expect(controller.value.boards, isEmpty);
+    expect(controller.value.openBoardIds, isEmpty);
+    expect(controller.value.selectedBoard, isNull);
+    expect(controller.value.message, '已删除 画板 1');
+
+    controller.flushWorkspaceSnapshot();
+    final restored = StoryboardController(database: fixture.database);
+    addTearDown(restored.dispose);
+    expect(restored.value.boards, isEmpty);
+    expect(restored.value.openBoardIds, isEmpty);
+    expect(restored.value.selectedBoard, isNull);
   });
 
   test('关闭画板只移除顶栏页签并允许全部关闭后重新打开', () async {
@@ -1995,6 +2019,10 @@ void main() {
       geminiApiKey: 'gemini-key-456',
       model: 'nano-banana-fast',
     );
+    expect(
+      fixture.settingsController.value.activeImageGenerationApiConfig?.model,
+      'nano-banana-fast',
+    );
     final imageService =
         fixture.imageService as _ConcurrentImageGenerationService;
     final controller = fixture.controller;
@@ -2345,6 +2373,10 @@ void main() {
       grsaiApiKey: 'grsai-key-123',
       geminiApiKey: 'gemini-key-456',
       model: 'gemini-3-pro-image',
+    );
+    expect(
+      fixture.settingsController.value.activeImageGenerationApiConfig?.model,
+      'gemini-3-pro-image',
     );
     final controller = fixture.controller;
     final asset = await _registeredAsset(fixture.database, fixture.root, 1);

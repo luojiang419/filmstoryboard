@@ -1,11 +1,15 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
 import '../../../core/database/app_database.dart';
 import '../../../core/services/app_directories.dart';
+import '../../storyboard/domain/image_generation_model_catalog.dart';
 import '../../updater/domain/app_update_config.dart';
 import '../domain/app_settings.dart';
+import '../domain/image_generation_api_config.dart';
+import '../domain/vision_api_config.dart';
 
 class SettingsRepository {
   const SettingsRepository(
@@ -33,6 +37,7 @@ class SettingsRepository {
   static const _videoMinimumSharpnessKey = 'videoMinimumSharpness';
   static const _videoAnalysisThinkingEnabledKey =
       'videoAnalysisThinkingEnabled';
+  static const _fullAutomationEnabledKey = 'fullAutomationEnabled';
   static const _replicateDefaultGlobalStyleKey = 'replicateDefaultGlobalStyle';
   static const _replicateDefaultConstraintsKey = 'replicateDefaultConstraints';
   static const _cutImageNumberEnabledKey = 'cutImageNumberEnabled';
@@ -47,6 +52,8 @@ class SettingsRepository {
   static const _visionApiBaseUrlKey = 'visionApiBaseUrl';
   static const _visionApiKeyKey = 'visionApiKey';
   static const _visionModelKey = 'visionModel';
+  static const _visionApiConfigsKey = 'visionApiConfigs';
+  static const _activeVisionApiConfigIdKey = 'activeVisionApiConfigId';
   static const _imageGenerationApiBaseUrlKey = 'imageGenerationApiBaseUrl';
   static const _imageGenerationApiKeyKey = 'imageGenerationApiKey';
   static const _imageGenerationGeminiApiBaseUrlKey =
@@ -57,6 +64,9 @@ class SettingsRepository {
   static const _imageGenerationApiMartApiKeyKey =
       'imageGenerationApiMartApiKey';
   static const _imageGenerationModelKey = 'imageGenerationModel';
+  static const _imageGenerationApiConfigsKey = 'imageGenerationApiConfigs';
+  static const _activeImageGenerationApiConfigIdKey =
+      'activeImageGenerationApiConfigId';
   static const _updateReleaseApiUrlKey = 'updateReleaseApiUrl';
   static const _autoInstallUpdatesKey = 'autoInstallUpdates';
   static const _updateDownloadModeKey = 'updateDownloadMode';
@@ -70,6 +80,59 @@ class SettingsRepository {
   AppSettings load() {
     final visionDefaults = _loadVisionDefaults();
     final imageGenerationDefaults = _loadImageGenerationDefaults();
+    final legacyVisionConfig = VisionApiConfig(
+      id: 'legacy-vision',
+      name: '当前视觉模型',
+      baseUrl: _getSettingWithImportedDefault(
+        _visionApiBaseUrlKey,
+        visionDefaults.baseUrl,
+      ),
+      apiKey: _getSettingWithImportedDefault(
+        _visionApiKeyKey,
+        visionDefaults.apiKey,
+      ),
+      model: _getSettingWithImportedDefault(
+        _visionModelKey,
+        visionDefaults.model,
+      ),
+    );
+    final visionApiConfigs = _loadVisionApiConfigs(legacyVisionConfig);
+    final activeVisionApiConfig = _activeVisionApiConfig(
+      visionApiConfigs,
+      _database.getSetting(_activeVisionApiConfigIdKey),
+    );
+    final legacyImageGeneration = _LegacyImageGenerationSettings(
+      grsaiBaseUrl: _getSettingWithImportedDefault(
+        _imageGenerationApiBaseUrlKey,
+        imageGenerationDefaults.baseUrl,
+      ),
+      grsaiApiKey: _getSettingWithImportedDefault(
+        _imageGenerationApiKeyKey,
+        imageGenerationDefaults.apiKey,
+      ),
+      geminiBaseUrl:
+          _database.getSetting(_imageGenerationGeminiApiBaseUrlKey) ??
+          AppSettings.defaultImageGenerationGeminiApiBaseUrl,
+      geminiApiKey: _database.getSetting(_imageGenerationGeminiApiKeyKey) ?? '',
+      apiMartBaseUrl:
+          _database.getSetting(_imageGenerationApiMartApiBaseUrlKey) ??
+          AppSettings.defaultImageGenerationApiMartApiBaseUrl,
+      apiMartApiKey:
+          _database.getSetting(_imageGenerationApiMartApiKeyKey) ?? '',
+      model: _getSettingWithImportedDefault(
+        _imageGenerationModelKey,
+        imageGenerationDefaults.model,
+      ),
+    );
+    final imageGenerationApiConfigs = _loadImageGenerationApiConfigs(
+      legacyImageGeneration,
+      imageGenerationDefaults,
+    );
+    final activeImageGenerationApiConfig = _activeImageGenerationApiConfig(
+      imageGenerationApiConfigs,
+      _database.getSetting(_activeImageGenerationApiConfigIdKey),
+      legacyImageGeneration.model,
+    );
     return AppSettings(
       exportDirectory:
           _database.getSetting(_exportDirectoryKey) ??
@@ -111,6 +174,8 @@ class SettingsRepository {
       ),
       videoAnalysisThinkingEnabled:
           _database.getSetting(_videoAnalysisThinkingEnabledKey) == 'true',
+      fullAutomationEnabled:
+          _database.getSetting(_fullAutomationEnabledKey) == 'true',
       replicateDefaultGlobalStyle:
           _database.getSetting(_replicateDefaultGlobalStyleKey) ??
           AppSettings.defaultReplicateGlobalStyle,
@@ -136,40 +201,20 @@ class SettingsRepository {
           _database.getSetting(_storyboardCaptionNumberEnabledKey) != 'false',
       storyboardSummaryPageEnabled:
           _database.getSetting(_storyboardSummaryPageEnabledKey) != 'false',
-      visionApiBaseUrl: _getSettingWithImportedDefault(
-        _visionApiBaseUrlKey,
-        visionDefaults.baseUrl,
-      ),
-      visionApiKey: _getSettingWithImportedDefault(
-        _visionApiKeyKey,
-        visionDefaults.apiKey,
-      ),
-      visionModel: _getSettingWithImportedDefault(
-        _visionModelKey,
-        visionDefaults.model,
-      ),
-      imageGenerationApiBaseUrl: _getSettingWithImportedDefault(
-        _imageGenerationApiBaseUrlKey,
-        imageGenerationDefaults.baseUrl,
-      ),
-      imageGenerationApiKey: _getSettingWithImportedDefault(
-        _imageGenerationApiKeyKey,
-        imageGenerationDefaults.apiKey,
-      ),
-      imageGenerationGeminiApiBaseUrl:
-          _database.getSetting(_imageGenerationGeminiApiBaseUrlKey) ??
-          AppSettings.defaultImageGenerationGeminiApiBaseUrl,
-      imageGenerationGeminiApiKey:
-          _database.getSetting(_imageGenerationGeminiApiKeyKey) ?? '',
-      imageGenerationApiMartApiBaseUrl:
-          _database.getSetting(_imageGenerationApiMartApiBaseUrlKey) ??
-          AppSettings.defaultImageGenerationApiMartApiBaseUrl,
-      imageGenerationApiMartApiKey:
-          _database.getSetting(_imageGenerationApiMartApiKeyKey) ?? '',
-      imageGenerationModel: _getSettingWithImportedDefault(
-        _imageGenerationModelKey,
-        imageGenerationDefaults.model,
-      ),
+      visionApiBaseUrl: activeVisionApiConfig.baseUrl,
+      visionApiKey: activeVisionApiConfig.apiKey,
+      visionModel: activeVisionApiConfig.model,
+      visionApiConfigs: visionApiConfigs,
+      activeVisionApiConfigId: activeVisionApiConfig.id,
+      imageGenerationApiBaseUrl: legacyImageGeneration.grsaiBaseUrl,
+      imageGenerationApiKey: legacyImageGeneration.grsaiApiKey,
+      imageGenerationGeminiApiBaseUrl: legacyImageGeneration.geminiBaseUrl,
+      imageGenerationGeminiApiKey: legacyImageGeneration.geminiApiKey,
+      imageGenerationApiMartApiBaseUrl: legacyImageGeneration.apiMartBaseUrl,
+      imageGenerationApiMartApiKey: legacyImageGeneration.apiMartApiKey,
+      imageGenerationModel: activeImageGenerationApiConfig.model,
+      imageGenerationApiConfigs: imageGenerationApiConfigs,
+      activeImageGenerationApiConfigId: activeImageGenerationApiConfig.id,
       updateReleaseApiUrl:
           _database.getSetting(_updateReleaseApiUrlKey) ??
           AppUpdateConfig.defaultReleaseRepositoryUrl,
@@ -212,6 +257,10 @@ class SettingsRepository {
         settings.videoAnalysisThinkingEnabled.toString(),
       )
       ..setSetting(
+        _fullAutomationEnabledKey,
+        settings.fullAutomationEnabled.toString(),
+      )
+      ..setSetting(
         _replicateDefaultGlobalStyleKey,
         settings.replicateDefaultGlobalStyle,
       )
@@ -247,6 +296,16 @@ class SettingsRepository {
       ..setSetting(_visionApiKeyKey, settings.visionApiKey)
       ..setSetting(_visionModelKey, settings.visionModel)
       ..setSetting(
+        _visionApiConfigsKey,
+        jsonEncode([
+          for (final config in settings.visionApiConfigs) config.toJson(),
+        ]),
+      )
+      ..setSetting(
+        _activeVisionApiConfigIdKey,
+        settings.activeVisionApiConfigId,
+      )
+      ..setSetting(
         _imageGenerationApiBaseUrlKey,
         settings.imageGenerationApiBaseUrl,
       )
@@ -268,6 +327,17 @@ class SettingsRepository {
         settings.imageGenerationApiMartApiKey,
       )
       ..setSetting(_imageGenerationModelKey, settings.imageGenerationModel)
+      ..setSetting(
+        _imageGenerationApiConfigsKey,
+        jsonEncode([
+          for (final config in settings.imageGenerationApiConfigs)
+            config.toJson(),
+        ]),
+      )
+      ..setSetting(
+        _activeImageGenerationApiConfigIdKey,
+        settings.activeImageGenerationApiConfigId,
+      )
       ..setSetting(_updateReleaseApiUrlKey, settings.updateReleaseApiUrl)
       ..setSetting(
         _autoInstallUpdatesKey,
@@ -280,6 +350,22 @@ class SettingsRepository {
   AppSettings defaults() {
     final visionDefaults = _loadVisionDefaults();
     final imageGenerationDefaults = _loadImageGenerationDefaults();
+    final visionApiConfigs = [
+      VisionApiConfig(
+        id: 'default-vision',
+        name: '默认视觉模型',
+        baseUrl: visionDefaults.baseUrl,
+        apiKey: visionDefaults.apiKey,
+        model: visionDefaults.model,
+      ),
+      const VisionApiConfig(
+        id: 'minimax-m3',
+        name: 'MiniMax M3',
+        baseUrl: 'https://api.minimaxi.com',
+        apiKey: '',
+        model: 'MiniMax-M3',
+      ),
+    ];
     return AppSettings(
       exportDirectory: _directories.exports.path,
       themePreference: AppThemePreference.system,
@@ -292,6 +378,7 @@ class SettingsRepository {
       videoSceneThreshold: 0.3,
       videoMinimumSharpness: 0.08,
       videoAnalysisThinkingEnabled: false,
+      fullAutomationEnabled: false,
       replicateDefaultGlobalStyle: AppSettings.defaultReplicateGlobalStyle,
       replicateDefaultConstraints: AppSettings.defaultReplicateConstraints,
       cutImageNumberEnabled: false,
@@ -301,9 +388,11 @@ class SettingsRepository {
       cutImageNumberTextScale: AppSettings.defaultCutImageNumberTextScale,
       storyboardCaptionNumberEnabled: true,
       storyboardSummaryPageEnabled: true,
-      visionApiBaseUrl: visionDefaults.baseUrl,
-      visionApiKey: visionDefaults.apiKey,
-      visionModel: visionDefaults.model,
+      visionApiBaseUrl: visionApiConfigs.first.baseUrl,
+      visionApiKey: visionApiConfigs.first.apiKey,
+      visionModel: visionApiConfigs.first.model,
+      visionApiConfigs: visionApiConfigs,
+      activeVisionApiConfigId: visionApiConfigs.first.id,
       imageGenerationApiBaseUrl: imageGenerationDefaults.baseUrl,
       imageGenerationApiKey: imageGenerationDefaults.apiKey,
       imageGenerationGeminiApiBaseUrl:
@@ -313,6 +402,30 @@ class SettingsRepository {
           AppSettings.defaultImageGenerationApiMartApiBaseUrl,
       imageGenerationApiMartApiKey: '',
       imageGenerationModel: imageGenerationDefaults.model,
+      imageGenerationApiConfigs: [
+        ImageGenerationApiConfig(
+          id: 'default-grsai-image',
+          name: '默认 GRSai',
+          baseUrl: imageGenerationDefaults.baseUrl,
+          apiKey: imageGenerationDefaults.apiKey,
+          model: imageGenerationDefaults.model,
+        ),
+        const ImageGenerationApiConfig(
+          id: 'default-gemini-image',
+          name: '默认 Gemini',
+          baseUrl: AppSettings.defaultImageGenerationGeminiApiBaseUrl,
+          apiKey: '',
+          model: 'gemini-3-pro-image',
+        ),
+        const ImageGenerationApiConfig(
+          id: 'default-apimart-image',
+          name: '默认 APIMart',
+          baseUrl: AppSettings.defaultImageGenerationApiMartApiBaseUrl,
+          apiKey: '',
+          model: 'apimart:gemini-2.5-flash-image-preview',
+        ),
+      ],
+      activeImageGenerationApiConfigId: 'default-grsai-image',
       updateReleaseApiUrl: AppUpdateConfig.defaultReleaseRepositoryUrl,
       autoInstallUpdates: false,
       updateDownloadMode: UpdateDownloadMode.automatic,
@@ -384,6 +497,127 @@ class SettingsRepository {
     return (value ?? defaultValue).clamp(min, max).toDouble();
   }
 
+  List<VisionApiConfig> _loadVisionApiConfigs(VisionApiConfig legacyConfig) {
+    final encoded = _database.getSetting(_visionApiConfigsKey);
+    if (encoded != null && encoded.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(encoded);
+        if (decoded is List) {
+          final configs = decoded
+              .whereType<Map>()
+              .map(
+                (value) =>
+                    VisionApiConfig.fromJson(Map<String, dynamic>.from(value)),
+              )
+              .where((config) => config.id.trim().isNotEmpty)
+              .toList();
+          if (configs.isNotEmpty) {
+            return configs;
+          }
+        }
+      } on FormatException {
+        // 配置损坏时回退到原有单配置，避免阻断启动。
+      }
+    }
+    return [
+      legacyConfig,
+      const VisionApiConfig(
+        id: 'minimax-m3',
+        name: 'MiniMax M3',
+        baseUrl: 'https://api.minimaxi.com',
+        apiKey: '',
+        model: 'MiniMax-M3',
+      ),
+    ];
+  }
+
+  VisionApiConfig _activeVisionApiConfig(
+    List<VisionApiConfig> configs,
+    String? activeId,
+  ) {
+    return configs.firstWhere(
+      (config) => config.id == activeId,
+      orElse: () => configs.first,
+    );
+  }
+
+  List<ImageGenerationApiConfig> _loadImageGenerationApiConfigs(
+    _LegacyImageGenerationSettings legacy,
+    _ImageGenerationApiDefaults defaults,
+  ) {
+    final encoded = _database.getSetting(_imageGenerationApiConfigsKey);
+    if (encoded != null && encoded.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(encoded);
+        if (decoded is List) {
+          final configs = decoded
+              .whereType<Map>()
+              .map(
+                (value) => ImageGenerationApiConfig.fromJson(
+                  Map<String, dynamic>.from(value),
+                ),
+              )
+              .where(
+                (config) =>
+                    config.id.trim().isNotEmpty &&
+                    ImageGenerationCatalog.descriptorFor(config.model) != null,
+              )
+              .toList();
+          if (configs.isNotEmpty) return configs;
+        }
+      } on FormatException {
+        // 配置损坏时回退到旧配置，避免阻断启动。
+      }
+    }
+
+    final legacyProtocol = ImageGenerationCatalog.descriptorFor(
+      legacy.model,
+    )?.protocol;
+    return [
+      ImageGenerationApiConfig(
+        id: 'legacy-grsai-image',
+        name: 'GRSai',
+        baseUrl: legacy.grsaiBaseUrl,
+        apiKey: legacy.grsaiApiKey,
+        model: legacyProtocol == ImageGenerationProviderProtocol.grsai
+            ? legacy.model
+            : defaults.model,
+      ),
+      ImageGenerationApiConfig(
+        id: 'legacy-gemini-image',
+        name: 'Gemini',
+        baseUrl: legacy.geminiBaseUrl,
+        apiKey: legacy.geminiApiKey,
+        model: legacyProtocol == ImageGenerationProviderProtocol.gemini
+            ? legacy.model
+            : 'gemini-3-pro-image',
+      ),
+      ImageGenerationApiConfig(
+        id: 'legacy-apimart-image',
+        name: 'APIMart',
+        baseUrl: legacy.apiMartBaseUrl,
+        apiKey: legacy.apiMartApiKey,
+        model: legacyProtocol == ImageGenerationProviderProtocol.apiMart
+            ? legacy.model
+            : 'apimart:gemini-2.5-flash-image-preview',
+      ),
+    ];
+  }
+
+  ImageGenerationApiConfig _activeImageGenerationApiConfig(
+    List<ImageGenerationApiConfig> configs,
+    String? activeId,
+    String legacyModel,
+  ) {
+    return configs.firstWhere(
+      (config) => config.id == activeId,
+      orElse: () => configs.firstWhere(
+        (config) => config.model == legacyModel,
+        orElse: () => configs.first,
+      ),
+    );
+  }
+
   _VisionApiDefaults _loadVisionDefaults() {
     final text = _visionDefaultsText ?? _readVisionDefaultsFile();
     if (text == null || text.trim().isEmpty) {
@@ -440,6 +674,26 @@ class SettingsRepository {
     }
     return null;
   }
+}
+
+class _LegacyImageGenerationSettings {
+  const _LegacyImageGenerationSettings({
+    required this.grsaiBaseUrl,
+    required this.grsaiApiKey,
+    required this.geminiBaseUrl,
+    required this.geminiApiKey,
+    required this.apiMartBaseUrl,
+    required this.apiMartApiKey,
+    required this.model,
+  });
+
+  final String grsaiBaseUrl;
+  final String grsaiApiKey;
+  final String geminiBaseUrl;
+  final String geminiApiKey;
+  final String apiMartBaseUrl;
+  final String apiMartApiKey;
+  final String model;
 }
 
 class _VisionApiDefaults {

@@ -75,19 +75,21 @@ class ShootingScriptRepository {
     _database.executeStatement(
       '''
       INSERT INTO script_shots(
-        id, script_id, shot_number, duration_seconds, frame_path, visual,
+        id, script_id, source_storyboard_asset_id, shot_number,
+        duration_seconds, frame_path, visual,
         content, shot_size, camera_movement, camera_notes, composition,
         camera_angle, lighting_mood, color_palette, visual_focus,
         transition_hint, scene, product_code, product_styling, dialogue,
         sound, prompt, status, updated_at
       ) VALUES(
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       );
       ''',
       [
         shot.id,
         shot.scriptId,
+        shot.sourceStoryboardAssetId,
         shot.shotNumber,
         shot.durationSeconds,
         shot.framePath,
@@ -141,6 +143,7 @@ class ShootingScriptRepository {
     return ScriptShot(
       id: row['id'] as String,
       scriptId: row['script_id'] as String,
+      sourceStoryboardAssetId: row['source_storyboard_asset_id'] as String?,
       shotNumber: row['shot_number'] as int,
       durationSeconds: (row['duration_seconds'] as num).toDouble(),
       framePath: row['frame_path'] as String,

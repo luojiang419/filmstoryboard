@@ -14,8 +14,10 @@ import '../features/settings/application/settings_controller.dart';
 import '../features/settings/domain/app_settings.dart';
 import '../features/settings/presentation/settings_page.dart';
 import '../features/shooting_script/presentation/shooting_script_page.dart';
+import '../features/shooting_script/application/shooting_script_controller.dart';
 import '../features/story_design/presentation/story_design_page.dart';
 import '../features/storyboard/application/storyboard_controller.dart';
+import '../features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
 import '../features/storyboard/presentation/storyboard_page.dart';
 import '../features/updater/application/updater_controller.dart';
 import '../features/updater/domain/app_update_config.dart';
@@ -49,6 +51,8 @@ class _AppShellState extends ConsumerState<AppShell> {
   late final UpdaterController _updaterController;
   late final OnboardingController _onboardingController;
   late final StoryboardController _storyboardController;
+  late final StoryboardShootingScriptSyncController
+  _storyboardScriptSyncController;
   late final SettingsController _settingsController;
   bool _updatePromptVisible = false;
   bool _assetNormalizationPromptVisible = false;
@@ -73,6 +77,10 @@ class _AppShellState extends ConsumerState<AppShell> {
     )..addListener(_handleOnboardingChanged);
     _storyboardController = ref.read(storyboardControllerProvider)
       ..addListener(_handleAssetNormalizationStateChanged);
+    _storyboardScriptSyncController = StoryboardShootingScriptSyncController(
+      storyboardController: _storyboardController,
+      shootingScriptController: ref.read(shootingScriptControllerProvider),
+    );
     _settingsController = ref.read(settingsControllerProvider)
       ..addListener(_handleSettingsChanged);
     _tabIndex =
@@ -96,6 +104,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     _onboardingController.removeListener(_handleOnboardingChanged);
     _onboardingController.dispose();
     _storyboardController.removeListener(_handleAssetNormalizationStateChanged);
+    _storyboardScriptSyncController.dispose();
     _settingsController.removeListener(_handleSettingsChanged);
     _updaterController.removeListener(_handleUpdaterStateChanged);
     super.dispose();

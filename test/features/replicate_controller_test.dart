@@ -9,9 +9,13 @@ import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart
 import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
 import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -127,6 +131,15 @@ void main() {
       directories: directories,
       settingsController: settingsController,
     );
+    final initialGenerationModel = controller.value.run!.generationModel;
+    final initialDescriptor = ImageGenerationCatalog.descriptorFor(
+      initialGenerationModel,
+    )!;
+    final changedAspectRatio = initialDescriptor.aspectRatios.contains('1:1')
+        ? '1:1'
+        : initialDescriptor.aspectRatios.first;
+    controller.updateGenerationDefaults(aspectRatio: changedAspectRatio);
+    expect(controller.value.run?.generationAspectRatio, changedAspectRatio);
     expect(controller.value.selectedScriptId, script.id);
     expect(
       controller.moveToStep(ReplicateStep.prepareAssets),
@@ -153,6 +166,7 @@ void main() {
       settingsController: settingsController,
     );
     expect(controller.value.run?.confirmedShotIds, contains(shot.id));
+    expect(controller.value.run?.generationAspectRatio, changedAspectRatio);
 
     final secondSource = File('${root.path}/second.png');
     await secondSource.writeAsBytes([137, 80, 78, 71, 13], flush: true);
@@ -232,6 +246,8 @@ void main() {
       repository: settingsRepository,
       initialSettings: settingsRepository.load().copyWith(
         imageGenerationModel: ImageGenerationCatalog.models.first.id,
+        imageGenerationApiConfigs: const [],
+        activeImageGenerationApiConfigId: '',
       ),
     );
     final shootingController = ShootingScriptController(
@@ -251,13 +267,107 @@ void main() {
     shootingController.updateShot(
       second.copyWith(framePath: frame2.path, content: '人物转身展示产品'),
     );
+    final character = File('${root.path}/new-character.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 3]);
+    final product = File('${root.path}/new-product.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 4]);
+    final unboundProp = File('${root.path}/unbound-prop.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 5]);
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final now = DateTime.now().toUtc();
+    const characterAssetId = 'bound-character';
+    const productAssetId = 'bound-product';
+    const unboundPropAssetId = 'unbound-prop';
+    for (final asset in [
+      ScriptAsset(
+        id: characterAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.character,
+        name: '新模特',
+        description: '短发、白衬衫',
+        path: character.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: productAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '新产品',
+        description: '白色瓶身，蓝色标签',
+        path: product.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: unboundPropAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.prop,
+        name: '未绑定道具',
+        description: '不应提交',
+        path: unboundProp.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    ]) {
+      workflowRepository.upsertScriptAsset(asset);
+    }
+    for (final link in [
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: characterAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定模特',
+        confirmed: true,
+        locked: true,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: productAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定产品',
+        confirmed: true,
+        locked: true,
+        sortOrder: 1,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: second.id,
+        scriptAssetId: productAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定产品特写',
+        confirmed: true,
+        locked: true,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    ]) {
+      workflowRepository.upsertLink(link);
+    }
     final imageService = _RecordingImageGenerationService();
+    final visionService = _RecordingVisionStoryboardService();
     var controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
+      workflowRepository: workflowRepository,
       imageGenerationService: imageService,
+      visionService: visionService,
     );
     addTearDown(() async {
       controller.dispose();
@@ -267,16 +377,6 @@ void main() {
       database.dispose();
       await root.delete(recursive: true);
     });
-    controller.confirmAllShots();
-    final product = File('${root.path}/new-product.png')
-      ..writeAsBytesSync([137, 80, 78, 71, 3]);
-    await controller.importAsset(
-      sourcePath: product.path,
-      type: ReplicateAssetType.product,
-      name: '新产品',
-      description: '白色瓶身，蓝色标签',
-    );
-
     await controller.replicateAllShots(
       stagger: const Duration(milliseconds: 20),
       maxConcurrent: 2,
@@ -285,9 +385,32 @@ void main() {
     expect(imageService.requests, hasLength(2));
     expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
     expect(imageService.requests[1].referenceImagePaths.first, frame2.path);
-    expect(imageService.requests[0].referenceImagePaths, hasLength(2));
+    expect(imageService.requests[0].referenceImagePaths, [
+      frame1.path,
+      character.path,
+      product.path,
+    ]);
+    expect(imageService.requests[1].referenceImagePaths, [
+      frame2.path,
+      product.path,
+    ]);
+    expect(
+      imageService.requests[0].referenceImagePaths,
+      isNot(contains(unboundProp.path)),
+    );
     expect(imageService.requests[0].prompt, contains('图片1'));
     expect(imageService.requests[0].prompt, contains('替换'));
+    expect(visionService.analyzeCount, 2);
+    expect(imageService.requests[0].prompt, contains('【视觉模型对原帧的关键维度解析】'));
+    expect(imageService.requests[0].prompt, contains('视觉焦点与道具：蓝色包装瓶'));
+    expect(imageService.requests[0].prompt, contains('【Gemini 3 分镜图像指令】'));
+    expect(imageService.requests[0].prompt, contains('图片1是本镜头唯一的构图母版'));
+    expect(imageService.requests[0].prompt, contains('色彩硬约束：以图片1的色彩风格'));
+    expect(imageService.requests[0].prompt, contains('产品主体必须清晰可辨'));
+    expect(imageService.requests[0].prompt, contains('严禁复用其身份或外观'));
+    expect(imageService.requests[0].prompt, contains('绑定资产硬约束'));
+    expect(imageService.requests[1].prompt, isNot(contains('人物必须使用图片2')));
+    expect(imageService.requests[0].prompt, isNot(contains('不要机械拼贴或照抄参考图版式')));
     expect(controller.value.replicatedImages, hasLength(2));
     expect(
       controller.value.replicatedImages.map((image) => image.status).toSet(),
@@ -349,6 +472,48 @@ class _RecordingImageGenerationService extends ImageGenerationService {
       localPath: output.path,
       remoteUrl: '',
       rawResponse: '{"ok":true}',
+    );
+  }
+}
+
+class _RecordingVisionStoryboardService extends VisionStoryboardService {
+  var analyzeCount = 0;
+
+  @override
+  Future<VisionImageAnalysis> analyzeImage({
+    required AppSettings settings,
+    required File imageFile,
+    required int sequenceNo,
+    required int rowIndex,
+    required int columnIndex,
+    bool allowThinking = false,
+    void Function(VisionImageRecoveryMode mode)? onRecovery,
+  }) async {
+    analyzeCount++;
+    return const VisionImageAnalysis(
+      caption: '女模特在窗边展示产品',
+      detail: '中景中女模特右手持蓝色包装瓶，侧身面向窗光。',
+      scene: '明亮室内窗边',
+      props: '蓝色包装瓶',
+      people: '女模特',
+      expression: '自然微笑，看向产品',
+      bodyAction: '右手举起产品展示',
+      movementTrend: '动作进行中',
+      shotSize: '中景',
+      cameraMovement: '固定',
+      composition: '主体偏右，左侧窗光留白',
+      subjectDirection: '三分之二侧面朝左',
+      gazeDirection: '看向手中产品',
+      actionStage: '进行',
+      spatialRelation: '站在窗边，产品位于胸前',
+      chronologyCue: '展示动作中',
+      cameraAngle: '眼平中景',
+      visualFocus: '蓝色包装瓶',
+      lightingMood: '柔和侧窗光',
+      colorPalette: '清爽白蓝色',
+      narrativeFunction: '广告产品记忆点',
+      transitionHint: '承接展示动作',
+      rawResponse: '{}',
     );
   }
 }

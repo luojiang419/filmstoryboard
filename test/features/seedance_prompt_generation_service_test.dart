@@ -115,6 +115,21 @@ void main() {
     expect(result.warnings, contains('参考素材超过推荐的 4–5 个，可能降低主体和风格稳定性'));
   });
 
+  test('视频解析脚本会明确以视频1复刻动作、运镜和节奏', () {
+    final result = service.generate(
+      shot: _shot(now),
+      assets: const [],
+      globalStyle: '',
+      constraints: '',
+      videoReferenceInstruction: '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻。',
+    );
+
+    expect(result.prompt, contains('参考视频1中的主体动作、镜头语言、节奏与视觉风格'));
+    expect(result.prompt, contains('镜头1：'));
+    expect(result.prompt, contains('全局风格：'));
+    expect(result.prompt, contains('整体约束：'));
+  });
+
   test('根据画面动作和相邻景别生成差异化动态运镜', () {
     final asset = _asset(
       now,

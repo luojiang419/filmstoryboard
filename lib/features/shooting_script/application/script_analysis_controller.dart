@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/vision_request_rate_limiter.dart';
+import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/script_multimodal_analysis_service.dart';
@@ -89,12 +91,15 @@ class ShootingScriptAnalysisController
     required ShootingScriptWorkflowRepository repository,
     required SettingsController settingsController,
     ScriptMultimodalAnalysisService? analysisService,
+    SeedancePromptGenerationService promptService =
+        const SeedancePromptGenerationService(),
     Uuid uuid = const Uuid(),
   }) : _shootingScriptController = shootingScriptController,
        _repository = repository,
        _settingsController = settingsController,
        _analysisService = analysisService ?? ScriptMultimodalAnalysisService(),
        _ownsAnalysisService = analysisService == null,
+       _promptService = promptService,
        _uuid = uuid,
        super(const ScriptAnalysisState()) {
     _shootingScriptController.addListener(_handleScriptChanged);
@@ -106,6 +111,7 @@ class ShootingScriptAnalysisController
   final SettingsController _settingsController;
   final ScriptMultimodalAnalysisService _analysisService;
   final bool _ownsAnalysisService;
+  final SeedancePromptGenerationService _promptService;
   final Uuid _uuid;
   bool _disposed = false;
 
@@ -141,11 +147,31 @@ class ShootingScriptAnalysisController
     );
   }
 
-  Future<void> analyzeAll({bool overwriteExisting = false}) async {
+  Future<void> analyzeAll({
+    bool overwriteExisting = false,
+    bool onlyFailed = false,
+  }) async {
     final script = _shootingScriptController.value.selectedScript;
     final shots = _shootingScriptController.value.shots;
     if (script == null || shots.isEmpty) {
       value = value.copyWith(message: '', errorMessage: '当前脚本没有可解析的镜头');
+      return;
+    }
+    final failedShotIds = onlyFailed
+        ? _repository
+              .listAnalyses(script.id)
+              .where((item) => item.status == ProcessingStatus.failed)
+              .map((item) => item.shotId)
+              .toSet()
+        : const <String>{};
+    final targets = onlyFailed
+        ? shots.where((shot) => failedShotIds.contains(shot.id)).toList()
+        : shots;
+    if (targets.isEmpty) {
+      value = value.copyWith(
+        message: onlyFailed ? '没有需要重试的失败镜头' : '',
+        errorMessage: '',
+      );
       return;
     }
     value = value.copyWith(
@@ -154,23 +180,35 @@ class ShootingScriptAnalysisController
       isBusy: true,
       completedCount: 0,
       failedCount: 0,
-      totalCount: shots.length,
-      message: '正在解析 0/${shots.length} 个镜头…',
+      totalCount: targets.length,
+      message: '正在解析 0/${targets.length} 个镜头…',
       errorMessage: '',
     );
-    for (var index = 0; index < shots.length; index++) {
-      if (_disposed) return;
-      await _analyzeOne(
-        scriptId: script.id,
-        shot: shots[index],
-        overwriteExisting: overwriteExisting,
-      );
-      if (!_disposed) {
-        value = value.copyWith(
-          message: '正在解析 ${index + 1}/${shots.length} 个镜头…',
+    var nextIndex = 0;
+    var processed = 0;
+    Future<void> processTargets() async {
+      while (!_disposed && nextIndex < targets.length) {
+        final shot = targets[nextIndex++];
+        await _analyzeOne(
+          script: script,
+          shot: shot,
+          overwriteExisting: overwriteExisting,
         );
+        processed++;
+        if (!_disposed) {
+          value = value.copyWith(
+            message: '正在解析 $processed/${targets.length} 个镜头…',
+          );
+        }
       }
     }
+
+    final workers = VisionRequestRateLimiter.maxConcurrentRequestsFor(
+      _settingsController.value,
+    ).clamp(1, targets.length);
+    await Future.wait([
+      for (var index = 0; index < workers; index++) processTargets(),
+    ]);
     final failed = value.failedCount;
     if (!_disposed) {
       value = value.copyWith(
@@ -196,7 +234,7 @@ class ShootingScriptAnalysisController
       errorMessage: '',
     );
     await _analyzeOne(
-      scriptId: script.id,
+      script: script,
       shot: shot,
       overwriteExisting: overwriteExisting,
     );
@@ -214,7 +252,7 @@ class ShootingScriptAnalysisController
   }
 
   Future<void> _analyzeOne({
-    required String scriptId,
+    required ShootingScript script,
     required ScriptShot shot,
     required bool overwriteExisting,
   }) async {
@@ -236,11 +274,28 @@ class ShootingScriptAnalysisController
         shot: shot,
         imageFile: File(imagePath),
       );
-      final updatedShot = _applyPatch(
+      var updatedShot = _applyPatch(
         shot,
         patch.values,
         overwriteExisting: overwriteExisting,
       );
+      if (overwriteExisting || updatedShot.prompt.trim().isEmpty) {
+        updatedShot = updatedShot.copyWith(
+          prompt: _promptService
+              .generate(
+                shot: updatedShot,
+                assets: const [],
+                globalStyle:
+                    _settingsController.value.replicateDefaultGlobalStyle,
+                constraints:
+                    _settingsController.value.replicateDefaultConstraints,
+                videoReferenceInstruction: script.sourceVideoId == null
+                    ? null
+                    : '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻；保持角色、产品和场景在镜头间连续一致。',
+              )
+              .prompt,
+        );
+      }
       _shootingScriptController.updateShot(updatedShot);
       final sources = <String, String>{
         for (final field in _analysisFields)
@@ -266,7 +321,7 @@ class ShootingScriptAnalysisController
           updatedAt: now,
         ),
       );
-      _refreshProgress(scriptId);
+      _refreshProgress(script.id);
     } catch (error) {
       _saveFailure(shot: shot, existing: existing, message: '$error', now: now);
     }

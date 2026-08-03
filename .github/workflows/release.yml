@@ -15,7 +15,9 @@ permissions:
 
 env:
   RELEASE_REPO: luojiang419/storyboard-grid-app-releases
-  MINIMUM_VERSION: v1.0.0.104
+  # 历史发布仓库停留在 1.0.0.107；必须以当前已发布安装包版本为下限，
+  # 避免新的 source push 被错误地发布为低版本，导致客户端无法更新。
+  MINIMUM_VERSION: v1.0.0.132
 
 jobs:
   release:

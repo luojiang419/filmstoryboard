@@ -25,6 +25,25 @@ class VideoStoryboardBridge {
     required List<VideoShot> shots,
     required VideoSummary? summary,
     required String Function(VideoFrame frame) resolveFramePath,
+  }) => buildSegments(
+    video: video,
+    frames: frames,
+    frameAnalyses: frameAnalyses,
+    shots: shots,
+    summary: summary,
+    resolveFramePath: resolveFramePath,
+  ).first;
+
+  /// 将一个视频的全部已解析镜头放入同一张故事板。
+  ///
+  /// 保留列表返回值以兼容调用方；每个视频始终只会返回一个结果。
+  static List<VideoStoryboardBuildResult> buildSegments({
+    required SourceVideo video,
+    required List<VideoFrame> frames,
+    required List<VideoFrameAnalysis> frameAnalyses,
+    required List<VideoShot> shots,
+    required VideoSummary? summary,
+    required String Function(VideoFrame frame) resolveFramePath,
   }) {
     final analysesByFrameId = {
       for (final analysis in frameAnalyses)
@@ -47,25 +66,30 @@ class VideoStoryboardBridge {
             return first.timestampMs.compareTo(second.timestampMs);
           });
 
-    return VideoStoryboardBuildResult(
-      sourceId: 'video:${video.id}',
-      boardName: '${_videoBaseName(video.fileName)} · 视频解析故事板',
-      summary: _storyboardSummary(summary),
-      images: [
-        for (final frame in orderedFrames)
-          StoryboardExternalImage(
-            stableId: 'video-frame:${frame.id}',
-            sourceName: video.fileName,
-            path: resolveFramePath(frame),
-            width: frame.width,
-            height: frame.height,
-            caption: _storyboardCaption(
-              shotsByFrameId[frame.id],
-              analysesByFrameId[frame.id],
-            ),
+    final images = [
+      for (final frame in orderedFrames)
+        StoryboardExternalImage(
+          stableId: 'video-frame:${frame.id}',
+          sourceName: video.fileName,
+          path: resolveFramePath(frame),
+          width: frame.width,
+          height: frame.height,
+          caption: _storyboardCaption(
+            shotsByFrameId[frame.id],
+            analysesByFrameId[frame.id],
           ),
-      ],
-    );
+        ),
+    ];
+    final baseSourceId = 'video:${video.id}';
+    final baseBoardName = '${_videoBaseName(video.fileName)} · 视频解析故事板';
+    return [
+      VideoStoryboardBuildResult(
+        sourceId: baseSourceId,
+        boardName: baseBoardName,
+        summary: _storyboardSummary(summary),
+        images: images,
+      ),
+    ];
   }
 
   static StoryboardSummary? _storyboardSummary(VideoSummary? summary) {

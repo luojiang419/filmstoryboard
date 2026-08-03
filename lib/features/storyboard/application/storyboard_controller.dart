@@ -14,11 +14,13 @@ import 'package:uuid/uuid.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/services/empty_directory_cleaner.dart';
+import '../../../core/services/vision_request_rate_limiter.dart';
 import '../../../core/services/workspace_snapshot_save_queue.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../grid_cut/application/grid_cut_controller.dart';
 import '../../projects/data/project_path_resolver.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../shooting_script/domain/shooting_script_models.dart';
 import '../data/image_generation_service.dart';
 import '../data/image_generation_diagnostic_logger.dart';
 import '../domain/image_generation_provider_resolver.dart';
@@ -101,7 +103,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   static const _workspaceSnapshotKey = 'storyboardWorkspaceSnapshot';
   static const _selectionStateKey = 'storyboardWorkspaceSelection';
   static const _workspaceSnapshotVersion = 3;
-  static const _maxGridExtent = 12;
+  static const _maxConfiguredGridExtent = 12;
+  static const _maxAutomaticGridExtent = storyboardMaxGridExtent;
   static const _historyLimit = 100;
   static const _aiEditedImagesDirectorySuffix = 'AI修改';
   static const _aiEditedImagesSourceName = 'AI修改';
@@ -1495,7 +1498,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     );
   }
 
-  void addBoard() {
+  StoryboardBoard addBoard() {
     final index = value.boards.length + 1;
     final board = _newBoard(index);
     _setState(
@@ -1506,6 +1509,92 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         message: '已创建 ${board.name}',
       ),
     );
+    return board;
+  }
+
+  StoryboardBoard? duplicateSelectedBoard() {
+    final board = value.selectedBoard;
+    if (board == null) {
+      return null;
+    }
+    final duplicate = board.copyWith(
+      id: _uuid.v4(),
+      name: _uniqueBoardName('${board.name} 副本'),
+      locked: false,
+    );
+    _setState(
+      value.copyWith(
+        boards: [...value.boards, duplicate],
+        openBoardIds: [...value.openBoardIds, duplicate.id],
+        selectedBoardId: duplicate.id,
+        message: '已复制 ${board.name}',
+      ),
+    );
+    return duplicate;
+  }
+
+  bool syncFromShootingScript({
+    required String boardId,
+    required List<ScriptShot> shots,
+  }) {
+    final board = value.boards.cast<StoryboardBoard?>().firstWhere(
+      (item) => item?.id == boardId,
+      orElse: () => null,
+    );
+    if (board == null) {
+      return false;
+    }
+    final itemByAssetId = {for (final item in board.items) item.asset.id: item};
+    final synchronizedItems = <StoryboardItem>[];
+    final orderedShots = shots.toList()
+      ..sort((first, second) => first.shotNumber.compareTo(second.shotNumber));
+    for (final shot in orderedShots) {
+      final assetId = shot.sourceStoryboardAssetId;
+      final item = assetId == null ? null : itemByAssetId[assetId];
+      if (item == null) {
+        continue;
+      }
+      final asset = shot.framePath == item.asset.path
+          ? item.asset
+          : StoryboardCutAsset(
+              id: item.asset.id,
+              imageId: item.asset.imageId,
+              sourceName: item.asset.sourceName,
+              path: shot.framePath,
+              indexNo: item.asset.indexNo,
+            );
+      synchronizedItems.add(
+        item.copyWith(
+          asset: asset,
+          caption: shot.content,
+          slotIndex: synchronizedItems.length,
+        ),
+      );
+    }
+    final hasChanges =
+        board.items.length != synchronizedItems.length ||
+        board.items.any((item) {
+          final next = synchronizedItems.cast<StoryboardItem?>().firstWhere(
+            (candidate) => candidate?.asset.id == item.asset.id,
+            orElse: () => null,
+          );
+          return next == null ||
+              next.slotIndex != item.slotIndex ||
+              next.caption != item.caption ||
+              next.asset.path != item.asset.path;
+        });
+    if (!hasChanges) {
+      return false;
+    }
+    _replaceBoard(
+      _boardWithGridForItemCount(
+        board.copyWith(items: synchronizedItems),
+        itemCount: synchronizedItems.length,
+      ),
+      message: '',
+      selectBoard: false,
+    );
+    return true;
   }
 
   Future<String?> createOrReplaceBoardFromExternalImages({
@@ -1847,10 +1936,6 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   }
 
   void deleteBoard(String boardId) {
-    if (value.boards.length <= 1) {
-      value = value.copyWith(message: '至少保留一个画板');
-      return;
-    }
     final index = value.boards.indexWhere((board) => board.id == boardId);
     if (index < 0) {
       return;
@@ -1859,6 +1944,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     if (_guardLockedBoard(deletedBoard, '删除画板')) {
       return;
     }
+    _undoHistoryByBoardId.remove(boardId);
+    _redoHistoryByBoardId.remove(boardId);
+    _database.deleteVisionAnalysisForBoard(boardId);
     final nextBoards = [
       for (final board in value.boards)
         if (board.id != boardId) board,
@@ -2964,9 +3052,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       );
     }
 
-    for (var i = 0; i < orderedItems.length; i++) {
+    Future<void> processItem(int i) async {
       if (_isVisionOperationCancelled(operationToken)) {
-        await finishCancelled();
         return;
       }
       final item = orderedItems[i];
@@ -3005,7 +3092,6 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           },
         );
         if (_isVisionOperationCancelled(operationToken)) {
-          await finishCancelled();
           return;
         }
         _database.insertVisionAnalysisItem(
@@ -3072,7 +3158,6 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         });
       } catch (error) {
         if (_isVisionOperationCancelled(operationToken)) {
-          await finishCancelled();
           return;
         }
         failedCount++;
@@ -3113,6 +3198,29 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         );
       }
     }
+
+    var nextIndex = 0;
+    Future<void> processQueue() async {
+      while (nextIndex < orderedItems.length &&
+          !_isVisionOperationCancelled(operationToken)) {
+        await processItem(nextIndex++);
+      }
+    }
+
+    final workerCount = VisionRequestRateLimiter.maxConcurrentRequestsFor(
+      settings,
+    ).clamp(1, orderedItems.length);
+    await Future.wait([
+      for (var worker = 0; worker < workerCount; worker++) processQueue(),
+    ]);
+    if (_isVisionOperationCancelled(operationToken)) {
+      await finishCancelled();
+      return;
+    }
+    // 并发返回顺序不稳定，连贯化与写回必须始终遵循故事板槽位顺序。
+    analyzedItems.sort(
+      (first, second) => first.slotIndex.compareTo(second.slotIndex),
+    );
 
     var captionRewriteError = '';
     var captionRewriteFallbackCount = 0;
@@ -3670,8 +3778,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       value = value.copyWith(message: '竖屏模式固定为每行 1 张图，请先关闭竖屏模式');
       return;
     }
-    final nextRows = rows.clamp(1, _maxGridExtent).toInt();
-    final nextColumns = columns.clamp(1, _maxGridExtent).toInt();
+    final nextRows = rows.clamp(1, _maxConfiguredGridExtent).toInt();
+    final nextColumns = columns.clamp(1, _maxConfiguredGridExtent).toInt();
     final nextBoard = _boardWithGridForItemCount(
       board,
       itemCount: board.visibleItemCount,
@@ -3699,11 +3807,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     if (board == null) {
       return;
     }
-    final nextRows = rows.clamp(1, _maxGridExtent).toInt();
+    final nextRows = rows.clamp(1, _maxConfiguredGridExtent).toInt();
     final itemCount = board.visibleItemCount.clamp(1, _maxSlotCount).toInt();
     final nextColumns = (itemCount / nextRows)
         .ceil()
-        .clamp(1, _maxGridExtent)
+        .clamp(1, _maxAutomaticGridExtent)
         .toInt();
     setGrid(nextRows, nextColumns);
   }
@@ -3713,11 +3821,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     if (board == null) {
       return;
     }
-    final nextColumns = columns.clamp(1, _maxGridExtent).toInt();
+    final nextColumns = columns.clamp(1, _maxConfiguredGridExtent).toInt();
     final itemCount = board.visibleItemCount.clamp(1, _maxSlotCount).toInt();
     final nextRows = (itemCount / nextColumns)
         .ceil()
-        .clamp(1, _maxGridExtent)
+        .clamp(1, _maxAutomaticGridExtent)
         .toInt();
     setGrid(nextRows, nextColumns);
   }
@@ -5141,7 +5249,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     return normalizedBoard.withAdaptiveHeight();
   }
 
-  int get _maxSlotCount => _maxGridExtent * _maxGridExtent;
+  int get _maxSlotCount => _maxAutomaticGridExtent * _maxAutomaticGridExtent;
 
   StoryboardBoard _boardWithGridForItemCount(
     StoryboardBoard board, {
@@ -5158,10 +5266,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       );
     }
     final baseRows = (configuredRows ?? board.effectiveConfiguredRows)
-        .clamp(1, _maxGridExtent)
+        .clamp(1, _maxConfiguredGridExtent)
         .toInt();
     final baseColumns = (configuredColumns ?? board.effectiveConfiguredColumns)
-        .clamp(1, _maxGridExtent)
+        .clamp(1, _maxConfiguredGridExtent)
         .toInt();
     final grid = _gridForItemCount(
       configuredRows: baseRows,
@@ -5182,15 +5290,17 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     required int configuredColumns,
     required int itemCount,
   }) {
-    final safeRows = configuredRows.clamp(1, _maxGridExtent).toInt();
-    final safeColumns = configuredColumns.clamp(1, _maxGridExtent).toInt();
+    final safeRows = configuredRows.clamp(1, _maxConfiguredGridExtent).toInt();
+    final safeColumns = configuredColumns
+        .clamp(1, _maxConfiguredGridExtent)
+        .toInt();
     final requiredCount = itemCount.clamp(0, _maxSlotCount).toInt();
     if (requiredCount <= safeRows * safeColumns) {
       return (rows: safeRows, columns: safeColumns);
     }
 
     final columnsForConfiguredRows = (requiredCount / safeRows).ceil();
-    if (columnsForConfiguredRows <= _maxGridExtent) {
+    if (columnsForConfiguredRows <= _maxConfiguredGridExtent) {
       return (rows: safeRows, columns: columnsForConfiguredRows);
     }
 
@@ -5199,8 +5309,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     var bestRows = safeRows;
     var bestColumns = safeColumns;
     var bestCapacity = _maxSlotCount + 1;
-    for (var rows = 1; rows <= _maxGridExtent; rows++) {
-      for (var columns = 1; columns <= _maxGridExtent; columns++) {
+    for (var rows = 1; rows <= _maxAutomaticGridExtent; rows++) {
+      for (var columns = 1; columns <= _maxAutomaticGridExtent; columns++) {
         final capacity = rows * columns;
         if (capacity < requiredCount) {
           continue;
@@ -5256,7 +5366,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
   void _restoreWorkspaceOrCreateDefault() {
     final restored = _loadWorkspaceSnapshot();
-    if (restored != null && restored.boards.isNotEmpty) {
+    if (restored != null) {
       _setState(restored, saveWorkspace: false, saveSelection: false);
       return;
     }
@@ -5284,6 +5394,21 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       items: const [],
       rowCaptions: const ['', '', ''],
     );
+  }
+
+  String _uniqueBoardName(String requested) {
+    final base = requested.trim().isEmpty ? '画板' : requested.trim();
+    final usedNames = value.boards
+        .map((board) => board.name.toLowerCase())
+        .toSet();
+    if (!usedNames.contains(base.toLowerCase())) {
+      return base;
+    }
+    var suffix = 2;
+    while (usedNames.contains('$base $suffix'.toLowerCase())) {
+      suffix++;
+    }
+    return '$base $suffix';
   }
 
   void _setState(
@@ -5337,7 +5462,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           boards.add(board.withAdaptiveHeight());
         }
       }
-      if (boards.isEmpty) {
+      if (boardValues.isNotEmpty && boards.isEmpty) {
         return null;
       }
       final boardGroups = _boardGroupsFromJson(decoded['boardGroups']);
@@ -5488,14 +5613,17 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     final rows = _jsonInt(
       value['rows'],
       3,
-    ).clamp(1, portraitMode ? _maxSlotCount : _maxGridExtent).toInt();
-    final columns = _jsonInt(value['columns'], 3).clamp(1, 12).toInt();
+    ).clamp(1, portraitMode ? _maxSlotCount : _maxAutomaticGridExtent).toInt();
+    final columns = _jsonInt(
+      value['columns'],
+      3,
+    ).clamp(1, _maxAutomaticGridExtent).toInt();
     final configuredRows = _jsonNullableInt(
       value['configuredRows'],
-    )?.clamp(1, 12).toInt();
+    )?.clamp(1, _maxConfiguredGridExtent).toInt();
     final configuredColumns = _jsonNullableInt(
       value['configuredColumns'],
-    )?.clamp(1, 12).toInt();
+    )?.clamp(1, _maxConfiguredGridExtent).toInt();
     final rowCaptions = _jsonStringList(value['rowCaptions']);
     final items = _jsonItems(value['items']);
     final normalizedRows = portraitMode ? math.max(1, items.length) : rows;

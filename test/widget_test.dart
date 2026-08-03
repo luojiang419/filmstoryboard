@@ -3094,22 +3094,32 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('图片生成 API'));
     await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('image-provider-card-default')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('image-provider-card-grsai')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('image-provider-card-gemini')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('image-provider-card-apimart')),
-      findsOneWidget,
-    );
+    if (settingsController.value.imageGenerationApiConfigs.isNotEmpty) {
+      final grsaiCard = find.byKey(
+        const ValueKey('image-generation-api-config-legacy-grsai-image'),
+      );
+      final geminiCard = find.byKey(
+        const ValueKey('image-generation-api-config-legacy-gemini-image'),
+      );
+      final apiMartCard = find.byKey(
+        const ValueKey('image-generation-api-config-legacy-apimart-image'),
+      );
+      expect(grsaiCard, findsOneWidget);
+      expect(geminiCard, findsOneWidget);
+      expect(apiMartCard, findsOneWidget);
+      await tester.tap(geminiCard);
+      await tester.pumpAndSettle();
+      expect(
+        settingsController.value.activeImageGenerationApiConfigId,
+        'legacy-gemini-image',
+      );
+      expect(
+        settingsController.value.imageGenerationModel,
+        'gemini-3-pro-image',
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      return;
+    }
 
     final modelField = find.byKey(
       const ValueKey('image-generation-model-field'),

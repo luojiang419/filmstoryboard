@@ -109,7 +109,7 @@ void main() {
     expect(loaded.autoInstallUpdates, isTrue);
     expect(loaded.updateDownloadMode, UpdateDownloadMode.manual);
     expect(loaded.updateManualProxyUrl, 'http://127.0.0.1:7890');
-    expect(database.countRows('settings'), 32);
+    expect(database.countRows('settings'), 37);
   });
 
   test('记录图片生成任务结果', () async {

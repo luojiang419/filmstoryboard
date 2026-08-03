@@ -46,6 +46,7 @@ class ScriptShot {
   const ScriptShot({
     required this.id,
     required this.scriptId,
+    this.sourceStoryboardAssetId,
     required this.shotNumber,
     required this.durationSeconds,
     required this.framePath,
@@ -72,6 +73,7 @@ class ScriptShot {
 
   final String id;
   final String scriptId;
+  final String? sourceStoryboardAssetId;
   final int shotNumber;
   final double durationSeconds;
   final String framePath;
@@ -97,6 +99,7 @@ class ScriptShot {
 
   ScriptShot copyWith({
     String? scriptId,
+    Object? sourceStoryboardAssetId = _copyWithSentinel,
     int? shotNumber,
     double? durationSeconds,
     String? framePath,
@@ -122,6 +125,10 @@ class ScriptShot {
   }) => ScriptShot(
     id: id,
     scriptId: scriptId ?? this.scriptId,
+    sourceStoryboardAssetId:
+        identical(sourceStoryboardAssetId, _copyWithSentinel)
+        ? this.sourceStoryboardAssetId
+        : sourceStoryboardAssetId as String?,
     shotNumber: shotNumber ?? this.shotNumber,
     durationSeconds: durationSeconds ?? this.durationSeconds,
     framePath: framePath ?? this.framePath,
@@ -146,6 +153,8 @@ class ScriptShot {
     updatedAt: updatedAt ?? this.updatedAt,
   );
 }
+
+const _copyWithSentinel = Object();
 
 /// Parses the old composite camera-notes value written by script analysis.
 ///

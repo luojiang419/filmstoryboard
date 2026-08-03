@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import '../../../core/services/vision_request_rate_limiter.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import 'vision_caption_coherence_service.dart';
@@ -724,6 +725,7 @@ class VisionStoryboardService {
     required int maxTokens,
     bool allowThinking = false,
   }) async {
+    await VisionRequestRateLimiter.waitForRequestSlot(settings);
     final endpoint = normalizeChatCompletionsEndpoint(
       settings.visionApiBaseUrl,
     );

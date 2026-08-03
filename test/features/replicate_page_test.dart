@@ -16,6 +16,7 @@ import 'package:filmstoryboard/features/shooting_script/application/shooting_ass
 import 'package:filmstoryboard/features/shooting_script/data/shooting_asset_library_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,10 +33,16 @@ void main() {
     late final Directory root;
     late final AppDirectories directories;
     late final AppDatabase database;
+    late final File fixtureImage;
+    late final File originalFrame;
+    late final File replicatedFrame;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp('replicate_page_');
       directories = await AppDirectories.create(executableDirectory: root);
       database = await AppDatabase.open(directories.databaseFile);
+      fixtureImage = File('assets/branding/app_icon_512.png');
+      originalFrame = fixtureImage;
+      replicatedFrame = fixtureImage;
     });
     final settingsRepository = SettingsRepository(database, directories);
     final settingsController = SettingsController(
@@ -48,15 +55,45 @@ void main() {
     );
     shootingController.createEmpty(name: '页面测试脚本');
     final shot = shootingController.addShot()!;
-    shootingController.updateShot(
-      shot.copyWith(content: '人物拿起产品并看向镜头', shotSize: '中景'),
+    final updatedShot = shot.copyWith(
+      content: '人物拿起产品并看向镜头',
+      shotSize: '中景',
+      framePath: originalFrame.path,
     );
+    shootingController.updateShot(updatedShot);
+    final replicateRepository = ReplicateRepository(database);
     final replicateController = ReplicateController(
-      repository: ReplicateRepository(database),
+      repository: replicateRepository,
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
     );
+    final now = DateTime.now().toUtc();
+    replicateRepository.upsertReplicatedShotImage(
+      ReplicatedShotImage(
+        id: 'test-replicated-${shot.id}',
+        runId: replicateController.value.run!.id,
+        scriptShotId: shot.id,
+        shotNumber: shot.shotNumber,
+        originalFramePath: originalFrame.path,
+        generatedFramePath: replicatedFrame.path,
+        assetIds: const [],
+        prompt: '',
+        model: 'test',
+        rawResponse: '',
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    replicateController.refresh();
+    expect(replicateController.value.replicatedImages, hasLength(1));
+    expect(
+      replicateController.value.replicatedImages.single.generatedFramePath,
+      replicatedFrame.path,
+    );
+    expect(replicatedFrame.existsSync(), isTrue);
     final analysisController = ShootingScriptAnalysisController(
       shootingScriptController: shootingController,
       repository: ShootingScriptWorkflowRepository(database),
@@ -113,6 +150,8 @@ void main() {
     expect(find.text('确认镜头'), findsOneWidget);
     expect(find.text('准备资产'), findsOneWidget);
     expect(find.text('合成提示词'), findsOneWidget);
+    expect(find.text('原图'), findsAtLeastNWidgets(2));
+    expect(find.text('复刻分镜'), findsOneWidget);
     expect(find.text('切换脚本模版'), findsOneWidget);
     expect(find.text('全部确认'), findsNothing);
     expect(find.text('清除确认'), findsNothing);
@@ -124,95 +163,92 @@ void main() {
     expect(find.widgetWithText(TextField, '人物拿起产品并看向镜头'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
+    await tester.tap(
+      find.byKey(ValueKey('replicate-shot-replica-thumbnail-${shot.id}')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('script-frame-gallery-image-1-复刻帧')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byTooltip('关闭预览'));
+    await tester.pumpAndSettle();
+
     await tester.tap(find.byKey(const ValueKey('replicate-new-next-assets')));
-    await tester.pump(const Duration(milliseconds: 220));
+    await tester.pumpAndSettle();
 
     expect(
       find.byKey(const ValueKey('replicate-new-prepare-assets-step')),
       findsOneWidget,
     );
     expect(find.text('全局风格'), findsOneWidget);
+    expect(find.text('资产库'), findsOneWidget);
+    expect(find.text('生成参数设置'), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('expand-all-shot-scripts')),
+      findsOneWidget,
+    );
+    expect(find.text('人物拿起产品并看向镜头'), findsNothing);
+    expect(find.text('镜头 01'), findsNothing);
+    expect(find.text('原视频帧'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('expand-all-shot-scripts')));
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(
+      find.byKey(const ValueKey('collapse-all-shot-scripts')),
+      findsOneWidget,
+    );
+    expect(find.text('人物拿起产品并看向镜头'), findsOneWidget);
+    expect(find.text('镜头 01'), findsOneWidget);
+    expect(find.text('原视频帧'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('collapse-all-shot-scripts')));
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(
+      find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
+      findsNothing,
+    );
+    expect(find.text('人物拿起产品并看向镜头'), findsNothing);
+    expect(find.text('镜头 01'), findsNothing);
+    expect(find.text('原视频帧'), findsNothing);
+    final assetScroll = find.byKey(
+      const ValueKey('replicate-asset-library-scroll'),
+    );
+    await tester.drag(assetScroll, const Offset(0, -800));
+    await tester.pumpAndSettle();
+    await tester.drag(assetScroll, const Offset(0, 800));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
+      findsNothing,
+    );
     expect(
       find.byKey(const ValueKey('upload-asset-character')),
       findsOneWidget,
     );
     expect(find.text('角色'), findsOneWidget);
+    await tester.tap(find.text('生成参数设置'));
+    await tester.pumpAndSettle();
+    expect(find.text('一键复刻默认生成参数'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('replicate-generation-model')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('replicate-generation-aspect-ratio')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('replicate-generation-resolution')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
 
     final source = File('${root.path}/character.png');
     await tester.runAsync(() async {
-      await source.writeAsBytes(const [
-        137,
-        80,
-        78,
-        71,
-        13,
-        10,
-        26,
-        10,
-        0,
-        0,
-        0,
-        13,
-        73,
-        72,
-        68,
-        82,
-        0,
-        0,
-        0,
-        1,
-        0,
-        0,
-        0,
-        1,
-        8,
-        6,
-        0,
-        0,
-        0,
-        31,
-        21,
-        196,
-        137,
-        0,
-        0,
-        0,
-        13,
-        73,
-        68,
-        65,
-        84,
-        120,
-        156,
-        99,
-        248,
-        207,
-        192,
-        240,
-        31,
-        0,
-        5,
-        0,
-        1,
-        255,
-        137,
-        153,
-        61,
-        29,
-        0,
-        0,
-        0,
-        0,
-        73,
-        69,
-        78,
-        68,
-        174,
-        66,
-        96,
-        130,
-      ], flush: true);
+      await fixtureImage.copy(source.path);
       await replicateController.importAsset(
         sourcePath: source.path,
         type: ReplicateAssetType.character,
@@ -251,5 +287,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 220));
     expect(find.byKey(const ValueKey('replicate-page')), findsOneWidget);
     expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+    await tester.pump(const Duration(milliseconds: 50));
   });
 }

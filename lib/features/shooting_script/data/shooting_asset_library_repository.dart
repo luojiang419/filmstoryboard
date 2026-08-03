@@ -44,51 +44,79 @@ class ShootingAssetLibraryRepository {
     String name = '',
     String description = '',
   }) async {
-    final source = File(sourcePath);
-    if (!source.existsSync()) {
-      return null;
-    }
+    final items = await importItems([
+      (
+        sourcePath: sourcePath,
+        type: type,
+        name: name,
+        description: description,
+      ),
+    ]);
+    return items.firstOrNull;
+  }
+
+  Future<List<ShootingAssetLibraryItem>> importItems(
+    Iterable<
+      ({
+        String sourcePath,
+        ReplicateAssetType type,
+        String name,
+        String description,
+      })
+    >
+    requests,
+  ) async {
     final directory = await _libraryDirectory();
-    final target = _uniqueFile(directory, p.basename(source.path));
-    await source.copy(target.path);
-    final now = DateTime.now().toUtc();
-    final item = ShootingAssetLibraryItem(
-      id: _uuid.v4(),
-      type: type,
-      name: name.trim().isEmpty
-          ? p.basenameWithoutExtension(source.path)
-          : name.trim(),
-      description: description.trim(),
-      path: target.path,
-      createdAt: now,
-      updatedAt: now,
-    );
-    _saveItems([item, ...listItems()]);
-    return item;
+    final imported = <ShootingAssetLibraryItem>[];
+    for (final request in requests) {
+      final source = File(request.sourcePath);
+      if (!await source.exists()) {
+        continue;
+      }
+      final target = await _uniqueFile(directory, p.basename(source.path));
+      await source.copy(target.path);
+      final now = DateTime.now().toUtc();
+      imported.add(
+        ShootingAssetLibraryItem(
+          id: _uuid.v4(),
+          type: request.type,
+          name: request.name.trim().isEmpty
+              ? p.basenameWithoutExtension(source.path)
+              : request.name.trim(),
+          description: request.description.trim(),
+          path: target.path,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    }
+    if (imported.isNotEmpty) {
+      _upsertItems(imported);
+    }
+    return imported;
   }
 
   void updateItem(ShootingAssetLibraryItem updated) {
-    final items = listItems();
-    final index = items.indexWhere((item) => item.id == updated.id);
-    if (index < 0) {
+    final existing = listItems().where((item) => item.id == updated.id);
+    if (existing.isEmpty) {
       return;
     }
-    final existing = items[index];
-    items[index] = updated.copyWith(
-      name: updated.name.trim().isEmpty ? existing.name : updated.name.trim(),
-      description: updated.description.trim(),
-      updatedAt: DateTime.now().toUtc(),
-    );
-    _saveItems(items);
+    final original = existing.first;
+    _upsertItems([
+      updated.copyWith(
+        name: updated.name.trim().isEmpty ? original.name : updated.name.trim(),
+        description: updated.description.trim(),
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    ]);
   }
 
   Future<void> deleteItem(String id) async {
-    final items = listItems();
-    final removed = items.where((item) => item.id == id).toList();
-    _saveItems([
-      for (final item in items)
-        if (item.id != id) item,
-    ]);
+    final removed = listItems().where((item) => item.id == id).toList();
+    _database.executeStatement(
+      'DELETE FROM shooting_asset_library_items WHERE id = ?;',
+      [id],
+    );
     for (final item in removed) {
       await _deleteManagedFile(item.path);
     }
@@ -133,11 +161,42 @@ class ShootingAssetLibraryRepository {
       _database.executeStatement('ROLLBACK;');
       rethrow;
     }
-    // Keep the old setting as a one-way compatibility copy for older builds.
-    _database.setSetting(
-      _settingKey,
-      jsonEncode([for (final item in normalized) _toJson(item)]),
-    );
+    // The SQLite table is the source of truth after legacy migration. Keeping
+    // the full JSON setting in sync makes each asset edit O(total assets).
+  }
+
+  void _upsertItems(Iterable<ShootingAssetLibraryItem> items) {
+    _database.executeStatement('BEGIN IMMEDIATE;');
+    try {
+      for (final item in items) {
+        _database.executeStatement(
+          '''
+          INSERT INTO shooting_asset_library_items(
+            id, asset_type, name, description, path, created_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            asset_type = excluded.asset_type,
+            name = excluded.name,
+            description = excluded.description,
+            path = excluded.path,
+            updated_at = excluded.updated_at;
+          ''',
+          [
+            item.id,
+            item.type.name,
+            item.name,
+            item.description,
+            item.path,
+            item.createdAt.toIso8601String(),
+            item.updatedAt.toIso8601String(),
+          ],
+        );
+      }
+      _database.executeStatement('COMMIT;');
+    } catch (_) {
+      _database.executeStatement('ROLLBACK;');
+      rethrow;
+    }
   }
 
   List<ShootingAssetLibraryItem> _readLegacyItems() {
@@ -210,25 +269,15 @@ class ShootingAssetLibraryRepository {
     );
   }
 
-  static Map<String, Object?> _toJson(ShootingAssetLibraryItem item) => {
-    'id': item.id,
-    'type': item.type.name,
-    'name': item.name,
-    'description': item.description,
-    'path': item.path,
-    'createdAt': item.createdAt.toIso8601String(),
-    'updatedAt': item.updatedAt.toIso8601String(),
-  };
-
-  static File _uniqueFile(Directory directory, String name) {
+  static Future<File> _uniqueFile(Directory directory, String name) async {
     var file = File(p.join(directory.path, name));
-    if (!file.existsSync()) {
+    if (!await file.exists()) {
       return file;
     }
     final extension = p.extension(name);
     final base = p.basenameWithoutExtension(name);
     var suffix = 2;
-    while (file.existsSync()) {
+    while (await file.exists()) {
       file = File(p.join(directory.path, '$base ($suffix)$extension'));
       suffix++;
     }

@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 import '../../../core/database/app_database.dart';
 
+/// 自动扩展故事板时允许的单边宫格上限（最多 10,000 张图片）。
+const storyboardMaxGridExtent = 100;
+
 class StoryboardCutAsset {
   const StoryboardCutAsset({
     required this.id,
@@ -326,8 +329,15 @@ class StoryboardBoard {
     bool portraitMode = false,
   }) {
     final safeWidth = width.clamp(1, 12000).toInt();
-    final safeRows = rows.clamp(1, portraitMode ? 144 : 12).toInt();
-    final safeColumns = columns.clamp(1, 12).toInt();
+    final safeRows = rows
+        .clamp(
+          1,
+          portraitMode
+              ? storyboardMaxGridExtent * storyboardMaxGridExtent
+              : storyboardMaxGridExtent,
+        )
+        .toInt();
+    final safeColumns = columns.clamp(1, storyboardMaxGridExtent).toInt();
     final titleHeight = titleHeightFor(captionFontSize);
     final cellWidth = math.max(
       1.0,
@@ -503,6 +513,7 @@ class StoryboardBoard {
   }
 
   StoryboardBoard copyWith({
+    String? id,
     String? name,
     int? width,
     int? height,
@@ -528,7 +539,7 @@ class StoryboardBoard {
     bool clearSummary = false,
   }) {
     return StoryboardBoard(
-      id: id,
+      id: id ?? this.id,
       name: name ?? this.name,
       width: width ?? this.width,
       height: height ?? this.height,

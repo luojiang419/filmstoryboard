@@ -327,6 +327,95 @@ void main() {
       ProcessingStatus.pending,
     );
   });
+
+  test('仅 MiniMax-M3 使用 200 路帧解析并发', () {
+    final miniMaxSettings = _testSettings().copyWith(
+      visionApiBaseUrl: 'https://api.minimaxi.com',
+      visionModel: 'MiniMax-M3',
+    );
+
+    expect(
+      VideoAnalysisService.maxConcurrentFrameRequestsFor(miniMaxSettings),
+      200,
+    );
+    expect(
+      VideoAnalysisService.maxConcurrentFrameRequestsFor(
+        miniMaxSettings.copyWith(visionModel: 'MiniMax-M2'),
+      ),
+      1,
+    );
+    expect(
+      VideoAnalysisService.maxConcurrentFrameRequestsFor(
+        miniMaxSettings.copyWith(visionApiBaseUrl: 'https://example.com'),
+      ),
+      1,
+    );
+  });
+
+  test('MiniMax-M3 会并行处理视频帧', () async {
+    final repository = VideoAnalysisRepository(database);
+    final now = DateTime.utc(2026, 8, 2);
+    final video = SourceVideo(
+      id: 'video-parallel',
+      originalPath: 'parallel.mp4',
+      fileName: 'parallel.mp4',
+      storedPath: 'videos/parallel.mp4',
+      durationMs: 3000,
+      frameRate: 24,
+      width: 1920,
+      height: 1080,
+      hasAudio: true,
+      frameCount: 3,
+      successfulFrames: 0,
+      failedFrames: 0,
+      status: ProcessingStatus.pending,
+      errorMessage: '',
+      createdAt: now,
+      updatedAt: now,
+    );
+    final frames = List.generate(
+      3,
+      (index) => VideoFrame(
+        id: 'frame-parallel-$index',
+        videoId: video.id,
+        index: index,
+        timestampMs: index * 1000,
+        path: 'frames/parallel-$index.jpg',
+        width: 1920,
+        height: 1080,
+        sharpness: 0.9,
+        brightness: 0.5,
+        motionScore: 0,
+        perceptualHash: 'hash-parallel-$index',
+        isFocus: true,
+        isSelected: true,
+        status: ProcessingStatus.pending,
+        errorMessage: '',
+        createdAt: now,
+      ),
+    );
+    repository.upsertSourceVideo(video);
+    for (final frame in frames) {
+      repository.upsertVideoFrame(frame);
+    }
+    final visionService = _ConcurrentVisionStoryboardService();
+    final service = VideoAnalysisService(
+      repository: repository,
+      visionService: visionService,
+    );
+
+    final result = await service.analyzeFrames(
+      settings: _testSettings().copyWith(
+        visionApiBaseUrl: 'https://api.minimaxi.com',
+        visionModel: 'MiniMax-M3',
+      ),
+      video: video,
+      frames: frames,
+    );
+
+    expect(result.completedCount, 3);
+    expect(visionService.maxActiveRequests, 3);
+  });
 }
 
 AppSettings _testSettings() {
@@ -378,5 +467,71 @@ class _BlockingVisionStoryboardService extends VisionStoryboardService {
     if (!_blocker.isCompleted) {
       _blocker.completeError(const FormatException('cancelled'));
     }
+  }
+}
+
+class _ConcurrentVisionStoryboardService extends VisionStoryboardService {
+  var _activeRequests = 0;
+  var maxActiveRequests = 0;
+
+  @override
+  Future<VisionImageAnalysis> analyzeImage({
+    required AppSettings settings,
+    required File imageFile,
+    required int sequenceNo,
+    required int rowIndex,
+    required int columnIndex,
+    bool allowThinking = false,
+    void Function(VisionImageRecoveryMode mode)? onRecovery,
+  }) async {
+    _activeRequests++;
+    if (_activeRequests > maxActiveRequests) {
+      maxActiveRequests = _activeRequests;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    _activeRequests--;
+    return VisionImageAnalysis(
+      caption: '镜头 $sequenceNo',
+      detail: '测试详情',
+      scene: '测试场景',
+      props: '',
+      people: '',
+      expression: '',
+      bodyAction: '',
+      movementTrend: '',
+      shotSize: '中景',
+      composition: '',
+      subjectDirection: '',
+      gazeDirection: '',
+      actionStage: '',
+      spatialRelation: '',
+      chronologyCue: '',
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionStoryboardSummaryResult> summarizeStoryboard({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
+  }) async {
+    return const VisionStoryboardSummaryResult(
+      outline: '测试大纲',
+      content: '测试内容',
+      scenes: '测试场景',
+      props: '',
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionVideoDimensionResult> analyzeVideoDimensions({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    required Map<String, String> summary,
+    bool allowThinking = false,
+  }) async {
+    return const VisionVideoDimensionResult(dimensions: {}, rawResponse: '{}');
   }
 }

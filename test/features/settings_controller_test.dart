@@ -5,6 +5,8 @@ import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/settings/domain/image_generation_api_config.dart';
+import 'package:filmstoryboard/features/settings/domain/vision_api_config.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -29,6 +31,86 @@ void main() {
     expect(controller.value.navigationPosition, AppNavigationPosition.left);
     expect(repository.load().navigationPosition, AppNavigationPosition.left);
     expect(database.getSetting('navigationPosition'), 'left');
+  });
+
+  test('视觉模型卡片可新增、切换并持久化', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'settings_vision_cards_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    final miniMax = const VisionApiConfig(
+      id: 'test-minimax',
+      name: 'MiniMax M3 测试',
+      baseUrl: 'https://api.minimaxi.com',
+      apiKey: 'test-key',
+      model: 'MiniMax-M3',
+    );
+    await controller.saveVisionApiConfig(miniMax);
+    await controller.setActiveVisionApiConfig(miniMax.id);
+
+    final restored = repository.load();
+    expect(restored.activeVisionApiConfigId, miniMax.id);
+    expect(restored.visionApiBaseUrl, miniMax.baseUrl);
+    expect(restored.visionApiKey, miniMax.apiKey);
+    expect(restored.visionModel, miniMax.model);
+    expect(restored.visionMaxRequestsPerMinute, 200);
+    expect(restored.visionApiConfigs, contains(isA<VisionApiConfig>()));
+
+    await controller.setVisionApiConfigMaxRequestsPerMinute(miniMax.id, 37);
+
+    final reloaded = repository.load();
+    expect(reloaded.activeVisionApiConfig?.maxRequestsPerMinute, 37);
+    expect(reloaded.visionMaxRequestsPerMinute, 37);
+  });
+
+  test('图片生成 API 卡片可新增、设为默认并持久化', () async {
+    final root = await Directory.systemTemp.createTemp('settings_image_cards_');
+    addTearDown(() => root.delete(recursive: true));
+
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    const config = ImageGenerationApiConfig(
+      id: 'test-gemini-image',
+      name: 'Gemini 图片测试',
+      baseUrl: 'https://gemini.example',
+      apiKey: 'test-key',
+      model: 'gemini-3-pro-image',
+    );
+    await controller.saveImageGenerationApiConfig(config);
+
+    expect(controller.value.activeImageGenerationApiConfigId, config.id);
+    expect(controller.value.imageGenerationModel, config.model);
+    expect(
+      controller.value.activeImageGenerationApiConfig?.apiKey,
+      config.apiKey,
+    );
+
+    final restored = repository.load();
+    expect(restored.activeImageGenerationApiConfigId, config.id);
+    expect(restored.imageGenerationModel, config.model);
+    expect(
+      restored.imageGenerationApiConfigs.map((item) => item.id),
+      contains(config.id),
+    );
   });
 
   test('视频抽帧配置会校验范围并持久化', () async {

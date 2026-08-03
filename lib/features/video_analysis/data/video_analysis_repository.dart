@@ -130,6 +130,12 @@ class VideoAnalysisRepository {
       .map(_videoFrame)
       .toList();
 
+  void deleteVideoFrame(String frameId) {
+    _database.executeStatement('DELETE FROM video_frames WHERE id = ?;', [
+      frameId,
+    ]);
+  }
+
   void upsertVideoShot(VideoShot shot) {
     _database.executeStatement('BEGIN IMMEDIATE;');
     try {
@@ -426,16 +432,22 @@ class VideoAnalysisRepository {
       '''
       INSERT INTO replicate_runs(
         id, video_id, script_id, global_style, constraints_text,
+        generation_model, generation_aspect_ratio, generation_image_size,
+        generation_quality,
         confirmed_shot_ids_json, image_reference_count, video_reference_count,
         audio_reference_count, current_step, status, confirm_shots_status,
         prepare_assets_status, compose_prompts_status, completed_count,
         total_count, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         script_id = excluded.script_id,
         global_style = excluded.global_style,
         constraints_text = excluded.constraints_text,
+        generation_model = excluded.generation_model,
+        generation_aspect_ratio = excluded.generation_aspect_ratio,
+        generation_image_size = excluded.generation_image_size,
+        generation_quality = excluded.generation_quality,
         confirmed_shot_ids_json = excluded.confirmed_shot_ids_json,
         image_reference_count = excluded.image_reference_count,
         video_reference_count = excluded.video_reference_count,
@@ -456,6 +468,10 @@ class VideoAnalysisRepository {
         run.scriptId ?? '',
         run.globalStyle,
         run.constraints,
+        run.generationModel,
+        run.generationAspectRatio,
+        run.generationImageSize,
+        run.generationQuality,
         jsonEncode(run.confirmedShotIds),
         run.imageReferenceCount,
         run.videoReferenceCount,
@@ -746,6 +762,11 @@ class VideoAnalysisRepository {
           : row['script_id'] as String?,
       globalStyle: row['global_style'] as String? ?? '',
       constraints: row['constraints_text'] as String? ?? '',
+      generationModel: row['generation_model'] as String? ?? '',
+      generationAspectRatio:
+          row['generation_aspect_ratio'] as String? ?? '16:9',
+      generationImageSize: row['generation_image_size'] as String? ?? '',
+      generationQuality: row['generation_quality'] as String? ?? '',
       confirmedShotIds: confirmedJson is List
           ? confirmedJson.map((value) => '$value').toList()
           : const [],

@@ -20,6 +20,10 @@ class ReplicateRun {
     this.scriptId,
     this.globalStyle = '',
     this.constraints = '',
+    this.generationModel = '',
+    this.generationAspectRatio = '16:9',
+    this.generationImageSize = '',
+    this.generationQuality = '',
     this.confirmedShotIds = const [],
     this.imageReferenceCount = 0,
     this.videoReferenceCount = 0,
@@ -41,6 +45,12 @@ class ReplicateRun {
   final String? scriptId;
   final String globalStyle;
   final String constraints;
+
+  /// 复刻任务专属的默认出图参数，不影响应用的全局图片生成设置。
+  final String generationModel;
+  final String generationAspectRatio;
+  final String generationImageSize;
+  final String generationQuality;
   final List<String> confirmedShotIds;
   final int imageReferenceCount;
   final int videoReferenceCount;
@@ -61,6 +71,10 @@ class ReplicateRun {
     String? scriptId,
     String? globalStyle,
     String? constraints,
+    String? generationModel,
+    String? generationAspectRatio,
+    String? generationImageSize,
+    String? generationQuality,
     List<String>? confirmedShotIds,
     int? imageReferenceCount,
     int? videoReferenceCount,
@@ -80,6 +94,10 @@ class ReplicateRun {
     scriptId: scriptId ?? this.scriptId,
     globalStyle: globalStyle ?? this.globalStyle,
     constraints: constraints ?? this.constraints,
+    generationModel: generationModel ?? this.generationModel,
+    generationAspectRatio: generationAspectRatio ?? this.generationAspectRatio,
+    generationImageSize: generationImageSize ?? this.generationImageSize,
+    generationQuality: generationQuality ?? this.generationQuality,
     confirmedShotIds: confirmedShotIds ?? this.confirmedShotIds,
     imageReferenceCount: imageReferenceCount ?? this.imageReferenceCount,
     videoReferenceCount: videoReferenceCount ?? this.videoReferenceCount,

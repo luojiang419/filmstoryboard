@@ -3,6 +3,9 @@ import 'package:flutter/foundation.dart';
 import '../data/settings_repository.dart';
 import '../domain/api_endpoint_normalizer.dart';
 import '../domain/app_settings.dart';
+import '../domain/image_generation_api_config.dart';
+import '../domain/vision_api_config.dart';
+import '../../storyboard/domain/image_generation_model_catalog.dart';
 
 class SettingsController extends ValueNotifier<AppSettings> {
   SettingsController({
@@ -126,21 +129,27 @@ class SettingsController extends ValueNotifier<AppSettings> {
   }
 
   Future<void> setVisionApiBaseUrl(String baseUrl) async {
-    final next = value.copyWith(visionApiBaseUrl: baseUrl.trim());
-    _repository.save(next);
-    value = next;
+    await setVisionSettings(
+      baseUrl: baseUrl,
+      apiKey: value.visionApiKey,
+      model: value.visionModel,
+    );
   }
 
   Future<void> setVisionApiKey(String apiKey) async {
-    final next = value.copyWith(visionApiKey: apiKey.trim());
-    _repository.save(next);
-    value = next;
+    await setVisionSettings(
+      baseUrl: value.visionApiBaseUrl,
+      apiKey: apiKey,
+      model: value.visionModel,
+    );
   }
 
   Future<void> setVisionModel(String model) async {
-    final next = value.copyWith(visionModel: model.trim());
-    _repository.save(next);
-    value = next;
+    await setVisionSettings(
+      baseUrl: value.visionApiBaseUrl,
+      apiKey: value.visionApiKey,
+      model: model,
+    );
   }
 
   Future<void> setVisionSettings({
@@ -148,13 +157,228 @@ class SettingsController extends ValueNotifier<AppSettings> {
     required String apiKey,
     required String model,
   }) async {
+    final activeId = value.activeVisionApiConfigId;
+    final configs = [
+      for (final config in value.visionApiConfigs)
+        if (config.id == activeId)
+          config.copyWith(
+            baseUrl: baseUrl.trim(),
+            apiKey: apiKey.trim(),
+            model: model.trim(),
+          )
+        else
+          config,
+    ];
+    final active = configs.firstWhere(
+      (config) => config.id == activeId,
+      orElse: () => VisionApiConfig(
+        id: 'vision-${DateTime.now().microsecondsSinceEpoch}',
+        name: '当前视觉模型',
+        baseUrl: baseUrl.trim(),
+        apiKey: apiKey.trim(),
+        model: model.trim(),
+      ),
+    );
     final next = value.copyWith(
-      visionApiBaseUrl: baseUrl.trim(),
-      visionApiKey: apiKey.trim(),
-      visionModel: model.trim(),
+      visionApiBaseUrl: active.baseUrl,
+      visionApiKey: active.apiKey,
+      visionModel: active.model,
+      visionApiConfigs: configs.isEmpty ? [active] : configs,
+      activeVisionApiConfigId: active.id,
     );
     _repository.save(next);
     value = next;
+  }
+
+  Future<void> saveVisionApiConfig(VisionApiConfig config) async {
+    final existing = value.visionApiConfigs.any((item) => item.id == config.id);
+    final configs = [
+      for (final item in value.visionApiConfigs)
+        if (item.id == config.id) config else item,
+      if (!existing) config,
+    ];
+    final isActive =
+        value.activeVisionApiConfigId.isEmpty ||
+        value.activeVisionApiConfigId == config.id;
+    final next = value.copyWith(
+      visionApiConfigs: configs,
+      activeVisionApiConfigId: isActive
+          ? config.id
+          : value.activeVisionApiConfigId,
+      visionApiBaseUrl: isActive
+          ? config.baseUrl.trim()
+          : value.visionApiBaseUrl,
+      visionApiKey: isActive ? config.apiKey.trim() : value.visionApiKey,
+      visionModel: isActive ? config.model.trim() : value.visionModel,
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setActiveVisionApiConfig(String configId) async {
+    final config = value.visionApiConfigs.firstWhere(
+      (item) => item.id == configId,
+      orElse: () => throw ArgumentError.value(configId, 'configId'),
+    );
+    final next = value.copyWith(
+      activeVisionApiConfigId: config.id,
+      visionApiBaseUrl: config.baseUrl.trim(),
+      visionApiKey: config.apiKey.trim(),
+      visionModel: config.model.trim(),
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setFullAutomationEnabled(bool enabled) async {
+    final next = value.copyWith(fullAutomationEnabled: enabled);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setVisionApiConfigMaxRequestsPerMinute(
+    String configId,
+    int maxRequestsPerMinute,
+  ) async {
+    final normalized = maxRequestsPerMinute.clamp(1, 200);
+    final configs = [
+      for (final config in value.visionApiConfigs)
+        if (config.id == configId)
+          config.copyWith(maxRequestsPerMinute: normalized)
+        else
+          config,
+    ];
+    if (configs.length == value.visionApiConfigs.length &&
+        !configs.any((config) => config.id == configId)) {
+      return;
+    }
+    final active = configs.firstWhere(
+      (config) => config.id == value.activeVisionApiConfigId,
+      orElse: () => configs.first,
+    );
+    final next = value.copyWith(
+      visionApiConfigs: configs,
+      visionApiBaseUrl: active.baseUrl.trim(),
+      visionApiKey: active.apiKey.trim(),
+      visionModel: active.model.trim(),
+      activeVisionApiConfigId: active.id,
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> deleteVisionApiConfig(String configId) async {
+    if (value.visionApiConfigs.length <= 1) {
+      return;
+    }
+    final configs = value.visionApiConfigs
+        .where((item) => item.id != configId)
+        .toList();
+    final active = configs.firstWhere(
+      (item) => item.id == value.activeVisionApiConfigId,
+      orElse: () => configs.first,
+    );
+    final next = value.copyWith(
+      visionApiConfigs: configs,
+      activeVisionApiConfigId: active.id,
+      visionApiBaseUrl: active.baseUrl.trim(),
+      visionApiKey: active.apiKey.trim(),
+      visionModel: active.model.trim(),
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> saveImageGenerationApiConfig(
+    ImageGenerationApiConfig config,
+  ) async {
+    final descriptor = ImageGenerationCatalog.descriptorFor(config.model);
+    if (descriptor == null) {
+      throw FormatException('请选择支持的图片生成模型');
+    }
+    final normalized = config.copyWith(
+      name: config.name.trim().isEmpty ? '未命名图片生成 API' : config.name.trim(),
+      baseUrl: descriptor.protocol == ImageGenerationProviderProtocol.apiMart
+          ? ApiEndpointNormalizer.normalizeApiMartBaseUrl(config.baseUrl)
+          : config.baseUrl.trim(),
+      apiKey: config.apiKey.trim(),
+      model: config.model.trim(),
+    );
+    final exists = value.imageGenerationApiConfigs.any(
+      (item) => item.id == normalized.id,
+    );
+    final configs = [
+      for (final item in value.imageGenerationApiConfigs)
+        if (item.id == normalized.id) normalized else item,
+      if (!exists) normalized,
+    ];
+    final activeId = exists
+        ? value.activeImageGenerationApiConfigId
+        : normalized.id;
+    final active = configs.firstWhere(
+      (item) => item.id == activeId,
+      orElse: () => configs.first,
+    );
+    final next = _withActiveImageGenerationConfig(
+      value.copyWith(imageGenerationApiConfigs: configs),
+      active,
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setActiveImageGenerationApiConfig(String configId) async {
+    final config = value.imageGenerationApiConfigs.firstWhere(
+      (item) => item.id == configId,
+      orElse: () => throw ArgumentError.value(configId, 'configId'),
+    );
+    final next = _withActiveImageGenerationConfig(value, config);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> deleteImageGenerationApiConfig(String configId) async {
+    if (value.imageGenerationApiConfigs.length <= 1) return;
+    final configs = value.imageGenerationApiConfigs
+        .where((item) => item.id != configId)
+        .toList();
+    final active = configs.firstWhere(
+      (item) => item.id == value.activeImageGenerationApiConfigId,
+      orElse: () => configs.first,
+    );
+    final next = _withActiveImageGenerationConfig(
+      value.copyWith(imageGenerationApiConfigs: configs),
+      active,
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  AppSettings _withActiveImageGenerationConfig(
+    AppSettings settings,
+    ImageGenerationApiConfig config,
+  ) {
+    return switch (config.protocol) {
+      ImageGenerationProviderProtocol.grsai => settings.copyWith(
+        activeImageGenerationApiConfigId: config.id,
+        imageGenerationModel: config.model,
+        imageGenerationApiBaseUrl: config.baseUrl,
+        imageGenerationApiKey: config.apiKey,
+      ),
+      ImageGenerationProviderProtocol.gemini => settings.copyWith(
+        activeImageGenerationApiConfigId: config.id,
+        imageGenerationModel: config.model,
+        imageGenerationGeminiApiBaseUrl: config.baseUrl,
+        imageGenerationGeminiApiKey: config.apiKey,
+      ),
+      ImageGenerationProviderProtocol.apiMart => settings.copyWith(
+        activeImageGenerationApiConfigId: config.id,
+        imageGenerationModel: config.model,
+        imageGenerationApiMartApiBaseUrl: config.baseUrl,
+        imageGenerationApiMartApiKey: config.apiKey,
+      ),
+      null => throw FormatException('图片生成 API 卡片的模型不受支持'),
+    };
   }
 
   Future<void> setImageGenerationApiBaseUrl(String baseUrl) async {
@@ -226,10 +450,19 @@ class SettingsController extends ValueNotifier<AppSettings> {
     required String baseUrl,
     required String apiKey,
   }) async {
+    final normalizedBaseUrl = ApiEndpointNormalizer.normalizeApiMartBaseUrl(
+      baseUrl,
+    );
     final next = value.copyWith(
-      imageGenerationApiMartApiBaseUrl:
-          ApiEndpointNormalizer.normalizeApiMartBaseUrl(baseUrl),
+      imageGenerationApiMartApiBaseUrl: normalizedBaseUrl,
       imageGenerationApiMartApiKey: apiKey.trim(),
+      imageGenerationApiConfigs: [
+        for (final config in value.imageGenerationApiConfigs)
+          if (config.protocol == ImageGenerationProviderProtocol.apiMart)
+            config.copyWith(baseUrl: normalizedBaseUrl, apiKey: apiKey.trim())
+          else
+            config,
+      ],
     );
     _repository.save(next);
     value = next;
@@ -250,7 +483,44 @@ class SettingsController extends ValueNotifier<AppSettings> {
     String? apiMartApiKey,
     required String model,
   }) async {
-    final next = value.copyWith(
+    final normalizedModel = model.trim();
+    final descriptor = ImageGenerationCatalog.descriptorFor(normalizedModel);
+    final matchingConfigIndex = descriptor == null
+        ? -1
+        : value.imageGenerationApiConfigs.indexWhere(
+            (config) => config.protocol == descriptor.protocol,
+          );
+    final configs = [...value.imageGenerationApiConfigs];
+    for (var index = 0; index < configs.length; index++) {
+      final current = configs[index];
+      configs[index] = switch (current.protocol) {
+        ImageGenerationProviderProtocol.gemini => current.copyWith(
+          baseUrl: geminiBaseUrl?.trim() ?? current.baseUrl,
+          apiKey: geminiApiKey.trim(),
+          model: descriptor?.protocol == ImageGenerationProviderProtocol.gemini
+              ? normalizedModel
+              : current.model,
+        ),
+        ImageGenerationProviderProtocol.apiMart => current.copyWith(
+          baseUrl: apiMartBaseUrl == null
+              ? current.baseUrl
+              : ApiEndpointNormalizer.normalizeApiMartBaseUrl(apiMartBaseUrl),
+          apiKey: apiMartApiKey?.trim() ?? current.apiKey,
+          model: descriptor?.protocol == ImageGenerationProviderProtocol.apiMart
+              ? normalizedModel
+              : current.model,
+        ),
+        ImageGenerationProviderProtocol.grsai => current.copyWith(
+          baseUrl: baseUrl.trim(),
+          apiKey: grsaiApiKey.trim(),
+          model: descriptor?.protocol == ImageGenerationProviderProtocol.grsai
+              ? normalizedModel
+              : current.model,
+        ),
+        null => current,
+      };
+    }
+    var next = value.copyWith(
       imageGenerationApiBaseUrl: baseUrl.trim(),
       imageGenerationApiKey: grsaiApiKey.trim(),
       imageGenerationGeminiApiBaseUrl: geminiBaseUrl?.trim(),
@@ -259,8 +529,15 @@ class SettingsController extends ValueNotifier<AppSettings> {
           ? null
           : ApiEndpointNormalizer.normalizeApiMartBaseUrl(apiMartBaseUrl),
       imageGenerationApiMartApiKey: apiMartApiKey?.trim(),
-      imageGenerationModel: model.trim(),
+      imageGenerationModel: normalizedModel,
+      imageGenerationApiConfigs: configs,
     );
+    if (matchingConfigIndex >= 0) {
+      next = _withActiveImageGenerationConfig(
+        next,
+        configs[matchingConfigIndex],
+      );
+    }
     _repository.save(next);
     value = next;
   }

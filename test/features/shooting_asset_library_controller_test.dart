@@ -65,4 +65,50 @@ void main() {
     expect(restored.value.items, isEmpty);
     expect(File(copiedPath).existsSync(), isFalse);
   });
+
+  test('批量添加资产只提交一次可观察状态并保留全部文件', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'shooting_asset_library_batch_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final controller = ShootingAssetLibraryController(
+      repository: ShootingAssetLibraryRepository(
+        database: database,
+        directories: directories,
+      ),
+      directories: directories,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    final paths = <String>[];
+    for (var index = 0; index < 3; index++) {
+      final file = File(p.join(root.path, 'asset-$index.png'));
+      await file.writeAsBytes([index + 1]);
+      paths.add(file.path);
+    }
+
+    var notifications = 0;
+    controller.addListener(() => notifications++);
+    final imported = await controller.importItems([
+      for (final path in paths)
+        (
+          sourcePath: path,
+          type: ReplicateAssetType.character,
+          name: '',
+          description: '',
+        ),
+    ]);
+
+    expect(imported, hasLength(3));
+    expect(notifications, 2);
+    expect(controller.value.items, hasLength(3));
+    expect(
+      controller.value.items.every((item) => File(item.path).existsSync()),
+      isTrue,
+    );
+  });
 }

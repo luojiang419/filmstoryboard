@@ -1,3 +1,6 @@
+import 'image_generation_api_config.dart';
+import 'vision_api_config.dart';
+
 enum AppThemePreference {
   system('跟随系统'),
   light('浅色'),
@@ -98,6 +101,7 @@ class AppSettings {
     this.videoSceneThreshold = 0.3,
     this.videoMinimumSharpness = 0.08,
     this.videoAnalysisThinkingEnabled = false,
+    this.fullAutomationEnabled = false,
     this.replicateDefaultGlobalStyle = defaultReplicateGlobalStyle,
     this.replicateDefaultConstraints = defaultReplicateConstraints,
     required this.cutImageNumberEnabled,
@@ -109,6 +113,8 @@ class AppSettings {
     required this.visionApiBaseUrl,
     required this.visionApiKey,
     required this.visionModel,
+    this.visionApiConfigs = const [],
+    this.activeVisionApiConfigId = '',
     required this.imageGenerationApiBaseUrl,
     required this.imageGenerationApiKey,
     this.imageGenerationGeminiApiBaseUrl =
@@ -118,6 +124,8 @@ class AppSettings {
         defaultImageGenerationApiMartApiBaseUrl,
     this.imageGenerationApiMartApiKey = '',
     required this.imageGenerationModel,
+    this.imageGenerationApiConfigs = const [],
+    this.activeImageGenerationApiConfigId = '',
     required this.updateReleaseApiUrl,
     required this.autoInstallUpdates,
     required this.updateDownloadMode,
@@ -144,6 +152,7 @@ class AppSettings {
   final double videoSceneThreshold;
   final double videoMinimumSharpness;
   final bool videoAnalysisThinkingEnabled;
+  final bool fullAutomationEnabled;
   final String replicateDefaultGlobalStyle;
   final String replicateDefaultConstraints;
   final bool cutImageNumberEnabled;
@@ -155,6 +164,18 @@ class AppSettings {
   final String visionApiBaseUrl;
   final String visionApiKey;
   final String visionModel;
+  final List<VisionApiConfig> visionApiConfigs;
+  final String activeVisionApiConfigId;
+
+  VisionApiConfig? get activeVisionApiConfig {
+    for (final config in visionApiConfigs) {
+      if (config.id == activeVisionApiConfigId) return config;
+    }
+    return visionApiConfigs.isEmpty ? null : visionApiConfigs.first;
+  }
+
+  int get visionMaxRequestsPerMinute =>
+      activeVisionApiConfig?.maxRequestsPerMinute ?? 200;
   final String imageGenerationApiBaseUrl;
   final String imageGenerationApiKey;
   final String imageGenerationGeminiApiBaseUrl;
@@ -162,6 +183,18 @@ class AppSettings {
   final String imageGenerationApiMartApiBaseUrl;
   final String imageGenerationApiMartApiKey;
   final String imageGenerationModel;
+  final List<ImageGenerationApiConfig> imageGenerationApiConfigs;
+  final String activeImageGenerationApiConfigId;
+
+  ImageGenerationApiConfig? get activeImageGenerationApiConfig {
+    for (final config in imageGenerationApiConfigs) {
+      if (config.id == activeImageGenerationApiConfigId) return config;
+    }
+    return imageGenerationApiConfigs.isEmpty
+        ? null
+        : imageGenerationApiConfigs.first;
+  }
+
   final String updateReleaseApiUrl;
   final bool autoInstallUpdates;
   final UpdateDownloadMode updateDownloadMode;
@@ -178,6 +211,7 @@ class AppSettings {
     double? videoSceneThreshold,
     double? videoMinimumSharpness,
     bool? videoAnalysisThinkingEnabled,
+    bool? fullAutomationEnabled,
     String? replicateDefaultGlobalStyle,
     String? replicateDefaultConstraints,
     bool? cutImageNumberEnabled,
@@ -189,6 +223,8 @@ class AppSettings {
     String? visionApiBaseUrl,
     String? visionApiKey,
     String? visionModel,
+    List<VisionApiConfig>? visionApiConfigs,
+    String? activeVisionApiConfigId,
     String? imageGenerationApiBaseUrl,
     String? imageGenerationApiKey,
     String? imageGenerationGeminiApiBaseUrl,
@@ -196,6 +232,8 @@ class AppSettings {
     String? imageGenerationApiMartApiBaseUrl,
     String? imageGenerationApiMartApiKey,
     String? imageGenerationModel,
+    List<ImageGenerationApiConfig>? imageGenerationApiConfigs,
+    String? activeImageGenerationApiConfigId,
     String? updateReleaseApiUrl,
     bool? autoInstallUpdates,
     UpdateDownloadMode? updateDownloadMode,
@@ -216,6 +254,8 @@ class AppSettings {
           videoMinimumSharpness ?? this.videoMinimumSharpness,
       videoAnalysisThinkingEnabled:
           videoAnalysisThinkingEnabled ?? this.videoAnalysisThinkingEnabled,
+      fullAutomationEnabled:
+          fullAutomationEnabled ?? this.fullAutomationEnabled,
       replicateDefaultGlobalStyle:
           replicateDefaultGlobalStyle ?? this.replicateDefaultGlobalStyle,
       replicateDefaultConstraints:
@@ -236,6 +276,9 @@ class AppSettings {
       visionApiBaseUrl: visionApiBaseUrl ?? this.visionApiBaseUrl,
       visionApiKey: visionApiKey ?? this.visionApiKey,
       visionModel: visionModel ?? this.visionModel,
+      visionApiConfigs: visionApiConfigs ?? this.visionApiConfigs,
+      activeVisionApiConfigId:
+          activeVisionApiConfigId ?? this.activeVisionApiConfigId,
       imageGenerationApiBaseUrl:
           imageGenerationApiBaseUrl ?? this.imageGenerationApiBaseUrl,
       imageGenerationApiKey:
@@ -251,6 +294,11 @@ class AppSettings {
       imageGenerationApiMartApiKey:
           imageGenerationApiMartApiKey ?? this.imageGenerationApiMartApiKey,
       imageGenerationModel: imageGenerationModel ?? this.imageGenerationModel,
+      imageGenerationApiConfigs:
+          imageGenerationApiConfigs ?? this.imageGenerationApiConfigs,
+      activeImageGenerationApiConfigId:
+          activeImageGenerationApiConfigId ??
+          this.activeImageGenerationApiConfigId,
       updateReleaseApiUrl: updateReleaseApiUrl ?? this.updateReleaseApiUrl,
       autoInstallUpdates: autoInstallUpdates ?? this.autoInstallUpdates,
       updateDownloadMode: updateDownloadMode ?? this.updateDownloadMode,

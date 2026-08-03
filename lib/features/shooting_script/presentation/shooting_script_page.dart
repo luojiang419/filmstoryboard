@@ -368,9 +368,10 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     final files = await openFiles(
       acceptedTypeGroups: const [ShootingScriptPage._assetTypes],
     );
-    for (final file in files) {
-      await controller.importItem(sourcePath: file.path, type: type);
-    }
+    await controller.importItems([
+      for (final file in files)
+        (sourcePath: file.path, type: type, name: '', description: ''),
+    ]);
   }
 
   Future<void> _manualAddLibraryAsset(
@@ -1022,54 +1023,79 @@ class _AssetLibraryPanel extends StatelessWidget {
                   Expanded(
                     child: state.items.isEmpty
                         ? const Center(child: Text('暂无常用资产'))
-                        : ListView(
-                            children: [
-                              for (final type in ReplicateAssetType.values)
-                                if (state.items.any(
-                                  (item) => item.type == type,
-                                )) ...[
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      top: 8,
-                                      bottom: 6,
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Icon(type.icon, size: 16),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          type.label,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .labelLarge
-                                              ?.copyWith(
-                                                fontWeight: FontWeight.w800,
-                                              ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          '${state.items.where((item) => item.type == type).length}',
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.labelSmall,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  for (final item in state.items)
-                                    if (item.type == type) ...[
-                                      _CompactLibraryAssetCard(item: item),
-                                      const SizedBox(height: 8),
-                                    ],
-                                ],
-                            ],
-                          ),
+                        : _LazyAssetLibraryList(items: state.items),
                   ),
                 ],
               ),
             ),
     );
   }
+}
+
+class _LazyAssetLibraryList extends StatelessWidget {
+  const _LazyAssetLibraryList({required this.items});
+
+  final List<ShootingAssetLibraryItem> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = <_AssetLibraryListEntry>[];
+    for (final type in ReplicateAssetType.values) {
+      final typedItems = [
+        for (final item in items)
+          if (item.type == type) item,
+      ];
+      if (typedItems.isEmpty) {
+        continue;
+      }
+      entries.add(_AssetLibraryListEntry.header(type, typedItems.length));
+      for (final item in typedItems) {
+        entries.add(_AssetLibraryListEntry.item(item));
+      }
+    }
+    return ListView.builder(
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        if (entry.type case final type?) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 6),
+            child: Row(
+              children: [
+                Icon(type.icon, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  type.label,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${entry.itemCount}',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+          );
+        }
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: _CompactLibraryAssetCard(item: entry.item!),
+        );
+      },
+    );
+  }
+}
+
+class _AssetLibraryListEntry {
+  const _AssetLibraryListEntry.header(this.type, this.itemCount) : item = null;
+
+  const _AssetLibraryListEntry.item(this.item) : type = null, itemCount = 0;
+
+  final ReplicateAssetType? type;
+  final int itemCount;
+  final ShootingAssetLibraryItem? item;
 }
 
 class _CompactLibraryAssetCard extends StatelessWidget {
@@ -1086,7 +1112,11 @@ class _CompactLibraryAssetCard extends StatelessWidget {
         padding: const EdgeInsets.all(8),
         child: Row(
           children: [
-            SizedBox(width: 58, height: 58, child: _LibraryAssetPreview(item)),
+            SizedBox(
+              width: 58,
+              height: 58,
+              child: _LibraryAssetPreview(item, logicalWidth: 58),
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
@@ -1165,6 +1195,25 @@ class _AssetManagerPage extends StatefulWidget {
 
 class _AssetManagerPageState extends State<_AssetManagerPage> {
   ReplicateAssetType _type = ReplicateAssetType.character;
+  var _isOpeningFilePicker = false;
+
+  Future<void> _pickFiles() async {
+    if (_isOpeningFilePicker) {
+      return;
+    }
+    setState(() => _isOpeningFilePicker = true);
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) {
+        return;
+      }
+      await widget.onPickFiles(context, widget.libraryController, _type);
+    } finally {
+      if (mounted) {
+        setState(() => _isOpeningFilePicker = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1213,11 +1262,7 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
                   ),
                   const SizedBox(width: 10),
                   FilledButton.icon(
-                    onPressed: () => widget.onPickFiles(
-                      context,
-                      widget.libraryController,
-                      _type,
-                    ),
+                    onPressed: _isOpeningFilePicker ? null : _pickFiles,
                     icon: const Icon(Icons.add_photo_alternate_outlined),
                     label: const Text('添加文件'),
                   ),
@@ -1234,7 +1279,8 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
                 ],
               ),
               const SizedBox(height: 14),
-              if (state.isBusy) const LinearProgressIndicator(minHeight: 3),
+              if (state.isBusy || _isOpeningFilePicker)
+                const LinearProgressIndicator(minHeight: 3),
               Expanded(
                 child: state.items.isEmpty
                     ? const Center(child: Text('暂无资产'))
@@ -1344,9 +1390,10 @@ class _ManagedLibraryAssetCard extends StatelessWidget {
 }
 
 class _LibraryAssetPreview extends StatelessWidget {
-  const _LibraryAssetPreview(this.item);
+  const _LibraryAssetPreview(this.item, {this.logicalWidth = 256});
 
   final ShootingAssetLibraryItem item;
+  final double logicalWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -1367,8 +1414,13 @@ class _LibraryAssetPreview extends StatelessWidget {
         ) ==
         ReplicateMediaKind.image;
     if (isImage && item.path.isNotEmpty) {
-      return Image.file(
-        File(item.path),
+      return Image(
+        image: previewFileImageProvider(
+          path: item.path,
+          logicalWidth: logicalWidth,
+          devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+          maxCacheWidth: 512,
+        ),
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => _AssetTypeIcon(item.type),
       );

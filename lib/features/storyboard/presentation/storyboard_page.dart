@@ -22,6 +22,7 @@ import '../../../core/widgets/viewport_lazy_grid.dart';
 import '../../exporter/data/storyboard_export_service.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../settings/presentation/cut_image_number_controls.dart';
+import '../../shooting_script/application/shooting_script_controller.dart';
 import '../application/storyboard_controller.dart';
 import '../data/image_generation_service.dart';
 import '../data/storyboard_image_edit_preferences_repository.dart';
@@ -157,6 +158,18 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(storyboardControllerProvider);
+    void createBoardWithShootingScript() {
+      final board = controller.addBoard();
+      ref.read(shootingScriptControllerProvider).createForStoryboard(board);
+    }
+
+    void duplicateBoardWithShootingScript() {
+      final board = controller.duplicateSelectedBoard();
+      if (board != null) {
+        ref.read(shootingScriptControllerProvider).createForStoryboard(board);
+      }
+    }
+
     final content = Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -168,7 +181,8 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
             builder: (context, state, _) => _BoardBar(
               state: state,
               onSelect: controller.selectBoard,
-              onAdd: controller.addBoard,
+              onAdd: createBoardWithShootingScript,
+              onDuplicate: duplicateBoardWithShootingScript,
               onManage: () => showBoardManagerDialog(
                 context: context,
                 controller: controller,
@@ -271,7 +285,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                                 context: context,
                                 controller: controller,
                               ),
-                              onAddBoard: controller.addBoard,
+                              onAddBoard: createBoardWithShootingScript,
                               canUndo: controller.canUndoSelectedBoard,
                               canRedo: controller.canRedoSelectedBoard,
                               onUndo: controller.undoSelectedBoard,
@@ -8646,6 +8660,7 @@ class _BoardBar extends StatelessWidget {
     required this.state,
     required this.onSelect,
     required this.onAdd,
+    required this.onDuplicate,
     required this.onManage,
     required this.onClose,
   });
@@ -8653,6 +8668,7 @@ class _BoardBar extends StatelessWidget {
   final StoryboardState state;
   final ValueChanged<String> onSelect;
   final VoidCallback onAdd;
+  final VoidCallback onDuplicate;
   final VoidCallback onManage;
   final ValueChanged<String> onClose;
 
@@ -8697,6 +8713,13 @@ class _BoardBar extends StatelessWidget {
             onPressed: onManage,
             icon: const Icon(Icons.dashboard_customize_outlined),
             label: const Text('画板管理'),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            key: const ValueKey('duplicate-storyboard-board'),
+            onPressed: state.selectedBoard == null ? null : onDuplicate,
+            icon: const Icon(Icons.copy_rounded),
+            label: const Text('复制画板'),
           ),
           const SizedBox(width: 8),
           FilledButton.icon(

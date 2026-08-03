@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 7;
+  static const currentSchemaVersion = 9;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -535,6 +535,7 @@ class AppDatabase {
         CREATE TABLE IF NOT EXISTS script_shots (
           id TEXT PRIMARY KEY,
           script_id TEXT NOT NULL REFERENCES shooting_scripts(id) ON DELETE CASCADE,
+          source_storyboard_asset_id TEXT,
           shot_number INTEGER NOT NULL,
           duration_seconds REAL NOT NULL DEFAULT 0,
           frame_path TEXT NOT NULL DEFAULT '',
@@ -759,6 +760,17 @@ class AppDatabase {
       }
       _database.execute('PRAGMA user_version = 7;');
     }
+    if (version < 8) {
+      _ensureNullableTextColumn('script_shots', 'source_storyboard_asset_id');
+      _database.execute('PRAGMA user_version = 8;');
+    }
+    if (version < 9) {
+      _ensureTextColumn('replicate_runs', 'generation_model');
+      _ensureTextColumn('replicate_runs', 'generation_aspect_ratio');
+      _ensureTextColumn('replicate_runs', 'generation_image_size');
+      _ensureTextColumn('replicate_runs', 'generation_quality');
+      _database.execute('PRAGMA user_version = 9;');
+    }
   }
 
   void _ensureVisionAnalysisItemColumns() {
@@ -792,6 +804,17 @@ class AppDatabase {
     _database.execute(
       "ALTER TABLE $tableName ADD COLUMN $columnName TEXT NOT NULL DEFAULT '';",
     );
+  }
+
+  void _ensureNullableTextColumn(String tableName, String columnName) {
+    final columns = _database
+        .select('PRAGMA table_info($tableName);')
+        .map((row) => row['name'] as String)
+        .toSet();
+    if (columns.contains(columnName)) {
+      return;
+    }
+    _database.execute('ALTER TABLE $tableName ADD COLUMN $columnName TEXT;');
   }
 
   void _ensureIntegerColumn(String tableName, String columnName) {

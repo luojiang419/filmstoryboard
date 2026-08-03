@@ -7,6 +7,9 @@ import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -139,6 +142,91 @@ void main() {
     addTearDown(restored.dispose);
     expect(restored.value.scripts, hasLength(2));
     expect(restored.value.scripts.any((item) => item.name == '正式拍摄脚本'), isTrue);
+  });
+
+  test('手动新建空故事板时创建关联的空拍摄脚本', () async {
+    final fixture = await _createFixture();
+    const board = StoryboardBoard(
+      id: 'manual-board-1',
+      name: '新画板 1',
+      width: 1920,
+      height: 1080,
+      rows: 3,
+      columns: 3,
+      gap: 12,
+      items: [],
+    );
+
+    final script = fixture.controller.createForStoryboard(board);
+
+    expect(script.sourceStoryboardId, board.id);
+    expect(script.sourceVideoId, isNull);
+    expect(script.name, '新画板 1 · 拍摄脚本');
+    expect(fixture.controller.value.selectedScript?.id, script.id);
+    expect(fixture.controller.value.shots, isEmpty);
+  });
+
+  test('从视频创建的故事板脚本同时保留故事板和源视频关联', () async {
+    final fixture = await _createFixture();
+    final board = StoryboardBoard(
+      id: 'video-board',
+      name: '视频故事板',
+      width: 1920,
+      height: 1080,
+      rows: 1,
+      columns: 1,
+      gap: 12,
+      items: const [],
+    );
+
+    final script = fixture.controller.createForStoryboard(
+      board,
+      sourceVideoId: 'source-video-1',
+    );
+
+    expect(script.sourceStoryboardId, board.id);
+    expect(script.sourceVideoId, 'source-video-1');
+  });
+
+  test('故事板和主拍摄脚本实时同步共享字段', () async {
+    final fixture = await _createFixture();
+    final storyboardController = StoryboardController(
+      database: fixture.database,
+    );
+    addTearDown(storyboardController.dispose);
+    final syncController = StoryboardShootingScriptSyncController(
+      storyboardController: storyboardController,
+      shootingScriptController: fixture.controller,
+    );
+    addTearDown(syncController.dispose);
+    final board = storyboardController.value.selectedBoard!;
+    fixture.controller.createForStoryboard(board);
+    const asset = StoryboardCutAsset(
+      id: 'manual-asset-1',
+      imageId: 'manual-image-1',
+      sourceName: '手动素材',
+      path: 'C:/fixtures/manual-asset-1.png',
+      indexNo: 1,
+    );
+
+    storyboardController.placeAssetAtSlot(asset, 0);
+
+    final shot = fixture.controller.value.shots.single;
+    expect(shot.sourceStoryboardAssetId, asset.id);
+    expect(shot.framePath, asset.path);
+    fixture.controller.updateShot(shot.copyWith(content: '脚本回写的镜头内容'));
+    expect(
+      storyboardController.value.selectedBoard!.items.single.caption,
+      '脚本回写的镜头内容',
+    );
+
+    fixture.controller.deleteShot(shot.id);
+    expect(storyboardController.value.selectedBoard!.items, isEmpty);
+
+    final duplicate = storyboardController.duplicateSelectedBoard()!;
+    final duplicateScript = fixture.controller.createForStoryboard(duplicate);
+    expect(duplicate.id, isNot(board.id));
+    expect(duplicateScript.sourceStoryboardId, duplicate.id);
   });
 
   test('脚本导出填充字段、保留图片槽位为空，并按原始字节复制镜头图片', () async {

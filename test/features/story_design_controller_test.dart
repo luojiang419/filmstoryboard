@@ -48,6 +48,32 @@ void main() {
     expect(controller.value.results.single.prompt, '女人抱着一个西瓜炸开了');
   });
 
+  test('Gemini 3 Pro 图像模型会使用连贯的分镜提示词增强规则', () async {
+    final fixture = await _createFixture();
+    final imageService = _FakeImageGenerationService();
+    final controller = StoryDesignController(
+      directories: fixture.directories,
+      settingsController: fixture.settingsController,
+      gridCutController: fixture.gridCutController,
+      imageGenerationService: imageService,
+    );
+    addTearDown(controller.dispose);
+
+    controller
+      ..setModel('apimart:gemini-3-pro-image-preview')
+      ..setGridCount(4)
+      ..setPrompt('雨夜里，侦探在霓虹灯下追踪嫌疑人');
+    await controller.generate();
+
+    final submittedPrompt = imageService.lastRequest!.prompt;
+    expect(submittedPrompt, contains('雨夜里，侦探在霓虹灯下追踪嫌疑人'));
+    expect(submittedPrompt, contains('【Gemini 3 分镜图像指令】'));
+    expect(submittedPrompt, contains('完整、连贯的视觉叙事'));
+    expect(submittedPrompt, contains('景别、机位、焦段感'));
+    expect(submittedPrompt, contains('固定排列为 2列×2行'));
+    expect(submittedPrompt, contains('不要添加标题、镜号、字幕'));
+  });
+
   test('生成参数修改后写入工程数据库并在新控制器恢复', () async {
     final fixture = await _createFixture();
     final preferencesRepository = StoryDesignPreferencesRepository(

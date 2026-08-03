@@ -245,10 +245,11 @@ class AnalysisReportExportService {
                 group.key,
                 field,
                 dimensions[field]?.trim().isNotEmpty == true
-                    ? dimensions[field]!
+                    ? _displayDimensionValue(dimensions[field]!)
                     : '暂无（未在可见画面中确认）',
               ]),
         ],
+        mergeFirstColumn: true,
       ),
     );
 
@@ -310,8 +311,11 @@ class AnalysisReportExportService {
         ),
       );
     }
-    return renderedPages;
+    return _addPageNumbers(renderedPages);
   }
+
+  static String _displayDimensionValue(String value) =>
+      value.trim().replaceFirst(RegExp(r'^证据\s*[：:]\s*'), '');
 
   String _shotValue(VideoFrameAnalysis? analysis, String key) {
     final dimensions = analysis?.dimensions ?? const <String, String>{};
@@ -333,6 +337,7 @@ class AnalysisReportExportService {
     required List<String> columns,
     required List<double> columnWidths,
     required List<_ReportTableRow> rows,
+    bool mergeFirstColumn = false,
   }) async {
     const width = 1240.0;
     const height = 1754.0;
@@ -361,13 +366,14 @@ class AnalysisReportExportService {
     for (var index = 0; index < chunks.length; index++) {
       renderedPages.add(
         await _renderTablePage(
-          title: index == 0 ? title : '${continuationTitle ?? title}（续）',
+          title: index == 0 ? title : continuationTitle ?? title,
           subtitle: index == 0 ? subtitle : null,
           header: header,
           rows: chunks[index],
           columnWidths: columnWidths,
           width: width,
           height: height,
+          mergeFirstColumn: mergeFirstColumn,
         ),
       );
     }
@@ -454,6 +460,7 @@ class AnalysisReportExportService {
     required List<double> columnWidths,
     required double width,
     required double height,
+    required bool mergeFirstColumn,
   }) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
@@ -493,9 +500,13 @@ class AnalysisReportExportService {
       isHeader: true,
     );
     y += headerHeight;
+    final rowTops = <double>[];
+    final rowHeights = <double>[];
     for (var index = 0; index < rows.length; index++) {
       final row = rows[index];
       final rowHeight = _tableRowHeight(row, columnWidths);
+      rowTops.add(y);
+      rowHeights.add(rowHeight);
       await _drawTableRow(
         canvas,
         row,
@@ -504,8 +515,18 @@ class AnalysisReportExportService {
         columnWidths: columnWidths,
         isHeader: false,
         alternate: index.isOdd,
+        skipFirstColumn: mergeFirstColumn,
       );
       y += rowHeight;
+    }
+    if (mergeFirstColumn) {
+      _drawMergedFirstColumnCells(
+        canvas,
+        rows: rows,
+        rowTops: rowTops,
+        rowHeights: rowHeights,
+        columnWidth: columnWidths.first,
+      );
     }
 
     final picture = recorder.endRecording();
@@ -527,6 +548,7 @@ class AnalysisReportExportService {
     required List<double> columnWidths,
     required bool isHeader,
     bool alternate = false,
+    bool skipFirstColumn = false,
   }) async {
     const left = 72.0;
     final background = ui.Paint()
@@ -542,6 +564,10 @@ class AnalysisReportExportService {
     var leftOffset = left;
     for (var index = 0; index < columnWidths.length; index++) {
       final cellWidth = columnWidths[index];
+      if (skipFirstColumn && index == 0) {
+        leftOffset += cellWidth;
+        continue;
+      }
       final rect = ui.Rect.fromLTWH(leftOffset, rowTop, cellWidth, rowHeight);
       canvas.drawRect(rect, background);
       canvas.drawRect(rect, border);
@@ -575,6 +601,96 @@ class AnalysisReportExportService {
       }
       leftOffset += cellWidth;
     }
+  }
+
+  void _drawMergedFirstColumnCells(
+    ui.Canvas canvas, {
+    required List<_ReportTableRow> rows,
+    required List<double> rowTops,
+    required List<double> rowHeights,
+    required double columnWidth,
+  }) {
+    const left = 72.0;
+    final border = ui.Paint()
+      ..color = const ui.Color(0xFFC9CEDA)
+      ..style = ui.PaintingStyle.stroke
+      ..strokeWidth = 1;
+    var start = 0;
+    while (start < rows.length) {
+      final group = rows[start].cells.first;
+      var end = start + 1;
+      while (end < rows.length && rows[end].cells.first == group) {
+        end++;
+      }
+      final top = rowTops[start];
+      final height = rowTops[end - 1] + rowHeights[end - 1] - top;
+      final rect = ui.Rect.fromLTWH(left, top, columnWidth, height);
+      canvas.drawRect(
+        rect,
+        ui.Paint()
+          ..color = start.isOdd
+              ? const ui.Color(0xFFF0F2F7)
+              : const ui.Color(0xFFFFFFFF),
+      );
+      canvas.drawRect(rect, border);
+      final paragraph = _tableParagraph(
+        group,
+        width: columnWidth - 16,
+        fontSize: 14,
+        color: const ui.Color(0xFF202124),
+      );
+      canvas.drawParagraph(
+        paragraph,
+        ui.Offset(left + 8, top + (height - paragraph.height) / 2),
+      );
+      start = end;
+    }
+  }
+
+  Future<List<Uint8List>> _addPageNumbers(List<Uint8List> pages) async {
+    final numberedPages = <Uint8List>[];
+    for (var index = 0; index < pages.length; index++) {
+      numberedPages.add(
+        await _addPageNumber(
+          pages[index],
+          pageNumber: index + 1,
+          totalPages: pages.length,
+        ),
+      );
+    }
+    return numberedPages;
+  }
+
+  Future<Uint8List> _addPageNumber(
+    Uint8List page, {
+    required int pageNumber,
+    required int totalPages,
+  }) async {
+    const width = 1240.0;
+    const height = 1754.0;
+    final codec = await ui.instantiateImageCodec(page);
+    final frame = await codec.getNextFrame();
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.drawImage(frame.image, ui.Offset.zero, ui.Paint());
+    final paragraph = _tableParagraph(
+      '第 $pageNumber / $totalPages 页',
+      width: 160,
+      fontSize: 14,
+      color: const ui.Color(0xFF5F6368),
+    );
+    canvas.drawParagraph(paragraph, ui.Offset(width - 72 - 160, height - 48));
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(width.toInt(), height.toInt());
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    picture.dispose();
+    frame.image.dispose();
+    codec.dispose();
+    if (data == null) {
+      throw StateError('分析报告页码渲染失败');
+    }
+    return data.buffer.asUint8List();
   }
 
   Future<List<Uint8List>> _renderPage(List<_ReportLine> lines) async {

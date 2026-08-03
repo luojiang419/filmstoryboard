@@ -14,6 +14,8 @@ import '../../updater/domain/app_update_config.dart';
 import '../../updater/domain/update_models.dart';
 import '../application/settings_controller.dart';
 import '../domain/app_settings.dart';
+import '../domain/image_generation_api_config.dart';
+import '../domain/vision_api_config.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({super.key});
@@ -39,9 +41,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   late final SettingsController _settingsController;
   late final TextEditingController _exportPathController;
-  late final TextEditingController _visionApiBaseUrlController;
-  late final TextEditingController _visionApiKeyController;
-  late final TextEditingController _visionModelController;
   late final TextEditingController _ffmpegExecutableController;
   late final TextEditingController _ffprobeExecutableController;
   late final TextEditingController _videoFrameIntervalController;
@@ -49,18 +48,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   late final TextEditingController _videoMinimumSharpnessController;
   late final TextEditingController _replicateGlobalStyleController;
   late final TextEditingController _replicateConstraintsController;
-  late final TextEditingController _imageGenerationApiBaseUrlController;
-  late final TextEditingController _imageGenerationApiKeyController;
-  late final TextEditingController _imageGenerationGeminiApiBaseUrlController;
-  late final TextEditingController _imageGenerationGeminiApiKeyController;
-  late final TextEditingController _imageGenerationApiMartApiBaseUrlController;
-  late final TextEditingController _imageGenerationApiMartApiKeyController;
-  late final TextEditingController _imageGenerationModelController;
   late final TextEditingController _updateManualProxyUrlController;
-  bool _visionApiKeyObscured = true;
-  bool _imageGenerationApiKeyObscured = true;
-  bool _imageGenerationGeminiApiKeyObscured = true;
-  bool _imageGenerationApiMartApiKeyObscured = true;
   late VideoFrameExtractionStrategy _videoExtractionStrategy;
   final _expandedSections = <_SettingsSection>{};
 
@@ -71,15 +59,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _settingsController = controller;
     _exportPathController = TextEditingController(
       text: controller.value.exportDirectory,
-    );
-    _visionApiBaseUrlController = TextEditingController(
-      text: controller.value.visionApiBaseUrl,
-    );
-    _visionApiKeyController = TextEditingController(
-      text: controller.value.visionApiKey,
-    );
-    _visionModelController = TextEditingController(
-      text: controller.value.visionModel,
     );
     _ffmpegExecutableController = TextEditingController(
       text: controller.value.ffmpegExecutable,
@@ -103,27 +82,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       text: controller.value.replicateDefaultConstraints,
     );
     _videoExtractionStrategy = controller.value.videoFrameExtractionStrategy;
-    _imageGenerationApiBaseUrlController = TextEditingController(
-      text: controller.value.imageGenerationApiBaseUrl,
-    );
-    _imageGenerationApiKeyController = TextEditingController(
-      text: controller.value.imageGenerationApiKey,
-    );
-    _imageGenerationGeminiApiBaseUrlController = TextEditingController(
-      text: controller.value.imageGenerationGeminiApiBaseUrl,
-    );
-    _imageGenerationGeminiApiKeyController = TextEditingController(
-      text: controller.value.imageGenerationGeminiApiKey,
-    );
-    _imageGenerationApiMartApiBaseUrlController = TextEditingController(
-      text: controller.value.imageGenerationApiMartApiBaseUrl,
-    );
-    _imageGenerationApiMartApiKeyController = TextEditingController(
-      text: controller.value.imageGenerationApiMartApiKey,
-    );
-    _imageGenerationModelController = TextEditingController(
-      text: controller.value.imageGenerationModel,
-    );
     _updateManualProxyUrlController = TextEditingController(
       text: controller.value.updateManualProxyUrl,
     );
@@ -135,9 +93,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   void dispose() {
     _settingsController.removeListener(_syncFromSettings);
     _exportPathController.dispose();
-    _visionApiBaseUrlController.dispose();
-    _visionApiKeyController.dispose();
-    _visionModelController.dispose();
     _ffmpegExecutableController.dispose();
     _ffprobeExecutableController.dispose();
     _videoFrameIntervalController.dispose();
@@ -145,13 +100,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _videoMinimumSharpnessController.dispose();
     _replicateGlobalStyleController.dispose();
     _replicateConstraintsController.dispose();
-    _imageGenerationApiBaseUrlController.dispose();
-    _imageGenerationApiKeyController.dispose();
-    _imageGenerationGeminiApiBaseUrlController.dispose();
-    _imageGenerationGeminiApiKeyController.dispose();
-    _imageGenerationApiMartApiBaseUrlController.dispose();
-    _imageGenerationApiMartApiKeyController.dispose();
-    _imageGenerationModelController.dispose();
     _updateManualProxyUrlController.dispose();
     super.dispose();
   }
@@ -160,15 +108,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final settings = ref.read(settingsControllerProvider).value;
     if (_exportPathController.text != settings.exportDirectory) {
       _exportPathController.text = settings.exportDirectory;
-    }
-    if (_visionApiBaseUrlController.text != settings.visionApiBaseUrl) {
-      _visionApiBaseUrlController.text = settings.visionApiBaseUrl;
-    }
-    if (_visionApiKeyController.text != settings.visionApiKey) {
-      _visionApiKeyController.text = settings.visionApiKey;
-    }
-    if (_visionModelController.text != settings.visionModel) {
-      _visionModelController.text = settings.visionModel;
     }
     if (_ffmpegExecutableController.text != settings.ffmpegExecutable) {
       _ffmpegExecutableController.text = settings.ffmpegExecutable;
@@ -199,49 +138,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           settings.replicateDefaultConstraints;
     }
     _videoExtractionStrategy = settings.videoFrameExtractionStrategy;
-    if (_imageGenerationApiBaseUrlController.text !=
-        settings.imageGenerationApiBaseUrl) {
-      _imageGenerationApiBaseUrlController.text =
-          settings.imageGenerationApiBaseUrl;
-    }
-    if (_imageGenerationApiKeyController.text !=
-        settings.imageGenerationApiKey) {
-      _imageGenerationApiKeyController.text = settings.imageGenerationApiKey;
-    }
-    if (_imageGenerationGeminiApiBaseUrlController.text !=
-        settings.imageGenerationGeminiApiBaseUrl) {
-      _imageGenerationGeminiApiBaseUrlController.text =
-          settings.imageGenerationGeminiApiBaseUrl;
-    }
-    if (_imageGenerationGeminiApiKeyController.text !=
-        settings.imageGenerationGeminiApiKey) {
-      _imageGenerationGeminiApiKeyController.text =
-          settings.imageGenerationGeminiApiKey;
-    }
-    if (_imageGenerationApiMartApiBaseUrlController.text !=
-        settings.imageGenerationApiMartApiBaseUrl) {
-      _imageGenerationApiMartApiBaseUrlController.text =
-          settings.imageGenerationApiMartApiBaseUrl;
-    }
-    if (_imageGenerationApiMartApiKeyController.text !=
-        settings.imageGenerationApiMartApiKey) {
-      _imageGenerationApiMartApiKeyController.text =
-          settings.imageGenerationApiMartApiKey;
-    }
-    if (_imageGenerationModelController.text != settings.imageGenerationModel) {
-      _imageGenerationModelController.text = settings.imageGenerationModel;
-    }
     if (_updateManualProxyUrlController.text != settings.updateManualProxyUrl) {
       _updateManualProxyUrlController.text = settings.updateManualProxyUrl;
     }
-  }
-
-  Future<void> _saveVisionSettings(SettingsController controller) async {
-    await controller.setVisionSettings(
-      baseUrl: _visionApiBaseUrlController.text,
-      apiKey: _visionApiKeyController.text,
-      model: _visionModelController.text,
-    );
   }
 
   Future<void> _saveVideoAnalysisSettings(SettingsController controller) async {
@@ -257,54 +156,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           double.tryParse(_videoMinimumSharpnessController.text) ?? 0.08,
       thinkingEnabled: controller.value.videoAnalysisThinkingEnabled,
     );
-  }
-
-  Future<void> _saveGrsaiImageGenerationSettings(
-    SettingsController controller,
-  ) async {
-    await controller.setImageGenerationGrsaiSettings(
-      baseUrl: _imageGenerationApiBaseUrlController.text,
-      apiKey: _imageGenerationApiKeyController.text,
-    );
-  }
-
-  Future<void> _saveGeminiImageGenerationSettings(
-    SettingsController controller,
-  ) async {
-    await controller.setImageGenerationGeminiSettings(
-      baseUrl: _imageGenerationGeminiApiBaseUrlController.text,
-      apiKey: _imageGenerationGeminiApiKeyController.text,
-    );
-  }
-
-  Future<void> _saveApiMartImageGenerationSettings(
-    SettingsController controller,
-  ) async {
-    try {
-      await controller.setImageGenerationApiMartSettings(
-        baseUrl: _imageGenerationApiMartApiBaseUrlController.text,
-        apiKey: _imageGenerationApiMartApiKeyController.text,
-      );
-    } on FormatException {
-      // 配置页不再弹出底部结果横幅；输入框保留当前内容供用户修正。
-    }
-  }
-
-  String _selectedImageProviderSummary(AppSettings settings) {
-    final descriptor = ImageGenerationCatalog.descriptorFor(
-      _imageGenerationModelController.text,
-    );
-    if (descriptor == null) {
-      return '当前模型不在支持目录中，请重新选择';
-    }
-    return switch (descriptor.protocol) {
-      ImageGenerationProviderProtocol.apiMart =>
-        '将自动使用 APIMart 配置 · ${settings.imageGenerationApiMartApiBaseUrl}',
-      ImageGenerationProviderProtocol.gemini =>
-        '将自动使用 Gemini 配置 · ${settings.imageGenerationGeminiApiBaseUrl}',
-      ImageGenerationProviderProtocol.grsai =>
-        '将自动使用 GRSai 配置 · ${settings.imageGenerationApiBaseUrl}',
-    };
   }
 
   Future<void> _saveUpdateSettings(SettingsController controller) async {
@@ -613,45 +464,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               onToggle: () => _toggleSection(_SettingsSection.visionApi),
               child: Column(
                 children: [
-                  TextField(
-                    controller: _visionApiBaseUrlController,
-                    decoration: const InputDecoration(
-                      labelText: 'API 地址',
-                      prefixIcon: Icon(Icons.cloud_queue_rounded),
-                    ),
-                    onSubmitted: settingsController.setVisionApiBaseUrl,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _visionApiKeyController,
-                    obscureText: _visionApiKeyObscured,
-                    decoration: InputDecoration(
-                      labelText: 'API Key',
-                      prefixIcon: const Icon(Icons.key_rounded),
-                      suffixIcon: IconButton(
-                        tooltip: _visionApiKeyObscured ? '显示 Key' : '隐藏 Key',
-                        onPressed: () {
-                          setState(() {
-                            _visionApiKeyObscured = !_visionApiKeyObscured;
-                          });
-                        },
-                        icon: Icon(
-                          _visionApiKeyObscured
-                              ? Icons.visibility_rounded
-                              : Icons.visibility_off_rounded,
-                        ),
-                      ),
-                    ),
-                    onSubmitted: settingsController.setVisionApiKey,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _visionModelController,
-                    decoration: const InputDecoration(
-                      labelText: '模型',
-                      prefixIcon: Icon(Icons.auto_awesome_rounded),
-                    ),
-                    onSubmitted: settingsController.setVisionModel,
+                  _VisionApiConfigSection(
+                    configs: settings.visionApiConfigs,
+                    activeId: settings.activeVisionApiConfigId,
+                    onSelect: settingsController.setActiveVisionApiConfig,
+                    onSave: settingsController.saveVisionApiConfig,
+                    onDelete: settingsController.deleteVisionApiConfig,
+                    onMaxRequestsPerMinuteChanged: settingsController
+                        .setVisionApiConfigMaxRequestsPerMinute,
                   ),
                   const SizedBox(height: 12),
                   SwitchListTile(
@@ -663,14 +483,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     onChanged:
                         settingsController.setVideoAnalysisThinkingEnabled,
                   ),
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: FilledButton.icon(
-                      onPressed: () => _saveVisionSettings(settingsController),
-                      icon: const Icon(Icons.save_rounded),
-                      label: const Text('保存视觉模型配置'),
+                  const Divider(height: 20),
+                  SwitchListTile(
+                    key: const ValueKey('full-automation-switch'),
+                    value: settings.fullAutomationEnabled,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('全自动模式'),
+                    subtitle: const Text(
+                      '添加视频后自动完成视频解析、故事板、拍摄脚本和分镜脚本解析；失败任务将在一分钟后自动重试一次。',
                     ),
+                    onChanged: settingsController.setFullAutomationEnabled,
                   ),
                 ],
               ),
@@ -842,198 +664,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               expanded: _sectionExpanded(_SettingsSection.imageGenerationApi),
               onToggle: () =>
                   _toggleSection(_SettingsSection.imageGenerationApi),
-              child: Column(
-                children: [
-                  _ImageProviderSettingsCard(
-                    key: const ValueKey('image-provider-card-default'),
-                    icon: Icons.auto_fix_high_rounded,
-                    title: '默认图片生成模型',
-                    subtitle: '选择模型后会自动绑定对应服务商的地址和 Key',
-                    actionKey: const ValueKey(
-                      'save-image-generation-default-model',
-                    ),
-                    actionLabel: '保存默认模型',
-                    onSave: () => settingsController.setImageGenerationModel(
-                      _imageGenerationModelController.text,
-                    ),
-                    children: [
-                      ImageGenerationModelSelector(
-                        key: const ValueKey('image-generation-model-field'),
-                        value: _imageGenerationModelController.text,
-                        labelText: '默认模型',
-                        prefixIcon: const Icon(Icons.account_tree_rounded),
-                        onChanged: (model) {
-                          setState(() {
-                            _imageGenerationModelController.text = model;
-                          });
-                        },
-                      ),
-                      const SizedBox(height: 10),
-                      _ProviderRouteHint(
-                        text: _selectedImageProviderSummary(settings),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _ImageProviderSettingsCard(
-                    key: const ValueKey('image-provider-card-grsai'),
-                    icon: Icons.cloud_queue_rounded,
-                    title: 'GRSai',
-                    subtitle: '独立接口 · Nano Banana、GPT Image 系列',
-                    actionKey: const ValueKey(
-                      'save-image-generation-grsai-settings',
-                    ),
-                    actionLabel: '保存 GRSai 配置',
-                    onSave: () =>
-                        _saveGrsaiImageGenerationSettings(settingsController),
-                    children: [
-                      TextField(
-                        key: const ValueKey(
-                          'image-generation-api-base-url-field',
-                        ),
-                        controller: _imageGenerationApiBaseUrlController,
-                        decoration: const InputDecoration(
-                          labelText: 'GRSai API 地址',
-                          prefixIcon: Icon(Icons.link_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        key: const ValueKey('image-generation-api-key-field'),
-                        controller: _imageGenerationApiKeyController,
-                        obscureText: _imageGenerationApiKeyObscured,
-                        decoration: InputDecoration(
-                          labelText: 'GRSai API Key',
-                          prefixIcon: const Icon(Icons.vpn_key_rounded),
-                          suffixIcon: IconButton(
-                            tooltip: _imageGenerationApiKeyObscured
-                                ? '显示 Key'
-                                : '隐藏 Key',
-                            onPressed: () {
-                              setState(() {
-                                _imageGenerationApiKeyObscured =
-                                    !_imageGenerationApiKeyObscured;
-                              });
-                            },
-                            icon: Icon(
-                              _imageGenerationApiKeyObscured
-                                  ? Icons.visibility_rounded
-                                  : Icons.visibility_off_rounded,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _ImageProviderSettingsCard(
-                    key: const ValueKey('image-provider-card-gemini'),
-                    icon: Icons.auto_awesome_rounded,
-                    title: 'Gemini',
-                    subtitle: '独立诗影接口 · Gemini Image 系列',
-                    actionKey: const ValueKey(
-                      'save-image-generation-gemini-settings',
-                    ),
-                    actionLabel: '保存 Gemini 配置',
-                    onSave: () =>
-                        _saveGeminiImageGenerationSettings(settingsController),
-                    children: [
-                      TextField(
-                        key: const ValueKey(
-                          'image-generation-gemini-api-base-url-field',
-                        ),
-                        controller: _imageGenerationGeminiApiBaseUrlController,
-                        decoration: const InputDecoration(
-                          labelText: 'Gemini API 地址',
-                          prefixIcon: Icon(Icons.link_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        key: const ValueKey(
-                          'image-generation-gemini-api-key-field',
-                        ),
-                        controller: _imageGenerationGeminiApiKeyController,
-                        obscureText: _imageGenerationGeminiApiKeyObscured,
-                        decoration: InputDecoration(
-                          labelText: 'Gemini API Key',
-                          prefixIcon: const Icon(Icons.key_rounded),
-                          suffixIcon: IconButton(
-                            tooltip: _imageGenerationGeminiApiKeyObscured
-                                ? '显示 Key'
-                                : '隐藏 Key',
-                            onPressed: () {
-                              setState(() {
-                                _imageGenerationGeminiApiKeyObscured =
-                                    !_imageGenerationGeminiApiKeyObscured;
-                              });
-                            },
-                            icon: Icon(
-                              _imageGenerationGeminiApiKeyObscured
-                                  ? Icons.visibility_rounded
-                                  : Icons.visibility_off_rounded,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _ImageProviderSettingsCard(
-                    key: const ValueKey('image-provider-card-apimart'),
-                    icon: Icons.hub_rounded,
-                    title: 'APIMart',
-                    subtitle: '独立官方接口 · 异步任务、上传与多模型系列',
-                    actionKey: const ValueKey(
-                      'save-image-generation-apimart-settings',
-                    ),
-                    actionLabel: '保存 APIMart 配置',
-                    onSave: () =>
-                        _saveApiMartImageGenerationSettings(settingsController),
-                    children: [
-                      TextField(
-                        key: const ValueKey(
-                          'image-generation-apimart-api-base-url-field',
-                        ),
-                        controller: _imageGenerationApiMartApiBaseUrlController,
-                        decoration: const InputDecoration(
-                          labelText: 'APIMart API 地址',
-                          hintText: 'https://api.apimart.ai',
-                          helperText: '可粘贴带 /v1 的地址，保存时会自动规范化',
-                          prefixIcon: Icon(Icons.link_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        key: const ValueKey(
-                          'image-generation-apimart-api-key-field',
-                        ),
-                        controller: _imageGenerationApiMartApiKeyController,
-                        obscureText: _imageGenerationApiMartApiKeyObscured,
-                        decoration: InputDecoration(
-                          labelText: 'APIMart API Key',
-                          prefixIcon: const Icon(Icons.key_rounded),
-                          suffixIcon: IconButton(
-                            tooltip: _imageGenerationApiMartApiKeyObscured
-                                ? '显示 Key'
-                                : '隐藏 Key',
-                            onPressed: () {
-                              setState(() {
-                                _imageGenerationApiMartApiKeyObscured =
-                                    !_imageGenerationApiMartApiKeyObscured;
-                              });
-                            },
-                            icon: Icon(
-                              _imageGenerationApiMartApiKeyObscured
-                                  ? Icons.visibility_rounded
-                                  : Icons.visibility_off_rounded,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+              child: _ImageGenerationApiConfigSection(
+                configs: settings.imageGenerationApiConfigs,
+                activeId: settings.activeImageGenerationApiConfigId,
+                onSelect: settingsController.setActiveImageGenerationApiConfig,
+                onSave: settingsController.saveImageGenerationApiConfig,
+                onDelete: settingsController.deleteImageGenerationApiConfig,
               ),
             ),
             const SizedBox(height: 14),
@@ -1223,117 +859,647 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 }
 
-class _ImageProviderSettingsCard extends StatelessWidget {
-  const _ImageProviderSettingsCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.children,
-    required this.actionKey,
-    required this.actionLabel,
+class _VisionApiConfigSection extends StatelessWidget {
+  const _VisionApiConfigSection({
+    required this.configs,
+    required this.activeId,
+    required this.onSelect,
     required this.onSave,
+    required this.onDelete,
+    required this.onMaxRequestsPerMinuteChanged,
   });
 
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final List<Widget> children;
-  final Key actionKey;
-  final String actionLabel;
-  final Future<void> Function() onSave;
+  final List<VisionApiConfig> configs;
+  final String activeId;
+  final Future<void> Function(String id) onSelect;
+  final Future<void> Function(VisionApiConfig config) onSave;
+  final Future<void> Function(String id) onDelete;
+  final Future<void> Function(String id, int value)
+  onMaxRequestsPerMinuteChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '点击卡片即可设为默认；可保存多个视觉模型配置。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            for (final config in configs)
+              _VisionApiConfigCard(
+                config: config,
+                selected: config.id == activeId,
+                deleteEnabled: configs.length > 1,
+                onSelect: () => onSelect(config.id),
+                onEdit: () => _edit(context, config),
+                onDelete: () => onDelete(config.id),
+                onMaxRequestsPerMinuteChanged: (value) =>
+                    onMaxRequestsPerMinuteChanged(config.id, value),
+              ),
+            _AddVisionApiConfigCard(onPressed: () => _edit(context, null)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _edit(BuildContext context, VisionApiConfig? current) async {
+    final config = await showDialog<VisionApiConfig>(
+      context: context,
+      builder: (_) => _VisionApiConfigDialog(config: current),
+    );
+    if (config != null) {
+      await onSave(config);
+    }
+  }
+}
+
+class _VisionApiConfigCard extends StatelessWidget {
+  const _VisionApiConfigCard({
+    required this.config,
+    required this.selected,
+    required this.deleteEnabled,
+    required this.onSelect,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onMaxRequestsPerMinuteChanged,
+  });
+
+  final VisionApiConfig config;
+  final bool selected;
+  final bool deleteEnabled;
+  final VoidCallback onSelect;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final Future<void> Function(int value) onMaxRequestsPerMinuteChanged;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.32),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.7)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: scheme.primaryContainer.withValues(alpha: 0.7),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon, size: 21, color: scheme.onPrimaryContainer),
+    return SizedBox(
+      width: 272,
+      child: Material(
+        color: selected ? scheme.primaryContainer : scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          key: ValueKey('vision-api-config-${config.id}'),
+          borderRadius: BorderRadius.circular(14),
+          onTap: onSelect,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? 2 : 1,
               ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    Text(title, style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                    Icon(
+                      Icons.visibility_rounded,
+                      color: selected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        config.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
                       ),
                     ),
+                    IconButton(
+                      tooltip: '编辑配置',
+                      onPressed: onEdit,
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                    if (deleteEnabled)
+                      IconButton(
+                        tooltip: '删除配置',
+                        onPressed: onDelete,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                      ),
                   ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 8),
+                Text(
+                  config.model.isEmpty ? '未设置模型' : config.model,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  config.baseUrl.isEmpty ? '未设置 API 地址' : config.baseUrl,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if (_isMiniMaxConfig(config)) ...[
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    key: ValueKey(
+                      'vision-api-max-requests-per-minute-${config.id}',
+                    ),
+                    initialValue: config.maxRequestsPerMinute.toString(),
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: '每分钟最大解析请求数（1–200）',
+                      helperText: '所有页面共享此上限，避免 API 限流',
+                    ),
+                    onFieldSubmitted: (text) async {
+                      final value = int.tryParse(text);
+                      if (value != null) {
+                        await onMaxRequestsPerMinuteChanged(value);
+                      }
+                    },
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Text(
+                  selected ? '当前默认配置' : '点击设为默认',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 14),
-          ...children,
-          const SizedBox(height: 12),
-          FilledButton.tonalIcon(
-            key: actionKey,
-            onPressed: onSave,
-            icon: const Icon(Icons.save_rounded),
-            label: Text(actionLabel),
-          ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  static bool _isMiniMaxConfig(VisionApiConfig config) {
+    final model = config.model.trim().toLowerCase();
+    final host = Uri.tryParse(config.baseUrl.trim())?.host.toLowerCase() ?? '';
+    return model == 'minimax-m3' && host.endsWith('minimaxi.com');
+  }
+}
+
+class _AddVisionApiConfigCard extends StatelessWidget {
+  const _AddVisionApiConfigCard({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 180,
+      height: 180,
+      child: OutlinedButton.icon(
+        key: const ValueKey('add-vision-api-config'),
+        onPressed: onPressed,
+        icon: const Icon(Icons.add_circle_outline_rounded),
+        label: const Text('添加 API 卡片'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: scheme.primary,
+          side: BorderSide(color: scheme.outlineVariant),
+        ),
       ),
     );
   }
 }
 
-class _ProviderRouteHint extends StatelessWidget {
-  const _ProviderRouteHint({required this.text});
+class _VisionApiConfigDialog extends StatefulWidget {
+  const _VisionApiConfigDialog({this.config});
 
-  final String text;
+  final VisionApiConfig? config;
+
+  @override
+  State<_VisionApiConfigDialog> createState() => _VisionApiConfigDialogState();
+}
+
+class _VisionApiConfigDialogState extends State<_VisionApiConfigDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _baseUrlController;
+  late final TextEditingController _apiKeyController;
+  late final TextEditingController _modelController;
+  var _apiKeyObscured = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final config = widget.config;
+    _nameController = TextEditingController(text: config?.name ?? '');
+    _baseUrlController = TextEditingController(text: config?.baseUrl ?? '');
+    _apiKeyController = TextEditingController(text: config?.apiKey ?? '');
+    _modelController = TextEditingController(text: config?.model ?? '');
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _baseUrlController.dispose();
+    _apiKeyController.dispose();
+    _modelController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isNew = widget.config == null;
+    return AlertDialog(
+      title: Text(isNew ? '添加视觉模型配置' : '编辑视觉模型配置'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: '配置名称'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _baseUrlController,
+              decoration: const InputDecoration(
+                labelText: 'API 地址',
+                hintText: 'https://api.example.com',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _apiKeyController,
+              obscureText: _apiKeyObscured,
+              decoration: InputDecoration(
+                labelText: 'API Key',
+                suffixIcon: IconButton(
+                  tooltip: _apiKeyObscured ? '显示 Key' : '隐藏 Key',
+                  onPressed: () {
+                    setState(() => _apiKeyObscured = !_apiKeyObscured);
+                  },
+                  icon: Icon(
+                    _apiKeyObscured
+                        ? Icons.visibility_rounded
+                        : Icons.visibility_off_rounded,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _modelController,
+              decoration: const InputDecoration(labelText: '模型名称'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final name = _nameController.text.trim();
+            Navigator.of(context).pop(
+              VisionApiConfig(
+                id:
+                    widget.config?.id ??
+                    'vision-${DateTime.now().microsecondsSinceEpoch}',
+                name: name.isEmpty ? '未命名视觉模型' : name,
+                baseUrl: _baseUrlController.text.trim(),
+                apiKey: _apiKeyController.text.trim(),
+                model: _modelController.text.trim(),
+                maxRequestsPerMinute:
+                    widget.config?.maxRequestsPerMinute ?? 200,
+              ),
+            );
+          },
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImageGenerationApiConfigSection extends StatelessWidget {
+  const _ImageGenerationApiConfigSection({
+    required this.configs,
+    required this.activeId,
+    required this.onSelect,
+    required this.onSave,
+    required this.onDelete,
+  });
+
+  final List<ImageGenerationApiConfig> configs;
+  final String activeId;
+  final Future<void> Function(String id) onSelect;
+  final Future<void> Function(ImageGenerationApiConfig config) onSave;
+  final Future<void> Function(String id) onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '点击卡片即可设为默认；每张卡片保存图片模型、API 地址和 Key。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            for (final config in configs)
+              _ImageGenerationApiConfigCard(
+                config: config,
+                selected: config.id == activeId,
+                deleteEnabled: configs.length > 1,
+                onSelect: () => onSelect(config.id),
+                onEdit: () => _edit(context, config),
+                onDelete: () => onDelete(config.id),
+              ),
+            _AddImageGenerationApiConfigCard(
+              onPressed: () => _edit(context, null),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _edit(
+    BuildContext context,
+    ImageGenerationApiConfig? current,
+  ) async {
+    final config = await showDialog<ImageGenerationApiConfig>(
+      context: context,
+      builder: (_) => _ImageGenerationApiConfigDialog(config: current),
+    );
+    if (config == null || !context.mounted) return;
+    try {
+      await onSave(config);
+    } on FormatException catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message.toString())));
+      }
+    }
+  }
+}
+
+class _ImageGenerationApiConfigCard extends StatelessWidget {
+  const _ImageGenerationApiConfigCard({
+    required this.config,
+    required this.selected,
+    required this.deleteEnabled,
+    required this.onSelect,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final ImageGenerationApiConfig config;
+  final bool selected;
+  final bool deleteEnabled;
+  final VoidCallback onSelect;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: BoxDecoration(
-        color: scheme.secondaryContainer.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.route_rounded,
-            size: 18,
-            color: scheme.onSecondaryContainer,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              text,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: scheme.onSecondaryContainer,
+    final model = ImageGenerationCatalog.descriptorFor(config.model);
+    return SizedBox(
+      width: 272,
+      child: Material(
+        color: selected ? scheme.primaryContainer : scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          key: ValueKey('image-generation-api-config-${config.id}'),
+          borderRadius: BorderRadius.circular(14),
+          onTap: onSelect,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? 2 : 1,
               ),
             ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.auto_fix_high_rounded,
+                      color: selected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        config.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '编辑配置',
+                      onPressed: onEdit,
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                    if (deleteEnabled)
+                      IconButton(
+                        tooltip: '删除配置',
+                        onPressed: onDelete,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  model?.label ?? '未设置模型',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${config.providerLabel} · ${config.baseUrl.isEmpty ? '未设置 API 地址' : config.baseUrl}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  selected ? '当前默认配置' : '点击设为默认',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
+        ),
       ),
+    );
+  }
+}
+
+class _AddImageGenerationApiConfigCard extends StatelessWidget {
+  const _AddImageGenerationApiConfigCard({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 180,
+      height: 180,
+      child: OutlinedButton.icon(
+        key: const ValueKey('add-image-generation-api-config'),
+        onPressed: onPressed,
+        icon: const Icon(Icons.add_circle_outline_rounded),
+        label: const Text('添加 API 卡片'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: scheme.primary,
+          side: BorderSide(color: scheme.outlineVariant),
+        ),
+      ),
+    );
+  }
+}
+
+class _ImageGenerationApiConfigDialog extends StatefulWidget {
+  const _ImageGenerationApiConfigDialog({this.config});
+
+  final ImageGenerationApiConfig? config;
+
+  @override
+  State<_ImageGenerationApiConfigDialog> createState() =>
+      _ImageGenerationApiConfigDialogState();
+}
+
+class _ImageGenerationApiConfigDialogState
+    extends State<_ImageGenerationApiConfigDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _baseUrlController;
+  late final TextEditingController _apiKeyController;
+  late String _model;
+  var _apiKeyObscured = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final config = widget.config;
+    _nameController = TextEditingController(text: config?.name ?? '');
+    _baseUrlController = TextEditingController(text: config?.baseUrl ?? '');
+    _apiKeyController = TextEditingController(text: config?.apiKey ?? '');
+    _model = config?.model ?? 'nano-banana-fast';
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _baseUrlController.dispose();
+    _apiKeyController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final descriptor = ImageGenerationCatalog.descriptorFor(_model);
+    final provider = ImageGenerationCatalog.providerLabelFor(_model);
+    return AlertDialog(
+      title: Text(widget.config == null ? '添加图片生成 API' : '编辑图片生成 API'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: '配置名称'),
+            ),
+            const SizedBox(height: 12),
+            ImageGenerationModelSelector(
+              value: _model,
+              labelText: '图片生成模型',
+              onChanged: (model) => setState(() => _model = model),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _baseUrlController,
+              decoration: InputDecoration(
+                labelText: '$provider API 地址',
+                hintText:
+                    descriptor?.protocol ==
+                        ImageGenerationProviderProtocol.apiMart
+                    ? 'https://api.apimart.ai'
+                    : 'https://api.example.com',
+                helperText:
+                    descriptor?.protocol ==
+                        ImageGenerationProviderProtocol.apiMart
+                    ? '可粘贴带 /v1 的地址，保存时会自动规范化'
+                    : null,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _apiKeyController,
+              obscureText: _apiKeyObscured,
+              decoration: InputDecoration(
+                labelText: '$provider API Key',
+                suffixIcon: IconButton(
+                  tooltip: _apiKeyObscured ? '显示 Key' : '隐藏 Key',
+                  onPressed: () =>
+                      setState(() => _apiKeyObscured = !_apiKeyObscured),
+                  icon: Icon(
+                    _apiKeyObscured
+                        ? Icons.visibility_rounded
+                        : Icons.visibility_off_rounded,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(
+            ImageGenerationApiConfig(
+              id:
+                  widget.config?.id ??
+                  'image-${DateTime.now().microsecondsSinceEpoch}',
+              name: _nameController.text.trim(),
+              baseUrl: _baseUrlController.text.trim(),
+              apiKey: _apiKeyController.text.trim(),
+              model: _model,
+            ),
+          ),
+          child: const Text('保存'),
+        ),
+      ],
     );
   }
 }
