@@ -33,6 +33,8 @@ void main() {
 
     expect(prompt, contains('图片1是本镜头唯一的构图母版'));
     expect(prompt, contains('图片1的色彩风格、色温、明暗关系、光影层次和景深也是硬约束'));
+    expect(prompt, contains('以查看图片1时的画面左/右为唯一坐标系'));
+    expect(prompt, contains('严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图'));
     expect(prompt, contains('其余参考图只用于替换人物、产品、场景和道具'));
     expect(prompt, isNot(contains('不要机械拼贴或照抄参考图版式')));
   });

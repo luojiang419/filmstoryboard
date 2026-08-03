@@ -405,6 +405,14 @@ void main() {
     expect(imageService.requests[0].prompt, contains('视觉焦点与道具：蓝色包装瓶'));
     expect(imageService.requests[0].prompt, contains('【Gemini 3 分镜图像指令】'));
     expect(imageService.requests[0].prompt, contains('图片1是本镜头唯一的构图母版'));
+    expect(
+      imageService.requests[0].prompt,
+      contains('屏幕方向硬约束：以查看图片1时的画面左/右为唯一坐标系'),
+    );
+    expect(
+      imageService.requests[0].prompt,
+      contains('严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图'),
+    );
     expect(imageService.requests[0].prompt, contains('色彩硬约束：以图片1的色彩风格'));
     expect(imageService.requests[0].prompt, contains('产品主体必须清晰可辨'));
     expect(imageService.requests[0].prompt, contains('严禁复用其身份或外观'));

@@ -123,6 +123,7 @@ void main() {
     expect(prompt, contains('镜头运镜'));
     expect(prompt, contains('正跟随'));
     expect(prompt, contains('人物朝向'));
+    expect(prompt, contains('以观看图片时的画面左/右为准'));
     expect(prompt, contains('动作阶段'));
     expect(prompt, contains('机位角度'));
     expect(prompt, contains('视觉焦点'));
