@@ -10,12 +10,16 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
+import '../../shooting_script/application/script_asset_binding_controller.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
+import '../../shooting_script/data/shooting_script_workflow_repository.dart';
+import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../storyboard/domain/image_generation_provider_resolver.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/replicate_repository.dart';
+import '../data/replicate_prompt_export_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
 import '../domain/replicate_models.dart';
 
@@ -26,6 +30,10 @@ final replicateControllerProvider = Provider<ReplicateController>(
       shootingScriptController: ref.watch(shootingScriptControllerProvider),
       directories: ref.watch(projectDirectoriesProvider),
       settingsController: ref.watch(settingsControllerProvider),
+      workflowRepository: ShootingScriptWorkflowRepository(
+        ref.watch(appDatabaseProvider),
+      ),
+      assetBindingController: ref.watch(scriptAssetBindingControllerProvider),
     );
     ref.onDispose(controller.dispose);
     return controller;
@@ -33,6 +41,7 @@ final replicateControllerProvider = Provider<ReplicateController>(
   dependencies: [
     appDatabaseProvider,
     projectDirectoriesProvider,
+    scriptAssetBindingControllerProvider,
     settingsControllerProvider,
     shootingScriptControllerProvider,
   ],
@@ -45,6 +54,7 @@ class ReplicateState {
     this.selectedScriptId = '',
     this.run,
     this.assets = const [],
+    this.replicatedImages = const [],
     this.prompts = const [],
     this.isBusy = false,
     this.message = '',
@@ -56,6 +66,7 @@ class ReplicateState {
   final String selectedScriptId;
   final ReplicateRun? run;
   final List<ReplicateAsset> assets;
+  final List<ReplicatedShotImage> replicatedImages;
   final List<ShotPrompt> prompts;
   final bool isBusy;
   final String message;
@@ -71,11 +82,9 @@ class ReplicateState {
   }
 
   List<ScriptShot> get confirmedShots {
-    final ids = run?.confirmedShotIds.toSet() ?? const <String>{};
-    return [
-      for (final shot in shots)
-        if (ids.contains(shot.id)) shot,
-    ];
+    // 镜头步骤只负责查阅和编辑，不再要求用户逐条点击确认；进入后续
+    // 步骤时，当前脚本中的全部镜头都视为可继续处理的镜头。
+    return [...shots];
   }
 
   ReplicateState copyWith({
@@ -84,6 +93,7 @@ class ReplicateState {
     String? selectedScriptId,
     ReplicateRun? run,
     List<ReplicateAsset>? assets,
+    List<ReplicatedShotImage>? replicatedImages,
     List<ShotPrompt>? prompts,
     bool? isBusy,
     String? message,
@@ -94,6 +104,7 @@ class ReplicateState {
     selectedScriptId: selectedScriptId ?? this.selectedScriptId,
     run: run ?? this.run,
     assets: assets ?? this.assets,
+    replicatedImages: replicatedImages ?? this.replicatedImages,
     prompts: prompts ?? this.prompts,
     isBusy: isBusy ?? this.isBusy,
     message: message ?? this.message,
@@ -102,10 +113,9 @@ class ReplicateState {
 }
 
 class ReplicateExportResult {
-  const ReplicateExportResult({required this.textFile, required this.jsonFile});
+  const ReplicateExportResult({required this.xlsxFile});
 
-  final File textFile;
-  final File jsonFile;
+  final File xlsxFile;
 }
 
 class ReplicateController extends ValueNotifier<ReplicateState> {
@@ -114,6 +124,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required ShootingScriptController shootingScriptController,
     required WorkspaceDirectories directories,
     required SettingsController settingsController,
+    ShootingScriptWorkflowRepository? workflowRepository,
+    ShootingScriptAssetBindingController? assetBindingController,
     SeedancePromptGenerationService promptService =
         const SeedancePromptGenerationService(),
     ImageGenerationService? imageGenerationService,
@@ -122,6 +134,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _shootingScriptController = shootingScriptController,
        _directories = directories,
        _settingsController = settingsController,
+       _workflowRepository = workflowRepository,
+       _assetBindingController = assetBindingController,
        _promptService = promptService,
        _imageGenerationService =
            imageGenerationService ?? ImageGenerationService(),
@@ -129,6 +143,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _uuid = uuid,
        super(const ReplicateState()) {
     _shootingScriptController.addListener(_handleShootingScriptChanged);
+    _assetBindingController?.addListener(_handleWorkflowChanged);
     _restoreFromShootingScript();
   }
 
@@ -138,16 +153,20 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final ShootingScriptController _shootingScriptController;
   final WorkspaceDirectories _directories;
   final SettingsController _settingsController;
+  final ShootingScriptWorkflowRepository? _workflowRepository;
+  final ShootingScriptAssetBindingController? _assetBindingController;
   final SeedancePromptGenerationService _promptService;
   final ImageGenerationService _imageGenerationService;
   final bool _ownsImageGenerationService;
   final Uuid _uuid;
   bool _disposed = false;
+  bool _replicationBatchActive = false;
 
   @override
   void dispose() {
     _disposed = true;
     _shootingScriptController.removeListener(_handleShootingScriptChanged);
+    _assetBindingController?.removeListener(_handleWorkflowChanged);
     if (_ownsImageGenerationService) {
       _imageGenerationService.close();
     }
@@ -195,17 +214,22 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return false;
     }
     if (step.index >= ReplicateStep.prepareAssets.index &&
-        value.confirmedShots.isEmpty) {
-      value = value.copyWith(errorMessage: '请先确认至少一个脚本镜头', message: '');
+        value.shots.isEmpty) {
+      value = value.copyWith(errorMessage: '当前脚本暂无可用镜头', message: '');
       return false;
     }
     if (step.index >= ReplicateStep.composePrompts.index &&
-        !_hasReadyAssets(value.assets)) {
+        !_hasPromptAssets()) {
       value = value.copyWith(errorMessage: '请先添加至少一个可用参考素材', message: '');
       return false;
     }
     final updated = run.copyWith(
       currentStep: step,
+      prepareAssetsStatus:
+          step.index >= ReplicateStep.composePrompts.index &&
+              _hasWorkflowPromptAssets()
+          ? ProcessingStatus.completed
+          : run.prepareAssetsStatus,
       errorMessage: '',
       updatedAt: DateTime.now().toUtc(),
     );
@@ -530,12 +554,261 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _shootingScriptController.updateShot(shot);
   }
 
+  void deleteShot(String shotId) {
+    _shootingScriptController.deleteShot(shotId);
+  }
+
+  Future<bool> replicateShot(String shotId) async {
+    if (_replicationBatchActive || value.isBusy) return false;
+    final shot = _shotById(shotId);
+    if (shot == null) return false;
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在提交镜头 ${shot.shotNumber} 的复刻任务…',
+      errorMessage: '',
+    );
+    final succeeded = await _generateReplicatedShot(shot);
+    if (!_disposed) {
+      final error = _replicatedImageForShot(shot.id)?.errorMessage ?? '';
+      value = value.copyWith(
+        isBusy: false,
+        message: succeeded ? '镜头 ${shot.shotNumber} 复刻完成' : '',
+        errorMessage: succeeded ? '' : error,
+      );
+    }
+    return succeeded;
+  }
+
+  Future<void> replicateAllShots({
+    Duration stagger = const Duration(milliseconds: 450),
+    int maxConcurrent = 3,
+  }) async {
+    if (_replicationBatchActive || value.isBusy) return;
+    final shots = [...value.confirmedShots]
+      ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
+    if (shots.isEmpty) {
+      value = value.copyWith(errorMessage: '当前脚本暂无可复刻的镜头', message: '');
+      return;
+    }
+    _replicationBatchActive = true;
+    value = value.copyWith(
+      isBusy: true,
+      message: '准备错峰提交 ${shots.length} 个复刻任务…',
+      errorMessage: '',
+    );
+    final active = <Future<bool>>[];
+    var completed = 0;
+    var succeeded = 0;
+    Future<bool> tracked(ScriptShot shot) async {
+      final result = await _generateReplicatedShot(shot);
+      completed++;
+      if (result) succeeded++;
+      if (!_disposed) {
+        value = value.copyWith(
+          message: '复刻进度 $completed/${shots.length}，成功 $succeeded 个',
+        );
+      }
+      return result;
+    }
+
+    try {
+      final concurrency = maxConcurrent.clamp(1, 6);
+      for (var index = 0; index < shots.length; index++) {
+        if (index > 0 && stagger > Duration.zero) {
+          await Future<void>.delayed(stagger);
+        }
+        active.add(tracked(shots[index]));
+        if (active.length >= concurrency) {
+          await active.removeAt(0);
+        }
+      }
+      await Future.wait(active);
+    } finally {
+      _replicationBatchActive = false;
+      if (!_disposed) {
+        final failed = shots.length - succeeded;
+        value = value.copyWith(
+          isBusy: false,
+          message: failed == 0 ? '已完成 ${shots.length} 个镜头复刻' : '',
+          errorMessage: failed == 0 ? '' : '$failed 个镜头复刻失败，可单独重试',
+        );
+      }
+    }
+  }
+
+  Future<bool> _generateReplicatedShot(ScriptShot shot) async {
+    final run = value.run;
+    if (run == null) return false;
+    final original = File(shot.framePath);
+    final references = _replacementReferences(shot.id);
+    final now = DateTime.now().toUtc();
+    final existing = _replicatedImageForShot(shot.id);
+    final model = _settingsController.value.imageGenerationModel;
+    var record = ReplicatedShotImage(
+      id: existing?.id ?? _replicatedImageId(run.id, shot.id),
+      runId: run.id,
+      scriptShotId: shot.id,
+      shotNumber: shot.shotNumber,
+      originalFramePath: shot.framePath,
+      generatedFramePath: existing?.generatedFramePath ?? '',
+      assetIds: [for (final reference in references) reference.id],
+      prompt: _replacementPrompt(shot, references),
+      model: model,
+      rawResponse: '',
+      status: ProcessingStatus.running,
+      errorMessage: '',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    );
+    if (!original.existsSync()) {
+      record = record.copyWith(
+        status: ProcessingStatus.failed,
+        errorMessage: '原视频帧不存在',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      return false;
+    }
+    if (references.isEmpty) {
+      record = record.copyWith(
+        status: ProcessingStatus.failed,
+        errorMessage: '当前镜头没有已确认的图片资产',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      return false;
+    }
+    _saveReplicatedImage(record);
+    try {
+      final descriptor = ImageGenerationCatalog.descriptorFor(model);
+      if (descriptor == null) {
+        throw FormatException('不支持的图片生成模型：$model');
+      }
+      final aspectRatio = descriptor.aspectRatios.contains('16:9')
+          ? '16:9'
+          : descriptor.aspectRatios.first;
+      final resolutions = ImageGenerationCatalog.resolutionsFor(
+        model,
+        aspectRatio,
+      );
+      final imageSize = resolutions.firstWhere(
+        (item) => item != 'auto',
+        orElse: () => resolutions.first,
+      );
+      final quality = descriptor.qualities.contains('high')
+          ? 'high'
+          : descriptor.qualities.first;
+      final outputDirectory = Directory(
+        p.join(
+          _directories.generatedImages.path,
+          'replicate',
+          _safeFileName(run.id),
+        ),
+      );
+      await outputDirectory.create(recursive: true);
+      final result = await _imageGenerationService.generateEditedImage(
+        ImageGenerationRequest(
+          provider: ImageGenerationProviderResolver.resolve(
+            settings: _settingsController.value,
+            model: model,
+          ),
+          model: model,
+          prompt: record.prompt,
+          aspectRatio: aspectRatio,
+          imageSize: imageSize,
+          quality: quality,
+          referenceImagePaths: [
+            original.path,
+            for (final reference in references) reference.path,
+          ],
+          outputDirectory: outputDirectory,
+        ),
+      );
+      final persistedPath = await _persistGeneratedFrame(
+        sourcePath: result.localPath,
+        outputDirectory: outputDirectory,
+        shot: shot,
+        previousPath: existing?.generatedFramePath ?? '',
+      );
+      record = record.copyWith(
+        generatedFramePath: persistedPath,
+        rawResponse: result.rawResponse,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      return true;
+    } catch (error) {
+      record = record.copyWith(
+        status: ProcessingStatus.failed,
+        errorMessage: '$error',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      return false;
+    }
+  }
+
+  Future<String> _persistGeneratedFrame({
+    required String sourcePath,
+    required Directory outputDirectory,
+    required ScriptShot shot,
+    required String previousPath,
+  }) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw FileSystemException('图片生成成功但本地文件不存在', sourcePath);
+    }
+    await outputDirectory.create(recursive: true);
+    final extension = p.extension(source.path).trim().toLowerCase();
+    final target = File(
+      p.join(
+        outputDirectory.path,
+        'shot-${shot.shotNumber.toString().padLeft(3, '0')}-'
+        '${_safeFileName(shot.id)}${extension.isEmpty ? '.png' : extension}',
+      ),
+    );
+    if (!p.equals(source.absolute.path, target.absolute.path)) {
+      await source.copy(target.path);
+    }
+    final sourceMetadata = File('${source.path}.json');
+    if (await sourceMetadata.exists()) {
+      await sourceMetadata.copy('${target.path}.json');
+    }
+    if (previousPath.trim().isNotEmpty &&
+        !p.equals(previousPath, target.path)) {
+      await _deleteManagedGeneratedFrame(previousPath, outputDirectory);
+    }
+    return target.path;
+  }
+
+  Future<void> _deleteManagedGeneratedFrame(
+    String path,
+    Directory outputDirectory,
+  ) async {
+    final file = File(path);
+    if (!await file.exists()) {
+      return;
+    }
+    final root = p.canonicalize(outputDirectory.absolute.path);
+    final candidate = p.canonicalize(file.absolute.path);
+    if (!p.isWithin(root, candidate)) {
+      return;
+    }
+    await file.delete();
+    final metadata = File('${file.path}.json');
+    if (await metadata.exists()) {
+      await metadata.delete();
+    }
+  }
+
   Future<void> composeAllPrompts() async {
     final run = value.run;
     final shots = value.confirmedShots;
     final assets = _readyAssets(value.assets);
-    if (run == null || shots.isEmpty || assets.isEmpty) {
-      value = value.copyWith(errorMessage: '需要已确认镜头和可用参考素材', message: '');
+    if (run == null || shots.isEmpty || !_hasPromptAssets(shots: shots)) {
+      value = value.copyWith(errorMessage: '需要可用镜头和参考素材', message: '');
       return;
     }
     final running = run.copyWith(
@@ -557,8 +830,15 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     );
     final prompts = <ShotPrompt>[];
     var completed = 0;
-    for (final shot in shots) {
-      final prompt = _composePrompt(run: running, shot: shot, assets: assets);
+    for (var index = 0; index < shots.length; index++) {
+      final shot = shots[index];
+      final prompt = _composePrompt(
+        run: running,
+        shot: shot,
+        assets: assets,
+        previousShot: index > 0 ? shots[index - 1] : null,
+        nextShot: index + 1 < shots.length ? shots[index + 1] : null,
+      );
       prompts.add(prompt);
       if (prompt.status == ProcessingStatus.completed) {
         completed++;
@@ -608,10 +888,17 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (shot == null) {
       return;
     }
+    final orderedShots = [...value.confirmedShots]
+      ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
+    final shotIndex = orderedShots.indexWhere((item) => item.id == shot.id);
     final updated = _composePrompt(
       run: run,
       shot: shot,
       assets: _readyAssets(value.assets),
+      previousShot: shotIndex > 0 ? orderedShots[shotIndex - 1] : null,
+      nextShot: shotIndex >= 0 && shotIndex + 1 < orderedShots.length
+          ? orderedShots[shotIndex + 1]
+          : null,
     );
     _repository.upsertPrompt(updated);
     final prompts = [...value.prompts]..[index] = updated;
@@ -657,36 +944,22 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     try {
       await _directories.prompts.create(recursive: true);
       final base = '${_safeFileName(script.name)}-Seedance2提示词';
-      final textFile = _uniqueFile(_directories.prompts, '$base.txt');
-      final jsonFile = File(p.setExtension(textFile.path, '.json'));
+      final xlsxFile = _uniqueFile(_directories.prompts, '$base.xlsx');
       final sorted = [
         ...value.prompts,
       ]..sort((first, second) => first.shotNumber.compareTo(second.shotNumber));
-      await textFile.writeAsString(
-        sorted
-            .map((item) => '镜头 ${item.shotNumber}\n${item.prompt}')
-            .join(
-              '\n\n------------------------------------------------------------------------\n\n',
-            ),
-        flush: true,
-      );
-      await jsonFile.writeAsString(
-        const JsonEncoder.withIndent('  ').convert({
-          'script': {'id': script.id, 'name': script.name},
-          'runId': run.id,
-          'model': promptModel,
-          'globalStyle': run.globalStyle,
-          'constraints': run.constraints,
-          'assets': [for (final asset in value.assets) _assetJson(asset)],
-          'prompts': [for (final prompt in sorted) _promptJson(prompt)],
-        }),
-        flush: true,
+      await const ReplicatePromptExportService().export(
+        script: script,
+        shots: value.shots,
+        prompts: sorted,
+        replicatedImages: value.replicatedImages,
+        outputPath: xlsxFile.path,
       );
       value = value.copyWith(
-        message: '已导出 TXT 与 JSON 到 ${_directories.prompts.path}',
+        message: '已导出合成提示词 XLSX：${xlsxFile.path}',
         errorMessage: '',
       );
-      return ReplicateExportResult(textFile: textFile, jsonFile: jsonFile);
+      return ReplicateExportResult(xlsxFile: xlsxFile);
     } catch (error) {
       value = value.copyWith(message: '', errorMessage: '导出提示词失败：$error');
       return null;
@@ -707,6 +980,13 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _restoreFromShootingScript();
   }
 
+  void _handleWorkflowChanged() {
+    if (_disposed) {
+      return;
+    }
+    _restoreFromShootingScript();
+  }
+
   void _restoreFromShootingScript({String? selectScriptId}) {
     final shooting = _shootingScriptController.value;
     final scripts = shooting.scripts;
@@ -714,10 +994,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       value = const ReplicateState();
       return;
     }
-    final requested = selectScriptId ?? value.selectedScriptId;
+    final requested = selectScriptId ?? shooting.selectedScriptId;
     final scriptId = scripts.any((script) => script.id == requested)
         ? requested
-        : shooting.selectedScriptId;
+        : scripts.first.id;
     if (scriptId != shooting.selectedScriptId) {
       _shootingScriptController.selectScript(scriptId);
       return;
@@ -748,26 +1028,42 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       _repository.upsertRun(run);
     }
-    final validIds = {for (final shot in shooting.shots) shot.id};
-    final confirmedIds = [
-      for (final id in run.confirmedShotIds)
-        if (validIds.contains(id)) id,
-    ];
-    if (confirmedIds.length != run.confirmedShotIds.length) {
+    final confirmedIds = [for (final shot in shooting.shots) shot.id];
+    if (confirmedIds.length != run.confirmedShotIds.length ||
+        !confirmedIds.every(run.confirmedShotIds.contains)) {
       run = run.copyWith(
         confirmedShotIds: confirmedIds,
         confirmShotsStatus: confirmedIds.isEmpty
             ? ProcessingStatus.pending
             : ProcessingStatus.completed,
+        totalCount: shooting.shots.length,
         updatedAt: DateTime.now().toUtc(),
       );
       _repository.upsertRun(run);
     }
     final assets = _repository.listAssets(run.id);
+    final replicatedImages = _restoreReplicatedImages(run.id);
     final prompts = _repository.listPrompts(run.id);
+    final workflowAssetIdsByShot = _confirmedScriptAssetIdsByShot(
+      scriptId,
+      shooting.shots,
+    );
     final normalizedRun = _normalizeReferenceCounts(run, assets);
     if (normalizedRun != run) {
       run = normalizedRun;
+      _repository.upsertRun(run);
+    }
+    final hasWorkflowAssets = workflowAssetIdsByShot.isNotEmpty;
+    final workflowPrepareStatus = hasWorkflowAssets
+        ? ProcessingStatus.completed
+        : (_hasReadyAssets(assets)
+              ? ProcessingStatus.completed
+              : ProcessingStatus.pending);
+    if (run.prepareAssetsStatus != workflowPrepareStatus) {
+      run = run.copyWith(
+        prepareAssetsStatus: workflowPrepareStatus,
+        updatedAt: DateTime.now().toUtc(),
+      );
       _repository.upsertRun(run);
     }
     if (prompts.isNotEmpty &&
@@ -776,6 +1072,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           shots: shooting.shots,
           confirmedShotIds: confirmedIds,
           assets: assets,
+          workflowAssetIdsByShot: workflowAssetIdsByShot,
         )) {
       run = run.copyWith(
         status: ProcessingStatus.pending,
@@ -790,6 +1087,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       selectedScriptId: scriptId,
       run: run,
       assets: assets,
+      replicatedImages: replicatedImages,
       prompts: prompts,
       isBusy: false,
     );
@@ -843,6 +1141,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     value = value.copyWith(
       run: run,
       assets: _repository.listAssets(run.id),
+      replicatedImages: _repository.listReplicatedShotImages(run.id),
       prompts: _repository.listPrompts(run.id),
       isBusy: isBusy,
       message: message,
@@ -871,14 +1170,28 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required ReplicateRun run,
     required ScriptShot shot,
     required List<ReplicateAsset> assets,
+    ScriptShot? previousShot,
+    ScriptShot? nextShot,
   }) {
     try {
-      final result = _promptService.generate(
-        shot: shot,
-        assets: assets,
-        globalStyle: run.globalStyle,
-        constraints: run.constraints,
-      );
+      final linkedAssets = _confirmedScriptAssets(shot.id);
+      final result = linkedAssets.isNotEmpty
+          ? _promptService.generateFromScriptAssets(
+              shot: shot,
+              assets: linkedAssets,
+              globalStyle: run.globalStyle,
+              constraints: run.constraints,
+              previousShot: previousShot,
+              nextShot: nextShot,
+            )
+          : _promptService.generate(
+              shot: shot,
+              assets: assets,
+              globalStyle: run.globalStyle,
+              constraints: run.constraints,
+              previousShot: previousShot,
+              nextShot: nextShot,
+            );
       return ShotPrompt(
         id: _promptId(run.id, shot.id),
         runId: run.id,
@@ -972,6 +1285,147 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     return null;
   }
+
+  ReplicatedShotImage? _replicatedImageForShot(String shotId) {
+    for (final image in value.replicatedImages) {
+      if (image.scriptShotId == shotId) return image;
+    }
+    return null;
+  }
+
+  void _saveReplicatedImage(ReplicatedShotImage image) {
+    _repository.upsertReplicatedShotImage(image);
+    if (_disposed) return;
+    value = value.copyWith(
+      replicatedImages: _repository.listReplicatedShotImages(image.runId),
+    );
+  }
+
+  List<ReplicatedShotImage> _restoreReplicatedImages(String runId) {
+    final images = _repository.listReplicatedShotImages(runId);
+    final generatedRoot = _directories.generatedImages;
+    if (!generatedRoot.existsSync()) {
+      return images;
+    }
+    final filesByName = <String, File>{};
+    for (final entity in generatedRoot.listSync(recursive: true)) {
+      if (entity is File) {
+        filesByName[p.basename(entity.path)] = entity;
+      }
+    }
+    final restored = <ReplicatedShotImage>[];
+    for (final image in images) {
+      final currentPath = image.generatedFramePath.trim();
+      if (currentPath.isNotEmpty && File(currentPath).existsSync()) {
+        restored.add(image);
+        continue;
+      }
+      final basename = currentPath.isEmpty ? '' : p.basename(currentPath);
+      final recovered = basename.isEmpty ? null : filesByName[basename];
+      if (recovered == null) {
+        restored.add(image);
+        continue;
+      }
+      final updated = image.copyWith(
+        generatedFramePath: recovered.path,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertReplicatedShotImage(updated);
+      restored.add(updated);
+    }
+    return restored;
+  }
+
+  List<_ReplacementReference> _replacementReferences(String shotId) {
+    final linked = _confirmedScriptAssets(shotId);
+    if (linked.isNotEmpty) {
+      return [
+        for (final asset in linked)
+          if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
+              asset.path.trim().isNotEmpty &&
+              File(asset.path).existsSync())
+            _ReplacementReference(
+              id: asset.id,
+              type: asset.type,
+              name: asset.name,
+              description: asset.description,
+              path: asset.path,
+            ),
+      ];
+    }
+    return [
+      for (final asset in _readyAssets(value.assets))
+        if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
+            asset.path.trim().isNotEmpty &&
+            File(asset.path).existsSync())
+          _ReplacementReference(
+            id: asset.id,
+            type: asset.type,
+            name: asset.name,
+            description: asset.description,
+            path: asset.path,
+          ),
+    ];
+  }
+
+  String _replacementPrompt(
+    ScriptShot shot,
+    List<_ReplacementReference> references,
+  ) {
+    final definitions = <String>[];
+    final operations = <String>[];
+    for (var index = 0; index < references.length; index++) {
+      final reference = references[index];
+      final imageLabel = '图片${index + 2}';
+      final description = reference.description.trim().isEmpty
+          ? ''
+          : '，特征：${reference.description.trim()}';
+      definitions.add(
+        '$imageLabel 是${_replacementTypeLabel(reference.type)}“${reference.name}”$description。',
+      );
+      operations.add(switch (reference.type) {
+        ReplicateAssetType.character =>
+          '将图片1中与“${reference.name}”对应的人物身份、脸部、发型、服装和外观替换为$imageLabel，保留原人物姿态、表情、视线和动作阶段。',
+        ReplicateAssetType.product =>
+          '将图片1中对应产品替换为$imageLabel 的“${reference.name}”，准确保留品牌结构、包装、材质和比例，并保持原来的手部接触与摆放关系。',
+        ReplicateAssetType.scene =>
+          '将图片1中对应场景替换为$imageLabel 的“${reference.name}”，保持原镜位、透视、主体位置和空间层次。',
+        ReplicateAssetType.prop =>
+          '将图片1中对应道具替换为$imageLabel 的“${reference.name}”，保持原来的尺寸、朝向、遮挡与交互关系。',
+        _ => '使用$imageLabel 的“${reference.name}”替换图片1中的对应视觉元素。',
+      });
+    }
+    return [
+      '这是逐镜头参考图替换任务。图片1是原视频镜头 ${shot.shotNumber} 的构图与动作基准。',
+      ...definitions,
+      ...operations,
+      '严格保持图片1的画幅、景别、机位、构图、透视、主体数量、动作、表情、视线、遮挡、光源方向、色温、景深和叙事时刻；除上述已匹配元素外，不新增、删除或改动其他内容。',
+      if (shot.content.trim().isNotEmpty) '镜头内容：${shot.content.trim()}。',
+      if (shot.shotSize.trim().isNotEmpty) '景别：${shot.shotSize.trim()}。',
+      if (shot.composition.trim().isNotEmpty) '构图：${shot.composition.trim()}。',
+      if (shot.cameraAngle.trim().isNotEmpty) '机位：${shot.cameraAngle.trim()}。',
+      if (shot.lightingMood.trim().isNotEmpty)
+        '光影与氛围：${shot.lightingMood.trim()}。',
+      if (shot.colorPalette.trim().isNotEmpty)
+        '色彩：${shot.colorPalette.trim()}。',
+      if (shot.visualFocus.trim().isNotEmpty)
+        '视觉焦点：${shot.visualFocus.trim()}。',
+      if (shot.transitionHint.trim().isNotEmpty)
+        '剪辑衔接：${shot.transitionHint.trim()}。',
+      if (shot.cameraNotes.trim().isNotEmpty)
+        '摄影备注：${shot.cameraNotes.trim()}。',
+      '输出一张自然、真实、细节一致的复刻版分镜图，不生成字幕、水印、额外 Logo 或无关文字。',
+    ].join('\n');
+  }
+
+  static String _replacementTypeLabel(ReplicateAssetType type) =>
+      switch (type) {
+        ReplicateAssetType.character => '人物参考',
+        ReplicateAssetType.product => '产品参考',
+        ReplicateAssetType.scene => '场景参考',
+        ReplicateAssetType.prop => '道具参考',
+        _ => '视觉参考',
+      };
 
   Future<Directory> _assetDirectory(String runId) async {
     final directory = Directory(
@@ -1114,6 +1568,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required List<ScriptShot> shots,
     required List<String> confirmedShotIds,
     required List<ReplicateAsset> assets,
+    Map<String, Set<String>> workflowAssetIdsByShot = const {},
   }) {
     if (prompts.length != confirmedShotIds.length) {
       return true;
@@ -1125,9 +1580,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       if (shot == null || !confirmedShotIds.contains(shot.id)) {
         return true;
       }
+      final expectedAssetIds = workflowAssetIdsByShot[shot.id] ?? readyAssetIds;
       if (prompt.shotNumber != shot.shotNumber ||
-          prompt.assetIds.toSet().difference(readyAssetIds).isNotEmpty ||
-          readyAssetIds.difference(prompt.assetIds.toSet()).isNotEmpty) {
+          prompt.assetIds.toSet().difference(expectedAssetIds).isNotEmpty ||
+          expectedAssetIds.difference(prompt.assetIds.toSet()).isNotEmpty) {
         return true;
       }
       try {
@@ -1149,6 +1605,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     'shotSize': shot.shotSize,
     'cameraMovement': shot.cameraMovement,
     'cameraNotes': shot.cameraNotes,
+    'composition': shot.composition,
+    'cameraAngle': shot.cameraAngle,
+    'lightingMood': shot.lightingMood,
+    'colorPalette': shot.colorPalette,
+    'visualFocus': shot.visualFocus,
+    'transitionHint': shot.transitionHint,
     'scene': shot.scene,
     'dialogue': shot.dialogue,
     'sound': shot.sound,
@@ -1165,6 +1627,61 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   static bool _hasReadyAssets(List<ReplicateAsset> assets) =>
       _readyAssets(assets).isNotEmpty;
 
+  bool _hasPromptAssets({List<ScriptShot>? shots}) {
+    if (_hasReadyAssets(value.assets)) return true;
+    final targetShots = shots ?? value.confirmedShots;
+    return targetShots.any(
+      (shot) => _confirmedScriptAssets(shot.id).isNotEmpty,
+    );
+  }
+
+  bool _hasWorkflowPromptAssets() {
+    final targetShots = value.confirmedShots;
+    return targetShots.any(
+      (shot) => _confirmedScriptAssets(shot.id).isNotEmpty,
+    );
+  }
+
+  List<ScriptAsset> _confirmedScriptAssets(String shotId) {
+    final repository = _workflowRepository;
+    final scriptId = value.selectedScriptId;
+    if (repository == null || scriptId.isEmpty) return const [];
+    final assetsById = {
+      for (final asset in repository.listScriptAssets(scriptId))
+        asset.id: asset,
+    };
+    return [
+      for (final link in repository.listLinksForShot(shotId))
+        if (link.confirmed) ..._assetIfPresent(assetsById[link.scriptAssetId]),
+    ];
+  }
+
+  static Iterable<ScriptAsset> _assetIfPresent(ScriptAsset? asset) {
+    if (asset == null) return const [];
+    return [asset];
+  }
+
+  Map<String, Set<String>> _confirmedScriptAssetIdsByShot(
+    String scriptId,
+    List<ScriptShot> shots,
+  ) {
+    final repository = _workflowRepository;
+    if (repository == null || scriptId.isEmpty) return const {};
+    final validAssetIds = {
+      for (final asset in repository.listScriptAssets(scriptId)) asset.id,
+    };
+    final result = <String, Set<String>>{};
+    for (final shot in shots) {
+      final ids = {
+        for (final link in repository.listLinksForShot(shot.id))
+          if (link.confirmed && validAssetIds.contains(link.scriptAssetId))
+            link.scriptAssetId,
+      };
+      if (ids.isNotEmpty) result[shot.id] = ids;
+    }
+    return result;
+  }
+
   static List<ReplicateAsset> _readyAssets(List<ReplicateAsset> assets) => [
     for (final asset in assets)
       if (asset.status == ProcessingStatus.completed &&
@@ -1178,6 +1695,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   static String _promptId(String runId, String shotId) =>
       '$runId-prompt-$shotId';
+
+  static String _replicatedImageId(String runId, String shotId) =>
+      '$runId-replicated-$shotId';
 
   static String _stepLabel(ReplicateStep step) => switch (step) {
     ReplicateStep.confirmShots => '步骤 1：确认脚本',
@@ -1219,24 +1739,20 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     return file;
   }
+}
 
-  static Map<String, Object?> _assetJson(ReplicateAsset asset) => {
-    'id': asset.id,
-    'type': asset.type.name,
-    'reference': SeedancePromptGenerationService.referenceLabel(asset),
-    'name': asset.name,
-    'description': asset.description,
-    'path': asset.path,
-    'status': asset.status.name,
-  };
+class _ReplacementReference {
+  const _ReplacementReference({
+    required this.id,
+    required this.type,
+    required this.name,
+    required this.description,
+    required this.path,
+  });
 
-  static Map<String, Object?> _promptJson(ShotPrompt prompt) => {
-    'shotNumber': prompt.shotNumber,
-    'scriptShotId': prompt.scriptShotId,
-    'assetIds': prompt.assetIds,
-    'prompt': prompt.prompt,
-    'model': prompt.model,
-    'status': prompt.status.name,
-    'errorMessage': prompt.errorMessage,
-  };
+  final String id;
+  final ReplicateAssetType type;
+  final String name;
+  final String description;
+  final String path;
 }

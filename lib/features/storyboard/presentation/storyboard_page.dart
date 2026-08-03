@@ -431,9 +431,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     if (!mounted || located) {
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('左侧栏中未找到该图片资源')));
   }
 
   Future<void> _pickReplacementImage(
@@ -447,13 +444,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       if (file != null) {
         await controller.replaceItemImage(item: item, imagePath: file.path);
       }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('选择替换图片失败：$error')));
-      }
-    }
+    } catch (_) {}
   }
 
   Future<void> _replaceWithDroppedImage(
@@ -469,11 +460,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       }
     }
     if (imagePath == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请拖入 PNG、JPG、WEBP 或 BMP 图片')),
-        );
-      }
       return;
     }
     await controller.replaceItemImage(item: item, imagePath: imagePath);
@@ -488,27 +474,11 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       return;
     }
     try {
-      final result = await const StoryboardExportService().exportBoardImages(
+      await const StoryboardExportService().exportBoardImages(
         board: board,
         outputDirectory: path,
       );
-      if (!mounted) {
-        return;
-      }
-      final message = result.files.isEmpty
-          ? '没有可导出的画板图片'
-          : '已导出 ${result.files.length} 张画板图片到 ${result.directory.path}';
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('导出画板图片失败：$error')));
-    }
+    } catch (_) {}
   }
 
   Future<void> _openAssetFolderDirectory(StoryboardFolder folder) async {
@@ -519,17 +489,8 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       if (!mounted || opened) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('文件夹目录不存在')));
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('打开目录失败：$error')));
-    }
+      return;
+    } catch (_) {}
   }
 
   double _effectiveAssetSidebarWidth(double availableWidth) {

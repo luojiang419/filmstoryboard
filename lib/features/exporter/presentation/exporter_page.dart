@@ -432,6 +432,16 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     return null;
   }
 
+  File _resolveReportFrame(VideoFrame frame) {
+    final directories = ref.read(projectDirectoriesProvider);
+    final normalized = frame.path.replaceAll('/', Platform.pathSeparator);
+    return File(
+      p.isAbsolute(normalized)
+          ? normalized
+          : p.join(directories.workspaceRoot.path, normalized),
+    );
+  }
+
   Future<void> _exportVideoAnalysisReport({
     required VideoAnalysisRepository repository,
     required SourceVideo video,
@@ -459,6 +469,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
         frameAnalyses: repository.listVideoFrameAnalyses(video.id),
         summary: summary,
         marketingAnalyses: repository.listMarketingAnalyses(video.id),
+        resolveFrame: _resolveReportFrame,
       );
       if (mounted) {
         setState(

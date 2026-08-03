@@ -1083,12 +1083,7 @@ class _ImageSidebarState extends State<_ImageSidebar> {
   }
 
   void _showMessage(String message) {
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
-    );
+    // 操作结果不再通过底部横幅播报。
   }
 }
 

@@ -142,6 +142,39 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     refresh(selectScriptId: scriptId);
   }
 
+  void reorderScripts(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= value.scripts.length) {
+      return;
+    }
+    var target = newIndex;
+    if (target > oldIndex) {
+      target--;
+    }
+    target = target.clamp(0, value.scripts.length - 1);
+    if (target == oldIndex) {
+      return;
+    }
+    final scripts = [...value.scripts];
+    final moving = scripts.removeAt(oldIndex);
+    scripts.insert(target, moving);
+
+    // 现有数据库按 updated_at 排序；用单调时间戳保存用户拖拽后的顺序，
+    // 不新增迁移字段，也不会改变脚本版本号。
+    final now = DateTime.now().toUtc();
+    for (var index = 0; index < scripts.length; index++) {
+      _repository.upsertScript(
+        scripts[index].copyWith(
+          updatedAt: now.add(Duration(microseconds: scripts.length - index)),
+        ),
+      );
+    }
+    refresh(
+      selectScriptId: value.selectedScriptId,
+      selectShotId: value.selectedShotId,
+    );
+    value = value.copyWith(message: '已调整脚本顺序', errorMessage: '');
+  }
+
   void selectShot(String shotId) {
     value = value.copyWith(selectedShotId: shotId);
   }
@@ -225,7 +258,13 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           ]),
           shotSize: dimensions['shotSize'] ?? '',
           cameraMovement: dimensions['cameraMovement'] ?? '',
-          cameraNotes: dimensions['detail'] ?? '',
+          cameraNotes: '',
+          composition: dimensions['composition'] ?? '',
+          cameraAngle: dimensions['cameraAngle'] ?? '',
+          lightingMood: dimensions['lightingMood'] ?? '',
+          colorPalette: dimensions['colorPalette'] ?? '',
+          visualFocus: dimensions['visualFocus'] ?? '',
+          transitionHint: dimensions['transitionHint'] ?? '',
           scene: dimensions['scene'] ?? '',
           productCode: '',
           productStyling: '',
@@ -320,6 +359,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           shotSize: shot.shotSize,
           cameraMovement: shot.cameraMovement,
           cameraNotes: shot.cameraNotes,
+          composition: shot.composition,
+          cameraAngle: shot.cameraAngle,
+          lightingMood: shot.lightingMood,
+          colorPalette: shot.colorPalette,
+          visualFocus: shot.visualFocus,
+          transitionHint: shot.transitionHint,
           scene: shot.scene,
           productCode: shot.productCode,
           productStyling: shot.productStyling,
@@ -381,6 +426,17 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     if (script == null) {
       return;
     }
+    deleteScript(script.id);
+  }
+
+  void deleteScript(String scriptId) {
+    final script = value.scripts.cast<ShootingScript?>().firstWhere(
+      (item) => item?.id == scriptId,
+      orElse: () => null,
+    );
+    if (script == null) {
+      return;
+    }
     _repository.deleteScript(script.id);
     refresh();
     value = value.copyWith(message: '已删除 ${script.name}', errorMessage: '');
@@ -420,6 +476,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       shotSize: source.shotSize,
       cameraMovement: source.cameraMovement,
       cameraNotes: source.cameraNotes,
+      composition: source.composition,
+      cameraAngle: source.cameraAngle,
+      lightingMood: source.lightingMood,
+      colorPalette: source.colorPalette,
+      visualFocus: source.visualFocus,
+      transitionHint: source.transitionHint,
       scene: source.scene,
       productCode: source.productCode,
       productStyling: source.productStyling,
@@ -528,6 +590,24 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           ),
           ShootingScriptBatchField.cameraMovement => shot.copyWith(
             cameraMovement: fieldValue,
+          ),
+          ShootingScriptBatchField.composition => shot.copyWith(
+            composition: fieldValue,
+          ),
+          ShootingScriptBatchField.cameraAngle => shot.copyWith(
+            cameraAngle: fieldValue,
+          ),
+          ShootingScriptBatchField.lightingMood => shot.copyWith(
+            lightingMood: fieldValue,
+          ),
+          ShootingScriptBatchField.colorPalette => shot.copyWith(
+            colorPalette: fieldValue,
+          ),
+          ShootingScriptBatchField.visualFocus => shot.copyWith(
+            visualFocus: fieldValue,
+          ),
+          ShootingScriptBatchField.transitionHint => shot.copyWith(
+            transitionHint: fieldValue,
           ),
           ShootingScriptBatchField.cameraNotes => shot.copyWith(
             cameraNotes: fieldValue,
@@ -775,6 +855,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
 enum ShootingScriptBatchField {
   shotSize,
   cameraMovement,
+  composition,
+  cameraAngle,
+  lightingMood,
+  colorPalette,
+  visualFocus,
+  transitionHint,
   cameraNotes,
   scene,
   productCode,

@@ -61,6 +61,7 @@ void main() {
       'replicate_runs',
       'replicate_assets',
       'shot_prompts',
+      'replicated_shot_images',
     ]) {
       expect(database.countRows(table), 0, reason: table);
     }
@@ -165,6 +166,12 @@ void main() {
         shotSize: '中景',
         cameraMovement: '固定',
         cameraNotes: '',
+        composition: '主体居中',
+        cameraAngle: '平视',
+        lightingMood: '柔和自然光',
+        colorPalette: '暖白',
+        visualFocus: '人物面部',
+        transitionHint: '接近景',
         scene: '室内',
         productCode: '',
         productStyling: '',
@@ -236,6 +243,13 @@ void main() {
       repository.listScriptShots('script-1').single.framePath,
       'frames/video-1/frame-0.jpg',
     );
+    final scriptShot = repository.listScriptShots('script-1').single;
+    expect(scriptShot.composition, '主体居中');
+    expect(scriptShot.cameraAngle, '平视');
+    expect(scriptShot.lightingMood, '柔和自然光');
+    expect(scriptShot.colorPalette, '暖白');
+    expect(scriptShot.visualFocus, '人物面部');
+    expect(scriptShot.transitionHint, '接近景');
     expect(
       repository.getReplicateRun('run-1')!.currentStep,
       ReplicateStep.prepareAssets,

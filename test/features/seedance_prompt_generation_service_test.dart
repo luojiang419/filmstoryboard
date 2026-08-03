@@ -9,7 +9,15 @@ void main() {
   final now = DateTime.utc(2026, 8, 2);
 
   test('按 SD2 顺序生成主体、镜头、风格和约束且不暴露 Asset ID', () {
-    final shot = _shot(now).copyWith(cameraMovement: '缓慢推镜');
+    final shot = _shot(now).copyWith(
+      cameraMovement: '缓慢推镜',
+      composition: '主体位于画面右侧，左侧留白',
+      cameraAngle: '平视角度',
+      lightingMood: '自然漫射光，明亮清新',
+      colorPalette: '暖橙色、绿色与蓝天白云',
+      visualFocus: '人物面部表情与产品色彩对比',
+      transitionHint: '适合作为中段人物特写插入',
+    );
     final assets = [
       _asset(
         now,
@@ -61,6 +69,12 @@ void main() {
     expect(result.prompt, contains('参考视频1中的主要运镜'));
     expect(result.prompt, contains('参考音频1中的音色'));
     expect(result.prompt, contains('镜头1：近景，缓慢推镜'));
+    expect(result.prompt, contains('构图：主体位于画面右侧，左侧留白'));
+    expect(result.prompt, contains('机位：平视角度'));
+    expect(result.prompt, contains('光影/氛围：自然漫射光，明亮清新'));
+    expect(result.prompt, contains('色彩：暖橙色、绿色与蓝天白云'));
+    expect(result.prompt, contains('视觉焦点：人物面部表情与产品色彩对比'));
+    expect(result.prompt, contains('剪辑衔接：适合作为中段人物特写插入'));
     expect(result.prompt, contains('{现在就来试试}'));
     expect(result.prompt, contains('<轻快音乐进入>'));
     expect(result.prompt, contains('全局风格：暖白高调商业摄影'));
@@ -99,6 +113,45 @@ void main() {
     expect(result.warnings, contains('原始运镜包含多种方式，已只保留一种主要运镜'));
     expect(result.warnings, contains('画面描述为空，建议补充主体动作与过渡'));
     expect(result.warnings, contains('参考素材超过推荐的 4–5 个，可能降低主体和风格稳定性'));
+  });
+
+  test('根据画面动作和相邻景别生成差异化动态运镜', () {
+    final asset = _asset(
+      now,
+      id: 'product',
+      type: ReplicateAssetType.product,
+      name: '产品',
+      description: '白色瓶身',
+      path: 'product.png',
+      number: 1,
+    );
+    final running = service.generate(
+      shot: _shot(
+        now,
+      ).copyWith(content: '人物从街道左侧奔跑冲向门口', cameraMovement: '固定镜头'),
+      assets: [asset],
+      globalStyle: '',
+      constraints: '',
+    );
+    final productDetail = service.generate(
+      shot: _shot(now).copyWith(content: '人物拿起产品展示瓶身细节', cameraMovement: ''),
+      assets: [asset],
+      globalStyle: '',
+      constraints: '',
+    );
+    final reveal = service.generate(
+      shot: _shot(
+        now,
+      ).copyWith(content: '建筑与城市空间全貌逐渐展开', cameraMovement: '', shotSize: '全景'),
+      assets: [asset],
+      globalStyle: '',
+      constraints: '',
+    );
+
+    expect(running.prompt, contains('平稳跟拍主体'));
+    expect(productDetail.prompt, contains('缓慢推近主体'));
+    expect(reveal.prompt, contains('缓慢拉远'));
+    expect({running.prompt, productDetail.prompt, reveal.prompt}, hasLength(3));
   });
 }
 

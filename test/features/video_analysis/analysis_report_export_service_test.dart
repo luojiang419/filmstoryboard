@@ -1,9 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:filmstoryboard/features/video_analysis/data/analysis_report_export_service.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -12,6 +15,10 @@ void main() {
     final root = await Directory.systemTemp.createTemp('analysis_report_');
     addTearDown(() => root.delete(recursive: true));
     final fixture = _fixture();
+    final thumbnail = File(p.join(root.path, 'thumbnail.png'));
+    await thumbnail.writeAsBytes(
+      img.encodePng(img.Image(width: 16, height: 9)),
+    );
     const service = AnalysisReportExportService();
 
     final xlsx = await service.export(
@@ -22,6 +29,7 @@ void main() {
       frameAnalyses: fixture.analyses,
       summary: fixture.summary,
       marketingAnalyses: fixture.marketing,
+      resolveFrame: (_) => thumbnail,
     );
     final archive = ZipDecoder().decodeBytes(
       await xlsx.files.single.readAsBytes(),
@@ -36,6 +44,12 @@ void main() {
         'xl/worksheets/sheet4.xml',
       ]),
     );
+    final workbook = utf8.decode(
+      archive
+          .firstWhere((entry) => entry.name == 'xl/workbook.xml')
+          .readBytes()!,
+    );
+    expect(workbook, contains('<sheet name="多维度分析" sheetId="1"'));
 
     final pdf = await service.export(
       format: AnalysisReportFormat.pdf,
@@ -45,6 +59,7 @@ void main() {
       frameAnalyses: fixture.analyses,
       summary: fixture.summary,
       marketingAnalyses: fixture.marketing,
+      resolveFrame: (_) => thumbnail,
     );
     expect(
       String.fromCharCodes((await pdf.files.single.readAsBytes()).take(4)),
@@ -59,6 +74,7 @@ void main() {
       frameAnalyses: fixture.analyses,
       summary: fixture.summary,
       marketingAnalyses: fixture.marketing,
+      resolveFrame: (_) => thumbnail,
     );
     expect(png.files.length, greaterThanOrEqualTo(2));
     expect((await png.files.first.readAsBytes()).take(8), [
@@ -81,6 +97,7 @@ void main() {
       frameAnalyses: fixture.analyses,
       summary: fixture.summary,
       marketingAnalyses: fixture.marketing,
+      resolveFrame: (_) => thumbnail,
     );
     expect((await jpg.files.first.readAsBytes()).take(2), [0xFF, 0xD8]);
     expect(jpg.files.first.path, contains('第01页.jpg'));

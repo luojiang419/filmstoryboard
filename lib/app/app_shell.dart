@@ -13,7 +13,6 @@ import '../features/onboarding/presentation/onboarding_overlay.dart';
 import '../features/settings/application/settings_controller.dart';
 import '../features/settings/domain/app_settings.dart';
 import '../features/settings/presentation/settings_page.dart';
-import '../features/replicate/presentation/replicate_page.dart';
 import '../features/shooting_script/presentation/shooting_script_page.dart';
 import '../features/story_design/presentation/story_design_page.dart';
 import '../features/storyboard/application/storyboard_controller.dart';
@@ -44,7 +43,7 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell> {
   static const _selectedTabIndexKey = 'appShellSelectedTabIndex';
   static const _selectedTabIndexVersionKey = 'appShellSelectedTabIndexVersion';
-  static const _selectedTabIndexVersion = 3;
+  static const _selectedTabIndexVersion = 4;
 
   late int _tabIndex;
   late final UpdaterController _updaterController;
@@ -60,7 +59,6 @@ class _AppShellState extends ConsumerState<AppShell> {
     _ShellTab('视频解析', Icons.video_file_rounded),
     _ShellTab('故事板', Icons.dashboard_customize_rounded),
     _ShellTab('拍摄脚本', Icons.table_chart_rounded),
-    _ShellTab('一键复刻', Icons.auto_awesome_rounded),
     _ShellTab('导出', Icons.ios_share_rounded),
     _ShellTab('设置', Icons.tune_rounded),
   ];
@@ -181,8 +179,7 @@ class _AppShellState extends ConsumerState<AppShell> {
           1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
           2 => const StoryboardPage(),
           3 => const ShootingScriptPage(),
-          4 => ReplicatePage(onOpenShootingScript: () => _selectTab(3)),
-          5 => const ExporterPage(),
+          4 => const ExporterPage(),
           _ => const SettingsPage(),
         },
       ),
@@ -224,20 +221,30 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (version == '$_selectedTabIndexVersion') {
       return index;
     }
+    if (version == '3') {
+      return switch (index) {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 || 4 => 3,
+        5 => 4,
+        _ => 5,
+      };
+    }
     if (version == '2') {
       return switch (index) {
         0 => 0,
         1 => 1,
         2 => 2,
-        3 => 5,
-        _ => 6,
+        3 => 4,
+        _ => 5,
       };
     }
     return switch (index) {
       0 => 1,
       1 => 2,
-      2 => 5,
-      _ => 6,
+      2 => 4,
+      _ => 5,
     };
   }
 
@@ -504,17 +511,8 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (!mounted) {
         return;
       }
-      if (result == true) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('旧工程图片已归纳完成，画板引用已同步更新。')));
-      } else {
+      if (result != true) {
         _assetNormalizationDeferred = true;
-        if (normalizing) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('图片归纳未完成，请重启应用后重试。')));
-        }
       }
     } finally {
       _assetNormalizationPromptVisible = false;

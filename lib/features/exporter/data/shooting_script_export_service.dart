@@ -751,7 +751,9 @@ class _ShootingScriptShot {
       cameraNotes: shot.cameraNotes,
       scene: shot.scene,
       productCode: shot.productCode,
-      imageText: shot.visual,
+      // “图片”列由后续搭配同事补充款式图片；当前软件只负责导出空槽位，
+      // 不把画面描述重复写入该列。
+      imageText: '',
       productStyling: shot.productStyling,
       pngBytes: pngBytes,
       displayWidth: displayWidth,

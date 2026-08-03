@@ -116,12 +116,7 @@ Future<void> _openImageDirectory(BuildContext context, String imagePath) async {
 }
 
 void _showMessage(BuildContext context, String message) {
-  if (!context.mounted) {
-    return;
-  }
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
-  );
+  // 操作结果不再通过底部横幅播报，保留调用点以维持菜单流程。
 }
 
 class _ImageFileMenuItem extends StatelessWidget {

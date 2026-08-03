@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 4;
+  static const currentSchemaVersion = 7;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -543,6 +543,12 @@ class AppDatabase {
           shot_size TEXT NOT NULL DEFAULT '',
           camera_movement TEXT NOT NULL DEFAULT '',
           camera_notes TEXT NOT NULL DEFAULT '',
+          composition TEXT NOT NULL DEFAULT '',
+          camera_angle TEXT NOT NULL DEFAULT '',
+          lighting_mood TEXT NOT NULL DEFAULT '',
+          color_palette TEXT NOT NULL DEFAULT '',
+          visual_focus TEXT NOT NULL DEFAULT '',
+          transition_hint TEXT NOT NULL DEFAULT '',
           scene TEXT NOT NULL DEFAULT '',
           product_code TEXT NOT NULL DEFAULT '',
           product_styling TEXT NOT NULL DEFAULT '',
@@ -656,6 +662,102 @@ class AppDatabase {
       _ensureIntegerColumn('replicate_runs', 'video_reference_count');
       _ensureIntegerColumn('replicate_runs', 'audio_reference_count');
       _database.execute('PRAGMA user_version = 4;');
+    }
+    if (version < 5) {
+      _database
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS shooting_asset_library_items (
+          id TEXT PRIMARY KEY,
+          asset_type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          path TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS script_assets (
+          id TEXT PRIMARY KEY,
+          script_id TEXT NOT NULL REFERENCES shooting_scripts(id) ON DELETE CASCADE,
+          library_asset_id TEXT,
+          asset_type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          path TEXT NOT NULL DEFAULT '',
+          reference_number INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(script_id, library_asset_id)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS script_shot_asset_links (
+          shot_id TEXT NOT NULL REFERENCES script_shots(id) ON DELETE CASCADE,
+          script_asset_id TEXT NOT NULL REFERENCES script_assets(id) ON DELETE CASCADE,
+          match_source TEXT NOT NULL DEFAULT 'manual',
+          confidence REAL NOT NULL DEFAULT 1,
+          match_reason TEXT NOT NULL DEFAULT '',
+          confirmed INTEGER NOT NULL DEFAULT 0,
+          locked INTEGER NOT NULL DEFAULT 0,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(shot_id, script_asset_id)
+        );
+      ''')
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS script_shot_analysis (
+          id TEXT PRIMARY KEY,
+          shot_id TEXT NOT NULL UNIQUE REFERENCES script_shots(id) ON DELETE CASCADE,
+          model TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          field_sources_json TEXT NOT NULL DEFAULT '{}',
+          field_confidence_json TEXT NOT NULL DEFAULT '{}',
+          raw_response TEXT NOT NULL DEFAULT '',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''')
+        ..execute('PRAGMA user_version = 5;');
+    }
+    if (version < 6) {
+      _database
+        ..execute('''
+        CREATE TABLE IF NOT EXISTS replicated_shot_images (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL REFERENCES replicate_runs(id) ON DELETE CASCADE,
+          script_shot_id TEXT NOT NULL REFERENCES script_shots(id) ON DELETE CASCADE,
+          shot_number INTEGER NOT NULL,
+          original_frame_path TEXT NOT NULL DEFAULT '',
+          generated_frame_path TEXT NOT NULL DEFAULT '',
+          asset_ids_json TEXT NOT NULL DEFAULT '[]',
+          prompt TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL DEFAULT '',
+          raw_response TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(run_id, script_shot_id)
+        );
+      ''')
+        ..execute('PRAGMA user_version = 6;');
+    }
+    if (version < 7) {
+      for (final column in const [
+        'composition',
+        'camera_angle',
+        'lighting_mood',
+        'color_palette',
+        'visual_focus',
+        'transition_hint',
+      ]) {
+        _ensureTextColumn('script_shots', column);
+      }
+      _database.execute('PRAGMA user_version = 7;');
     }
   }
 
@@ -936,6 +1038,16 @@ class AppDatabase {
     _rewriteTextColumn('export_records', 'output_path', transform);
     _rewriteTextColumn('image_generation_records', 'source_path', transform);
     _rewriteTextColumn('image_generation_records', 'result_path', transform);
+    _rewriteTextColumn(
+      'replicated_shot_images',
+      'original_frame_path',
+      transform,
+    );
+    _rewriteTextColumn(
+      'replicated_shot_images',
+      'generated_frame_path',
+      transform,
+    );
     _rewriteJsonColumn(
       'image_generation_records',
       'reference_paths_json',

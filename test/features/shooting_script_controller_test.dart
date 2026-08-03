@@ -111,6 +111,15 @@ void main() {
     expect(fixture.controller.value.shots.first.scriptId, copiedScript!.id);
     expect(fixture.controller.value.shots.first.id, isNot(first.id));
 
+    final scriptOrderBeforeReorder = fixture.controller.value.scripts
+        .map((item) => item.id)
+        .toList();
+    fixture.controller.reorderScripts(0, scriptOrderBeforeReorder.length);
+    expect(
+      fixture.controller.value.scripts.last.id,
+      scriptOrderBeforeReorder.first,
+    );
+
     expect(fixture.controller.renameSelectedScript('正式拍摄脚本'), isTrue);
     fixture.controller.toggleArchiveSelectedScript();
     expect(
@@ -132,7 +141,7 @@ void main() {
     expect(restored.value.scripts.any((item) => item.name == '正式拍摄脚本'), isTrue);
   });
 
-  test('脚本导出严格填充十列、附加页，并按原始字节复制镜头图片', () async {
+  test('脚本导出填充字段、保留图片槽位为空，并按原始字节复制镜头图片', () async {
     final fixture = await _createFixture();
     final source = await _writeImage(
       fixture.directories.frames,
@@ -183,7 +192,8 @@ void main() {
     expect(primary, contains('主光从左前方进入'));
     expect(primary, contains('白色摄影棚'));
     expect(primary, contains('A-1024'));
-    expect(primary, contains('商品正面图'));
+    expect(primary, isNot(contains('商品正面图')));
+    expect(RegExp(r'<c r="I3"[^>]*\/>').hasMatch(primary), isTrue);
     expect(primary, contains('白衬衫 + 银色配饰'));
     expect(extra, contains('时长（秒）'));
     expect(extra, contains('现在就来试试'));

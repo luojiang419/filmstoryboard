@@ -12,7 +12,6 @@ import '../../../app/app_shell.dart';
 import '../../../app/window_title_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../application/project_workspace_controller.dart';
-import '../data/project_operations_service.dart';
 import '../domain/project_models.dart';
 
 class ProjectPortal extends ConsumerStatefulWidget {
@@ -241,11 +240,6 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
     }
     try {
       await _controller.renameProject(entry, name);
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('工程已重命名为：$name')));
-      }
     } catch (error) {
       _showError(error);
     }
@@ -257,25 +251,12 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
       return;
     }
     try {
-      late ProjectMigrationResult result;
       await _runOperation('正在迁移并校验工程...', () async {
-        result = await ref
+        await ref
             .read(projectOperationsServiceProvider)
             .migrateProject(entry: entry, targetParent: Directory(path));
       });
       _controller.refreshProjects();
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result.oldSourceRetained
-                ? '迁移完成，但旧目录删除失败，已保留两份工程'
-                : '工程已迁移到 ${File(result.entry.indexPath).parent.path}',
-          ),
-        ),
-      );
     } catch (error) {
       _showError(error);
     }
@@ -295,17 +276,11 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
       return;
     }
     try {
-      late File output;
       await _runOperation('正在打包并校验工程...', () async {
-        output = await ref
+        await ref
             .read(projectOperationsServiceProvider)
             .exportProject(entry: entry, outputFile: File(location.path));
       });
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('工程包已导出：${output.path}')));
-      }
     } catch (error) {
       _showError(error);
     }
@@ -332,12 +307,6 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
             );
       });
       await _controller.openProject(File(imported.indexPath));
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导入并打开工程：${imported.displayName}')),
-      );
     } catch (error) {
       _showError(error);
     }
@@ -386,10 +355,19 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(error.toString()),
-        behavior: SnackBarBehavior.floating,
+    unawaited(
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('操作失败'),
+          content: SelectableText(error.toString()),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
       ),
     );
   }

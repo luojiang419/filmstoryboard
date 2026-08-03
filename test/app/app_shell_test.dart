@@ -82,7 +82,8 @@ void main() {
         tester.view.physicalSize.width / tester.view.devicePixelRatio;
     expect(bottomTabsCenter.dx, closeTo(logicalWidth / 2, 0.5));
     expect(database.getSetting('appShellSelectedTabIndex'), '1');
-    expect(database.getSetting('appShellSelectedTabIndexVersion'), '3');
+    expect(database.getSetting('appShellSelectedTabIndexVersion'), '4');
+    expect(find.byKey(const ValueKey('app-shell-tab-一键复刻')), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));
     await tester.pumpAndSettle();
@@ -94,11 +95,52 @@ void main() {
     );
     expect(tester.takeException(), isNull);
 
+    await tester.tap(
+      find.byKey(const ValueKey('create-empty-shooting-script')),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, '合并流程脚本');
+    await tester.tap(find.widgetWithText(FilledButton, '确定'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('shooting-script-workflow')),
+      findsOneWidget,
+    );
+    expect(find.text('确认镜头'), findsOneWidget);
+    expect(find.text('准备资产'), findsOneWidget);
+    expect(find.text('合成提示词'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('start-replicate-from-shooting-script')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('shooting-script-left-resize-handle')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('shooting-script-right-resize-handle')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('collapse-script-sidebar')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('expand-script-sidebar')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('expand-script-sidebar')));
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('collapse-asset-library-panel')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('expand-asset-library-panel')),
+      findsOneWidget,
+    );
+
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-设置')));
     await tester.pumpAndSettle();
 
     expect(find.text('外观'), findsOneWidget);
-    expect(database.getSetting('appShellSelectedTabIndex'), '6');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -279,7 +321,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-导出')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(database.getSetting('appShellSelectedTabIndex'), '5');
+    expect(database.getSetting('appShellSelectedTabIndex'), '4');
 
     await tester.tap(find.byKey(const ValueKey('show-onboarding-help')));
     await tester.pump(const Duration(milliseconds: 100));
@@ -287,12 +329,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(database.getSetting('appShellSelectedTabIndex'), '5');
+    expect(database.getSetting('appShellSelectedTabIndex'), '4');
 
     await tester.tap(find.byKey(const ValueKey('onboarding-skip')));
     await tester.pump(const Duration(milliseconds: 240));
     expect(find.byKey(const ValueKey('onboarding-overlay')), findsNothing);
-    expect(database.getSetting('appShellSelectedTabIndex'), '5');
+    expect(database.getSetting('appShellSelectedTabIndex'), '4');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

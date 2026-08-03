@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../../settings/domain/app_settings.dart';
+import '../../video_analysis/domain/video_analysis_models.dart';
 import 'vision_caption_coherence_service.dart';
 
 enum VisionImageRecoveryMode {
@@ -488,32 +489,14 @@ class VisionStoryboardService {
     final content = await _createChatCompletion(
       settings: settings,
       prompt: _videoDimensionPrompt(analyses, summary),
-      maxTokens: 2200,
+      maxTokens: 4200,
       allowThinking: allowThinking,
     );
     final json = _extractJsonObject(content);
-    const fields = [
-      '开场类型',
-      '黄金3秒内容',
-      '留存钩子',
-      '视频结构',
-      '镜头节奏',
-      '信息密度',
-      '出现时间',
-      '产品展示方式',
-      '卖点表达',
-      '场景',
-      '画面风格',
-      '色彩',
-      '刺激点',
-      '购买理由',
-      'CTA',
-      '福利',
-      '评论引导',
-    ];
     return VisionVideoDimensionResult(
       dimensions: {
-        for (final field in fields) field: _stringValue(json, field),
+        for (final field in videoAnalysisDimensionFields)
+          field: _stringValue(json, field),
       },
       rawResponse: content,
     );
@@ -691,6 +674,7 @@ class VisionStoryboardService {
     required AppSettings settings,
     required String prompt,
     String? imageDataUrl,
+    List<String> imageDataUrls = const [],
     required int maxTokens,
     bool allowThinking = false,
   }) async {
@@ -698,16 +682,45 @@ class VisionStoryboardService {
       settings: settings,
       prompt: prompt,
       imageDataUrl: imageDataUrl,
+      imageDataUrls: imageDataUrls,
       maxTokens: maxTokens,
       allowThinking: allowThinking,
     );
     return completion.content;
   }
 
+  /// Runs a JSON-oriented chat completion for workflow features that need to
+  /// compare several local images in one request.
+  Future<String> complete({
+    required AppSettings settings,
+    required String prompt,
+    List<File> imageFiles = const [],
+    int maxTokens = 1200,
+    bool allowThinking = false,
+  }) async {
+    _validateSettings(settings);
+    final imageDataUrls = <String>[];
+    for (final imageFile in imageFiles) {
+      if (!imageFile.existsSync()) continue;
+      final bytes = await imageFile.readAsBytes();
+      imageDataUrls.add(
+        'data:${_mimeTypeForPath(imageFile.path)};base64,${base64Encode(bytes)}',
+      );
+    }
+    return _createChatCompletion(
+      settings: settings,
+      prompt: prompt,
+      imageDataUrls: imageDataUrls,
+      maxTokens: maxTokens,
+      allowThinking: allowThinking,
+    );
+  }
+
   Future<VisionChatCompletion> _createChatCompletionDetailed({
     required AppSettings settings,
     required String prompt,
     String? imageDataUrl,
+    List<String> imageDataUrls = const [],
     required int maxTokens,
     bool allowThinking = false,
   }) async {
@@ -728,10 +741,13 @@ class VisionStoryboardService {
             ? '/think\n$prompt'
             : prompt,
       },
-      if (imageDataUrl != null)
+      for (final image in [
+        ...?imageDataUrl == null ? null : [imageDataUrl],
+        ...imageDataUrls,
+      ])
         {
           'type': 'image_url',
-          'image_url': {'url': imageDataUrl},
+          'image_url': {'url': image},
         },
     ];
     final response = await _client
@@ -1006,29 +1022,29 @@ JSON 字段：
     final buffer = StringBuffer()
       ..writeln('你是一名资深短视频广告策略师、剪辑导演和转化分析师。')
       ..writeln('请基于下面可见的逐镜头事实，完成整条参考视频的多维度专业拆解。')
+      ..writeln(
+        '商业规则参考：Google ABCD（Attention、Branding、Connection、Direction），以及 TikTok Creative Codes 的 Hook-Body-Close、刺激留存、声音和明确 CTA。',
+      )
       ..writeln('只返回一个扁平 JSON 对象，不要 Markdown，不要解释，不要新增字段。')
-      ..writeln('不得编造画面中不存在的产品、福利、价格或 CTA；无法确认时明确写“未在可见画面中确认”。')
-      ..writeln('结论必须具体说明“什么画面/动作产生什么作用”，避免“吸引用户、节奏较快”等空泛套话。')
-      ..writeln('JSON 必须包含以下全部字段：')
-      ..writeln('''{
-  "开场类型": "具体开场机制",
-  "黄金3秒内容": "前三秒可见内容与信息顺序",
-  "留存钩子": "具体视觉/动作/悬念钩子",
-  "视频结构": "按阶段说明完整结构",
-  "镜头节奏": "镜头长度、切换密度和快慢变化",
-  "信息密度": "单位时间承载的主体、卖点和动作信息",
-  "出现时间": "产品首次/重点/收尾出现位置",
-  "产品展示方式": "拿取、使用、细节、结果、包装等具体方式",
-  "卖点表达": "画面如何证明卖点",
-  "场景": "主要场景及切换关系",
-  "画面风格": "构图、机位、光线和质感",
-  "色彩": "主色、对比和情绪作用",
-  "刺激点": "具体触发注意或情绪反应的画面",
-  "购买理由": "由画面证据支撑的购买动机",
-  "CTA": "可见的行动号召及出现位置",
-  "福利": "可见的价格/优惠/赠品信息",
-  "评论引导": "可见或可推断自台词结构的互动设计"
-}''')
+      ..writeln('不得编造画面中不存在的产品、品牌、价格、福利、证明、评论或 CTA；无法确认时明确写“未在可见画面中确认”。')
+      ..writeln(
+        '每个字段尽量写“可见证据 → 商业作用 → 缺口/优化建议”，至少一个完整句子；不要只写“吸引用户、节奏较快、画面高级”等空泛结论。',
+      )
+      ..writeln(
+        'ABCD 字段必须分别判断注意力、品牌识别、人与内容的情感连接、行动指引是否成立；Hook-Body-Close 必须标出三段内容和断点。',
+      )
+      ..writeln('如果某项只依赖音频、字幕、落地页或视频比例而当前输入没有事实，必须明确标记未确认，不要用行业常识代替证据。')
+      ..writeln('JSON 必须包含以下全部字段，键名必须完全一致：')
+      ..writeln(videoAnalysisDimensionFields.join('、'))
+      ..writeln('JSON 示例结构（每个值都要换成真实分析）：');
+    buffer.writeln('{');
+    for (var index = 0; index < videoAnalysisDimensionFields.length; index++) {
+      final field = videoAnalysisDimensionFields[index];
+      final comma = index == videoAnalysisDimensionFields.length - 1 ? '' : ',';
+      buffer.writeln('  "$field": "证据；商业作用；缺口或优化建议"$comma');
+    }
+    buffer
+      ..writeln('}')
       ..writeln('视频级已有摘要：')
       ..writeln('大纲：${summary['outline'] ?? ''}')
       ..writeln('内容：${summary['content'] ?? ''}')

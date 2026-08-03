@@ -54,6 +54,12 @@ class ScriptShot {
     required this.shotSize,
     required this.cameraMovement,
     required this.cameraNotes,
+    this.composition = '',
+    this.cameraAngle = '',
+    this.lightingMood = '',
+    this.colorPalette = '',
+    this.visualFocus = '',
+    this.transitionHint = '',
     required this.scene,
     required this.productCode,
     required this.productStyling,
@@ -74,6 +80,12 @@ class ScriptShot {
   final String shotSize;
   final String cameraMovement;
   final String cameraNotes;
+  final String composition;
+  final String cameraAngle;
+  final String lightingMood;
+  final String colorPalette;
+  final String visualFocus;
+  final String transitionHint;
   final String scene;
   final String productCode;
   final String productStyling;
@@ -93,6 +105,12 @@ class ScriptShot {
     String? shotSize,
     String? cameraMovement,
     String? cameraNotes,
+    String? composition,
+    String? cameraAngle,
+    String? lightingMood,
+    String? colorPalette,
+    String? visualFocus,
+    String? transitionHint,
     String? scene,
     String? productCode,
     String? productStyling,
@@ -112,6 +130,12 @@ class ScriptShot {
     shotSize: shotSize ?? this.shotSize,
     cameraMovement: cameraMovement ?? this.cameraMovement,
     cameraNotes: cameraNotes ?? this.cameraNotes,
+    composition: composition ?? this.composition,
+    cameraAngle: cameraAngle ?? this.cameraAngle,
+    lightingMood: lightingMood ?? this.lightingMood,
+    colorPalette: colorPalette ?? this.colorPalette,
+    visualFocus: visualFocus ?? this.visualFocus,
+    transitionHint: transitionHint ?? this.transitionHint,
     scene: scene ?? this.scene,
     productCode: productCode ?? this.productCode,
     productStyling: productStyling ?? this.productStyling,
@@ -121,4 +145,99 @@ class ScriptShot {
     status: status ?? this.status,
     updatedAt: updatedAt ?? this.updatedAt,
   );
+}
+
+/// Parses the old composite camera-notes value written by script analysis.
+///
+/// Older scripts stored several visual dimensions as one string such as
+/// "构图：…；机位：…；光影：…". New records keep these dimensions separately,
+/// but reading old records through this parser prevents the legacy value from
+/// polluting the light/mood column.
+class ScriptShotVisualFields {
+  const ScriptShotVisualFields({
+    this.cameraNotes = '',
+    this.composition = '',
+    this.cameraAngle = '',
+    this.lightingMood = '',
+    this.colorPalette = '',
+    this.visualFocus = '',
+    this.transitionHint = '',
+  });
+
+  final String cameraNotes;
+  final String composition;
+  final String cameraAngle;
+  final String lightingMood;
+  final String colorPalette;
+  final String visualFocus;
+  final String transitionHint;
+
+  factory ScriptShotVisualFields.fromLegacyCameraNotes(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) {
+      return const ScriptShotVisualFields();
+    }
+    final matches =
+        RegExp(
+          r'构图|机位(?:角度)?|光影(?:/氛围)?|光线情绪|色彩(?:调性)?|视觉焦点|衔接|剪辑承接',
+        ).allMatches(normalized).where((match) {
+          final after = normalized.substring(match.end);
+          return RegExp(r'^\s*[:：]').hasMatch(after);
+        }).toList();
+    if (matches.isEmpty) {
+      return ScriptShotVisualFields(cameraNotes: normalized);
+    }
+
+    var composition = '';
+    var cameraAngle = '';
+    var lightingMood = '';
+    var colorPalette = '';
+    var visualFocus = '';
+    var transitionHint = '';
+    for (var index = 0; index < matches.length; index++) {
+      final match = matches[index];
+      final nextStart = index + 1 < matches.length
+          ? matches[index + 1].start
+          : normalized.length;
+      final content = normalized
+          .substring(match.end, nextStart)
+          .replaceFirst(RegExp(r'^\s*[:：]\s*'), '')
+          .replaceFirst(RegExp(r'[；;]\s*$'), '')
+          .trim();
+      if (content.isEmpty) continue;
+      switch (match.group(0)) {
+        case '构图':
+          composition = content;
+          break;
+        case '机位':
+        case '机位角度':
+          cameraAngle = content;
+          break;
+        case '光影':
+        case '光影/氛围':
+        case '光线情绪':
+          lightingMood = content;
+          break;
+        case '色彩':
+        case '色彩调性':
+          colorPalette = content;
+          break;
+        case '视觉焦点':
+          visualFocus = content;
+          break;
+        case '衔接':
+        case '剪辑承接':
+          transitionHint = content;
+          break;
+      }
+    }
+    return ScriptShotVisualFields(
+      composition: composition,
+      cameraAngle: cameraAngle,
+      lightingMood: lightingMood,
+      colorPalette: colorPalette,
+      visualFocus: visualFocus,
+      transitionHint: transitionHint,
+    );
+  }
 }

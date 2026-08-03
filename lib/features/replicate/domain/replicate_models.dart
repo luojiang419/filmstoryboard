@@ -195,3 +195,64 @@ class ShotPrompt {
     updatedAt: updatedAt ?? this.updatedAt,
   );
 }
+
+class ReplicatedShotImage {
+  const ReplicatedShotImage({
+    required this.id,
+    required this.runId,
+    required this.scriptShotId,
+    required this.shotNumber,
+    required this.originalFramePath,
+    required this.generatedFramePath,
+    required this.assetIds,
+    required this.prompt,
+    required this.model,
+    required this.rawResponse,
+    required this.status,
+    required this.errorMessage,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String runId;
+  final String scriptShotId;
+  final int shotNumber;
+  final String originalFramePath;
+  final String generatedFramePath;
+  final List<String> assetIds;
+  final String prompt;
+  final String model;
+  final String rawResponse;
+  final ProcessingStatus status;
+  final String errorMessage;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  ReplicatedShotImage copyWith({
+    String? originalFramePath,
+    String? generatedFramePath,
+    List<String>? assetIds,
+    String? prompt,
+    String? model,
+    String? rawResponse,
+    ProcessingStatus? status,
+    String? errorMessage,
+    DateTime? updatedAt,
+  }) => ReplicatedShotImage(
+    id: id,
+    runId: runId,
+    scriptShotId: scriptShotId,
+    shotNumber: shotNumber,
+    originalFramePath: originalFramePath ?? this.originalFramePath,
+    generatedFramePath: generatedFramePath ?? this.generatedFramePath,
+    assetIds: assetIds ?? this.assetIds,
+    prompt: prompt ?? this.prompt,
+    model: model ?? this.model,
+    rawResponse: rawResponse ?? this.rawResponse,
+    status: status ?? this.status,
+    errorMessage: errorMessage ?? this.errorMessage,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+}

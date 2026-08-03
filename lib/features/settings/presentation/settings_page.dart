@@ -285,30 +285,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         baseUrl: _imageGenerationApiMartApiBaseUrlController.text,
         apiKey: _imageGenerationApiMartApiKeyController.text,
       );
-      if (!mounted) {
-        return;
-      }
-      final hasApiKey =
-          controller.value.imageGenerationApiMartApiKey.isNotEmpty;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            hasApiKey
-                ? 'APIMart 配置已保存，请求地址：${controller.value.imageGenerationApiMartApiBaseUrl}'
-                : 'APIMart 地址已保存；API Key 为空，生成前请先填写',
-          ),
-        ),
-      );
-    } on FormatException catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error.message),
-          backgroundColor: Theme.of(context).colorScheme.error,
-        ),
-      );
+    } on FormatException {
+      // 配置页不再弹出底部结果横幅；输入框保留当前内容供用户修正。
     }
   }
 
@@ -389,13 +367,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       if (mounted) {
         setState(() {});
       }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('目录不可写：$error')));
-      }
-    }
+    } catch (_) {}
   }
 
   void _resetDefaultProjectRoot() {

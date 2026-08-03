@@ -76,10 +76,14 @@ class ShootingScriptRepository {
       '''
       INSERT INTO script_shots(
         id, script_id, shot_number, duration_seconds, frame_path, visual,
-        content, shot_size, camera_movement, camera_notes, scene,
-        product_code, product_styling, dialogue, sound, prompt, status,
-        updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        content, shot_size, camera_movement, camera_notes, composition,
+        camera_angle, lighting_mood, color_palette, visual_focus,
+        transition_hint, scene, product_code, product_styling, dialogue,
+        sound, prompt, status, updated_at
+      ) VALUES(
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      );
       ''',
       [
         shot.id,
@@ -92,6 +96,12 @@ class ShootingScriptRepository {
         shot.shotSize,
         shot.cameraMovement,
         shot.cameraNotes,
+        shot.composition,
+        shot.cameraAngle,
+        shot.lightingMood,
+        shot.colorPalette,
+        shot.visualFocus,
+        shot.transitionHint,
         shot.scene,
         shot.productCode,
         shot.productStyling,
@@ -118,24 +128,41 @@ class ShootingScriptRepository {
     updatedAt: DateTime.parse(row['updated_at'] as String),
   );
 
-  ScriptShot _shotFromRow(Map<String, Object?> row) => ScriptShot(
-    id: row['id'] as String,
-    scriptId: row['script_id'] as String,
-    shotNumber: row['shot_number'] as int,
-    durationSeconds: (row['duration_seconds'] as num).toDouble(),
-    framePath: row['frame_path'] as String,
-    visual: row['visual'] as String,
-    content: row['content'] as String,
-    shotSize: row['shot_size'] as String,
-    cameraMovement: row['camera_movement'] as String,
-    cameraNotes: row['camera_notes'] as String,
-    scene: row['scene'] as String,
-    productCode: row['product_code'] as String,
-    productStyling: row['product_styling'] as String,
-    dialogue: row['dialogue'] as String,
-    sound: row['sound'] as String,
-    prompt: row['prompt'] as String,
-    status: ProcessingStatus.fromStorage(row['status']),
-    updatedAt: DateTime.parse(row['updated_at'] as String),
-  );
+  ScriptShot _shotFromRow(Map<String, Object?> row) {
+    final legacy = ScriptShotVisualFields.fromLegacyCameraNotes(
+      row['camera_notes'] as String? ?? '',
+    );
+    String text(String column) => row[column] as String? ?? '';
+    String valueOrLegacy(String column, String legacyValue) {
+      final value = text(column);
+      return value.trim().isEmpty ? legacyValue : value;
+    }
+
+    return ScriptShot(
+      id: row['id'] as String,
+      scriptId: row['script_id'] as String,
+      shotNumber: row['shot_number'] as int,
+      durationSeconds: (row['duration_seconds'] as num).toDouble(),
+      framePath: row['frame_path'] as String,
+      visual: row['visual'] as String,
+      content: row['content'] as String,
+      shotSize: row['shot_size'] as String,
+      cameraMovement: row['camera_movement'] as String,
+      cameraNotes: legacy.cameraNotes,
+      composition: valueOrLegacy('composition', legacy.composition),
+      cameraAngle: valueOrLegacy('camera_angle', legacy.cameraAngle),
+      lightingMood: valueOrLegacy('lighting_mood', legacy.lightingMood),
+      colorPalette: valueOrLegacy('color_palette', legacy.colorPalette),
+      visualFocus: valueOrLegacy('visual_focus', legacy.visualFocus),
+      transitionHint: valueOrLegacy('transition_hint', legacy.transitionHint),
+      scene: row['scene'] as String,
+      productCode: row['product_code'] as String,
+      productStyling: row['product_styling'] as String,
+      dialogue: row['dialogue'] as String,
+      sound: row['sound'] as String,
+      prompt: row['prompt'] as String,
+      status: ProcessingStatus.fromStorage(row['status']),
+      updatedAt: DateTime.parse(row['updated_at'] as String),
+    );
+  }
 }

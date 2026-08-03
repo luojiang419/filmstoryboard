@@ -1381,7 +1381,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.text('请拖入 PNG、JPG、WEBP 或 BMP 图片'), findsOneWidget);
+    expect(find.text('请拖入 PNG、JPG、WEBP 或 BMP 图片'), findsNothing);
     expect(controller.value.selectedBoard!.itemAtSlot(0)!.asset.id, 'asset-1');
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -3209,7 +3209,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       find.text('APIMart 配置已保存，请求地址：https://api.apimart.ai'),
-      findsOneWidget,
+      findsNothing,
     );
 
     expect(

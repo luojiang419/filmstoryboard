@@ -1,6 +1,7 @@
-import 'dart:convert';
 import 'dart:io';
+import 'dart:convert';
 
+import 'package:archive/archive.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
@@ -10,11 +11,76 @@ import 'package:filmstoryboard/features/settings/application/settings_controller
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
+import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('从故事板生成新脚本后复刻工作区跟随新脚本', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_storyboard_selection_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    shootingController.createEmpty(name: '旧脚本');
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    final generated = shootingController.createFromStoryboard(
+      const StoryboardBoard(
+        id: 'board-1',
+        name: '当前故事板',
+        width: 1920,
+        height: 1080,
+        rows: 1,
+        columns: 1,
+        gap: 12,
+        items: [
+          StoryboardItem(
+            asset: StoryboardCutAsset(
+              id: 'asset-1',
+              imageId: 'image-1',
+              sourceName: 'shot.png',
+              path: 'D:/shots/shot.png',
+              indexNo: 1,
+            ),
+            caption: '人物拿起产品',
+            slotIndex: 0,
+          ),
+        ],
+      ),
+    );
+
+    expect(generated, isNotNull);
+    expect(shootingController.value.selectedScriptId, generated!.id);
+    expect(controller.value.selectedScriptId, generated.id);
+    expect(controller.value.shots, hasLength(1));
+    expect(controller.value.shots.single.content, '人物拿起产品');
+  });
 
   test('三步复刻任务可恢复，素材编号删除后不复用并能导出提示词', () async {
     final root = await Directory.systemTemp.createTemp('replicate_flow_');
@@ -40,8 +106,13 @@ void main() {
 
     final script = shootingController.createEmpty(name: '夏日产品片');
     final shot = shootingController.addShot()!;
+    final frame = File('${root.path}/source-frame.png');
+    final frameImage = img.Image(width: 12, height: 8);
+    img.fill(frameImage, color: img.ColorRgb8(40, 120, 200));
+    await frame.writeAsBytes(img.encodePng(frameImage), flush: true);
     shootingController.updateShot(
       shot.copyWith(
+        framePath: frame.path,
         content: '模特缓慢拿起玻璃杯并转向窗边',
         shotSize: '中景',
         cameraMovement: '缓慢推镜、横移',
@@ -57,10 +128,11 @@ void main() {
       settingsController: settingsController,
     );
     expect(controller.value.selectedScriptId, script.id);
-    expect(controller.moveToStep(ReplicateStep.prepareAssets), isFalse);
-
-    controller.toggleShotConfirmed(shot.id, true);
-    expect(controller.moveToStep(ReplicateStep.prepareAssets), isTrue);
+    expect(
+      controller.moveToStep(ReplicateStep.prepareAssets),
+      isTrue,
+      reason: '镜头步骤只需查阅，不再要求逐条点击确认',
+    );
 
     final firstSource = File('${root.path}/first.png');
     await firstSource.writeAsBytes([137, 80, 78, 71], flush: true);
@@ -105,11 +177,30 @@ void main() {
 
     final exported = await controller.exportPrompts();
     expect(exported, isNotNull);
-    expect(exported!.textFile.existsSync(), isTrue);
-    expect(exported.jsonFile.existsSync(), isTrue);
-    final json = jsonDecode(await exported.jsonFile.readAsString());
-    expect(json['model'], ReplicateController.promptModel);
-    expect(json['prompts'], hasLength(1));
+    expect(exported!.xlsxFile.existsSync(), isTrue);
+    expect(exported.xlsxFile.path.toLowerCase(), endsWith('.xlsx'));
+    final exportedArchive = ZipDecoder().decodeBytes(
+      await exported.xlsxFile.readAsBytes(),
+    );
+    final exportedSheet = utf8.decode(
+      exportedArchive.findFile('xl/worksheets/sheet1.xml')!.content
+          as List<int>,
+    );
+    expect(exportedSheet, contains('最终提示词'));
+    expect(exportedSheet, contains('主体与素材定义'));
+    expect(exportedSheet, contains('图片2中的透明玻璃瓶'));
+    expect(
+      exportedArchive.files.where((file) => file.name.startsWith('xl/media/')),
+      hasLength(1),
+    );
+    expect(exportedArchive.findFile('xl/drawings/drawing1.xml'), isNotNull);
+    expect(
+      exportedArchive.files.where(
+        (file) => file.name.endsWith('.txt') || file.name.endsWith('.json'),
+      ),
+      isEmpty,
+      reason: '合成提示词导出只应生成 XLSX',
+    );
 
     controller.dispose();
     controller = ReplicateController(
@@ -131,4 +222,133 @@ void main() {
       reason: '脚本内容变化后，旧提示词必须明确标记为待重新合成',
     );
   });
+
+  test('错峰批量复刻按镜号提交原帧和新资产并持久化结果', () async {
+    final root = await Directory.systemTemp.createTemp('replicate_images_');
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load().copyWith(
+        imageGenerationModel: ImageGenerationCatalog.models.first.id,
+      ),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    shootingController.createEmpty(name: '批量复刻脚本');
+    final frame1 = File('${root.path}/frame-1.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 1]);
+    final frame2 = File('${root.path}/frame-2.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 2]);
+    final first = shootingController.addShot()!;
+    shootingController.updateShot(
+      first.copyWith(framePath: frame1.path, content: '人物手持原产品'),
+    );
+    final second = shootingController.addShot()!;
+    shootingController.updateShot(
+      second.copyWith(framePath: frame2.path, content: '人物转身展示产品'),
+    );
+    final imageService = _RecordingImageGenerationService();
+    var controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      imageGenerationService: imageService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      imageService.close();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    controller.confirmAllShots();
+    final product = File('${root.path}/new-product.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 3]);
+    await controller.importAsset(
+      sourcePath: product.path,
+      type: ReplicateAssetType.product,
+      name: '新产品',
+      description: '白色瓶身，蓝色标签',
+    );
+
+    await controller.replicateAllShots(
+      stagger: const Duration(milliseconds: 20),
+      maxConcurrent: 2,
+    );
+
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
+    expect(imageService.requests[1].referenceImagePaths.first, frame2.path);
+    expect(imageService.requests[0].referenceImagePaths, hasLength(2));
+    expect(imageService.requests[0].prompt, contains('图片1'));
+    expect(imageService.requests[0].prompt, contains('替换'));
+    expect(controller.value.replicatedImages, hasLength(2));
+    expect(
+      controller.value.replicatedImages.map((image) => image.status).toSet(),
+      {ProcessingStatus.completed},
+    );
+    expect(
+      controller.value.replicatedImages.every(
+        (image) => File(image.generatedFramePath).existsSync(),
+      ),
+      isTrue,
+    );
+    expect(
+      controller.value.replicatedImages.every(
+        (image) => image.generatedFramePath.startsWith(
+          directories.generatedImages.absolute.path,
+        ),
+      ),
+      isTrue,
+      reason: '复刻图必须写入工程的 generated_images 持久目录',
+    );
+    expect(
+      controller.value.replicatedImages.every(
+        (image) => File(image.generatedFramePath).existsSync(),
+      ),
+      isTrue,
+    );
+
+    controller.dispose();
+    controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      imageGenerationService: imageService,
+    );
+    expect(controller.value.replicatedImages, hasLength(2));
+    expect(controller.value.replicatedImages.map((image) => image.shotNumber), [
+      1,
+      2,
+    ]);
+  });
+}
+
+class _RecordingImageGenerationService extends ImageGenerationService {
+  final requests = <ImageGenerationRequest>[];
+
+  @override
+  Future<ImageGenerationResult> generateEditedImage(
+    ImageGenerationRequest request,
+  ) async {
+    requests.add(request);
+    final serviceCacheDirectory = request.outputDirectory.parent.parent.parent;
+    final output = File(
+      '${serviceCacheDirectory.path}${Platform.pathSeparator}'
+      'service-cache-${requests.length}.png',
+    );
+    await output.writeAsBytes([137, 80, 78, 71, requests.length], flush: true);
+    return ImageGenerationResult(
+      localPath: output.path,
+      remoteUrl: '',
+      rawResponse: '{"ok":true}',
+    );
+  }
 }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import '../../../core/widgets/preview_file_image.dart';
 import '../../replicate/application/replicate_controller.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../replicate/domain/replicate_models.dart';
+import '../../replicate/presentation/replicate_page.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../video_analysis/application/video_analysis_controller.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
@@ -17,13 +19,9 @@ import '../application/shooting_script_controller.dart';
 import '../domain/shooting_asset_library_models.dart';
 import '../domain/shooting_script_models.dart';
 
-class ShootingScriptPage extends ConsumerWidget {
+class ShootingScriptPage extends ConsumerStatefulWidget {
   const ShootingScriptPage({super.key});
 
-  static const _imageTypes = XTypeGroup(
-    label: '图片',
-    extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
-  );
   static const _assetTypes = XTypeGroup(
     label: '视频资产',
     extensions: [
@@ -48,7 +46,24 @@ class ShootingScriptPage extends ConsumerWidget {
   );
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ShootingScriptPage> createState() => _ShootingScriptPageState();
+}
+
+class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
+  static const _collapsedPanelWidth = 56.0;
+  static const _minimumScriptPanelWidth = 220.0;
+  static const _minimumAssetPanelWidth = 220.0;
+  static const _minimumWorkspaceWidth = 360.0;
+  static const _panelGap = 8.0;
+  static const _resizeHandleWidth = 10.0;
+
+  var _scriptPanelWidth = 280.0;
+  var _assetPanelWidth = 260.0;
+  var _scriptPanelCollapsed = false;
+  var _assetPanelCollapsed = false;
+
+  @override
+  Widget build(BuildContext context) {
     final controller = ref.watch(shootingScriptControllerProvider);
     final replicateController = ref.watch(replicateControllerProvider);
     final assetLibraryController = ref.watch(
@@ -105,23 +120,25 @@ class ShootingScriptPage extends ConsumerWidget {
                         ),
                       ],
                       const SizedBox(height: 12),
-                      if (state.selectedScript != null &&
-                          replicateState.run != null) ...[
-                        _ShootingScriptStepBar(
-                          scriptState: state,
-                          replicateState: replicateState,
-                          controller: replicateController,
-                        ),
-                        const SizedBox(height: 12),
-                      ],
                       Expanded(
                         child: LayoutBuilder(
                           builder: (context, constraints) {
                             final sidebar = _ScriptSidebar(
                               state: state,
                               controller: controller,
+                              collapsed: _scriptPanelCollapsed,
                               onCreate: () =>
                                   _createScript(context, controller),
+                              onDeleteScript: (script) => _deleteScript(
+                                context,
+                                controller,
+                                state,
+                                script,
+                              ),
+                              onToggleCollapsed: () => setState(
+                                () => _scriptPanelCollapsed =
+                                    !_scriptPanelCollapsed,
+                              ),
                               onCreateFromVideo: () =>
                                   controller.createFromVideo(
                                     video: videoController.value.selectedVideo!,
@@ -140,54 +157,156 @@ class ShootingScriptPage extends ConsumerWidget {
                                   storyboardController.value.selectedBoard !=
                                   null,
                             );
-                            final workspace = state.selectedScript == null
-                                ? const _EmptyScriptState()
-                                : _ScriptWorkspace(
-                                    state: state,
-                                    controller: controller,
-                                    onBatchEdit: () =>
-                                        _batchEdit(context, controller),
-                                    onPickFrame: (shot) =>
-                                        _pickFrame(controller, shot),
-                                  );
+                            final workspace = ReplicatePage(
+                              key: const ValueKey('shooting-script-workflow'),
+                              embedded: true,
+                              onOpenShootingScript: () {},
+                            );
                             final assetPanel = _AssetLibraryPanel(
                               state: libraryState,
-                              replicateState: replicateState,
-                              libraryController: assetLibraryController,
-                              replicateController: replicateController,
+                              collapsed: _assetPanelCollapsed,
                               onManage: () => _openAssetManager(
                                 context,
                                 assetLibraryController,
                                 replicateController,
                               ),
+                              onToggleCollapsed: () => setState(
+                                () => _assetPanelCollapsed =
+                                    !_assetPanelCollapsed,
+                              ),
                             );
                             if (constraints.maxWidth < 900) {
                               return Column(
                                 children: [
-                                  SizedBox(height: 250, child: sidebar),
+                                  SizedBox(
+                                    height: _scriptPanelCollapsed ? 64 : 250,
+                                    child: sidebar,
+                                  ),
                                   const SizedBox(height: 12),
                                   Expanded(child: workspace),
                                 ],
                               );
                             }
-                            if (constraints.maxWidth < 1260) {
+                            if (constraints.maxWidth < 1100) {
+                              final availableWidth =
+                                  constraints.maxWidth -
+                                  _panelGap -
+                                  _resizeHandleWidth;
+                              final maximumScriptWidth = math.max(
+                                _minimumScriptPanelWidth,
+                                availableWidth - _minimumWorkspaceWidth,
+                              );
+                              final scriptWidth = _scriptPanelCollapsed
+                                  ? _collapsedPanelWidth
+                                  : _scriptPanelWidth
+                                        .clamp(
+                                          _minimumScriptPanelWidth,
+                                          maximumScriptWidth,
+                                        )
+                                        .toDouble();
                               return Row(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  SizedBox(width: 280, child: sidebar),
-                                  const VerticalDivider(width: 20),
+                                  SizedBox(width: scriptWidth, child: sidebar),
+                                  _PanelResizeHandle(
+                                    key: const ValueKey(
+                                      'shooting-script-left-resize-handle',
+                                    ),
+                                    onDrag: _scriptPanelCollapsed
+                                        ? null
+                                        : (delta) => setState(() {
+                                            _scriptPanelWidth =
+                                                (scriptWidth + delta)
+                                                    .clamp(
+                                                      _minimumScriptPanelWidth,
+                                                      maximumScriptWidth,
+                                                    )
+                                                    .toDouble();
+                                          }),
+                                  ),
+                                  const SizedBox(width: _panelGap),
                                   Expanded(child: workspace),
                                 ],
                               );
                             }
+                            final availablePanels =
+                                constraints.maxWidth -
+                                _panelGap * 2 -
+                                _resizeHandleWidth * 2;
+                            final minimumLeft = _scriptPanelCollapsed
+                                ? _collapsedPanelWidth
+                                : _minimumScriptPanelWidth;
+                            final minimumRight = _assetPanelCollapsed
+                                ? _collapsedPanelWidth
+                                : _minimumAssetPanelWidth;
+                            final maximumRight = math.max(
+                              minimumRight,
+                              availablePanels -
+                                  _minimumWorkspaceWidth -
+                                  minimumLeft,
+                            );
+                            final assetWidth = _assetPanelCollapsed
+                                ? _collapsedPanelWidth
+                                : _assetPanelWidth
+                                      .clamp(
+                                        _minimumAssetPanelWidth,
+                                        maximumRight,
+                                      )
+                                      .toDouble();
+                            final maximumLeft = math.max(
+                              minimumLeft,
+                              availablePanels -
+                                  _minimumWorkspaceWidth -
+                                  assetWidth,
+                            );
+                            final scriptWidth = _scriptPanelCollapsed
+                                ? _collapsedPanelWidth
+                                : _scriptPanelWidth
+                                      .clamp(
+                                        _minimumScriptPanelWidth,
+                                        maximumLeft,
+                                      )
+                                      .toDouble();
                             return Row(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                SizedBox(width: 280, child: sidebar),
-                                const VerticalDivider(width: 20),
+                                SizedBox(width: scriptWidth, child: sidebar),
+                                _PanelResizeHandle(
+                                  key: const ValueKey(
+                                    'shooting-script-left-resize-handle',
+                                  ),
+                                  onDrag: _scriptPanelCollapsed
+                                      ? null
+                                      : (delta) => setState(() {
+                                          _scriptPanelWidth =
+                                              (scriptWidth + delta)
+                                                  .clamp(
+                                                    _minimumScriptPanelWidth,
+                                                    maximumLeft,
+                                                  )
+                                                  .toDouble();
+                                        }),
+                                ),
+                                const SizedBox(width: _panelGap),
                                 Expanded(child: workspace),
-                                const VerticalDivider(width: 20),
-                                SizedBox(width: 310, child: assetPanel),
+                                const SizedBox(width: _panelGap),
+                                _PanelResizeHandle(
+                                  key: const ValueKey(
+                                    'shooting-script-right-resize-handle',
+                                  ),
+                                  onDrag: _assetPanelCollapsed
+                                      ? null
+                                      : (delta) => setState(() {
+                                          _assetPanelWidth =
+                                              (assetWidth - delta)
+                                                  .clamp(
+                                                    _minimumAssetPanelWidth,
+                                                    maximumRight,
+                                                  )
+                                                  .toDouble();
+                                        }),
+                                ),
+                                SizedBox(width: assetWidth, child: assetPanel),
                               ],
                             );
                           },
@@ -246,7 +365,9 @@ class ShootingScriptPage extends ConsumerWidget {
     ShootingAssetLibraryController controller,
     ReplicateAssetType type,
   ) async {
-    final files = await openFiles(acceptedTypeGroups: const [_assetTypes]);
+    final files = await openFiles(
+      acceptedTypeGroups: const [ShootingScriptPage._assetTypes],
+    );
     for (final file in files) {
       await controller.importItem(sourcePath: file.path, type: type);
     }
@@ -426,18 +547,24 @@ class ShootingScriptPage extends ConsumerWidget {
   Future<void> _deleteScript(
     BuildContext context,
     ShootingScriptController controller,
-    ShootingScriptState state,
-  ) async {
-    final script = state.selectedScript;
+    ShootingScriptState state, [
+    ShootingScript? targetScript,
+  ]) async {
+    final script = targetScript ?? state.selectedScript;
     if (script == null) {
       return;
     }
+    final shotCount = script.id == state.selectedScriptId
+        ? state.shots.length
+        : null;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除拍摄脚本？'),
         content: Text(
-          '将删除“${script.name}”及其 ${state.shots.length} 个镜头。已导出的文件不会删除。',
+          shotCount == null
+              ? '将删除“${script.name}”及其关联镜头。已导出的文件不会删除。'
+              : '将删除“${script.name}”及其 $shotCount 个镜头。已导出的文件不会删除。',
         ),
         actions: [
           TextButton(
@@ -452,85 +579,7 @@ class ShootingScriptPage extends ConsumerWidget {
       ),
     );
     if (confirmed == true) {
-      controller.deleteSelectedScript();
-    }
-  }
-
-  Future<void> _pickFrame(
-    ShootingScriptController controller,
-    ScriptShot shot,
-  ) async {
-    final result = await openFile(acceptedTypeGroups: const [_imageTypes]);
-    if (result != null) {
-      controller.updateShot(
-        shot.copyWith(
-          framePath: result.path,
-          status: ProcessingStatus.completed,
-        ),
-      );
-    }
-  }
-
-  Future<void> _batchEdit(
-    BuildContext context,
-    ShootingScriptController controller,
-  ) async {
-    var field = ShootingScriptBatchField.shotSize;
-    final valueController = TextEditingController();
-    final result =
-        await showDialog<({ShootingScriptBatchField field, String value})>(
-          context: context,
-          builder: (context) => StatefulBuilder(
-            builder: (context, setState) => AlertDialog(
-              title: const Text('批量修改全部镜头'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  DropdownButtonFormField<ShootingScriptBatchField>(
-                    initialValue: field,
-                    decoration: const InputDecoration(labelText: '字段'),
-                    items: [
-                      for (final item in ShootingScriptBatchField.values)
-                        DropdownMenuItem(value: item, child: Text(item.label)),
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() => field = value);
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: valueController,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: '统一值',
-                      helperText: '留空将清空所选字段',
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(
-                    context,
-                  ).pop((field: field, value: valueController.text)),
-                  child: const Text('应用到全部镜头'),
-                ),
-              ],
-            ),
-          ),
-        );
-    valueController.dispose();
-    if (result != null) {
-      controller.batchUpdateShots(
-        field: result.field,
-        fieldValue: result.value,
-      );
+      controller.deleteScript(script.id);
     }
   }
 
@@ -539,16 +588,16 @@ class ShootingScriptPage extends ConsumerWidget {
     required String title,
     required String initial,
   }) async {
-    final textController = TextEditingController(text: initial);
+    var enteredName = initial;
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(title),
         content: TextField(
-          controller: textController,
           autofocus: true,
           decoration: const InputDecoration(labelText: '脚本名称'),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
+          onChanged: (value) => enteredName = value,
+          onSubmitted: (_) => Navigator.of(context).pop(enteredName),
         ),
         actions: [
           TextButton(
@@ -556,13 +605,12 @@ class ShootingScriptPage extends ConsumerWidget {
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(textController.text),
+            onPressed: () => Navigator.of(context).pop(enteredName),
             child: const Text('确定'),
           ),
         ],
       ),
     );
-    textController.dispose();
     return result?.trim().isEmpty == true ? null : result?.trim();
   }
 }
@@ -679,7 +727,10 @@ class _ScriptSidebar extends StatelessWidget {
   const _ScriptSidebar({
     required this.state,
     required this.controller,
+    required this.collapsed,
     required this.onCreate,
+    required this.onDeleteScript,
+    required this.onToggleCollapsed,
     required this.onCreateFromVideo,
     required this.canCreateFromVideo,
     required this.onCreateFromStoryboard,
@@ -688,7 +739,10 @@ class _ScriptSidebar extends StatelessWidget {
 
   final ShootingScriptState state;
   final ShootingScriptController controller;
+  final bool collapsed;
   final VoidCallback onCreate;
+  final ValueChanged<ShootingScript> onDeleteScript;
+  final VoidCallback onToggleCollapsed;
   final VoidCallback onCreateFromVideo;
   final bool canCreateFromVideo;
   final VoidCallback onCreateFromStoryboard;
@@ -703,228 +757,201 @@ class _ScriptSidebar extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: scheme.outlineVariant),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('脚本列表', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Expanded(
-              child: state.scripts.isEmpty
-                  ? const Center(child: Text('尚未创建脚本'))
-                  : ListView.separated(
-                      itemCount: state.scripts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 6),
-                      itemBuilder: (context, index) {
-                        final script = state.scripts[index];
-                        final selected = script.id == state.selectedScriptId;
-                        return ListTile(
-                          selected: selected,
-                          selectedTileColor: scheme.secondaryContainer,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          leading: Icon(
-                            script.status == ShootingScriptStatus.archived
-                                ? Icons.archive_outlined
-                                : Icons.description_outlined,
-                          ),
-                          title: Text(
-                            script.name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            'v${script.version} · ${script.status.label}',
-                          ),
-                          onTap: () => controller.selectScript(script.id),
-                        );
-                      },
-                    ),
-            ),
-            const Divider(),
-            FilledButton.icon(
-              key: const ValueKey('create-empty-shooting-script'),
-              onPressed: onCreate,
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('新建空脚本'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              key: const ValueKey('create-shooting-script-from-video'),
-              onPressed: canCreateFromVideo ? onCreateFromVideo : null,
-              icon: const Icon(Icons.video_file_rounded),
-              label: const Text('从当前视频生成'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              key: const ValueKey('create-shooting-script-from-storyboard'),
-              onPressed: canCreateFromStoryboard
-                  ? onCreateFromStoryboard
-                  : null,
-              icon: const Icon(Icons.dashboard_customize_rounded),
-              label: const Text('从当前故事板生成'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ShootingScriptStepBar extends StatelessWidget {
-  const _ShootingScriptStepBar({
-    required this.scriptState,
-    required this.replicateState,
-    required this.controller,
-  });
-
-  final ShootingScriptState scriptState;
-  final ReplicateState replicateState;
-  final ReplicateController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final run = replicateState.run!;
-    final readyAssets = replicateState.assets
-        .where((item) => item.status == ProcessingStatus.completed)
-        .length;
-    return SizedBox(
-      height: 74,
-      child: Row(
-        children: [
-          Expanded(
-            child: _FlowStepPill(
-              number: 1,
-              title: '确认镜头',
-              summary:
-                  '${run.confirmedShotIds.length}/${scriptState.shots.length} 已确认',
-              status: run.confirmShotsStatus,
-              selected: run.currentStep == ReplicateStep.confirmShots,
-              onTap: () => controller.moveToStep(ReplicateStep.confirmShots),
-              action: TextButton(
-                onPressed: scriptState.shots.isEmpty
-                    ? null
-                    : controller.confirmAllShots,
-                child: const Text('全部确认'),
+      child: collapsed
+          ? Center(
+              child: IconButton(
+                key: const ValueKey('expand-script-sidebar'),
+                tooltip: '展开脚本列表',
+                onPressed: onToggleCollapsed,
+                icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
               ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _FlowStepPill(
-              number: 2,
-              title: '准备资产',
-              summary: '$readyAssets/${replicateState.assets.length} 可用',
-              status: run.prepareAssetsStatus,
-              selected: run.currentStep == ReplicateStep.prepareAssets,
-              onTap: () => controller.moveToStep(ReplicateStep.prepareAssets),
-              action: TextButton(
-                onPressed: run.confirmedShotIds.isEmpty
-                    ? null
-                    : () => controller.moveToStep(ReplicateStep.prepareAssets),
-                child: const Text('去匹配'),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _FlowStepPill(
-              number: 3,
-              title: '合成提示词',
-              summary: '${run.completedCount}/${run.totalCount} 已合成',
-              status: run.composePromptsStatus,
-              selected: run.currentStep == ReplicateStep.composePrompts,
-              onTap: () => controller.moveToStep(ReplicateStep.composePrompts),
-              action: TextButton(
-                onPressed: replicateState.isBusy
-                    ? null
-                    : controller.composeAllPrompts,
-                child: Text(replicateState.prompts.isEmpty ? '生成' : '重生成'),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _FlowStepPill extends StatelessWidget {
-  const _FlowStepPill({
-    required this.number,
-    required this.title,
-    required this.summary,
-    required this.status,
-    required this.selected,
-    required this.onTap,
-    required this.action,
-  });
-
-  final int number;
-  final String title;
-  final String summary;
-  final ProcessingStatus status;
-  final bool selected;
-  final VoidCallback onTap;
-  final Widget action;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: selected ? scheme.primaryContainer : scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: selected ? scheme.primary : scheme.outlineVariant,
-        ),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 16,
-                  backgroundColor: selected
-                      ? scheme.primary
-                      : scheme.secondaryContainer,
-                  foregroundColor: selected
-                      ? scheme.onPrimary
-                      : scheme.onSecondaryContainer,
-                  child: Text('$number'),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            )
+          : Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
                     children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall,
+                      Expanded(
+                        child: Text(
+                          '脚本列表',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
                       ),
-                      Text(
-                        '$summary · ${status.label}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: status.color(scheme),
+                      IconButton(
+                        key: const ValueKey('collapse-script-sidebar'),
+                        tooltip: '折叠脚本列表',
+                        onPressed: onToggleCollapsed,
+                        icon: const Icon(
+                          Icons.keyboard_double_arrow_left_rounded,
                         ),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: state.scripts.isEmpty
+                        ? const Center(child: Text('尚未创建脚本'))
+                        : ReorderableListView.builder(
+                            buildDefaultDragHandles: false,
+                            itemCount: state.scripts.length,
+                            onReorder: controller.reorderScripts,
+                            itemBuilder: (context, index) {
+                              final script = state.scripts[index];
+                              return Padding(
+                                key: ValueKey(script.id),
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: _ScriptListCard(
+                                  index: index,
+                                  script: script,
+                                  selected: script.id == state.selectedScriptId,
+                                  onTap: () =>
+                                      controller.selectScript(script.id),
+                                  onDelete: () => onDeleteScript(script),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  const Divider(),
+                  FilledButton.icon(
+                    key: const ValueKey('create-empty-shooting-script'),
+                    onPressed: onCreate,
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('新建空脚本'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    key: const ValueKey('create-shooting-script-from-video'),
+                    onPressed: canCreateFromVideo ? onCreateFromVideo : null,
+                    icon: const Icon(Icons.video_file_rounded),
+                    label: const Text('从当前视频生成'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    key: const ValueKey(
+                      'create-shooting-script-from-storyboard',
+                    ),
+                    onPressed: canCreateFromStoryboard
+                        ? onCreateFromStoryboard
+                        : null,
+                    icon: const Icon(Icons.dashboard_customize_rounded),
+                    label: const Text('从当前故事板生成'),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+}
+
+class _ScriptListCard extends StatelessWidget {
+  const _ScriptListCard({
+    required this.index,
+    required this.script,
+    required this.selected,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  final int index;
+  final ShootingScript script;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final borderColor = selected ? scheme.primary : scheme.outlineVariant;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: selected ? scheme.secondaryContainer : scheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: borderColor, width: selected ? 1.4 : 1),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 6, 4, 6),
+          child: Row(
+            children: [
+              Icon(
+                script.status == ShootingScriptStatus.archived
+                    ? Icons.archive_outlined
+                    : Icons.description_outlined,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      script.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 2),
+                    Text('v${script.version} · ${script.status.label}'),
+                  ],
                 ),
-                action,
-              ],
+              ),
+              IconButton(
+                tooltip: '删除脚本',
+                visualDensity: VisualDensity.compact,
+                onPressed: onDelete,
+                icon: const Icon(Icons.delete_outline_rounded, size: 19),
+              ),
+              ReorderableDragStartListener(
+                index: index,
+                child: Tooltip(
+                  message: '拖拽动态排序',
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Icon(
+                      Icons.drag_indicator_rounded,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PanelResizeHandle extends StatelessWidget {
+  const _PanelResizeHandle({super.key, required this.onDrag});
+
+  final ValueChanged<double>? onDrag;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MouseRegion(
+      cursor: onDrag == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: onDrag == null
+            ? null
+            : (details) => onDrag!(details.delta.dx),
+        child: SizedBox(
+          width: _ShootingScriptPageState._resizeHandleWidth,
+          child: Center(
+            child: Container(
+              width: 1,
+              height: double.infinity,
+              color: scheme.outlineVariant.withValues(alpha: 0.55),
             ),
           ),
         ),
@@ -936,17 +963,15 @@ class _FlowStepPill extends StatelessWidget {
 class _AssetLibraryPanel extends StatelessWidget {
   const _AssetLibraryPanel({
     required this.state,
-    required this.replicateState,
-    required this.libraryController,
-    required this.replicateController,
+    required this.collapsed,
     required this.onManage,
+    required this.onToggleCollapsed,
   });
 
   final ShootingAssetLibraryState state;
-  final ReplicateState replicateState;
-  final ShootingAssetLibraryController libraryController;
-  final ReplicateController replicateController;
+  final bool collapsed;
   final VoidCallback onManage;
+  final VoidCallback onToggleCollapsed;
 
   @override
   Widget build(BuildContext context) {
@@ -957,114 +982,100 @@ class _AssetLibraryPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: scheme.outlineVariant),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '资产库',
-                    style: Theme.of(context).textTheme.titleMedium,
+      child: collapsed
+          ? Center(
+              child: IconButton(
+                key: const ValueKey('expand-asset-library-panel'),
+                tooltip: '展开资产库',
+                onPressed: onToggleCollapsed,
+                icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
+              ),
+            )
+          : Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '资产库',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ),
+                      IconButton.filledTonal(
+                        tooltip: '管理资产',
+                        onPressed: onManage,
+                        icon: const Icon(Icons.tune_rounded),
+                      ),
+                      IconButton(
+                        key: const ValueKey('collapse-asset-library-panel'),
+                        tooltip: '折叠资产库',
+                        onPressed: onToggleCollapsed,
+                        icon: const Icon(
+                          Icons.keyboard_double_arrow_right_rounded,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                IconButton.filledTonal(
-                  tooltip: '管理资产',
-                  onPressed: onManage,
-                  icon: const Icon(Icons.tune_rounded),
-                ),
-              ],
+                  Expanded(
+                    child: state.items.isEmpty
+                        ? const Center(child: Text('暂无常用资产'))
+                        : ListView(
+                            children: [
+                              for (final type in ReplicateAssetType.values)
+                                if (state.items.any(
+                                  (item) => item.type == type,
+                                )) ...[
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                      top: 8,
+                                      bottom: 6,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(type.icon, size: 16),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          type.label,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelLarge
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          '${state.items.where((item) => item.type == type).length}',
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.labelSmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  for (final item in state.items)
+                                    if (item.type == type) ...[
+                                      _CompactLibraryAssetCard(item: item),
+                                      const SizedBox(height: 8),
+                                    ],
+                                ],
+                            ],
+                          ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            _AssetDropBox(
-              enabled: replicateState.run != null,
-              onAccept: replicateController.importLibraryAsset,
-            ),
-            const SizedBox(height: 10),
-            Expanded(
-              child: state.items.isEmpty
-                  ? const Center(child: Text('暂无常用资产'))
-                  : ListView.separated(
-                      itemCount: state.items.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        final item = state.items[index];
-                        return _CompactLibraryAssetCard(
-                          item: item,
-                          enabled: replicateState.run != null,
-                          onUse: () =>
-                              replicateController.importLibraryAsset(item),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AssetDropBox extends StatelessWidget {
-  const _AssetDropBox({required this.enabled, required this.onAccept});
-
-  final bool enabled;
-  final ValueChanged<ShootingAssetLibraryItem> onAccept;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DragTarget<ShootingAssetLibraryItem>(
-      onWillAcceptWithDetails: (_) => enabled,
-      onAcceptWithDetails: (details) => onAccept(details.data),
-      builder: (context, candidateData, _) {
-        final active = candidateData.isNotEmpty;
-        return AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          height: 96,
-          decoration: BoxDecoration(
-            color: active
-                ? scheme.primaryContainer
-                : scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: active ? scheme.primary : scheme.outlineVariant,
-            ),
-          ),
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.upload_file_rounded,
-                  color: enabled ? scheme.primary : scheme.onSurfaceVariant,
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  enabled ? '拖入当前脚本素材' : '先选择拍摄脚本',
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 }
 
 class _CompactLibraryAssetCard extends StatelessWidget {
-  const _CompactLibraryAssetCard({
-    required this.item,
-    required this.enabled,
-    required this.onUse,
-  });
+  const _CompactLibraryAssetCard({required this.item});
 
   final ShootingAssetLibraryItem item;
-  final bool enabled;
-  final VoidCallback onUse;
 
   @override
   Widget build(BuildContext context) {
@@ -1100,11 +1111,6 @@ class _CompactLibraryAssetCard extends StatelessWidget {
                     ),
                 ],
               ),
-            ),
-            IconButton(
-              tooltip: '使用资产',
-              onPressed: enabled ? onUse : null,
-              icon: const Icon(Icons.add_circle_outline_rounded),
             ),
           ],
         ),
@@ -1488,7 +1494,7 @@ class _ScriptWorkspaceState extends State<_ScriptWorkspace> {
           SizedBox(
             height: 190,
             child: state.selectedShot == null
-                ? const Center(child: Text('选择一个镜头查看附加字段'))
+                ? const Center(child: Text('选择一个镜头查看原图位置'))
                 : _ShotInspector(
                     shot: state.selectedShot!,
                     controller: widget.controller,
@@ -1514,6 +1520,12 @@ class _ScriptTableHeader extends StatelessWidget {
           _HeaderCell('内容', 220),
           _HeaderCell('景别', 100),
           _HeaderCell('运镜', 110),
+          _HeaderCell('构图', 180),
+          _HeaderCell('机位', 140),
+          _HeaderCell('光影/氛围', 200),
+          _HeaderCell('色彩', 160),
+          _HeaderCell('视觉焦点', 200),
+          _HeaderCell('衔接', 200),
           _HeaderCell('摄影备注', 200),
           _HeaderCell('基地场景', 140),
           _HeaderCell('款号', 110),
@@ -1552,7 +1564,7 @@ class _ScriptTableRow extends StatelessWidget {
     required this.onPickFrame,
   });
 
-  static const totalWidth = 1530.0;
+  static const totalWidth = 2610.0;
 
   final int index;
   final ScriptShot shot;
@@ -1644,6 +1656,24 @@ class _ScriptTableRow extends StatelessWidget {
               _editor(110, '运镜', shot.cameraMovement, (value) {
                 controller.updateShot(shot.copyWith(cameraMovement: value));
               }),
+              _editor(180, '构图', shot.composition, (value) {
+                controller.updateShot(shot.copyWith(composition: value));
+              }),
+              _editor(140, '机位', shot.cameraAngle, (value) {
+                controller.updateShot(shot.copyWith(cameraAngle: value));
+              }),
+              _editor(200, '光影/氛围', shot.lightingMood, (value) {
+                controller.updateShot(shot.copyWith(lightingMood: value));
+              }),
+              _editor(160, '色彩', shot.colorPalette, (value) {
+                controller.updateShot(shot.copyWith(colorPalette: value));
+              }),
+              _editor(200, '视觉焦点', shot.visualFocus, (value) {
+                controller.updateShot(shot.copyWith(visualFocus: value));
+              }),
+              _editor(200, '衔接', shot.transitionHint, (value) {
+                controller.updateShot(shot.copyWith(transitionHint: value));
+              }),
               _editor(200, '摄影备注', shot.cameraNotes, (value) {
                 controller.updateShot(shot.copyWith(cameraNotes: value));
               }),
@@ -1670,7 +1700,7 @@ class _ScriptTableRow extends StatelessWidget {
                       icon: const Icon(Icons.copy_rounded),
                     ),
                     IconButton(
-                      tooltip: '删除镜头',
+                      tooltip: '删除分镜脚本',
                       onPressed: () => controller.deleteShot(shot.id),
                       icon: const Icon(Icons.delete_outline_rounded),
                     ),
@@ -1722,57 +1752,6 @@ class _ShotInspector extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
-                width: 110,
-                child: _CommitTextField(
-                  key: ValueKey('${shot.id}-duration'),
-                  initialValue: shot.durationSeconds == 0
-                      ? ''
-                      : shot.durationSeconds.toStringAsFixed(2),
-                  label: '时长（秒）',
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  onSaved: (value) => controller.updateShot(
-                    shot.copyWith(durationSeconds: double.tryParse(value) ?? 0),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _CommitTextField(
-                  key: ValueKey('${shot.id}-dialogue'),
-                  initialValue: shot.dialogue,
-                  label: '对白 / 旁白',
-                  maxLines: 4,
-                  onSaved: (value) =>
-                      controller.updateShot(shot.copyWith(dialogue: value)),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _CommitTextField(
-                  key: ValueKey('${shot.id}-sound'),
-                  initialValue: shot.sound,
-                  label: '音效',
-                  maxLines: 4,
-                  onSaved: (value) =>
-                      controller.updateShot(shot.copyWith(sound: value)),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                flex: 2,
-                child: _CommitTextField(
-                  key: ValueKey('${shot.id}-prompt'),
-                  initialValue: shot.prompt,
-                  label: '最终提示词',
-                  maxLines: 5,
-                  onSaved: (value) =>
-                      controller.updateShot(shot.copyWith(prompt: value)),
-                ),
-              ),
-              const SizedBox(width: 10),
-              SizedBox(
                 width: 210,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1810,14 +1789,12 @@ class _CommitTextField extends StatefulWidget {
     required this.label,
     required this.onSaved,
     this.maxLines = 1,
-    this.keyboardType,
   });
 
   final String initialValue;
   final String label;
   final ValueChanged<String> onSaved;
   final int maxLines;
-  final TextInputType? keyboardType;
 
   @override
   State<_CommitTextField> createState() => _CommitTextFieldState();
@@ -1874,7 +1851,6 @@ class _CommitTextFieldState extends State<_CommitTextField> {
     return TextField(
       controller: _controller,
       focusNode: _focusNode,
-      keyboardType: widget.keyboardType,
       maxLines: widget.maxLines,
       minLines: 1,
       decoration: InputDecoration(
@@ -1885,26 +1861,6 @@ class _CommitTextFieldState extends State<_CommitTextField> {
       onSubmitted: (_) => _commit(),
     );
   }
-}
-
-class _EmptyScriptState extends StatelessWidget {
-  const _EmptyScriptState();
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          Icons.table_chart_outlined,
-          size: 56,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-        const SizedBox(height: 12),
-        const Text('选择或创建一个拍摄脚本'),
-      ],
-    ),
-  );
 }
 
 class _LibraryAssetEditorResult {
@@ -1929,18 +1885,6 @@ extension on ShootingScriptStatus {
   };
 }
 
-extension on ShootingScriptBatchField {
-  String get label => switch (this) {
-    ShootingScriptBatchField.shotSize => '景别',
-    ShootingScriptBatchField.cameraMovement => '运镜',
-    ShootingScriptBatchField.cameraNotes => '摄影备注',
-    ShootingScriptBatchField.scene => '基地场景',
-    ShootingScriptBatchField.productCode => '款号',
-    ShootingScriptBatchField.visual => '图片',
-    ShootingScriptBatchField.productStyling => '产品搭配',
-  };
-}
-
 extension on ReplicateAssetType {
   String get label => switch (this) {
     ReplicateAssetType.character => '角色',
@@ -1962,24 +1906,5 @@ extension on ReplicateAssetType {
     ReplicateAssetType.audio => Icons.audio_file_outlined,
     ReplicateAssetType.reference => Icons.collections_outlined,
     ReplicateAssetType.other => Icons.attach_file_rounded,
-  };
-}
-
-extension on ProcessingStatus {
-  String get label => switch (this) {
-    ProcessingStatus.pending => '待处理',
-    ProcessingStatus.running => '处理中',
-    ProcessingStatus.completed => '已完成',
-    ProcessingStatus.partial => '部分完成',
-    ProcessingStatus.failed => '失败',
-    ProcessingStatus.retrying => '重试中',
-  };
-
-  Color color(ColorScheme scheme) => switch (this) {
-    ProcessingStatus.completed => scheme.primary,
-    ProcessingStatus.failed => scheme.error,
-    ProcessingStatus.partial => scheme.tertiary,
-    ProcessingStatus.running || ProcessingStatus.retrying => scheme.secondary,
-    ProcessingStatus.pending => scheme.onSurfaceVariant,
   };
 }

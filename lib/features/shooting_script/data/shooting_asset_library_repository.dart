@@ -25,24 +25,17 @@ class ShootingAssetLibraryRepository {
   final Uuid _uuid;
 
   List<ShootingAssetLibraryItem> listItems() {
-    final raw = _database.getSetting(_settingKey);
-    if (raw == null || raw.trim().isEmpty) {
-      return const [];
+    final rows = _database.selectRows(
+      'SELECT * FROM shooting_asset_library_items ORDER BY updated_at DESC;',
+    );
+    if (rows.isNotEmpty) {
+      return rows.map(_fromRow).toList();
     }
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! List) {
-        return const [];
-      }
-      return decoded
-          .whereType<Map>()
-          .map((item) => _fromJson(item.cast<String, Object?>()))
-          .where((item) => item.path.trim().isNotEmpty)
-          .toList()
-        ..sort((first, second) => second.updatedAt.compareTo(first.updatedAt));
-    } catch (_) {
-      return const [];
+    final legacyItems = _readLegacyItems();
+    if (legacyItems.isNotEmpty) {
+      _saveItems(legacyItems);
     }
+    return legacyItems;
   }
 
   Future<ShootingAssetLibraryItem?> importItem({
@@ -112,11 +105,75 @@ class ShootingAssetLibraryRepository {
     for (final item in items) {
       unique[item.id] = item;
     }
-    final encoded = jsonEncode([
-      for (final item in unique.values) _toJson(item),
-    ]);
-    _database.setSetting(_settingKey, encoded);
+    final normalized = unique.values.toList()
+      ..sort((first, second) => second.updatedAt.compareTo(first.updatedAt));
+    _database.executeStatement('BEGIN IMMEDIATE;');
+    try {
+      _database.executeStatement('DELETE FROM shooting_asset_library_items;');
+      for (final item in normalized) {
+        _database.executeStatement(
+          '''
+          INSERT INTO shooting_asset_library_items(
+            id, asset_type, name, description, path, created_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?);
+          ''',
+          [
+            item.id,
+            item.type.name,
+            item.name,
+            item.description,
+            item.path,
+            item.createdAt.toIso8601String(),
+            item.updatedAt.toIso8601String(),
+          ],
+        );
+      }
+      _database.executeStatement('COMMIT;');
+    } catch (_) {
+      _database.executeStatement('ROLLBACK;');
+      rethrow;
+    }
+    // Keep the old setting as a one-way compatibility copy for older builds.
+    _database.setSetting(
+      _settingKey,
+      jsonEncode([for (final item in normalized) _toJson(item)]),
+    );
   }
+
+  List<ShootingAssetLibraryItem> _readLegacyItems() {
+    final raw = _database.getSetting(_settingKey);
+    if (raw == null || raw.trim().isEmpty) {
+      return const [];
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        return const [];
+      }
+      return decoded
+          .whereType<Map>()
+          .map((item) => _fromJson(item.cast<String, Object?>()))
+          .where((item) => item.path.trim().isNotEmpty)
+          .toList()
+        ..sort((first, second) => second.updatedAt.compareTo(first.updatedAt));
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  ShootingAssetLibraryItem _fromRow(Map<String, Object?> row) =>
+      ShootingAssetLibraryItem(
+        id: row['id'] as String,
+        type: ReplicateAssetType.values.firstWhere(
+          (item) => item.name == row['asset_type'],
+          orElse: () => ReplicateAssetType.reference,
+        ),
+        name: row['name'] as String,
+        description: row['description'] as String,
+        path: row['path'] as String,
+        createdAt: DateTime.parse(row['created_at'] as String),
+        updatedAt: DateTime.parse(row['updated_at'] as String),
+      );
 
   Future<void> _deleteManagedFile(String path) async {
     if (path.trim().isEmpty) {

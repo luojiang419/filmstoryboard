@@ -591,6 +591,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
         frameAnalyses: value.frameAnalyses,
         summary: summary,
         marketingAnalyses: value.marketingAnalyses,
+        resolveFrame: resolveFrame,
       );
       value = value.copyWith(
         isExporting: false,

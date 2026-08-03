@@ -99,6 +99,11 @@ void main() {
     expect(firstSheet, contains('近景'));
     expect(firstSheet, contains('推'));
     expect(firstSheet, contains('第二镜解析'));
+    expect(
+      RegExp(r'<c r="I3"[^>]*\/>').hasMatch(firstSheet),
+      isTrue,
+      reason: '图片列不能重复写入画面内容',
+    );
     expect(secondSheet, contains('第二页'));
     expect(
       firstSheet.indexOf('<pageMargins '),

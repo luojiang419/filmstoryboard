@@ -58,7 +58,7 @@ void main() {
 
     expect(find.byKey(const ValueKey('onboarding-overlay')), findsOneWidget);
     expect(find.text('从参考视频，到可执行的复刻方案'), findsOneWidget);
-    expect(find.text('1 / 8'), findsOneWidget);
+    expect(find.text('1 / 7'), findsOneWidget);
     expect(
       tester
           .widget<TextButton>(find.byKey(const ValueKey('onboarding-previous')))
@@ -69,7 +69,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 220));
     expect(find.text('先把创意变成连贯镜头'), findsOneWidget);
-    expect(find.text('2 / 8'), findsOneWidget);
+    expect(find.text('2 / 7'), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pump(const Duration(milliseconds: 220));

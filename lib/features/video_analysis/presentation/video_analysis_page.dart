@@ -272,9 +272,6 @@ class VideoAnalysisPage extends ConsumerWidget {
     if (!context.mounted) {
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(storyboardController.value.message)));
     if (boardId != null) {
       onOpenStoryboard?.call();
     }
@@ -728,9 +725,7 @@ class _VideoSidebar extends StatelessWidget {
       return;
     }
     if (!opened) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('所在目录不存在或无法打开')));
+      return;
     }
   }
 

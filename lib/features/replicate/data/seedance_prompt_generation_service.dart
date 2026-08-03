@@ -2,6 +2,7 @@ import 'package:path/path.dart' as p;
 
 import '../../settings/domain/app_settings.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
+import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../domain/replicate_models.dart';
 
 class SeedancePromptResult {
@@ -27,6 +28,8 @@ class SeedancePromptGenerationService {
     required List<ReplicateAsset> assets,
     required String globalStyle,
     required String constraints,
+    ScriptShot? previousShot,
+    ScriptShot? nextShot,
   }) {
     final readyAssets =
         assets.where((asset) => asset.path.trim().isNotEmpty).toList()
@@ -66,16 +69,31 @@ class SeedancePromptGenerationService {
       });
     }
 
-    final movement = _singleCameraMovement(clean(shot.cameraMovement));
+    final movement = _cameraMovementForShot(
+      shot,
+      previousShot: previousShot,
+      nextShot: nextShot,
+    );
     final shotOpening = [
       clean(shot.shotSize),
       movement,
     ].where((value) => value.isNotEmpty).join('，');
+    final visualAnalysis = <String>[
+      if (clean(shot.composition).isNotEmpty) '构图：${clean(shot.composition)}',
+      if (clean(shot.cameraAngle).isNotEmpty) '机位：${clean(shot.cameraAngle)}',
+      if (clean(shot.lightingMood).isNotEmpty)
+        '光影/氛围：${clean(shot.lightingMood)}',
+      if (clean(shot.colorPalette).isNotEmpty) '色彩：${clean(shot.colorPalette)}',
+      if (clean(shot.visualFocus).isNotEmpty) '视觉焦点：${clean(shot.visualFocus)}',
+      if (clean(shot.transitionHint).isNotEmpty)
+        '剪辑衔接：${clean(shot.transitionHint)}',
+      if (clean(shot.cameraNotes).isNotEmpty) '摄影备注：${clean(shot.cameraNotes)}',
+    ].join('；');
     final body = <String>[
       if (shotOpening.isNotEmpty) shotOpening,
       clean(shot.content),
       if (clean(shot.scene).isNotEmpty) '场景位于${clean(shot.scene)}',
-      clean(shot.cameraNotes),
+      if (visualAnalysis.isNotEmpty) '综合视觉分析：$visualAnalysis',
       if (clean(shot.dialogue).isNotEmpty)
         '人物说道{${_stripBrackets(clean(shot.dialogue))}}',
       if (clean(shot.sound).isNotEmpty)
@@ -98,6 +116,39 @@ class SeedancePromptGenerationService {
       prompt: prompt,
       assetIds: [for (final asset in readyAssets) asset.id],
       warnings: validate(prompt: prompt, shot: shot, assets: readyAssets),
+    );
+  }
+
+  SeedancePromptResult generateFromScriptAssets({
+    required ScriptShot shot,
+    required List<ScriptAsset> assets,
+    required String globalStyle,
+    required String constraints,
+    ScriptShot? previousShot,
+    ScriptShot? nextShot,
+  }) {
+    final promptAssets = [
+      for (final asset in assets)
+        ReplicateAsset(
+          id: asset.id,
+          runId: asset.scriptId,
+          type: asset.type,
+          name: asset.name,
+          description: asset.description,
+          path: asset.path,
+          referenceNumber: asset.referenceNumber,
+          status: asset.status,
+          createdAt: asset.createdAt,
+          updatedAt: asset.updatedAt,
+        ),
+    ];
+    return generate(
+      shot: shot,
+      assets: promptAssets,
+      globalStyle: globalStyle,
+      constraints: constraints,
+      previousShot: previousShot,
+      nextShot: nextShot,
     );
   }
 
@@ -196,6 +247,109 @@ class SeedancePromptGenerationService {
       return firstSegment;
     }
     return terms.first;
+  }
+
+  static String _cameraMovementForShot(
+    ScriptShot shot, {
+    ScriptShot? previousShot,
+    ScriptShot? nextShot,
+  }) {
+    final explicit = _singleCameraMovement(shot.cameraMovement.trim());
+    final explicitIsFixed = explicit.contains('固定') || explicit.contains('静止');
+    if (explicit.isNotEmpty && !explicitIsFixed) return explicit;
+
+    final visualText = [
+      shot.visual,
+      shot.content,
+      shot.cameraNotes,
+      shot.composition,
+      shot.cameraAngle,
+      shot.lightingMood,
+      shot.colorPalette,
+      shot.visualFocus,
+      shot.transitionHint,
+      shot.scene,
+    ].join(' ');
+    bool containsAny(Iterable<String> terms) => terms.any(visualText.contains);
+
+    if (containsAny(const ['航拍', '无人机', '俯冲', '高空', '鸟瞰'])) {
+      return '航拍俯冲或平稳升降，突出空间纵深与运动方向';
+    }
+    if (containsAny(const ['环绕', '旋转展示', '转台', '绕行', '360度'])) {
+      return '缓慢环绕主体，连续展示外观与空间关系';
+    }
+    if (containsAny(const [
+      '奔跑',
+      '跑向',
+      '追逐',
+      '快走',
+      '行走',
+      '走向',
+      '移动',
+      '驶过',
+      '骑行',
+      '飞行',
+      '冲向',
+    ])) {
+      return '平稳跟拍主体，速度与主体移动趋势一致';
+    }
+    if (containsAny(const ['向左', '向右', '左侧', '右侧', '横向', '掠过', '转向', '转身'])) {
+      return '平稳横摇跟随主体方向，保持动作连续';
+    }
+    if (containsAny(const [
+      '拿起',
+      '举起',
+      '展示',
+      '特写',
+      '细节',
+      '靠近',
+      '凝视',
+      '表情',
+      '打开',
+      '触碰',
+    ])) {
+      return '缓慢推近主体，聚焦关键动作与细节变化';
+    }
+    if (containsAny(const [
+      '全景',
+      '远景',
+      '展开',
+      '揭示',
+      '人群',
+      '城市',
+      '建筑',
+      '环境全貌',
+      '空间关系',
+    ])) {
+      return '缓慢拉远，逐步揭示环境全貌与空间关系';
+    }
+    final previousScale = _shotScale(previousShot?.shotSize ?? '');
+    final currentScale = _shotScale(shot.shotSize);
+    if (previousScale != null && currentScale != null) {
+      if (currentScale < previousScale) {
+        return '缓慢推近，承接上一镜并强化当前视觉焦点';
+      }
+      if (currentScale > previousScale) {
+        return '缓慢拉远，承接上一镜并扩展环境信息';
+      }
+    }
+    final nextScale = _shotScale(nextShot?.shotSize ?? '');
+    if (currentScale != null && nextScale != null && nextScale < currentScale) {
+      return '轻微推近，为下一镜的近景细节建立视觉动势';
+    }
+    return explicitIsFixed ? '固定镜头，保持画面稳定' : '轻微平稳推近，保持自然呼吸感';
+  }
+
+  static int? _shotScale(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) return null;
+    if (normalized.contains('特写')) return 0;
+    if (normalized.contains('中近景')) return 2;
+    if (normalized.contains('近景')) return 1;
+    if (normalized.contains('中景')) return 3;
+    if (normalized.contains('全景')) return 5;
+    if (normalized.contains('远景')) return 6;
+    return null;
   }
 
   static List<String> _movementTerms(String value) {

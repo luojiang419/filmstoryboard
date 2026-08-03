@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -40,6 +41,7 @@ class AnalysisReportExportService {
     required List<VideoFrameAnalysis> frameAnalyses,
     required VideoSummary summary,
     required List<MarketingAnalysis> marketingAnalyses,
+    File Function(VideoFrame frame)? resolveFrame,
   }) async {
     await outputDirectory.create(recursive: true);
     final baseName = _safeFileName(
@@ -61,6 +63,7 @@ class AnalysisReportExportService {
           frameAnalyses,
           summary,
           marketingAnalyses,
+          resolveFrame: resolveFrame,
         );
         if (format == AnalysisReportFormat.pdf) {
           final document = pw.Document();
@@ -119,6 +122,12 @@ class AnalysisReportExportService {
       for (final analysis in analyses) analysis.frameId: analysis,
     };
     final sheets = <String, List<List<String>>>{
+      '多维度分析': [
+        ['分组', '字段', '分析结果'],
+        for (final group in videoAnalysisDimensionGroups.entries)
+          for (final field in group.value)
+            [group.key, field, dimensions[field] ?? ''],
+      ],
       '概览': [
         ['字段', '内容'],
         ['视频文件', video.fileName],
@@ -136,6 +145,7 @@ class AnalysisReportExportService {
       ],
       '镜头明细': [
         [
+          '帧缩略图路径',
           '序号',
           '时间戳',
           '状态',
@@ -151,6 +161,7 @@ class AnalysisReportExportService {
         ],
         for (final frame in frames)
           [
+            frame.path,
             '${frame.index + 1}',
             _duration(frame.timestampMs),
             (analysisByFrame[frame.id]?.status ?? frame.status).name,
@@ -164,12 +175,6 @@ class AnalysisReportExportService {
             analysisByFrame[frame.id]?.dimensions['lightingMood'] ?? '',
             analysisByFrame[frame.id]?.dimensions['colorPalette'] ?? '',
           ],
-      ],
-      '多维度分析': [
-        ['分组', '字段', '分析结果'],
-        for (final group in videoAnalysisDimensionGroups.entries)
-          for (final field in group.value)
-            [group.key, field, dimensions[field] ?? ''],
       ],
       '模型原始结果': [
         ['序号', '帧 ID', '状态', '错误', '原始结果'],
@@ -216,73 +221,437 @@ class AnalysisReportExportService {
     List<VideoFrame> frames,
     List<VideoFrameAnalysis> analyses,
     VideoSummary summary,
-    List<MarketingAnalysis> marketing,
-  ) async {
-    final pages = <List<String>>[
-      [
-        '${p.basenameWithoutExtension(video.fileName)} 视频多维度分析报告',
-        '报告概览',
-        '视频：${video.fileName}',
-        '时长：${_duration(video.durationMs)}    分辨率：${video.width} × ${video.height}    帧率：${video.frameRate.toStringAsFixed(2)}',
-        '候选帧：${frames.length}    成功解析：${analyses.where((item) => item.status == ProcessingStatus.completed).length}',
-        '',
-        '内容大纲',
-        summary.fields['outline'] ?? '暂无',
-        '',
-        '内容总结',
-        summary.fields['content'] ?? '暂无',
-      ],
-    ];
-    for (var start = 0; start < analyses.length; start += 6) {
-      final chunk = analyses.skip(start).take(6);
-      pages.add([
-        '镜头明细 ${start + 1}–${start + chunk.length}',
-        for (final analysis in chunk) ...[
-          '',
-          '镜头 ${analysis.sequenceNo.toString().padLeft(2, '0')}',
-          analysis.dimensions['caption'] ?? '暂无画面描述',
-          '场景：${analysis.dimensions['scene'] ?? ''}',
-          '人物/动作：${analysis.dimensions['people'] ?? ''}；${analysis.dimensions['bodyAction'] ?? ''}',
-          '景别/运镜/构图：${analysis.dimensions['shotSize'] ?? ''}；${analysis.dimensions['cameraMovement'] ?? ''}；${analysis.dimensions['composition'] ?? ''}',
-        ],
-      ]);
-    }
+    List<MarketingAnalysis> marketing, {
+    File Function(VideoFrame frame)? resolveFrame,
+  }) async {
     final dimensions = marketing.isEmpty
         ? const <String, String>{}
         : marketing.first.dimensions;
-    pages.add([
-      '多维度分析',
-      for (final group in videoAnalysisDimensionGroups.entries) ...[
-        '',
-        group.key,
-        for (final field in group.value)
-          '$field：${dimensions[field]?.trim().isNotEmpty == true ? dimensions[field] : '暂无'}',
-      ],
-    ]);
-    return Future.wait(pages.map(_renderPage));
+    final reportTitle =
+        '${p.basenameWithoutExtension(video.fileName)} 视频多维度分析报告';
+    final renderedPages = <Uint8List>[];
+    renderedPages.addAll(
+      await _renderTablePages(
+        title: reportTitle,
+        continuationTitle: '多维度分析',
+        subtitle:
+            '视频：${video.fileName}    时长：${_duration(video.durationMs)}    分辨率：${video.width} × ${video.height}    帧率：${video.frameRate.toStringAsFixed(2)}',
+        columns: const ['分组', '分析维度', '分析结果'],
+        columnWidths: const [220, 255, 621],
+        rows: [
+          for (final group in videoAnalysisDimensionGroups.entries)
+            for (final field in group.value)
+              _ReportTableRow([
+                group.key,
+                field,
+                dimensions[field]?.trim().isNotEmpty == true
+                    ? dimensions[field]!
+                    : '暂无（未在可见画面中确认）',
+              ]),
+        ],
+      ),
+    );
+
+    renderedPages.addAll(
+      await _renderPage([
+        _ReportLine('报告概览', level: 0),
+        _ReportLine('视频：${video.fileName}'),
+        _ReportLine(
+          '时长：${_duration(video.durationMs)}    分辨率：${video.width} × ${video.height}    帧率：${video.frameRate.toStringAsFixed(2)}',
+        ),
+        _ReportLine(
+          '候选帧：${frames.length}    成功解析：${analyses.where((item) => item.status == ProcessingStatus.completed).length}',
+        ),
+        _ReportLine('内容大纲', level: 1),
+        _ReportLine(summary.fields['outline'] ?? '暂无'),
+        _ReportLine('内容总结', level: 1),
+        _ReportLine(summary.fields['content'] ?? '暂无'),
+      ]),
+    );
+
+    final analysisByFrame = {
+      for (final analysis in analyses) analysis.frameId: analysis,
+    };
+    if (frames.isEmpty) {
+      renderedPages.addAll(
+        await _renderTablePages(
+          title: '镜头明细',
+          columns: const ['序号', '时间', '缩略图', '画面 / 场景', '人物 / 动作', '镜头语言'],
+          columnWidths: const [72, 100, 190, 250, 250, 234],
+          rows: const [
+            _ReportTableRow(['-', '-', '-', '暂无可用视频帧', '-', '-']),
+          ],
+        ),
+      );
+    } else {
+      renderedPages.addAll(
+        await _renderTablePages(
+          title: '镜头明细',
+          subtitle: '缩略图与分析字段按列对齐，便于快速核对画面、动作和镜头语言。',
+          columns: const ['序号', '时间', '缩略图', '画面 / 场景', '人物 / 动作', '镜头语言'],
+          columnWidths: const [72, 100, 190, 250, 250, 234],
+          rows: [
+            for (final frame in frames)
+              _ReportTableRow(
+                [
+                  (analysisByFrame[frame.id]?.sequenceNo ?? frame.index + 1)
+                      .toString()
+                      .padLeft(2, '0'),
+                  _duration(frame.timestampMs),
+                  '',
+                  _shotValue(analysisByFrame[frame.id], 'caption'),
+                  '${_shotValue(analysisByFrame[frame.id], 'people')}\n${_shotValue(analysisByFrame[frame.id], 'bodyAction')}',
+                  '${_shotValue(analysisByFrame[frame.id], 'shotSize')} / ${_shotValue(analysisByFrame[frame.id], 'cameraMovement')}\n${_shotValue(analysisByFrame[frame.id], 'composition')}',
+                ],
+                imagePath: _thumbnailPath(frame, resolveFrame),
+                imageCellIndex: 2,
+              ),
+          ],
+        ),
+      );
+    }
+    return renderedPages;
   }
 
-  Future<Uint8List> _renderPage(List<String> lines) async {
+  String _shotValue(VideoFrameAnalysis? analysis, String key) {
+    final dimensions = analysis?.dimensions ?? const <String, String>{};
+    return dimensions[key]?.trim().isNotEmpty == true ? dimensions[key]! : '暂无';
+  }
+
+  String? _thumbnailPath(
+    VideoFrame frame,
+    File Function(VideoFrame frame)? resolveFrame,
+  ) {
+    final file = resolveFrame?.call(frame) ?? File(frame.path);
+    return file.existsSync() ? file.path : null;
+  }
+
+  Future<List<Uint8List>> _renderTablePages({
+    required String title,
+    String? subtitle,
+    String? continuationTitle,
+    required List<String> columns,
+    required List<double> columnWidths,
+    required List<_ReportTableRow> rows,
+  }) async {
     const width = 1240.0;
     const height = 1754.0;
+    const bottomPadding = 90.0;
+    final header = _ReportTableRow(columns);
+    final headerHeight = _tableRowHeight(header, columnWidths, isHeader: true);
+    final chunks = <List<_ReportTableRow>>[];
+    var currentChunk = <_ReportTableRow>[];
+    var y = _tableStartY(title, subtitle) + headerHeight;
+
+    for (final row in rows) {
+      final rowHeight = _tableRowHeight(row, columnWidths);
+      if (currentChunk.isNotEmpty && y + rowHeight > height - bottomPadding) {
+        chunks.add(currentChunk);
+        currentChunk = <_ReportTableRow>[];
+        y = _tableStartY(title, subtitle) + headerHeight;
+      }
+      currentChunk.add(row);
+      y += rowHeight;
+    }
+    if (currentChunk.isNotEmpty || chunks.isEmpty) {
+      chunks.add(currentChunk);
+    }
+
+    final renderedPages = <Uint8List>[];
+    for (var index = 0; index < chunks.length; index++) {
+      renderedPages.add(
+        await _renderTablePage(
+          title: index == 0 ? title : '${continuationTitle ?? title}（续）',
+          subtitle: index == 0 ? subtitle : null,
+          header: header,
+          rows: chunks[index],
+          columnWidths: columnWidths,
+          width: width,
+          height: height,
+        ),
+      );
+    }
+    return renderedPages;
+  }
+
+  double _tableStartY(String title, String? subtitle) {
+    const width = 1096.0;
+    final titleParagraph = _tableParagraph(
+      title,
+      width: width,
+      fontSize: 34,
+      bold: true,
+      color: const ui.Color(0xFF1A237E),
+    );
+    var y = 62.0 + titleParagraph.height + 10;
+    if (subtitle != null && subtitle.trim().isNotEmpty) {
+      final subtitleParagraph = _tableParagraph(
+        subtitle,
+        width: width,
+        fontSize: 16,
+        color: const ui.Color(0xFF5F6368),
+      );
+      y += subtitleParagraph.height + 12;
+    }
+    return y + 4;
+  }
+
+  double _tableRowHeight(
+    _ReportTableRow row,
+    List<double> columnWidths, {
+    bool isHeader = false,
+  }) {
+    var height = isHeader ? 34.0 : 24.0;
+    for (var index = 0; index < row.cells.length; index++) {
+      final isImageCell =
+          row.imagePath != null &&
+          row.imageCellIndex == index &&
+          row.imagePath!.isNotEmpty;
+      if (isImageCell) {
+        height = math.max(height, 100.0);
+        continue;
+      }
+      final paragraph = _tableParagraph(
+        row.cells[index],
+        width: columnWidths[index] - 16,
+        fontSize: isHeader ? 15 : 14,
+        bold: isHeader,
+        color: isHeader
+            ? const ui.Color(0xFF1A237E)
+            : const ui.Color(0xFF202124),
+      );
+      height = math.max(height, paragraph.height + 16);
+    }
+    return height;
+  }
+
+  ui.Paragraph _tableParagraph(
+    String text, {
+    required double width,
+    required double fontSize,
+    bool bold = false,
+    required ui.Color color,
+  }) {
+    final builder =
+        ui.ParagraphBuilder(
+            ui.ParagraphStyle(
+              fontFamily: 'Microsoft YaHei',
+              fontSize: fontSize,
+              fontWeight: bold ? ui.FontWeight.w700 : ui.FontWeight.w400,
+              height: 1.25,
+            ),
+          )
+          ..pushStyle(ui.TextStyle(color: color))
+          ..addText(text);
+    return builder.build()..layout(ui.ParagraphConstraints(width: width));
+  }
+
+  Future<Uint8List> _renderTablePage({
+    required String title,
+    required String? subtitle,
+    required _ReportTableRow header,
+    required List<_ReportTableRow> rows,
+    required List<double> columnWidths,
+    required double width,
+    required double height,
+  }) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
     canvas.drawColor(const ui.Color(0xFFF7F8FA), ui.BlendMode.src);
     final accent = ui.Paint()..color = const ui.Color(0xFF3F51B5);
-    canvas.drawRect(const ui.Rect.fromLTWH(0, 0, width, 20), accent);
-    var y = 72.0;
-    for (var index = 0; index < lines.length; index++) {
-      if (y > height - 90) {
-        break;
+    canvas.drawRect(ui.Rect.fromLTWH(0, 0, width, 20), accent);
+
+    final titleParagraph = _tableParagraph(
+      title,
+      width: width - 144,
+      fontSize: 34,
+      bold: true,
+      color: const ui.Color(0xFF1A237E),
+    );
+    var y = 62.0;
+    canvas.drawParagraph(titleParagraph, ui.Offset(72, y));
+    y += titleParagraph.height + 10;
+    if (subtitle != null && subtitle.trim().isNotEmpty) {
+      final subtitleParagraph = _tableParagraph(
+        subtitle,
+        width: width - 144,
+        fontSize: 16,
+        color: const ui.Color(0xFF5F6368),
+      );
+      canvas.drawParagraph(subtitleParagraph, ui.Offset(72, y));
+      y += subtitleParagraph.height + 12;
+    }
+    y += 4;
+
+    final headerHeight = _tableRowHeight(header, columnWidths, isHeader: true);
+    await _drawTableRow(
+      canvas,
+      header,
+      rowTop: y,
+      rowHeight: headerHeight,
+      columnWidths: columnWidths,
+      isHeader: true,
+    );
+    y += headerHeight;
+    for (var index = 0; index < rows.length; index++) {
+      final row = rows[index];
+      final rowHeight = _tableRowHeight(row, columnWidths);
+      await _drawTableRow(
+        canvas,
+        row,
+        rowTop: y,
+        rowHeight: rowHeight,
+        columnWidths: columnWidths,
+        isHeader: false,
+        alternate: index.isOdd,
+      );
+      y += rowHeight;
+    }
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(width.toInt(), height.toInt());
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    picture.dispose();
+    if (data == null) {
+      throw StateError('分析报告页面渲染失败');
+    }
+    return data.buffer.asUint8List();
+  }
+
+  Future<void> _drawTableRow(
+    ui.Canvas canvas,
+    _ReportTableRow row, {
+    required double rowTop,
+    required double rowHeight,
+    required List<double> columnWidths,
+    required bool isHeader,
+    bool alternate = false,
+  }) async {
+    const left = 72.0;
+    final background = ui.Paint()
+      ..color = isHeader
+          ? const ui.Color(0xFFE1E6F4)
+          : (alternate
+                ? const ui.Color(0xFFF0F2F7)
+                : const ui.Color(0xFFFFFFFF));
+    final border = ui.Paint()
+      ..color = const ui.Color(0xFFC9CEDA)
+      ..style = ui.PaintingStyle.stroke
+      ..strokeWidth = 1;
+    var leftOffset = left;
+    for (var index = 0; index < columnWidths.length; index++) {
+      final cellWidth = columnWidths[index];
+      final rect = ui.Rect.fromLTWH(leftOffset, rowTop, cellWidth, rowHeight);
+      canvas.drawRect(rect, background);
+      canvas.drawRect(rect, border);
+      final isImageCell =
+          row.imagePath != null &&
+          row.imageCellIndex == index &&
+          row.imagePath!.isNotEmpty;
+      if (isImageCell) {
+        final image = await _decodeImage(File(row.imagePath!));
+        if (image != null) {
+          final destination = ui.Rect.fromLTWH(
+            leftOffset + 8,
+            rowTop + 8,
+            cellWidth - 16,
+            math.min(84, rowHeight - 16),
+          );
+          _drawImageCover(canvas, image, destination);
+          image.dispose();
+        }
+      } else {
+        final paragraph = _tableParagraph(
+          row.cells[index],
+          width: cellWidth - 16,
+          fontSize: isHeader ? 15 : 14,
+          bold: isHeader,
+          color: isHeader
+              ? const ui.Color(0xFF1A237E)
+              : const ui.Color(0xFF202124),
+        );
+        canvas.drawParagraph(paragraph, ui.Offset(leftOffset + 8, rowTop + 8));
       }
-      final line = lines[index];
-      final isTitle = index == 0;
-      final isSection =
-          !isTitle &&
-          line.isNotEmpty &&
-          !line.contains('：') &&
-          line.length < 24;
+      leftOffset += cellWidth;
+    }
+  }
+
+  Future<List<Uint8List>> _renderPage(List<_ReportLine> lines) async {
+    const width = 1240.0;
+    const height = 1754.0;
+    const bottomPadding = 90.0;
+    final pageLines = <List<_ReportLine>>[];
+    var currentPage = <_ReportLine>[];
+    var y = 72.0;
+
+    for (final line in lines) {
+      final metrics = _lineMetrics(line, width);
+      final lineHeight = metrics.contentHeight + (line.level == 0 ? 30 : 16);
+      if (currentPage.isNotEmpty && y + lineHeight > height - bottomPadding) {
+        pageLines.add(currentPage);
+        currentPage = <_ReportLine>[];
+        y = 72.0;
+      }
+      currentPage.add(line);
+      y += lineHeight;
+    }
+    if (currentPage.isNotEmpty) {
+      pageLines.add(currentPage);
+    }
+    return Future.wait(
+      pageLines.map((page) => _renderSinglePage(page, width, height)),
+    );
+  }
+
+  _ReportLineMetrics _lineMetrics(_ReportLine line, double width) {
+    final isTitle = line.level == 0;
+    final isSection = line.level == 1;
+    final fontSize = isTitle ? 40.0 : (isSection ? 25.0 : 19.0);
+    final textWidth = width - 144;
+    final paragraphBuilder =
+        ui.ParagraphBuilder(
+            ui.ParagraphStyle(
+              fontFamily: 'Microsoft YaHei',
+              fontSize: fontSize,
+              fontWeight: isTitle || isSection
+                  ? ui.FontWeight.w700
+                  : ui.FontWeight.w400,
+              height: 1.45,
+            ),
+          )
+          ..pushStyle(
+            ui.TextStyle(
+              color: isTitle
+                  ? const ui.Color(0xFF1A237E)
+                  : const ui.Color(0xFF202124),
+            ),
+          )
+          ..addText(line.text);
+    final paragraph = paragraphBuilder.build()
+      ..layout(ui.ParagraphConstraints(width: textWidth));
+    return _ReportLineMetrics(
+      paragraph: paragraph,
+      contentHeight: paragraph.height,
+    );
+  }
+
+  Future<Uint8List> _renderSinglePage(
+    List<_ReportLine> lines,
+    double width,
+    double height,
+  ) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.drawColor(const ui.Color(0xFFF7F8FA), ui.BlendMode.src);
+    final accent = ui.Paint()..color = const ui.Color(0xFF3F51B5);
+    canvas.drawRect(ui.Rect.fromLTWH(0, 0, width, 20), accent);
+    var y = 72.0;
+    for (final line in lines) {
+      final isTitle = line.level == 0;
+      final isSection = line.level == 1;
       final fontSize = isTitle ? 40.0 : (isSection ? 25.0 : 19.0);
+      final textWidth = width - 144;
       final paragraph =
           (ui.ParagraphBuilder(
               ui.ParagraphStyle(
@@ -300,11 +669,11 @@ class AnalysisReportExportService {
                     : const ui.Color(0xFF202124),
               ),
             ))
-            ..addText(line);
+            ..addText(line.text);
       final built = paragraph.build()
-        ..layout(const ui.ParagraphConstraints(width: width - 144));
+        ..layout(ui.ParagraphConstraints(width: textWidth));
       canvas.drawParagraph(built, ui.Offset(72, y));
-      y += built.height + (isTitle ? 30 : 10);
+      y += built.height + (isTitle ? 30 : 16);
     }
     final picture = recorder.endRecording();
     final image = await picture.toImage(width.toInt(), height.toInt());
@@ -315,6 +684,44 @@ class AnalysisReportExportService {
       throw StateError('分析报告页面渲染失败');
     }
     return data.buffer.asUint8List();
+  }
+
+  Future<ui.Image?> _decodeImage(File file) async {
+    try {
+      final codec = await ui.instantiateImageCodec(
+        await file.readAsBytes(),
+        targetWidth: 360,
+      );
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      return frame.image;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _drawImageCover(ui.Canvas canvas, ui.Image image, ui.Rect destination) {
+    final sourceAspect = image.width / image.height;
+    final destinationAspect = destination.width / destination.height;
+    ui.Rect source;
+    if (sourceAspect > destinationAspect) {
+      final sourceWidth = image.height * destinationAspect;
+      source = ui.Rect.fromLTWH(
+        (image.width - sourceWidth) / 2,
+        0,
+        sourceWidth,
+        image.height.toDouble(),
+      );
+    } else {
+      final sourceHeight = image.width / destinationAspect;
+      source = ui.Rect.fromLTWH(
+        0,
+        (image.height - sourceHeight) / 2,
+        image.width.toDouble(),
+        sourceHeight,
+      );
+    }
+    canvas.drawImageRect(image, source, destination, ui.Paint());
   }
 
   Uint8List _pngToJpg(Uint8List png) {
@@ -421,4 +828,29 @@ class AnalysisReportExportService {
     final millis = (duration.inMilliseconds % 1000).toString().padLeft(3, '0');
     return '$minutes:$seconds.$millis';
   }
+}
+
+class _ReportLine {
+  const _ReportLine(this.text, {this.level = 2});
+
+  final String text;
+  final int level;
+}
+
+class _ReportLineMetrics {
+  const _ReportLineMetrics({
+    required this.paragraph,
+    required this.contentHeight,
+  });
+
+  final ui.Paragraph paragraph;
+  final double contentHeight;
+}
+
+class _ReportTableRow {
+  const _ReportTableRow(this.cells, {this.imagePath, this.imageCellIndex});
+
+  final List<String> cells;
+  final String? imagePath;
+  final int? imageCellIndex;
 }
