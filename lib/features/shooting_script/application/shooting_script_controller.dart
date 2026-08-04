@@ -203,30 +203,41 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     required List<VideoFrame> frames,
     required List<VideoShot> videoShots,
     required List<VideoFrameAnalysis> analyses,
+    String? sourceStoryboardId,
   }) {
-    final focusFrames =
+    final completedFrames =
         frames
-            .where(
-              (frame) =>
-                  frame.isFocus && frame.status == ProcessingStatus.completed,
-            )
+            .where((frame) => frame.status == ProcessingStatus.completed)
             .toList()
           ..sort((first, second) => first.index.compareTo(second.index));
-    if (focusFrames.isEmpty) {
-      value = value.copyWith(message: '', errorMessage: '当前视频没有已完成解析的焦点帧');
+    final focusFrames = completedFrames
+        .where((frame) => frame.isFocus)
+        .toList(growable: false);
+    final sourceFrames = focusFrames.isEmpty ? completedFrames : focusFrames;
+    if (sourceFrames.isEmpty) {
+      value = value.copyWith(message: '', errorMessage: '当前视频没有已完成解析的帧');
       return null;
     }
     final now = DateTime.now().toUtc();
-    final script = ShootingScript(
-      id: _uuid.v4(),
-      name: _uniqueScriptName('${_baseName(video.fileName)} · 拍摄脚本'),
-      sourceStoryboardId: null,
-      sourceVideoId: video.id,
-      status: ShootingScriptStatus.draft,
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    );
+    final existing = sourceStoryboardId == null
+        ? null
+        : _primaryScriptForStoryboard(sourceStoryboardId);
+    final script = existing == null
+        ? ShootingScript(
+            id: _uuid.v4(),
+            name: _uniqueScriptName('${_baseName(video.fileName)} · 拍摄脚本'),
+            sourceStoryboardId: sourceStoryboardId,
+            sourceVideoId: video.id,
+            status: ShootingScriptStatus.draft,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          )
+        : existing.copyWith(
+            sourceVideoId: video.id,
+            version: existing.version + 1,
+            updatedAt: now,
+          );
     final shotByFrameId = {
       for (final shot in videoShots)
         if (shot.primaryFrameId != null) shot.primaryFrameId!: shot,
@@ -235,8 +246,8 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       for (final analysis in analyses) analysis.frameId: analysis,
     };
     final shots = <ScriptShot>[];
-    for (var index = 0; index < focusFrames.length; index++) {
-      final frame = focusFrames[index];
+    for (var index = 0; index < sourceFrames.length; index++) {
+      final frame = sourceFrames[index];
       final sourceShot = shotByFrameId[frame.id];
       final analysis = analysisByFrameId[frame.id];
       final dimensions = analysis?.dimensions ?? const <String, String>{};
@@ -244,6 +255,9 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
         ScriptShot(
           id: _uuid.v4(),
           scriptId: script.id,
+          sourceStoryboardAssetId: sourceStoryboardId == null
+              ? null
+              : 'external-cut:video-frame:${frame.id}',
           sourceVideoFrameId: frame.id,
           shotNumber: index + 1,
           durationSeconds: sourceShot == null

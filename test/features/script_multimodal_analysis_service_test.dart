@@ -72,4 +72,58 @@ void main() {
     expect(fields.transitionHint, '适合作为中段插入');
     expect(fields.cameraNotes, isEmpty);
   });
+
+  test('空运镜兜底优先识别垂直构图变化而不是默认推镜', () {
+    final patch = ScriptMultimodalAnalysisService.fromVisionAnalysis(
+      VisionImageAnalysis(
+        caption: '镜头从腰部抬到上半身',
+        detail: '女模特站在墙边，画面从腰部位置抬升到上半身和脸部。',
+        scene: '复古砖墙前',
+        props: '砖墙',
+        people: '女模特站立',
+        expression: '平静看向镜头',
+        bodyAction: '保持站立，手部抬起',
+        movementTrend: '画面重心向上抬升',
+        shotSize: '中近景',
+        composition: '从下半身构图过渡到上半身构图',
+        subjectDirection: '正面看向镜头',
+        gazeDirection: '看向镜头',
+        actionStage: '进行',
+        spatialRelation: '女模特站在墙边',
+        chronologyCue: '动作中',
+        visualFocus: '上半身与面部',
+        rawResponse: '{}',
+      ),
+    );
+
+    expect(patch.values['cameraMovement'], contains('垂直升降'));
+    expect(patch.values['cameraMovement'], isNot(contains('推近')));
+    expect(patch.fieldConfidence['cameraMovement'], 0.62);
+  });
+
+  test('空运镜且证据不足时不再默认生成推近', () {
+    final patch = ScriptMultimodalAnalysisService.fromVisionAnalysis(
+      VisionImageAnalysis(
+        caption: '人物安静站在室内',
+        detail: '人物站在室内，画面没有明确移动证据。',
+        scene: '室内',
+        props: '',
+        people: '人物站立',
+        expression: '平静',
+        bodyAction: '站立',
+        movementTrend: '静止不明显',
+        shotSize: '中景',
+        composition: '主体居中',
+        subjectDirection: '正面',
+        gazeDirection: '不明显',
+        actionStage: '静态',
+        spatialRelation: '人物位于房间中央',
+        chronologyCue: '不明显',
+        rawResponse: '{}',
+      ),
+    );
+
+    expect(patch.values['cameraMovement'], contains('固定镜头'));
+    expect(patch.values['cameraMovement'], isNot(contains('推近')));
+  });
 }

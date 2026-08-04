@@ -186,25 +186,34 @@ class VideoAnalysisService {
         .listVideoFrameAnalyses(video.id)
         .where((item) => item.status == ProcessingStatus.completed)
         .toList();
-    final analyses = storedAnalyses.map(_visionFromStored).toList();
     final totalFailed = repository
         .listVideoFrameAnalyses(video.id)
         .where((item) => item.status == ProcessingStatus.failed)
         .length;
-    final summary = await _saveSummary(video, settings, analyses, totalFailed);
     final allFrames = repository.listVideoFrames(video.id);
-    _saveShots(video, allFrames, storedAnalyses);
+    final refinedAnalyses = await _refineShotCameraMotion(
+      settings: settings,
+      video: video,
+      frames: allFrames,
+      analyses: storedAnalyses,
+      resolveFrame: resolveFrame,
+      onFrameCompleted: onFrameCompleted,
+      shouldContinue: shouldContinue,
+    );
+    final analyses = refinedAnalyses.map(_visionFromStored).toList();
+    final summary = await _saveSummary(video, settings, analyses, totalFailed);
+    _saveShots(video, allFrames, refinedAnalyses);
     await _saveMarketingAnalysis(
       video,
       settings,
       allFrames,
-      storedAnalyses,
+      refinedAnalyses,
       summary,
       analyses,
     );
     repository.upsertSourceVideo(
       video.copyWith(
-        successfulFrames: storedAnalyses.length,
+        successfulFrames: refinedAnalyses.length,
         failedFrames: totalFailed,
         status: totalFailed == 0
             ? ProcessingStatus.completed
@@ -218,6 +227,95 @@ class VideoAnalysisService {
       failedCount: failed,
       summary: summary,
     );
+  }
+
+  Future<List<VideoFrameAnalysis>> _refineShotCameraMotion({
+    required AppSettings settings,
+    required SourceVideo video,
+    required List<VideoFrame> frames,
+    required List<VideoFrameAnalysis> analyses,
+    required File Function(VideoFrame frame)? resolveFrame,
+    required void Function(VideoFrameAnalysis analysis)? onFrameCompleted,
+    required bool Function()? shouldContinue,
+  }) async {
+    if (analyses.length < 2) {
+      return analyses;
+    }
+    final groups = _buildShotFrameGroups(frames, analyses);
+    if (groups.every((group) => group.frames.length < 2)) {
+      return analyses;
+    }
+    final refinedByFrameId = {for (final item in analyses) item.frameId: item};
+    for (var index = 0; index < groups.length; index++) {
+      if (shouldContinue?.call() == false) {
+        return refinedByFrameId.values.toList()..sort(
+          (first, second) => first.sequenceNo.compareTo(second.sequenceNo),
+        );
+      }
+      final group = groups[index];
+      if (group.frames.length < 2) {
+        continue;
+      }
+      final files = <File>[];
+      for (final frame in group.frames) {
+        final file = resolveFrame?.call(frame) ?? File(frame.path);
+        if (file.existsSync()) {
+          files.add(file);
+        }
+      }
+      if (files.length < 2) {
+        continue;
+      }
+      try {
+        final motion = await visionService.analyzeShotMotion(
+          settings: settings,
+          imageFiles: files,
+          analyses: group.analyses.map(_visionFromStored).toList(),
+          shotNumber: index + 1,
+          allowThinking: settings.videoAnalysisThinkingEnabled,
+        );
+        if (!motion.isSameShot) {
+          continue;
+        }
+        for (final analysis in group.analyses) {
+          final dimensions = Map<String, String>.from(analysis.dimensions);
+          if (motion.cameraMovement.trim().isNotEmpty) {
+            dimensions['cameraMovement'] = motion.cameraMovement.trim();
+          }
+          if (motion.cameraAngle.trim().isNotEmpty) {
+            dimensions['cameraAngle'] = motion.cameraAngle.trim();
+          }
+          if (motion.evidence.trim().isNotEmpty) {
+            dimensions['cameraMovementEvidence'] = motion.evidence.trim();
+          }
+          dimensions['shotGroupFrameIds'] = group.frames
+              .map((frame) => frame.id)
+              .join(',');
+          final refined = VideoFrameAnalysis(
+            id: analysis.id,
+            videoId: analysis.videoId,
+            frameId: analysis.frameId,
+            sequenceNo: analysis.sequenceNo,
+            dimensions: Map.unmodifiable(dimensions),
+            rawResponse: [
+              analysis.rawResponse,
+              '[组级运镜复核]\n${motion.rawResponse}',
+            ].where((item) => item.trim().isNotEmpty).join('\n\n'),
+            status: analysis.status,
+            errorMessage: analysis.errorMessage,
+            createdAt: analysis.createdAt,
+            updatedAt: DateTime.now().toUtc(),
+          );
+          refinedByFrameId[analysis.frameId] = refined;
+          repository.upsertVideoFrameAnalysis(refined);
+          onFrameCompleted?.call(refined);
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    return refinedByFrameId.values.toList()
+      ..sort((first, second) => first.sequenceNo.compareTo(second.sequenceNo));
   }
 
   VisionImageAnalysis _visionFromStored(VideoFrameAnalysis analysis) {
@@ -257,27 +355,33 @@ class VideoAnalysisService {
     List<VideoFrameAnalysis> analyses,
   ) {
     final analysisByFrame = {for (final item in analyses) item.frameId: item};
-    final focusFrames = frames
-        .where(
-          (frame) => frame.isFocus && analysisByFrame.containsKey(frame.id),
-        )
+    final groups = _buildShotFrameGroups(frames, analyses);
+    var shotGroups = groups
+        .where((group) => group.frames.any((frame) => frame.isFocus))
         .toList();
+    if (shotGroups.isEmpty) {
+      shotGroups = groups;
+    }
     repository.deleteVideoShots(video.id);
     final now = DateTime.now().toUtc();
-    for (var index = 0; index < focusFrames.length; index++) {
-      final frame = focusFrames[index];
+    for (var index = 0; index < shotGroups.length; index++) {
+      final group = shotGroups[index];
+      final frame = group.frames.firstWhere(
+        (item) => item.isFocus,
+        orElse: () => group.frames.first,
+      );
       final analysis = analysisByFrame[frame.id]!;
       repository.upsertVideoShot(
         VideoShot(
           id: '${video.id}-shot-${index + 1}',
           videoId: video.id,
           shotNumber: index + 1,
-          startMs: frame.timestampMs,
-          endMs: index + 1 < focusFrames.length
-              ? focusFrames[index + 1].timestampMs
+          startMs: group.frames.first.timestampMs,
+          endMs: index + 1 < shotGroups.length
+              ? shotGroups[index + 1].frames.first.timestampMs
               : video.durationMs,
           primaryFrameId: frame.id,
-          frameIds: [frame.id],
+          frameIds: group.frames.map((item) => item.id).toList(),
           description: analysis.dimensions['caption'] ?? '',
           storyFlow:
               analysis.dimensions['narrativeFunction'] ??
@@ -289,6 +393,145 @@ class VideoAnalysisService {
         ),
       );
     }
+  }
+
+  List<_ShotFrameGroup> _buildShotFrameGroups(
+    List<VideoFrame> frames,
+    List<VideoFrameAnalysis> analyses,
+  ) {
+    final analysisByFrame = {for (final item in analyses) item.frameId: item};
+    final orderedFrames =
+        frames.where((frame) => analysisByFrame.containsKey(frame.id)).toList()
+          ..sort((first, second) {
+            final byIndex = first.index.compareTo(second.index);
+            return byIndex != 0
+                ? byIndex
+                : first.timestampMs.compareTo(second.timestampMs);
+          });
+    final groups = <_ShotFrameGroup>[];
+    var currentFrames = <VideoFrame>[];
+    var currentAnalyses = <VideoFrameAnalysis>[];
+    for (final frame in orderedFrames) {
+      final analysis = analysisByFrame[frame.id]!;
+      if (currentFrames.isNotEmpty &&
+          !_isSameShotCandidate(
+            currentFrames.last,
+            frame,
+            currentAnalyses.last,
+            analysis,
+          )) {
+        groups.add(
+          _ShotFrameGroup(
+            frames: List.unmodifiable(currentFrames),
+            analyses: List.unmodifiable(currentAnalyses),
+          ),
+        );
+        currentFrames = <VideoFrame>[];
+        currentAnalyses = <VideoFrameAnalysis>[];
+      }
+      currentFrames.add(frame);
+      currentAnalyses.add(analysis);
+    }
+    if (currentFrames.isNotEmpty) {
+      groups.add(
+        _ShotFrameGroup(
+          frames: List.unmodifiable(currentFrames),
+          analyses: List.unmodifiable(currentAnalyses),
+        ),
+      );
+    }
+    return groups;
+  }
+
+  bool _isSameShotCandidate(
+    VideoFrame previousFrame,
+    VideoFrame frame,
+    VideoFrameAnalysis previousAnalysis,
+    VideoFrameAnalysis analysis,
+  ) {
+    final previous = previousAnalysis.dimensions;
+    final current = analysis.dimensions;
+    if (current['continuesFromPrevious'] == 'true' ||
+        previous['continuesToNext'] == 'true') {
+      return true;
+    }
+    if (_hasShotBoundaryCue(previous, current)) {
+      return false;
+    }
+    final hashDistance = _hashDistance(
+      previousFrame.perceptualHash,
+      frame.perceptualHash,
+    );
+    if (hashDistance != null && hashDistance <= 10) {
+      return true;
+    }
+    if (frame.motionScore <= 0.35 &&
+        _sameMeaningfulField(previous, current, 'scene')) {
+      return true;
+    }
+    return _sameMeaningfulField(previous, current, 'scene') &&
+        (_sameMeaningfulField(previous, current, 'props') ||
+            _sameMeaningfulField(previous, current, 'spatialRelation') ||
+            _sameMeaningfulField(previous, current, 'composition'));
+  }
+
+  bool _hasShotBoundaryCue(
+    Map<String, String> previous,
+    Map<String, String> current,
+  ) {
+    if (current['continuesFromPrevious'] == 'false' &&
+        previous['continuesToNext'] == 'false' &&
+        !_sameMeaningfulField(previous, current, 'scene')) {
+      return true;
+    }
+    final text = [
+      current['transitionHint'],
+      current['chronologyCue'],
+      current['narrativeFunction'],
+    ].whereType<String>().join(' ');
+    return text.contains('切入') ||
+        text.contains('转场') ||
+        text.contains('新场景') ||
+        text.contains('切换');
+  }
+
+  bool _sameMeaningfulField(
+    Map<String, String> previous,
+    Map<String, String> current,
+    String key,
+  ) {
+    final first = _normalizeComparableText(previous[key] ?? '');
+    final second = _normalizeComparableText(current[key] ?? '');
+    return first.length >= 2 && first == second;
+  }
+
+  String _normalizeComparableText(String value) {
+    return value
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceAll(RegExp(r'[，,。；;：:、]'), '')
+        .trim();
+  }
+
+  int? _hashDistance(String first, String second) {
+    final a = first.trim();
+    final b = second.trim();
+    if (a.isEmpty || b.isEmpty || a.length != b.length) {
+      return null;
+    }
+    var distance = 0;
+    for (var index = 0; index < a.length; index++) {
+      final left = int.tryParse(a[index], radix: 16);
+      final right = int.tryParse(b[index], radix: 16);
+      if (left == null || right == null) {
+        return null;
+      }
+      var xor = left ^ right;
+      while (xor > 0) {
+        distance += xor & 1;
+        xor >>= 1;
+      }
+    }
+    return distance;
   }
 
   Future<void> _saveMarketingAnalysis(
@@ -532,4 +775,11 @@ class VideoAnalysisService {
       return summary;
     }
   }
+}
+
+class _ShotFrameGroup {
+  const _ShotFrameGroup({required this.frames, required this.analyses});
+
+  final List<VideoFrame> frames;
+  final List<VideoFrameAnalysis> analyses;
 }

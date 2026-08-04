@@ -152,6 +152,10 @@ void main() {
     expect(prompt, contains('起身'));
     expect(prompt, contains('景别'));
     expect(prompt, contains('镜头运镜'));
+    expect(prompt, contains('先比较同一镜头的起始/当前/结束帧构图变化'));
+    expect(prompt, contains('从腰部/下半身抬到上半身/脸部'));
+    expect(prompt, contains('不要写“推”'));
+    expect(prompt, contains('仅人物从下半身变成上半身'));
     expect(prompt, contains('正跟随'));
     expect(prompt, contains('人物朝向'));
     expect(prompt, contains('以观看图片时的画面左/右为准'));
@@ -214,6 +218,8 @@ void main() {
     final prompt = (content.first as Map<String, dynamic>)['text'] as String;
     expect(prompt, contains('上一帧、当前帧、下一帧'));
     expect(prompt, contains('禁止根据单帧姿态猜测运动'));
+    expect(prompt, contains('画面中心/边缘参照物位移'));
+    expect(prompt, contains('主体和背景整体尺度持续变大/变小'));
     expect(result.movementTrend, '身体向上起身');
     expect(result.actionStage, '进行');
     expect(result.continuesFromPrevious, isTrue);

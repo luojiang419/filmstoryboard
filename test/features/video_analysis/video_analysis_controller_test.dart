@@ -223,6 +223,15 @@ void main() {
     expect(script.sourceStoryboardId, board.id);
     expect(script.sourceVideoId, videoId);
     expect(shootingScriptController.value.shots, hasLength(1));
+    expect(
+      shootingScriptController.value.shots.single.sourceStoryboardAssetId,
+      'external-cut:video-frame:${frame.id}',
+    );
+    expect(
+      shootingScriptController.value.shots.single.sourceVideoFrameId,
+      frame.id,
+    );
+    expect(shootingScriptController.value.shots.single.content, '自动生成的测试镜头');
     expect(controller.value.message, contains('已自动创建 1 个故事板、1 个拍摄脚本'));
 
     storyboardController.deleteBoard(board.id);

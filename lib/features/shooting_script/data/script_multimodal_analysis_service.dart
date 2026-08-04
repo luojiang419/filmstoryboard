@@ -118,13 +118,24 @@ class ScriptMultimodalAnalysisService {
     if (_containsAny(text, const ['走', '跑', '移动', '驶', '飞', '跟随'])) {
       return '平稳跟拍主体，速度与主体动作保持一致';
     }
+    if (_containsAny(text, const [
+      '向上',
+      '上移',
+      '抬升',
+      '上升',
+      '下半身',
+      '腰部',
+      '上半身',
+    ])) {
+      return '镜头随主体垂直升降或轻微上摇，保持构图变化准确';
+    }
     if (_containsAny(text, const ['特写', '细节', '表情', '产品', '聚焦'])) {
       return '缓慢推近主体，聚焦关键动作与视觉细节';
     }
     if (_containsAny(text, const ['全景', '远景', '环境', '建立场景'])) {
       return '缓慢拉远，逐步交代环境与主体空间关系';
     }
-    return '轻微平稳推近，保持单一运镜和自然呼吸感';
+    return '固定镜头，保持画面稳定，仅在人工确认后添加推拉摇移';
   }
 
   static String _designSound(VisionImageAnalysis analysis) {

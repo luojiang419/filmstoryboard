@@ -170,6 +170,22 @@ class VisionVideoDimensionResult {
   final String rawResponse;
 }
 
+class VisionShotMotionAnalysis {
+  const VisionShotMotionAnalysis({
+    required this.isSameShot,
+    required this.cameraMovement,
+    required this.cameraAngle,
+    required this.evidence,
+    required this.rawResponse,
+  });
+
+  final bool isSameShot;
+  final String cameraMovement;
+  final String cameraAngle;
+  final String evidence;
+  final String rawResponse;
+}
+
 class VisionStoryboardCaptionRewriteResult {
   const VisionStoryboardCaptionRewriteResult({
     required this.captions,
@@ -225,6 +241,19 @@ class VisionStoryboardService {
   static const _maxMissingOrderRepairCount = 2;
 
   static const requestTimeout = Duration(seconds: 120);
+
+  static const _cameraMovementGuide = '''
+运镜判断必须先比较同一镜头的起始/当前/结束帧构图变化，再选择一个主导运镜；不要只看当前帧主体大小。
+判定顺序：
+1. 固定：背景位置和画面边缘参照物基本不变，只有人物动作或姿态变化。
+2. 升降/上摇下摇：画面取景沿垂直方向改变，例如从腰部/下半身抬到上半身/脸部，或背景边缘整体向上/向下滑动；这种情况优先写“升降”，不要写“推”。
+3. 摇：机位原地水平或垂直转向，背景透视基本不变但取景方向改变。
+4. 移/平移：整台摄影机横向或纵向平移，前景与背景有相对位移或视差。
+5. 推/拉：主体和背景整体尺度持续变大/变小，画面透视或空间纵深支持摄影机靠近/远离；仅人物从下半身变成上半身、但画面重心上移，不算推。
+6. 跟/正跟随/倒跟随：主体在空间中移动，镜头随主体保持相对距离。
+7. 环绕/手持/摇移：只有出现绕主体视角变化、明显手持晃动或复合摇移证据时才选择。
+如果前后帧证据冲突，优先选择“画面中心/边缘参照物位移”所支持的运镜；证据不足时写“固定”或空字符串。
+''';
 
   http.Client _client;
   final bool _ownsClient;
@@ -537,6 +566,45 @@ class VisionStoryboardService {
         for (final field in videoAnalysisDimensionFields)
           field: _stringValue(json, field),
       },
+      rawResponse: content,
+    );
+  }
+
+  Future<VisionShotMotionAnalysis> analyzeShotMotion({
+    required AppSettings settings,
+    required List<File> imageFiles,
+    required List<VisionImageAnalysis> analyses,
+    required int shotNumber,
+    bool allowThinking = false,
+  }) async {
+    if (imageFiles.length < 2 || analyses.length < 2) {
+      throw const FormatException('组级运镜复核至少需要两帧');
+    }
+    _validateSettings(settings);
+    final selectedImages = _selectShotMotionFiles(imageFiles);
+    final selectedAnalyses = _selectShotMotionAnalyses(analyses);
+    final content = await complete(
+      settings: settings,
+      prompt: _shotMotionPrompt(
+        shotNumber: shotNumber,
+        analyses: selectedAnalyses,
+      ),
+      imageFiles: selectedImages,
+      maxTokens: 900,
+      allowThinking: allowThinking,
+    );
+    final json = _extractJsonObject(content);
+    return VisionShotMotionAnalysis(
+      isSameShot: _boolValue(json, const ['is_same_shot', 'isSameShot']),
+      cameraMovement: _firstStringValue(json, const [
+        'camera_movement',
+        'cameraMovement',
+      ]),
+      cameraAngle: _firstStringValue(json, const [
+        'camera_angle',
+        'cameraAngle',
+      ]),
+      evidence: _stringValue(json, 'evidence'),
       rawResponse: content,
     );
   }
@@ -920,6 +988,7 @@ class VisionStoryboardService {
 请分析第 $sequenceNo 张图片，它位于第 ${rowIndex + 1} 行、第 ${columnIndex + 1} 列。
 $sequenceGuide
 禁止根据单帧姿态猜测运动：只有前后帧出现可见位移、姿态推进或动作结果时，才能判断运动趋势和动作阶段。
+$_cameraMovementGuide
 请判断当前动作是否承接上一帧、是否继续到下一帧；必须同时满足人物/主体、场景和动作因果连续，单纯处于同一场景不算同一组动作。
 描述要有镜头画面感：把主体、环境、动作、情绪、光线、视觉焦点和镜头意图连成一句自然中文。
 称呼规范：成年女性统一称为“女模特”，成年男性统一称为“男模特”，不要使用“女子”“男子”。
@@ -944,7 +1013,7 @@ JSON 字段：
   "expression": "面部神态、视线方向和情绪状态；没有人物则写空字符串",
   "body_action": "身体姿态和正在发生的动作，例如站立、倚靠、伸手、起身、回头",
  "movement_trend": "可见方向、位移或动作趋势，例如向右行走、身体左转、准备起身；无法判断则写静止不明显",
-  "camera_movement": "镜头运镜，只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；单张画面无法可靠判断时写空字符串",
+  "camera_movement": "镜头运镜，只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；必须依据前后帧构图/边缘参照物/主体尺度证据选择；单张画面无法可靠判断时写空字符串",
   "shot_size": "景别，只能从全景、中景、近景、特写、大全景、远景、中近景、大特写中选择一个；无法判断时写空字符串",
   "composition": "构图和主体位置，例如主体居中、左侧留白、右侧前景遮挡、俯视/仰视",
   "subject_direction": "人物或主体朝向，例如面向画面右侧、背对镜头、正面看向镜头、无人物/不适用",
@@ -1004,6 +1073,7 @@ $rawResponse
     return '''
 请对第 $sequenceNo 张故事板图片执行稳定的精简视觉解析，它位于第 ${rowIndex + 1} 行、第 ${columnIndex + 1} 列。
 只根据画面可见内容描述，不编造剧情。成年女性称为“女模特”，成年男性称为“男模特”。
+$_cameraMovementGuide
 只返回一个可被标准 JSON 解析器直接解析的对象，不要使用 Markdown，不要解释。
 所有字段值必须是字符串，画面文字使用中文引号“”，禁止使用未转义英文双引号。
 JSON 字段：
@@ -1015,6 +1085,7 @@ JSON 字段：
   "people": "人物与可见动作",
   "body_action": "身体姿态和动作",
   "movement_trend": "可见运动方向或静止不明显",
+  "camera_movement": "镜头运镜；从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；无法可靠判断时写空字符串",
   "shot_size": "景别",
   "composition": "构图与主体位置",
   "visual_focus": "第一视觉焦点",
@@ -1121,6 +1192,77 @@ JSON 字段：
         ..writeln(
           '焦点/光色/功能：${item.visualFocus}；${item.lightingMood}；${item.colorPalette}；${item.narrativeFunction}',
         );
+    }
+    return buffer.toString();
+  }
+
+  List<File> _selectShotMotionFiles(List<File> imageFiles) {
+    if (imageFiles.length <= 3) {
+      return imageFiles;
+    }
+    return [
+      imageFiles.first,
+      imageFiles[imageFiles.length ~/ 2],
+      imageFiles.last,
+    ];
+  }
+
+  List<VisionImageAnalysis> _selectShotMotionAnalyses(
+    List<VisionImageAnalysis> analyses,
+  ) {
+    if (analyses.length <= 3) {
+      return analyses;
+    }
+    return [analyses.first, analyses[analyses.length ~/ 2], analyses.last];
+  }
+
+  String _shotMotionPrompt({
+    required int shotNumber,
+    required List<VisionImageAnalysis> analyses,
+  }) {
+    final buffer = StringBuffer()
+      ..writeln('你正在复核参考视频第 $shotNumber 个镜头组的运镜和机位角度。')
+      ..writeln('本次按时间顺序提供同一候选镜头组的首帧、中间帧、尾帧；如果只有两帧，则为首帧和尾帧。')
+      ..writeln(
+        '核心规则：同一镜头通常背景、场景、主体身份和空间关系连续，背景不变或变化很少；这时必须把多帧作为一个连续镜头判断运镜，不要逐帧孤立猜测。',
+      )
+      ..writeln('如果背景/场景/主体突然切换，才判定不是同一镜头，并在 evidence 说明切换证据。')
+      ..writeln(_cameraMovementGuide)
+      ..writeln('必须特别区分：')
+      ..writeln('A. 画面从腰部/下半身上移到上半身/脸部，背景基本连续，这是升降或上摇，不是推。')
+      ..writeln('B. 只有主体和背景整体同步变大、透视或空间纵深支持摄影机靠近，才是推。')
+      ..writeln('C. 主体在空间里移动且镜头保持距离，才是跟/正跟随/倒跟随。')
+      ..writeln(
+        '只返回一个 JSON 对象，不要 Markdown，不要解释。所有字段值必须是字符串，is_same_shot 返回 true 或 false。',
+      )
+      ..writeln('JSON 字段：')
+      ..writeln('{')
+      ..writeln('  "is_same_shot": "true 或 false",')
+      ..writeln(
+        '  "camera_movement": "只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；无法可靠判断时写固定",',
+      )
+      ..writeln(
+        '  "camera_angle": "组级机位角度，例如眼平、低角度仰拍、俯视、轻微上摇到眼平、过肩；无法判断时写不明显",',
+      )
+      ..writeln('  "evidence": "用一句中文说明首帧到尾帧的背景连续性、画面中心/边缘参照物、主体尺度和构图裁切变化"')
+      ..writeln('}')
+      ..writeln()
+      ..writeln('候选镜头组逐帧事实：');
+    for (var index = 0; index < analyses.length; index++) {
+      final item = analyses[index];
+      buffer
+        ..writeln('帧 ${index + 1}：${_emptyAsNone(item.caption)}')
+        ..writeln('详细：${_emptyAsNone(item.detail)}')
+        ..writeln(
+          '场景/主体/动作：${_emptyAsNone(item.scene)}；${_emptyAsNone(item.people)}；${_emptyAsNone(item.bodyAction)}',
+        )
+        ..writeln(
+          '趋势/景别/构图：${_emptyAsNone(item.movementTrend)}；${_emptyAsNone(item.shotSize)}；${_emptyAsNone(item.composition)}',
+        )
+        ..writeln(
+          '逐帧原运镜/机位：${_emptyAsNone(item.cameraMovement)}；${_emptyAsNone(item.cameraAngle)}',
+        )
+        ..writeln();
     }
     return buffer.toString();
   }

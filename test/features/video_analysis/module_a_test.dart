@@ -424,6 +424,95 @@ void main() {
     expect(result.completedCount, 3);
     expect(visionService.maxActiveRequests, 3);
   });
+
+  test('同镜头多帧会组级复核运镜并覆盖逐帧推镜误判', () async {
+    final repository = VideoAnalysisRepository(database);
+    final now = DateTime.utc(2026, 8, 4);
+    final video = SourceVideo(
+      id: 'video-shot-motion',
+      originalPath: 'motion.mp4',
+      fileName: 'motion.mp4',
+      storedPath: 'videos/motion.mp4',
+      durationMs: 3000,
+      frameRate: 24,
+      width: 1920,
+      height: 1080,
+      hasAudio: true,
+      frameCount: 3,
+      successfulFrames: 0,
+      failedFrames: 0,
+      status: ProcessingStatus.pending,
+      errorMessage: '',
+      createdAt: now,
+      updatedAt: now,
+    );
+    final frameFiles = <File>[];
+    final frames = <VideoFrame>[];
+    for (var index = 0; index < 3; index++) {
+      final file = File('${root.path}/shot-motion-$index.jpg');
+      await file.writeAsBytes([index + 1]);
+      frameFiles.add(file);
+      frames.add(
+        VideoFrame(
+          id: 'frame-motion-$index',
+          videoId: video.id,
+          index: index,
+          timestampMs: index * 1000,
+          path: file.path,
+          width: 1920,
+          height: 1080,
+          sharpness: 0.9,
+          brightness: 0.5,
+          motionScore: index == 0 ? 0 : 0.08,
+          perceptualHash: '000000000000000$index',
+          isFocus: false,
+          isSelected: true,
+          status: ProcessingStatus.pending,
+          errorMessage: '',
+          createdAt: now,
+        ),
+      );
+    }
+    repository.upsertSourceVideo(video);
+    for (final frame in frames) {
+      repository.upsertVideoFrame(frame);
+    }
+    final visionService = _ShotMotionVisionStoryboardService();
+    final service = VideoAnalysisService(
+      repository: repository,
+      visionService: visionService,
+    );
+
+    final result = await service.analyzeFrames(
+      settings: _testSettings(),
+      video: video,
+      frames: frames,
+      resolveFrame: (frame) => frameFiles[frame.index],
+    );
+
+    expect(result.completedCount, 3);
+    expect(visionService.shotMotionRequestCount, 1);
+    final analyses = repository.listVideoFrameAnalyses(video.id);
+    expect(analyses, hasLength(3));
+    for (final analysis in analyses) {
+      expect(analysis.dimensions['cameraMovement'], '升降');
+      expect(analysis.dimensions['cameraAngle'], '轻微上摇到眼平');
+      expect(
+        analysis.dimensions['cameraMovementEvidence'],
+        contains('腰部抬到上半身'),
+      );
+      expect(
+        analysis.dimensions['shotGroupFrameIds'],
+        'frame-motion-0,frame-motion-1,frame-motion-2',
+      );
+    }
+    final shot = repository.listVideoShots(video.id).single;
+    expect(shot.frameIds, [
+      'frame-motion-0',
+      'frame-motion-1',
+      'frame-motion-2',
+    ]);
+  });
 }
 
 AppSettings _testSettings() {
@@ -533,6 +622,100 @@ class _ConcurrentVisionStoryboardService extends VisionStoryboardService {
       content: '测试内容',
       scenes: '测试场景',
       props: '',
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionVideoDimensionResult> analyzeVideoDimensions({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    required Map<String, String> summary,
+    bool allowThinking = false,
+  }) async {
+    return const VisionVideoDimensionResult(dimensions: {}, rawResponse: '{}');
+  }
+}
+
+class _ShotMotionVisionStoryboardService extends VisionStoryboardService {
+  var shotMotionRequestCount = 0;
+
+  @override
+  Future<VisionImageAnalysis> analyzeImage({
+    required AppSettings settings,
+    required File imageFile,
+    required int sequenceNo,
+    required int rowIndex,
+    required int columnIndex,
+    bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
+    void Function(VisionImageRecoveryMode mode)? onRecovery,
+  }) async {
+    return VisionImageAnalysis(
+      caption: '女模特同镜头第 $sequenceNo 帧',
+      detail: sequenceNo == 1
+          ? '画面从女模特腰部附近开始。'
+          : sequenceNo == 3
+          ? '画面抬到女模特上半身和脸部。'
+          : '画面位于腰部到上半身之间。',
+      scene: '复古砖墙前',
+      props: '砖墙',
+      people: '女模特站立',
+      expression: '平静看向镜头',
+      bodyAction: '保持站立',
+      movementTrend: '画面重心向上抬升',
+      cameraMovement: '推',
+      shotSize: '中近景',
+      composition: '背景砖墙连续，构图从腰部抬到上半身',
+      subjectDirection: '正面',
+      gazeDirection: '看向镜头',
+      actionStage: '进行',
+      spatialRelation: '女模特站在复古砖墙前',
+      chronologyCue: '同一镜头动作中',
+      cameraAngle: '眼平',
+      visualFocus: '女模特上半身',
+      lightingMood: '柔和自然光',
+      colorPalette: '暖灰',
+      narrativeFunction: '推进',
+      transitionHint: '承接同一镜头',
+      continuesFromPrevious: sequenceNo > 1,
+      continuesToNext: sequenceNo < 3,
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionShotMotionAnalysis> analyzeShotMotion({
+    required AppSettings settings,
+    required List<File> imageFiles,
+    required List<VisionImageAnalysis> analyses,
+    required int shotNumber,
+    bool allowThinking = false,
+  }) async {
+    shotMotionRequestCount++;
+    expect(imageFiles, hasLength(3));
+    expect(analyses, hasLength(3));
+    return const VisionShotMotionAnalysis(
+      isSameShot: true,
+      cameraMovement: '升降',
+      cameraAngle: '轻微上摇到眼平',
+      evidence: '三帧背景砖墙连续，画面从腰部抬到上半身，主体和背景没有整体推近证据。',
+      rawResponse: '{"camera_movement":"升降"}',
+    );
+  }
+
+  @override
+  Future<VisionStoryboardSummaryResult> summarizeStoryboard({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
+  }) async {
+    return const VisionStoryboardSummaryResult(
+      outline: '女模特在砖墙前完成向上取景展示',
+      content: '同一镜头从腰部构图抬到上半身。',
+      scenes: '复古砖墙前',
+      props: '砖墙',
       rawResponse: '{}',
     );
   }

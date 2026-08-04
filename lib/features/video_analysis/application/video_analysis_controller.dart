@@ -757,10 +757,17 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       createdBoardCount++;
       // 初始脚本必须关联新建的故事板：这样故事板编辑会持续同步到脚本，
       // 也不再需要用户手动点击“从当前故事板生成”。
-      final script = shootingScriptController.createForStoryboard(
-        board,
-        sourceVideoId: video.id,
+      final script = shootingScriptController.createFromVideo(
+        video: video,
+        frames: frames,
+        videoShots: _repository.listVideoShots(video.id),
+        analyses: analyses,
+        sourceStoryboardId: board.id,
       );
+      if (script == null) {
+        failures.add(storyboard.boardName);
+        continue;
+      }
       createdScriptCount++;
       scripts.add(script.id);
     }
