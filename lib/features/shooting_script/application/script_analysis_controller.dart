@@ -11,6 +11,7 @@ import '../../settings/application/settings_controller.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/script_multimodal_analysis_service.dart';
 import '../data/shooting_script_workflow_repository.dart';
+import '../domain/script_shot_continuity_refiner.dart';
 import '../domain/shooting_script_models.dart';
 import '../domain/shooting_script_workflow_models.dart';
 import 'shooting_script_controller.dart';
@@ -209,6 +210,7 @@ class ShootingScriptAnalysisController
     await Future.wait([
       for (var index = 0; index < workers; index++) processTargets(),
     ]);
+    _refineContinuity(script.id);
     final failed = value.failedCount;
     if (!_disposed) {
       value = value.copyWith(
@@ -269,10 +271,22 @@ class ShootingScriptAnalysisController
       return;
     }
     try {
+      final orderedShots = _shootingScriptController.value.shots;
+      final shotIndex = orderedShots.indexWhere((item) => item.id == shot.id);
+      File? adjacentFile(int index) {
+        if (index < 0 || index >= orderedShots.length) return null;
+        final path = orderedShots[index].framePath.trim();
+        if (path.isEmpty) return null;
+        final file = File(path);
+        return file.existsSync() ? file : null;
+      }
+
       final patch = await _analysisService.analyzeShot(
         settings: _settingsController.value,
         shot: shot,
         imageFile: File(imagePath),
+        previousImageFile: adjacentFile(shotIndex - 1),
+        nextImageFile: adjacentFile(shotIndex + 1),
       );
       var updatedShot = _applyPatch(
         shot,
@@ -368,11 +382,29 @@ class ShootingScriptAnalysisController
     }
   }
 
+  void _refineContinuity(String scriptId) {
+    final current = _shootingScriptController.value;
+    if (current.selectedScriptId != scriptId || current.shots.length < 2) {
+      return;
+    }
+    final refined = const ScriptShotContinuityRefiner().refine(current.shots);
+    for (var index = 0; index < refined.length; index++) {
+      final original = current.shots[index];
+      final updated = refined[index];
+      if (original.continuesFromPrevious == updated.continuesFromPrevious &&
+          original.continuesToNext == updated.continuesToNext) {
+        continue;
+      }
+      _shootingScriptController.updateShot(updated);
+    }
+  }
+
   void _handleScriptChanged() {
     if (!_disposed) refresh(preserveBusy: true);
   }
 
   static const _analysisFields = [
+    'durationSeconds',
     'visual',
     'content',
     'shotSize',
@@ -383,11 +415,14 @@ class ShootingScriptAnalysisController
     'colorPalette',
     'visualFocus',
     'transitionHint',
+    'movementTrend',
+    'actionStage',
+    'continuesFromPrevious',
+    'continuesToNext',
     'cameraNotes',
     'scene',
     'productCode',
     'productStyling',
-    'dialogue',
     'sound',
   ];
 
@@ -402,7 +437,12 @@ class ShootingScriptAnalysisController
     final updatedValue = _fieldValue(updated, field).trim();
     final modelValueApplied =
         patch.values.containsKey(field) &&
-        (overwriteExisting || originalValue.isEmpty);
+        (overwriteExisting ||
+            _shouldApplyWithoutOverwrite(
+              field,
+              originalValue,
+              patch.values[field] ?? '',
+            ));
     if (modelValueApplied) return 'model';
     if (originalValue.isNotEmpty && updatedValue.isNotEmpty) return 'preserved';
     return 'unavailable';
@@ -416,14 +456,31 @@ class ShootingScriptAnalysisController
     var updated = shot;
     for (final entry in values.entries) {
       final current = _fieldValue(updated, entry.key);
-      if (!overwriteExisting && current.trim().isNotEmpty) continue;
+      if (!overwriteExisting &&
+          !_shouldApplyWithoutOverwrite(entry.key, current, entry.value)) {
+        continue;
+      }
       updated = _copyField(updated, entry.key, entry.value);
     }
     return updated;
   }
 
+  static bool _shouldApplyWithoutOverwrite(
+    String field,
+    String current,
+    String incoming,
+  ) {
+    if (field == 'continuesFromPrevious' || field == 'continuesToNext') {
+      return current.trim().toLowerCase() != 'true' &&
+          incoming.trim().toLowerCase() == 'true';
+    }
+    return current.trim().isEmpty;
+  }
+
   static String _fieldValue(ScriptShot shot, String field) => switch (field) {
     'visual' => shot.visual,
+    'durationSeconds' =>
+      shot.durationSeconds <= 0 ? '' : '${shot.durationSeconds}',
     'content' => shot.content,
     'shotSize' => shot.shotSize,
     'cameraMovement' => shot.cameraMovement,
@@ -433,6 +490,10 @@ class ShootingScriptAnalysisController
     'colorPalette' => shot.colorPalette,
     'visualFocus' => shot.visualFocus,
     'transitionHint' => shot.transitionHint,
+    'movementTrend' => shot.movementTrend,
+    'actionStage' => shot.actionStage,
+    'continuesFromPrevious' => shot.continuesFromPrevious.toString(),
+    'continuesToNext' => shot.continuesToNext.toString(),
     'cameraNotes' => shot.cameraNotes,
     'scene' => shot.scene,
     'productCode' => shot.productCode,
@@ -444,6 +505,10 @@ class ShootingScriptAnalysisController
 
   static ScriptShot _copyField(ScriptShot shot, String field, String value) =>
       switch (field) {
+        'durationSeconds' => shot.copyWith(
+          durationSeconds:
+              double.tryParse(value.trim()) ?? shot.durationSeconds,
+        ),
         'visual' => shot.copyWith(visual: value),
         'content' => shot.copyWith(content: value),
         'shotSize' => shot.copyWith(shotSize: value),
@@ -454,11 +519,18 @@ class ShootingScriptAnalysisController
         'colorPalette' => shot.copyWith(colorPalette: value),
         'visualFocus' => shot.copyWith(visualFocus: value),
         'transitionHint' => shot.copyWith(transitionHint: value),
+        'movementTrend' => shot.copyWith(movementTrend: value),
+        'actionStage' => shot.copyWith(actionStage: value),
+        'continuesFromPrevious' => shot.copyWith(
+          continuesFromPrevious: value.trim().toLowerCase() == 'true',
+        ),
+        'continuesToNext' => shot.copyWith(
+          continuesToNext: value.trim().toLowerCase() == 'true',
+        ),
         'cameraNotes' => shot.copyWith(cameraNotes: value),
         'scene' => shot.copyWith(scene: value),
         'productCode' => shot.copyWith(productCode: value),
         'productStyling' => shot.copyWith(productStyling: value),
-        'dialogue' => shot.copyWith(dialogue: value),
         'sound' => shot.copyWith(sound: value),
         _ => shot,
       };

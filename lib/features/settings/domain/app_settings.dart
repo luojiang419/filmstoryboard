@@ -100,8 +100,10 @@ class AppSettings {
     this.videoFrameIntervalSeconds = 1,
     this.videoSceneThreshold = 0.3,
     this.videoMinimumSharpness = 0.08,
+    this.videoPreviewPaddingSeconds = 1.5,
     this.videoAnalysisThinkingEnabled = false,
     this.fullAutomationEnabled = false,
+    this.videoStartEndFrameModeEnabled = false,
     this.replicateDefaultGlobalStyle = defaultReplicateGlobalStyle,
     this.replicateDefaultConstraints = defaultReplicateConstraints,
     required this.cutImageNumberEnabled,
@@ -151,8 +153,10 @@ class AppSettings {
   final double videoFrameIntervalSeconds;
   final double videoSceneThreshold;
   final double videoMinimumSharpness;
+  final double videoPreviewPaddingSeconds;
   final bool videoAnalysisThinkingEnabled;
   final bool fullAutomationEnabled;
+  final bool videoStartEndFrameModeEnabled;
   final String replicateDefaultGlobalStyle;
   final String replicateDefaultConstraints;
   final bool cutImageNumberEnabled;
@@ -210,8 +214,10 @@ class AppSettings {
     double? videoFrameIntervalSeconds,
     double? videoSceneThreshold,
     double? videoMinimumSharpness,
+    double? videoPreviewPaddingSeconds,
     bool? videoAnalysisThinkingEnabled,
     bool? fullAutomationEnabled,
+    bool? videoStartEndFrameModeEnabled,
     String? replicateDefaultGlobalStyle,
     String? replicateDefaultConstraints,
     bool? cutImageNumberEnabled,
@@ -252,10 +258,14 @@ class AppSettings {
       videoSceneThreshold: videoSceneThreshold ?? this.videoSceneThreshold,
       videoMinimumSharpness:
           videoMinimumSharpness ?? this.videoMinimumSharpness,
+      videoPreviewPaddingSeconds:
+          videoPreviewPaddingSeconds ?? this.videoPreviewPaddingSeconds,
       videoAnalysisThinkingEnabled:
           videoAnalysisThinkingEnabled ?? this.videoAnalysisThinkingEnabled,
       fullAutomationEnabled:
           fullAutomationEnabled ?? this.fullAutomationEnabled,
+      videoStartEndFrameModeEnabled:
+          videoStartEndFrameModeEnabled ?? this.videoStartEndFrameModeEnabled,
       replicateDefaultGlobalStyle:
           replicateDefaultGlobalStyle ?? this.replicateDefaultGlobalStyle,
       replicateDefaultConstraints:

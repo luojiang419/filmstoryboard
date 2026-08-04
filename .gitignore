@@ -37,10 +37,11 @@ migrate_working_dir/
 /tmp/
 /backup/
 /进度快照/
-/website/
+/website/demo/build/
 /web_demo/
 /docs/reference/
 /docs/api key.md
+/docs/*.docx
 /*.zip
 /*.log
 

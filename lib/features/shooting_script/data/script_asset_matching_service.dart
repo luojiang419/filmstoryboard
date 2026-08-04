@@ -1,8 +1,5 @@
-import 'dart:convert';
-import 'dart:io';
-
 import '../../settings/domain/app_settings.dart';
-import '../../storyboard/data/vision_storyboard_service.dart';
+import '../../replicate/domain/replicate_models.dart';
 import '../domain/shooting_asset_library_models.dart';
 import '../domain/shooting_script_models.dart';
 
@@ -28,16 +25,10 @@ class ScriptAssetMatchResult {
   final bool usedModel;
 }
 
-/// Matches a script shot with reusable assets. A small deterministic shortlist
-/// keeps the multimodal request bounded; the model then sees the shot image,
-/// candidate asset images, names and descriptions together.
+/// Matches controlled asset names in storyboard text without sending images or
+/// text to a remote model. Duplicate names are deliberately left unbound.
 class ScriptAssetMatchingService {
-  ScriptAssetMatchingService({VisionStoryboardService? visionService})
-    : _visionService = visionService ?? VisionStoryboardService(),
-      _ownsVisionService = visionService == null;
-
-  final VisionStoryboardService _visionService;
-  final bool _ownsVisionService;
+  const ScriptAssetMatchingService();
 
   Future<ScriptAssetMatchResult> match({
     required AppSettings settings,
@@ -47,186 +38,89 @@ class ScriptAssetMatchingService {
     if (assets.isEmpty) {
       return const ScriptAssetMatchResult(candidates: [], usedModel: false);
     }
-    final ranked = _rankLocally(shot, assets);
-    final shortlist = ranked.isNotEmpty
-        ? ranked.take(6).toList()
-        : [
-            for (final asset in assets.take(6))
-              _RankedAsset(
-                asset: asset,
-                score: 0,
-                reason: '名称和描述无明显重合，交由画面匹配确认',
-              ),
-          ];
-    try {
-      final prompt = _matchingPrompt(shot, shortlist);
-      final imageFiles = <File>[
-        if (File(shot.framePath).existsSync()) File(shot.framePath),
-        for (final asset in shortlist)
-          if (File(asset.asset.path).existsSync()) File(asset.asset.path),
-      ];
-      final raw = await _visionService.complete(
-        settings: settings,
-        prompt: prompt,
-        imageFiles: imageFiles,
-        maxTokens: 900,
-      );
-      final parsed = _parseCandidates(raw, shortlist);
-      if (parsed.isNotEmpty) {
-        return ScriptAssetMatchResult(candidates: parsed, usedModel: true);
-      }
-    } catch (_) {
-      // A model outage should not prevent deterministic matching from being
-      // useful. The controller exposes the source as rule-based in this case.
-    }
     return ScriptAssetMatchResult(
-      candidates: [
-        for (final item in ranked)
-          ScriptAssetMatchCandidate(
-            assetId: item.asset.id,
-            confidence: item.score,
-            reason: item.reason,
-          ),
-      ],
+      candidates: _matchNames(shot, assets),
       usedModel: false,
     );
   }
 
-  void cancel() => _visionService.cancelActiveRequests();
+  void cancel() {}
 
-  void close() {
-    if (_ownsVisionService) _visionService.close();
-  }
+  void close() {}
 
-  List<_RankedAsset> _rankLocally(
+  List<ScriptAssetMatchCandidate> _matchNames(
     ScriptShot shot,
     List<ShootingAssetLibraryItem> assets,
   ) {
-    final shotText = [
-      shot.visual,
-      shot.content,
-      shot.scene,
-      shot.productCode,
-      shot.productStyling,
-    ].join(' ');
-    final shotTokens = _tokens(shotText).toSet();
-    final ranked = <_RankedAsset>[];
+    final contexts = [
+      (label: '镜头文案', value: '${shot.visual} ${shot.content} ${shot.prompt}'),
+      (label: '场景字段', value: shot.scene),
+      (label: '产品字段', value: '${shot.productCode} ${shot.productStyling}'),
+    ];
+    final names = <String, List<_NameEntry>>{};
     for (final asset in assets) {
-      final assetText = '${asset.name} ${asset.description}';
-      final tokens = _tokens(assetText).toSet();
-      final overlap = shotTokens.intersection(tokens).length;
-      final denominator = shotTokens.union(tokens).length;
-      var score = denominator == 0 ? 0.0 : overlap / denominator;
-      if (shotText.contains(asset.name.trim()) &&
-          asset.name.trim().isNotEmpty) {
-        score += 0.55;
+      if (const {
+        ReplicateAssetType.video,
+        ReplicateAssetType.audio,
+      }.contains(asset.type)) {
+        continue;
       }
-      if (shot.scene.trim().isNotEmpty &&
-          asset.type.name == 'scene' &&
-          (asset.name.contains(shot.scene) ||
-              asset.description.contains(shot.scene))) {
-        score += 0.25;
+      _addName(names, asset.name, asset, isAlias: false);
+      for (final alias in asset.aliases) {
+        _addName(names, alias, asset, isAlias: true);
       }
-      if (score >= 0.08) {
-        ranked.add(
-          _RankedAsset(
-            asset: asset,
-            score: score.clamp(0.0, 1.0),
-            reason: overlap == 0
-                ? '资产类型和镜头上下文候选'
-                : '名称/描述与镜头字段存在 $overlap 个语义词重合',
-          ),
+    }
+    final candidates = <String, ScriptAssetMatchCandidate>{};
+    for (final context in contexts) {
+      final text = _normalize(context.value);
+      if (text.isEmpty) continue;
+      for (final entry in names.entries) {
+        if (!text.contains(entry.key) || entry.value.length != 1) continue;
+        final match = entry.value.single;
+        final candidate = ScriptAssetMatchCandidate(
+          assetId: match.asset.id,
+          confidence: match.isAlias ? 0.96 : 1.0,
+          reason:
+              '${match.isAlias ? '别名' : '标准名称'}“${match.value}”命中${context.label}',
         );
+        final existing = candidates[candidate.assetId];
+        if (existing == null || candidate.confidence > existing.confidence) {
+          candidates[candidate.assetId] = candidate;
+        }
       }
     }
-    ranked.sort((first, second) => second.score.compareTo(first.score));
-    return ranked;
+    final result = candidates.values.toList()
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+    return result;
   }
 
-  String _matchingPrompt(ScriptShot shot, List<_RankedAsset> shortlist) {
-    final buffer = StringBuffer()
-      ..writeln('你是拍摄脚本资产匹配器。第一张图片是当前镜头，后续图片按列表顺序对应资产。')
-      ..writeln('只能从候选资产 ID 中选择，不得生成新 ID。')
-      ..writeln('根据镜头画面、镜头文字、资产名称和资产描述判断哪些资产实际适用于该镜头。')
-      ..writeln(
-        '镜头：${shot.visual}；${shot.content}；场景：${shot.scene}；景别：${shot.shotSize}',
-      )
-      ..writeln('候选资产：');
-    for (final item in shortlist) {
-      buffer.writeln(
-        '${item.asset.id} | 类型=${item.asset.type.name} | 名称=${item.asset.name} | 描述=${item.asset.description}',
-      );
-    }
-    buffer
-      ..writeln(
-        '只返回 JSON：{"matches":[{"asset_id":"候选ID","confidence":0.0,"reason":"一句话理由"}]}',
-      )
-      ..writeln('不适用的资产不要返回；confidence 必须在 0 到 1 之间。');
-    return buffer.toString();
+  void _addName(
+    Map<String, List<_NameEntry>> names,
+    String value,
+    ShootingAssetLibraryItem asset, {
+    required bool isAlias,
+  }) {
+    final normalized = _normalize(value);
+    if (normalized.isEmpty) return;
+    final entries = names.putIfAbsent(normalized, () => []);
+    if (entries.any((entry) => entry.asset.id == asset.id)) return;
+    entries.add(
+      _NameEntry(asset: asset, value: value.trim(), isAlias: isAlias),
+    );
   }
 
-  List<ScriptAssetMatchCandidate> _parseCandidates(
-    String raw,
-    List<_RankedAsset> shortlist,
-  ) {
-    final validIds = {for (final item in shortlist) item.asset.id};
-    try {
-      final object = _extractJson(raw);
-      final matches = object['matches'];
-      if (matches is! List) return const [];
-      final result = <ScriptAssetMatchCandidate>[];
-      for (final item in matches) {
-        if (item is! Map) continue;
-        final id = item['asset_id']?.toString() ?? '';
-        if (!validIds.contains(id)) continue;
-        final confidence = item['confidence'] is num
-            ? (item['confidence'] as num).toDouble()
-            : double.tryParse('${item['confidence']}') ?? 0;
-        result.add(
-          ScriptAssetMatchCandidate(
-            assetId: id,
-            confidence: confidence.clamp(0.0, 1.0),
-            reason: item['reason']?.toString() ?? '模型匹配',
-          ),
-        );
-      }
-      return result;
-    } catch (_) {
-      return const [];
-    }
-  }
-
-  static Map<String, dynamic> _extractJson(String raw) {
-    final trimmed = raw.trim();
-    final start = trimmed.indexOf('{');
-    final end = trimmed.lastIndexOf('}');
-    if (start < 0 || end <= start) {
-      throw const FormatException('资产匹配模型未返回 JSON');
-    }
-    final decoded = jsonDecode(trimmed.substring(start, end + 1));
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('资产匹配 JSON 结构异常');
-    }
-    return decoded;
-  }
-
-  static Iterable<String> _tokens(String value) sync* {
-    for (final match in RegExp(
-      r'[A-Za-z0-9_]+|[\u4e00-\u9fff]',
-    ).allMatches(value)) {
-      yield match.group(0)!.toLowerCase();
-    }
-  }
+  static String _normalize(String value) =>
+      value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff]'), '');
 }
 
-class _RankedAsset {
-  const _RankedAsset({
+class _NameEntry {
+  const _NameEntry({
     required this.asset,
-    required this.score,
-    required this.reason,
+    required this.value,
+    required this.isAlias,
   });
 
   final ShootingAssetLibraryItem asset;
-  final double score;
-  final String reason;
+  final String value;
+  final bool isAlias;
 }

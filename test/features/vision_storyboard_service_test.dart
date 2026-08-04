@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
+import 'package:filmstoryboard/features/video_analysis/application/video_analysis_service.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -108,6 +109,36 @@ void main() {
     expect(result.narrativeFunction, '推进');
     expect(result.transitionHint, '适合承接开场后切向窗外目标');
     expect(result.hasStoryboardOrderingCues, isTrue);
+    final dimensions = VideoFrameAnalysisFieldMapper.fromVision(result);
+    expect(
+      dimensions.keys,
+      containsAll([
+        'caption',
+        'detail',
+        'scene',
+        'props',
+        'people',
+        'expression',
+        'bodyAction',
+        'movementTrend',
+        'cameraMovement',
+        'shotSize',
+        'composition',
+        'subjectDirection',
+        'gazeDirection',
+        'actionStage',
+        'spatialRelation',
+        'chronologyCue',
+        'cameraAngle',
+        'visualFocus',
+        'lightingMood',
+        'colorPalette',
+        'narrativeFunction',
+        'transitionHint',
+      ]),
+    );
+    expect(dimensions['cameraMovement'], '推');
+    expect(dimensions['visualFocus'], '窗外光线与角色专注视线');
     expect(requests.single, isNot(contains('max_tokens')));
     final content = requests.single['messages'][0]['content'] as List<dynamic>;
     final prompt = (content.first as Map<String, dynamic>)['text'] as String;
@@ -137,6 +168,56 @@ void main() {
       (imagePart['image_url'] as Map<String, dynamic>)['url'],
       startsWith('data:image/png;base64,'),
     );
+  });
+
+  test('视频帧解析按上一帧当前帧下一帧顺序联合判断动作连续性', () async {
+    late Map<String, dynamic> requestBody;
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return _chatResponse(
+          jsonEncode({
+            'caption': '人物从坐姿开始起身',
+            'detail': '对比前后帧可见人物由坐姿抬升为站姿。',
+            'movement_trend': '身体向上起身',
+            'action_stage': '进行',
+            'continues_from_previous': 'true',
+            'continues_to_next': true,
+          }),
+        );
+      }),
+    );
+    addTearDown(service.close);
+    final root = await Directory.systemTemp.createTemp('vision_sequence_');
+    addTearDown(() => root.delete(recursive: true));
+    final files = <File>[];
+    for (var index = 0; index < 3; index++) {
+      files.add(
+        await File(
+          '${root.path}${Platform.pathSeparator}$index.png',
+        ).writeAsBytes([index + 1]),
+      );
+    }
+
+    final result = await service.analyzeImage(
+      settings: _settings(),
+      imageFile: files[1],
+      previousImageFile: files[0],
+      nextImageFile: files[2],
+      sequenceNo: 2,
+      rowIndex: 0,
+      columnIndex: 1,
+    );
+
+    final content = requestBody['messages'][0]['content'] as List<dynamic>;
+    expect(content, hasLength(4));
+    final prompt = (content.first as Map<String, dynamic>)['text'] as String;
+    expect(prompt, contains('上一帧、当前帧、下一帧'));
+    expect(prompt, contains('禁止根据单帧姿态猜测运动'));
+    expect(result.movementTrend, '身体向上起身');
+    expect(result.actionStage, '进行');
+    expect(result.continuesFromPrevious, isTrue);
+    expect(result.continuesToNext, isTrue);
   });
 
   test('Qwen3 视觉请求会显式关闭思考模式', () async {

@@ -1,5 +1,6 @@
-import 'dart:io';
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
@@ -182,12 +183,39 @@ void main() {
     await controller.composeAllPrompts();
     expect(controller.value.prompts, hasLength(1));
     final prompt = controller.value.prompts.single.prompt;
-    expect(prompt, contains('图片2'));
-    expect(prompt, contains('镜头1'));
-    expect(prompt, contains('无字幕'));
-    expect(prompt, isNot(contains(second!.id)));
+    final generated = controller.value.prompts.single;
+    expect(prompt, contains('以图片1作为首帧和主体外观参考'));
+    expect(controller.promptFormatFor(generated), ShotPromptFormat.kling);
     expect(controller.value.run?.completedCount, 1);
     expect(shootingController.value.shots.single.prompt, prompt);
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.kling),
+      contains('以图片1作为首帧和主体外观参考'),
+    );
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.sd2),
+      contains('图片2'),
+    );
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.sd2),
+      contains('镜头1'),
+    );
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.sd2),
+      contains('无字幕'),
+    );
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.sd2),
+      isNot(contains(second!.id)),
+    );
+    controller.selectPromptFormat(generated.id, ShotPromptFormat.kling);
+    expect(controller.value.prompts.single.prompt, contains('以图片1作为首帧和主体外观参考'));
+    expect(
+      controller.promptFormatFor(controller.value.prompts.single),
+      ShotPromptFormat.kling,
+    );
+    controller.selectPromptFormat(generated.id, ShotPromptFormat.sd2);
+    expect(controller.value.prompts.single.prompt, contains('图片2'));
 
     final exported = await controller.exportPrompts();
     expect(exported, isNotNull);
@@ -223,7 +251,7 @@ void main() {
       directories: directories,
       settingsController: settingsController,
     );
-    expect(controller.value.prompts.single.prompt, prompt);
+    expect(controller.value.prompts.single.prompt, contains('图片2'));
     expect(controller.value.run?.currentStep, ReplicateStep.composePrompts);
 
     final restoredShot = shootingController.value.shots.single;
@@ -234,6 +262,11 @@ void main() {
       controller.value.run?.composePromptsStatus,
       ProcessingStatus.pending,
       reason: '脚本内容变化后，旧提示词必须明确标记为待重新合成',
+    );
+    expect(
+      controller.value.prompts,
+      isEmpty,
+      reason: '镜头信息变化后进入步骤 3 必须为空，等待用户主动重新合成',
     );
   });
 
@@ -377,10 +410,27 @@ void main() {
       database.dispose();
       await root.delete(recursive: true);
     });
-    await controller.replicateAllShots(
+    final firstRequestStarted = Completer<void>();
+    final releaseRequests = Completer<void>();
+    imageService
+      ..requestStarted = firstRequestStarted
+      ..requestGate = releaseRequests.future;
+    final replicateFuture = controller.replicateAllShots(
       stagger: const Duration(milliseconds: 20),
       maxConcurrent: 2,
     );
+    await firstRequestStarted.future;
+
+    final activeMessage = controller.value.message;
+    controller.refresh();
+    expect(controller.value.isBusy, isTrue, reason: '脚本或页面同步刷新不能清除正在执行的一键复刻状态');
+    expect(controller.value.message, activeMessage);
+
+    releaseRequests.complete();
+    await replicateFuture;
+    imageService
+      ..requestStarted = null
+      ..requestGate = null;
 
     expect(imageService.requests, hasLength(2));
     expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
@@ -415,6 +465,19 @@ void main() {
     );
     expect(imageService.requests[0].prompt, contains('色彩硬约束：以图片1的色彩风格'));
     expect(imageService.requests[0].prompt, contains('产品主体必须清晰可辨'));
+    expect(imageService.requests[0].prompt, contains('画面文字与标识零容忍硬约束'));
+    expect(imageService.requests[0].prompt, contains('默认输出必须是纯净无字画面'));
+    expect(imageService.requests[0].prompt, contains('底部字幕'));
+    expect(imageService.requests[0].prompt, contains('严禁复制、临摹、变体重绘、替换或新增'));
+    expect(
+      imageService.requests[0].prompt,
+      contains('所有文字、Logo、商标及可识别品牌标记必须移除'),
+    );
+    expect(imageService.requests[0].prompt, isNot(contains('额外 Logo 或无关文字')));
+    expect(
+      imageService.requests[0].prompt,
+      endsWith('若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。'),
+    );
     expect(imageService.requests[0].prompt, contains('严禁复用其身份或外观'));
     expect(imageService.requests[0].prompt, contains('绑定资产硬约束'));
     expect(imageService.requests[1].prompt, isNot(contains('人物必须使用图片2')));
@@ -446,6 +509,59 @@ void main() {
       isTrue,
     );
 
+    visionService.resolvedPrompt = '清理后的最终提示词：使用新模特，不出现原人物的耳环、眼镜和帽子。';
+    final firstShotForInstructions = shootingController.value.shots.firstWhere(
+      (item) => item.id == first.id,
+    );
+    controller.updateShot(
+      firstShotForInstructions.copyWith(
+        replicationInstructions: '移除原人物的耳环、眼镜和帽子',
+      ),
+    );
+    expect(
+      controller.value.shots
+          .firstWhere((item) => item.id == first.id)
+          .replicationInstructions,
+      '移除原人物的耳环、眼镜和帽子',
+    );
+    final instructedReplicateResult = await controller.replicateShot(first.id);
+    expect(
+      instructedReplicateResult,
+      isTrue,
+      reason: controller.value.errorMessage,
+    );
+    expect(visionService.completionPrompts, hasLength(1));
+    expect(visionService.completionPrompts.single, contains('最高优先级'));
+    expect(
+      visionService.completionPrompts.single,
+      contains('必须完整保留自动提示词中的“画面文字与标识零容忍硬约束”'),
+    );
+    expect(
+      imageService.requests.last.prompt,
+      startsWith(visionService.resolvedPrompt),
+    );
+    expect(imageService.requests.last.prompt, contains('【最终输出复核】'));
+    expect(
+      imageService.requests.last.prompt,
+      endsWith('若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。'),
+    );
+
+    visionService.resolvedPrompt = '使用新模特，画面标题仅写“夏日新品”。';
+    final textSpecifiedShot = shootingController.value.shots.firstWhere(
+      (item) => item.id == first.id,
+    );
+    controller.updateShot(
+      textSpecifiedShot.copyWith(replicationInstructions: '在画面顶部写“夏日新品”'),
+    );
+    expect(await controller.replicateShot(first.id), isTrue);
+    expect(visionService.completionPrompts.last, contains('在画面顶部写“夏日新品”'));
+    expect(imageService.requests.last.prompt, contains('画面标题仅写“夏日新品”'));
+    expect(
+      imageService.requests.last.prompt,
+      endsWith('若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。'),
+      reason: '用户指定文本时只开放该段文本，参考图中的其他文字与 Logo 仍必须禁止',
+    );
+
     controller.dispose();
     controller = ReplicateController(
       repository: ReplicateRepository(database),
@@ -460,16 +576,310 @@ void main() {
       2,
     ]);
   });
+
+  test('首尾帧模式一键复刻只提交连续动作组端点帧', () async {
+    final root = await Directory.systemTemp.createTemp('replicate_start_end_');
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load().copyWith(
+        imageGenerationModel: ImageGenerationCatalog.models.first.id,
+        imageGenerationApiConfigs: const [],
+        activeImageGenerationApiConfigId: '',
+      ),
+    );
+    await settingsController.setVideoStartEndFrameModeEnabled(true);
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    shootingController.createEmpty(name: '首尾帧脚本');
+    final frame1 = File('${root.path}/frame-1.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 1]);
+    final frame2 = File('${root.path}/frame-2.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 2]);
+    final frame3 = File('${root.path}/frame-3.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 3]);
+    final first = shootingController.addShot()!;
+    shootingController.updateShot(
+      first.copyWith(
+        framePath: frame1.path,
+        content: '人物开始举起产品',
+        scene: '室内',
+        continuesToNext: true,
+      ),
+    );
+    final middle = shootingController.addShot()!;
+    shootingController.updateShot(
+      middle.copyWith(
+        framePath: frame2.path,
+        content: '人物举起产品到中段',
+        scene: '室内',
+        continuesFromPrevious: true,
+        continuesToNext: true,
+      ),
+    );
+    final tail = shootingController.addShot()!;
+    shootingController.updateShot(
+      tail.copyWith(
+        framePath: frame3.path,
+        content: '人物完成展示动作',
+        scene: '室内',
+        continuesFromPrevious: true,
+      ),
+    );
+    final product = File('${root.path}/product.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 4]);
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final now = DateTime.now().toUtc();
+    const productAssetId = 'start-end-product';
+    workflowRepository.upsertScriptAsset(
+      ScriptAsset(
+        id: productAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '新产品',
+        description: '无字白色瓶身',
+        path: product.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    for (final shot in [first, tail]) {
+      workflowRepository.upsertLink(
+        ScriptShotAssetLink(
+          shotId: shot.id,
+          scriptAssetId: productAssetId,
+          matchSource: ScriptAssetMatchSource.manual,
+          confidence: 1,
+          matchReason: '测试绑定产品',
+          confirmed: true,
+          locked: true,
+          sortOrder: 0,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    }
+    final imageService = _RecordingImageGenerationService();
+    final visionService = _RecordingVisionStoryboardService();
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      workflowRepository: workflowRepository,
+      imageGenerationService: imageService,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      imageService.close();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await controller.replicateAllShots(
+      stagger: Duration.zero,
+      maxConcurrent: 1,
+    );
+
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
+    expect(imageService.requests[1].referenceImagePaths.first, frame3.path);
+    expect(
+      imageService.requests.map((request) => request.referenceImagePaths.first),
+      isNot(contains(frame2.path)),
+    );
+    expect(controller.value.replicatedImages, hasLength(2));
+    expect(
+      controller.value.replicatedImages.map((image) => image.scriptShotId),
+      containsAll([first.id, tail.id]),
+    );
+    expect(controller.value.message, contains('首尾帧'));
+  });
+
+  test('不同脚本的一键复刻互不阻塞', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_script_isolation_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load().copyWith(
+        imageGenerationModel: ImageGenerationCatalog.models.first.id,
+        imageGenerationApiConfigs: const [],
+        activeImageGenerationApiConfigId: '',
+      ),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final imageService = _RecordingImageGenerationService();
+    final visionService = _RecordingVisionStoryboardService();
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      workflowRepository: workflowRepository,
+      imageGenerationService: imageService,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      imageService.close();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    final scriptA = shootingController.createEmpty(name: 'A 脚本');
+    final frameA = File('${root.path}/frame-a.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 10]);
+    final shotA = shootingController.addShot()!;
+    shootingController.updateShot(
+      shotA.copyWith(framePath: frameA.path, content: 'A 脚本镜头'),
+    );
+    final scriptB = shootingController.createEmpty(name: 'B 脚本');
+    final frameB = File('${root.path}/frame-b.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 11]);
+    final shotB = shootingController.addShot()!;
+    shootingController.updateShot(
+      shotB.copyWith(framePath: frameB.path, content: 'B 脚本镜头'),
+    );
+
+    final now = DateTime.now().toUtc();
+    void bindAsset({
+      required String scriptId,
+      required String shotId,
+      required String assetId,
+      required String path,
+    }) {
+      workflowRepository.upsertScriptAsset(
+        ScriptAsset(
+          id: assetId,
+          scriptId: scriptId,
+          type: ReplicateAssetType.product,
+          name: '替换产品 $assetId',
+          description: '蓝色包装',
+          path: path,
+          referenceNumber: 1,
+          status: ProcessingStatus.completed,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+      workflowRepository.upsertLink(
+        ScriptShotAssetLink(
+          shotId: shotId,
+          scriptAssetId: assetId,
+          matchSource: ScriptAssetMatchSource.manual,
+          confidence: 1,
+          matchReason: '测试绑定',
+          confirmed: true,
+          locked: true,
+          sortOrder: 0,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    }
+
+    final assetA = File('${root.path}/asset-a.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 12]);
+    final assetB = File('${root.path}/asset-b.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 13]);
+    bindAsset(
+      scriptId: scriptA.id,
+      shotId: shotA.id,
+      assetId: 'asset-a',
+      path: assetA.path,
+    );
+    bindAsset(
+      scriptId: scriptB.id,
+      shotId: shotB.id,
+      assetId: 'asset-b',
+      path: assetB.path,
+    );
+
+    controller.selectScript(scriptA.id);
+    final runAId = controller.value.run!.id;
+    final firstRequestStarted = Completer<void>();
+    final releaseRequests = Completer<void>();
+    imageService
+      ..requestStarted = firstRequestStarted
+      ..requestGate = releaseRequests.future;
+    final replicateAFuture = controller.replicateAllShots(
+      stagger: Duration.zero,
+      maxConcurrent: 1,
+    );
+    await firstRequestStarted.future;
+    expect(controller.value.isBusy, isTrue);
+    expect(imageService.requests, hasLength(1));
+
+    final secondRequestStarted = Completer<void>();
+    imageService.requestStarted = secondRequestStarted;
+    controller.selectScript(scriptB.id);
+    final runBId = controller.value.run!.id;
+    expect(controller.value.selectedScriptId, scriptB.id);
+    expect(
+      controller.value.isBusy,
+      isFalse,
+      reason: '切换到未运行的一键复刻脚本后不应继承 A 脚本 busy 状态',
+    );
+
+    final replicateBFuture = controller.replicateAllShots(
+      stagger: Duration.zero,
+      maxConcurrent: 1,
+    );
+    await secondRequestStarted.future;
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests[0].referenceImagePaths.first, frameA.path);
+    expect(imageService.requests[1].referenceImagePaths.first, frameB.path);
+    expect(controller.value.isBusy, isTrue);
+
+    releaseRequests.complete();
+    await Future.wait([replicateAFuture, replicateBFuture]);
+    imageService
+      ..requestStarted = null
+      ..requestGate = null;
+
+    final repository = ReplicateRepository(database);
+    expect(repository.listReplicatedShotImages(runAId), hasLength(1));
+    expect(repository.listReplicatedShotImages(runBId), hasLength(1));
+    expect(controller.value.selectedScriptId, scriptB.id);
+    expect(controller.value.isBusy, isFalse);
+  });
 }
 
 class _RecordingImageGenerationService extends ImageGenerationService {
   final requests = <ImageGenerationRequest>[];
+  Completer<void>? requestStarted;
+  Future<void>? requestGate;
 
   @override
   Future<ImageGenerationResult> generateEditedImage(
     ImageGenerationRequest request,
   ) async {
     requests.add(request);
+    final started = requestStarted;
+    if (started != null && !started.isCompleted) {
+      started.complete();
+    }
+    final gate = requestGate;
+    if (gate != null) await gate;
     final serviceCacheDirectory = request.outputDirectory.parent.parent.parent;
     final output = File(
       '${serviceCacheDirectory.path}${Platform.pathSeparator}'
@@ -486,6 +896,20 @@ class _RecordingImageGenerationService extends ImageGenerationService {
 
 class _RecordingVisionStoryboardService extends VisionStoryboardService {
   var analyzeCount = 0;
+  var resolvedPrompt = '';
+  final completionPrompts = <String>[];
+
+  @override
+  Future<String> complete({
+    required AppSettings settings,
+    required String prompt,
+    List<File> imageFiles = const [],
+    int maxTokens = 1200,
+    bool allowThinking = false,
+  }) async {
+    completionPrompts.add(prompt);
+    return resolvedPrompt;
+  }
 
   @override
   Future<VisionImageAnalysis> analyzeImage({
@@ -495,6 +919,8 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeCount++;

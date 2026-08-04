@@ -72,6 +72,7 @@ class ShootingAssetLibraryController
     required ReplicateAssetType type,
     String name = '',
     String description = '',
+    List<String> aliases = const [],
   }) async {
     final items = await importItems([
       (
@@ -79,6 +80,7 @@ class ShootingAssetLibraryController
         type: type,
         name: name,
         description: description,
+        aliases: aliases,
       ),
     ]);
     return items.firstOrNull;
@@ -91,6 +93,7 @@ class ShootingAssetLibraryController
         ReplicateAssetType type,
         String name,
         String description,
+        List<String> aliases,
       })
     >
     requests,
@@ -103,6 +106,7 @@ class ShootingAssetLibraryController
             type: _normalizedTypeForPath(request.type, request.sourcePath),
             name: request.name,
             description: request.description,
+            aliases: request.aliases,
           ),
     ];
     if (normalizedRequests.isEmpty) {

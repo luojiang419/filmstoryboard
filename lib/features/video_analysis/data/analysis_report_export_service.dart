@@ -126,7 +126,13 @@ class AnalysisReportExportService {
         ['分组', '字段', '分析结果'],
         for (final group in videoAnalysisDimensionGroups.entries)
           for (final field in group.value)
-            [group.key, field, dimensions[field] ?? ''],
+            [
+              group.key,
+              field,
+              dimensions[field]?.trim().isNotEmpty == true
+                  ? _displayDimensionValue(dimensions[field]!)
+                  : '暂无（未在可见画面中确认）',
+            ],
       ],
       '概览': [
         ['字段', '内容'],
@@ -277,7 +283,7 @@ class AnalysisReportExportService {
       renderedPages.addAll(
         await _renderTablePages(
           title: '镜头明细',
-          columns: const ['序号', '时间', '缩略图', '画面 / 场景', '人物 / 动作', '镜头语言'],
+          columns: const ['序号', '时间', '视频帧', '画面 / 场景', '人物 / 动作', '镜头语言'],
           columnWidths: const [72, 100, 190, 250, 250, 234],
           rows: const [
             _ReportTableRow(['-', '-', '-', '暂无可用视频帧', '-', '-']),
@@ -289,7 +295,7 @@ class AnalysisReportExportService {
         await _renderTablePages(
           title: '镜头明细',
           subtitle: '缩略图与分析字段按列对齐，便于快速核对画面、动作和镜头语言。',
-          columns: const ['序号', '时间', '缩略图', '画面 / 场景', '人物 / 动作', '镜头语言'],
+          columns: const ['序号', '时间', '视频帧', '画面 / 场景', '人物 / 动作', '镜头语言'],
           columnWidths: const [72, 100, 190, 250, 250, 234],
           rows: [
             for (final frame in frames)
@@ -314,8 +320,23 @@ class AnalysisReportExportService {
     return _addPageNumbers(renderedPages);
   }
 
-  static String _displayDimensionValue(String value) =>
-      value.trim().replaceFirst(RegExp(r'^证据\s*[：:]\s*'), '');
+  static String _displayDimensionValue(String value) {
+    final normalized = value
+        .trim()
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n');
+    return normalized.replaceAllMapped(
+      RegExp(r'(?:^|[；;。]\s*)(可见证据|证据|商业作用|缺口(?:/|或)?优化建议|优化建议|建议)\s*[：:]\s*'),
+      (match) {
+        final label = switch (match.group(1)!) {
+          '可见证据' || '证据' => '证据',
+          '商业作用' => '商业作用',
+          _ => '优化建议',
+        };
+        return '${match.start == 0 ? '' : '\n'}$label：';
+      },
+    );
+  }
 
   String _shotValue(VideoFrameAnalysis? analysis, String key) {
     final dimensions = analysis?.dimensions ?? const <String, String>{};

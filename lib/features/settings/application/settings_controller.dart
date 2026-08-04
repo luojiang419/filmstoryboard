@@ -41,6 +41,7 @@ class SettingsController extends ValueNotifier<AppSettings> {
     required double frameIntervalSeconds,
     required double sceneThreshold,
     required double minimumSharpness,
+    required double previewPaddingSeconds,
     required bool thinkingEnabled,
   }) async {
     final next = value.copyWith(
@@ -54,6 +55,9 @@ class SettingsController extends ValueNotifier<AppSettings> {
       videoFrameIntervalSeconds: frameIntervalSeconds.clamp(0.1, 60).toDouble(),
       videoSceneThreshold: sceneThreshold.clamp(0.05, 0.95).toDouble(),
       videoMinimumSharpness: minimumSharpness.clamp(0, 1).toDouble(),
+      videoPreviewPaddingSeconds: previewPaddingSeconds
+          .clamp(0.1, 30)
+          .toDouble(),
       videoAnalysisThinkingEnabled: thinkingEnabled,
     );
     _repository.save(next);
@@ -62,6 +66,12 @@ class SettingsController extends ValueNotifier<AppSettings> {
 
   Future<void> setVideoAnalysisThinkingEnabled(bool enabled) async {
     final next = value.copyWith(videoAnalysisThinkingEnabled: enabled);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setVideoStartEndFrameModeEnabled(bool enabled) async {
+    final next = value.copyWith(videoStartEndFrameModeEnabled: enabled);
     _repository.save(next);
     value = next;
   }

@@ -4,7 +4,7 @@ import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_servic
 import 'package:test/test.dart';
 
 void main() {
-  test('视觉解析结果映射为脚本字段，但不虚构静态图无法证明的字段', () {
+  test('视觉解析结果映射字段并设计音效时长运镜，但对白仍由用户填写', () {
     final patch = ScriptMultimodalAnalysisService.fromVisionAnalysis(
       VisionImageAnalysis(
         caption: '白衬衫人物走向镜头',
@@ -29,6 +29,8 @@ void main() {
         colorPalette: '米白与金色',
         narrativeFunction: '建立场景',
         transitionHint: '可接近景',
+        continuesFromPrevious: true,
+        continuesToNext: true,
         rawResponse: '{}',
       ),
     );
@@ -43,9 +45,15 @@ void main() {
     expect(patch.values['colorPalette'], '米白与金色');
     expect(patch.values['visualFocus'], '人物面部');
     expect(patch.values['transitionHint'], '可接近景');
+    expect(patch.values['movementTrend'], '向前');
+    expect(patch.values['actionStage'], '动作开始');
+    expect(patch.values['continuesFromPrevious'], 'true');
+    expect(patch.values['continuesToNext'], 'true');
     expect(patch.values.containsKey('cameraNotes'), isFalse);
     expect(patch.values.containsKey('dialogue'), isFalse);
-    expect(patch.values.containsKey('sound'), isFalse);
+    expect(patch.values['sound'], contains('音效设计'));
+    expect(patch.values['sound'], contains('现代客厅'));
+    expect(double.parse(patch.values['durationSeconds']!), 5);
     expect(patch.values.containsKey('productCode'), isFalse);
     expect(patch.fieldConfidence['content'], greaterThan(0.8));
   });

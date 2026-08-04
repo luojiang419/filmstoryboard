@@ -47,6 +47,7 @@ class ScriptShot {
     required this.id,
     required this.scriptId,
     this.sourceStoryboardAssetId,
+    this.sourceVideoFrameId,
     required this.shotNumber,
     required this.durationSeconds,
     required this.framePath,
@@ -61,12 +62,17 @@ class ScriptShot {
     this.colorPalette = '',
     this.visualFocus = '',
     this.transitionHint = '',
+    this.movementTrend = '',
+    this.actionStage = '',
+    this.continuesFromPrevious = false,
+    this.continuesToNext = false,
     required this.scene,
     required this.productCode,
     required this.productStyling,
     required this.dialogue,
     required this.sound,
     required this.prompt,
+    this.replicationInstructions = '',
     required this.status,
     required this.updatedAt,
   });
@@ -74,6 +80,7 @@ class ScriptShot {
   final String id;
   final String scriptId;
   final String? sourceStoryboardAssetId;
+  final String? sourceVideoFrameId;
   final int shotNumber;
   final double durationSeconds;
   final String framePath;
@@ -88,18 +95,24 @@ class ScriptShot {
   final String colorPalette;
   final String visualFocus;
   final String transitionHint;
+  final String movementTrend;
+  final String actionStage;
+  final bool continuesFromPrevious;
+  final bool continuesToNext;
   final String scene;
   final String productCode;
   final String productStyling;
   final String dialogue;
   final String sound;
   final String prompt;
+  final String replicationInstructions;
   final ProcessingStatus status;
   final DateTime updatedAt;
 
   ScriptShot copyWith({
     String? scriptId,
     Object? sourceStoryboardAssetId = _copyWithSentinel,
+    Object? sourceVideoFrameId = _copyWithSentinel,
     int? shotNumber,
     double? durationSeconds,
     String? framePath,
@@ -114,12 +127,17 @@ class ScriptShot {
     String? colorPalette,
     String? visualFocus,
     String? transitionHint,
+    String? movementTrend,
+    String? actionStage,
+    bool? continuesFromPrevious,
+    bool? continuesToNext,
     String? scene,
     String? productCode,
     String? productStyling,
     String? dialogue,
     String? sound,
     String? prompt,
+    String? replicationInstructions,
     ProcessingStatus? status,
     DateTime? updatedAt,
   }) => ScriptShot(
@@ -129,6 +147,9 @@ class ScriptShot {
         identical(sourceStoryboardAssetId, _copyWithSentinel)
         ? this.sourceStoryboardAssetId
         : sourceStoryboardAssetId as String?,
+    sourceVideoFrameId: identical(sourceVideoFrameId, _copyWithSentinel)
+        ? this.sourceVideoFrameId
+        : sourceVideoFrameId as String?,
     shotNumber: shotNumber ?? this.shotNumber,
     durationSeconds: durationSeconds ?? this.durationSeconds,
     framePath: framePath ?? this.framePath,
@@ -143,12 +164,18 @@ class ScriptShot {
     colorPalette: colorPalette ?? this.colorPalette,
     visualFocus: visualFocus ?? this.visualFocus,
     transitionHint: transitionHint ?? this.transitionHint,
+    movementTrend: movementTrend ?? this.movementTrend,
+    actionStage: actionStage ?? this.actionStage,
+    continuesFromPrevious: continuesFromPrevious ?? this.continuesFromPrevious,
+    continuesToNext: continuesToNext ?? this.continuesToNext,
     scene: scene ?? this.scene,
     productCode: productCode ?? this.productCode,
     productStyling: productStyling ?? this.productStyling,
     dialogue: dialogue ?? this.dialogue,
     sound: sound ?? this.sound,
     prompt: prompt ?? this.prompt,
+    replicationInstructions:
+        replicationInstructions ?? this.replicationInstructions,
     status: status ?? this.status,
     updatedAt: updatedAt ?? this.updatedAt,
   );

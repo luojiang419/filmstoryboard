@@ -93,6 +93,7 @@ void main() {
     expect(loaded.cutImageNumberTextScale, 1.4);
     expect(loaded.storyboardCaptionNumberEnabled, isFalse);
     expect(loaded.storyboardSummaryPageEnabled, isFalse);
+    expect(loaded.videoPreviewPaddingSeconds, 1.5);
     expect(loaded.visionApiBaseUrl, 'http://localhost:9000');
     expect(loaded.visionModel, 'custom-vlm');
     expect(loaded.imageGenerationApiBaseUrl, 'https://grsaiapi.com');
@@ -109,7 +110,7 @@ void main() {
     expect(loaded.autoInstallUpdates, isTrue);
     expect(loaded.updateDownloadMode, UpdateDownloadMode.manual);
     expect(loaded.updateManualProxyUrl, 'http://127.0.0.1:7890');
-    expect(database.countRows('settings'), 37);
+    expect(database.countRows('settings'), 39);
   });
 
   test('记录图片生成任务结果', () async {

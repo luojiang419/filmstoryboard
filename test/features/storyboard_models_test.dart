@@ -4,7 +4,7 @@ import 'package:test/test.dart';
 
 void main() {
   test('手动 5x5 布局生成 25 个格位并在顶部保留标题栏', () {
-    final titleHeight = StoryboardBoard.titleHeightFor(22);
+    final titleHeight = StoryboardBoard.titleHeightFor(12);
     final board = StoryboardBoard(
       id: 'board-1',
       name: '测试画板',
@@ -23,11 +23,11 @@ void main() {
   test('故事板高度以宽度为基准按行列比例自动修正', () {
     expect(
       StoryboardBoard.heightForLayout(width: 1200, rows: 3, columns: 4),
-      971,
+      957,
     );
     expect(
       StoryboardBoard.heightForLayout(width: 1200, rows: 4, columns: 6),
-      873,
+      858,
     );
   });
 

@@ -8,7 +8,7 @@ void main() {
   const service = SeedancePromptGenerationService();
   final now = DateTime.utc(2026, 8, 2);
 
-  test('按 SD2 顺序生成主体、镜头、风格和约束且不暴露 Asset ID', () {
+  test('按即梦规则顺序生成主体、镜头、风格和约束且不暴露 Asset ID', () {
     final shot = _shot(now).copyWith(
       cameraMovement: '缓慢推镜',
       composition: '主体位于画面右侧，左侧留白',

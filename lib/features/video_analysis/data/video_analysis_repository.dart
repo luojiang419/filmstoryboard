@@ -357,14 +357,15 @@ class VideoAnalysisRepository {
     _database.executeStatement(
       '''
       INSERT INTO script_shots(
-        id, script_id, shot_number, duration_seconds, frame_path, visual,
+        id, script_id, source_video_frame_id, shot_number, duration_seconds, frame_path, visual,
         content, shot_size, camera_movement, camera_notes, composition,
         camera_angle, lighting_mood, color_palette, visual_focus,
-        transition_hint, scene, product_code, product_styling, dialogue,
-        sound, prompt, status, updated_at
+        transition_hint, movement_trend, action_stage, continues_from_previous,
+        continues_to_next, scene, product_code, product_styling, dialogue,
+        sound, prompt, replication_instructions, status, updated_at
       ) VALUES(
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id) DO UPDATE SET
         shot_number = excluded.shot_number,
@@ -381,18 +382,24 @@ class VideoAnalysisRepository {
         color_palette = excluded.color_palette,
         visual_focus = excluded.visual_focus,
         transition_hint = excluded.transition_hint,
+        movement_trend = excluded.movement_trend,
+        action_stage = excluded.action_stage,
+        continues_from_previous = excluded.continues_from_previous,
+        continues_to_next = excluded.continues_to_next,
         scene = excluded.scene,
         product_code = excluded.product_code,
         product_styling = excluded.product_styling,
         dialogue = excluded.dialogue,
         sound = excluded.sound,
         prompt = excluded.prompt,
+        replication_instructions = excluded.replication_instructions,
         status = excluded.status,
         updated_at = excluded.updated_at;
     ''',
       [
         shot.id,
         shot.scriptId,
+        shot.sourceVideoFrameId,
         shot.shotNumber,
         shot.durationSeconds,
         shot.framePath,
@@ -407,12 +414,17 @@ class VideoAnalysisRepository {
         shot.colorPalette,
         shot.visualFocus,
         shot.transitionHint,
+        shot.movementTrend,
+        shot.actionStage,
+        shot.continuesFromPrevious ? 1 : 0,
+        shot.continuesToNext ? 1 : 0,
         shot.scene,
         shot.productCode,
         shot.productStyling,
         shot.dialogue,
         shot.sound,
         shot.prompt,
+        shot.replicationInstructions,
         shot.status.name,
         _date(shot.updatedAt),
       ],
@@ -432,18 +444,21 @@ class VideoAnalysisRepository {
       '''
       INSERT INTO replicate_runs(
         id, video_id, script_id, global_style, constraints_text,
+        replication_instructions,
         generation_model, generation_aspect_ratio, generation_image_size,
         generation_quality,
         confirmed_shot_ids_json, image_reference_count, video_reference_count,
         audio_reference_count, current_step, status, confirm_shots_status,
         prepare_assets_status, compose_prompts_status, completed_count,
+        generate_videos_status,
         total_count, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         script_id = excluded.script_id,
         global_style = excluded.global_style,
         constraints_text = excluded.constraints_text,
+        replication_instructions = excluded.replication_instructions,
         generation_model = excluded.generation_model,
         generation_aspect_ratio = excluded.generation_aspect_ratio,
         generation_image_size = excluded.generation_image_size,
@@ -457,6 +472,7 @@ class VideoAnalysisRepository {
         confirm_shots_status = excluded.confirm_shots_status,
         prepare_assets_status = excluded.prepare_assets_status,
         compose_prompts_status = excluded.compose_prompts_status,
+        generate_videos_status = excluded.generate_videos_status,
         completed_count = excluded.completed_count,
         total_count = excluded.total_count,
         error_message = excluded.error_message,
@@ -468,6 +484,7 @@ class VideoAnalysisRepository {
         run.scriptId ?? '',
         run.globalStyle,
         run.constraints,
+        run.replicationInstructions,
         run.generationModel,
         run.generationAspectRatio,
         run.generationImageSize,
@@ -482,6 +499,7 @@ class VideoAnalysisRepository {
         run.prepareAssetsStatus.name,
         run.composePromptsStatus.name,
         run.completedCount,
+        run.generateVideosStatus.name,
         run.totalCount,
         run.errorMessage,
         _date(run.createdAt),
@@ -725,6 +743,8 @@ class VideoAnalysisRepository {
     return ScriptShot(
       id: row['id'] as String,
       scriptId: row['script_id'] as String,
+      sourceStoryboardAssetId: row['source_storyboard_asset_id'] as String?,
+      sourceVideoFrameId: row['source_video_frame_id'] as String?,
       shotNumber: row['shot_number'] as int,
       durationSeconds: (row['duration_seconds'] as num).toDouble(),
       framePath: row['frame_path'] as String,
@@ -739,12 +759,17 @@ class VideoAnalysisRepository {
       colorPalette: valueOrLegacy('color_palette', legacy.colorPalette),
       visualFocus: valueOrLegacy('visual_focus', legacy.visualFocus),
       transitionHint: valueOrLegacy('transition_hint', legacy.transitionHint),
+      movementTrend: text('movement_trend'),
+      actionStage: text('action_stage'),
+      continuesFromPrevious: (row['continues_from_previous'] as int? ?? 0) != 0,
+      continuesToNext: (row['continues_to_next'] as int? ?? 0) != 0,
       scene: row['scene'] as String,
       productCode: row['product_code'] as String,
       productStyling: row['product_styling'] as String,
       dialogue: row['dialogue'] as String,
       sound: row['sound'] as String,
       prompt: row['prompt'] as String,
+      replicationInstructions: text('replication_instructions'),
       status: ProcessingStatus.fromStorage(row['status']),
       updatedAt: _parseDate(row['updated_at']),
     );
@@ -762,6 +787,7 @@ class VideoAnalysisRepository {
           : row['script_id'] as String?,
       globalStyle: row['global_style'] as String? ?? '',
       constraints: row['constraints_text'] as String? ?? '',
+      replicationInstructions: row['replication_instructions'] as String? ?? '',
       generationModel: row['generation_model'] as String? ?? '',
       generationAspectRatio:
           row['generation_aspect_ratio'] as String? ?? '16:9',
@@ -786,6 +812,9 @@ class VideoAnalysisRepository {
       ),
       composePromptsStatus: ProcessingStatus.fromStorage(
         row['compose_prompts_status'],
+      ),
+      generateVideosStatus: ProcessingStatus.fromStorage(
+        row['generate_videos_status'],
       ),
       completedCount: row['completed_count'] as int,
       totalCount: row['total_count'] as int,

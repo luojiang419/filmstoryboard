@@ -48,6 +48,8 @@ class VideoFrameAnalysisFieldMapper {
     'colorPalette': analysis.colorPalette,
     'narrativeFunction': analysis.narrativeFunction,
     'transitionHint': analysis.transitionHint,
+    'continuesFromPrevious': analysis.continuesFromPrevious.toString(),
+    'continuesToNext': analysis.continuesToNext.toString(),
   };
 }
 
@@ -100,6 +102,14 @@ class VideoAnalysisService {
             rowIndex: 0,
             columnIndex: index,
             allowThinking: settings.videoAnalysisThinkingEnabled,
+            previousImageFile: index == 0
+                ? null
+                : resolveFrame?.call(frames[index - 1]) ??
+                      File(frames[index - 1].path),
+            nextImageFile: index + 1 >= frames.length
+                ? null
+                : resolveFrame?.call(frames[index + 1]) ??
+                      File(frames[index + 1].path),
           );
           final record = VideoFrameAnalysis(
             id: '${video.id}-${frame.id}',
@@ -235,6 +245,8 @@ class VideoAnalysisService {
       colorPalette: value('colorPalette'),
       narrativeFunction: value('narrativeFunction'),
       transitionHint: value('transitionHint'),
+      continuesFromPrevious: value('continuesFromPrevious') == 'true',
+      continuesToNext: value('continuesToNext') == 'true',
       rawResponse: analysis.rawResponse,
     );
   }
@@ -326,31 +338,9 @@ class VideoAnalysisService {
     final props = joinField('props');
     final scenes = joinField('scene');
     const pending = '画面信息不足，需人工确认';
-    String withEvidence(String value, String suffix) =>
-        value.isEmpty ? pending : '$value；$suffix';
+    String withEvidence(String value, String businessImpact) =>
+        value.isEmpty ? pending : '证据：$value\n商业作用：$businessImpact';
     final dimensions = <String, String>{
-      'ABCD-注意力': withEvidence(
-        [opening, firstFocus].where((item) => item.isNotEmpty).join('；'),
-        '用于判断前三秒是否形成停留理由',
-      ),
-      'ABCD-品牌识别': pending,
-      'ABCD-情感连接': withEvidence(
-        [
-          people,
-          expressions,
-          firstField('bodyAction'),
-        ].where((item) => item.isNotEmpty).join('；'),
-        '用于判断人物、痛点或情绪是否让内容与受众建立关系',
-      ),
-      'ABCD-行动指引': pending,
-      'Hook-Body-Close结构': withEvidence(
-        [
-          opening,
-          narrative,
-          lastCaption,
-        ].where((item) => item.isNotEmpty).join('；'),
-        '按开场钩子、主体证明、结尾收束检查信息闭环',
-      ),
       '开场类型': storedAnalyses.isEmpty
           ? pending
           : (storedAnalyses.first.dimensions['narrativeFunction'] ?? '画面建立'),

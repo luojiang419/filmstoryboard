@@ -5312,7 +5312,8 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
         if (!_isDragging && _selectedAssetIds.length == 1) {
           final selectedAssetId = _selectedAssetIds.first;
           for (final item in widget.board.items) {
-            if (item.asset.id == selectedAssetId &&
+            if (!item.resourceRemoved &&
+                item.asset.id == selectedAssetId &&
                 item.slotIndex >= 0 &&
                 item.slotIndex < widget.board.slotCount) {
               selectedItem = item;
@@ -5494,7 +5495,8 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       captionFontFamily: widget.board.captionFontFamily,
       captionFontSize: captionFontSize,
       selected: _selectedAssetIds.contains(item.asset.id),
-      showImageQuickActions: _quickActionAssetId == item.asset.id,
+      showImageQuickActions:
+          !item.resourceRemoved && _quickActionAssetId == item.asset.id,
       onSelect: () => _selectItem(item.asset.id),
       onRemove: widget.board.locked
           ? null
@@ -5502,7 +5504,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       captionEnabled: !widget.board.locked,
       onCaptionChanged: (caption) =>
           widget.onCaptionChanged(item.slotIndex, caption),
-      imageBuilder: widget.board.locked
+      imageBuilder: widget.board.locked || item.resourceRemoved
           ? null
           : (context, child) => _buildDraggableImage(
               item: item,
@@ -7286,12 +7288,14 @@ class _StoryboardTile extends StatelessWidget {
     final borderColor = emphasized
         ? canvasColors.accent
         : canvasColors.slotBorder;
-    final image = _StoryboardTileImage(
-      item: item,
-      index: index,
-      previewLogicalWidth: previewLogicalWidth,
-      showDragHandle: imageBuilder != null && showImageQuickActions,
-    );
+    final image = item.resourceRemoved
+        ? const _RemovedStoryboardResourcePlaceholder()
+        : _StoryboardTileImage(
+            item: item,
+            index: index,
+            previewLogicalWidth: previewLogicalWidth,
+            showDragHandle: imageBuilder != null && showImageQuickActions,
+          );
     return GestureDetector(
       onTap: onSelect,
       onSecondaryTap: onRemove,
@@ -7360,6 +7364,37 @@ class _StoryboardTile extends StatelessWidget {
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _RemovedStoryboardResourcePlaceholder extends StatelessWidget {
+  const _RemovedStoryboardResourcePlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    final canvasColors = StoryboardCanvasStyle.of(context);
+    return DecoratedBox(
+      key: const ValueKey('storyboard-resource-removed-placeholder'),
+      decoration: BoxDecoration(
+        color: canvasColors.imageBackground,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: canvasColors.mutedText.withValues(alpha: 0.48),
+        ),
+      ),
+      child: const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.image_not_supported_outlined, size: 28),
+            SizedBox(height: 6),
+            Text('资源已移除'),
+            SizedBox(height: 3),
+            Text('右键移除占位符后，可添加新资源'),
+          ],
         ),
       ),
     );

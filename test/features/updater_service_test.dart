@@ -54,10 +54,7 @@ void main() {
     test('expectedInstallerNames supports current and v-tag names', () {
       expect(
         UpdaterService.expectedInstallerNames('v1.2.3', platformKey: 'windows'),
-        [
-          'filmstoryboard-Setup-v1.2.3.exe',
-          'filmstoryboard-Setup-1.2.3.exe',
-        ],
+        ['filmstoryboard-Setup-v1.2.3.exe', 'filmstoryboard-Setup-1.2.3.exe'],
       );
       expect(
         UpdaterService.expectedInstallerNames(

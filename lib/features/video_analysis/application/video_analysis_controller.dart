@@ -64,6 +64,7 @@ class VideoAnalysisState {
     this.isAnalyzing = false,
     this.isPaused = false,
     this.isExporting = false,
+    this.isGeneratingStoryboard = false,
     this.completedProgress = 0,
     this.totalProgress = 0,
     this.message = '',
@@ -85,6 +86,7 @@ class VideoAnalysisState {
   final bool isAnalyzing;
   final bool isPaused;
   final bool isExporting;
+  final bool isGeneratingStoryboard;
   final int completedProgress;
   final int totalProgress;
   final String message;
@@ -151,7 +153,8 @@ class VideoAnalysisState {
     }).toList();
   }
 
-  bool get isBusy => isImporting || isAnalyzing || isExporting;
+  bool get isBusy =>
+      isImporting || isAnalyzing || isExporting || isGeneratingStoryboard;
 
   VideoAnalysisState copyWith({
     List<SourceVideo>? videos,
@@ -170,6 +173,7 @@ class VideoAnalysisState {
     bool? isAnalyzing,
     bool? isPaused,
     bool? isExporting,
+    bool? isGeneratingStoryboard,
     int? completedProgress,
     int? totalProgress,
     String? message,
@@ -190,6 +194,8 @@ class VideoAnalysisState {
     isAnalyzing: isAnalyzing ?? this.isAnalyzing,
     isPaused: isPaused ?? this.isPaused,
     isExporting: isExporting ?? this.isExporting,
+    isGeneratingStoryboard:
+        isGeneratingStoryboard ?? this.isGeneratingStoryboard,
     completedProgress: completedProgress ?? this.completedProgress,
     totalProgress: totalProgress ?? this.totalProgress,
     message: message ?? this.message,
@@ -672,6 +678,37 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     _continueAnalysis = false;
     _analysisService.visionService.cancelActiveRequests();
     value = value.copyWith(isPaused: false, message: '正在取消解析…');
+  }
+
+  Future<bool> generateStoryboardForSelectedVideo() async {
+    final video = value.selectedVideo;
+    if (video == null || value.isBusy) {
+      return false;
+    }
+    value = value.copyWith(
+      isGeneratingStoryboard: true,
+      message: '正在生成故事板和拍摄脚本…',
+      errorMessage: '',
+    );
+    try {
+      final result = await _createFollowUpArtifacts(video);
+      final generated = result.createdBoardCount > 0;
+      value = value.copyWith(
+        isGeneratingStoryboard: false,
+        message: generated
+            ? '已生成 ${result.createdBoardCount} 个故事板、${result.createdScriptCount} 个拍摄脚本'
+            : '',
+        errorMessage: result.errorMessage,
+      );
+      return generated;
+    } catch (error) {
+      value = value.copyWith(
+        isGeneratingStoryboard: false,
+        message: '',
+        errorMessage: '生成故事板和拍摄脚本失败：$error',
+      );
+      return false;
+    }
   }
 
   Future<_FollowUpArtifactsResult> _createFollowUpArtifacts(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'window_fullscreen_controller.dart';
 import '../features/updater/domain/app_update_config.dart';
 
 class WindowTitleBar extends StatelessWidget {
@@ -17,6 +18,9 @@ class WindowTitleBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (WindowFullscreenScope.isFullscreenOf(context)) {
+      return const SizedBox.shrink();
+    }
     final scheme = Theme.of(context).colorScheme;
     return Container(
       height: 42,

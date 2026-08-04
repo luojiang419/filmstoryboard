@@ -34,18 +34,32 @@ class StoryboardShootingScriptSyncController {
     }
     final changedBoards = [
       for (final board in _storyboardController.value.boards)
-        if (_boardSignature(_boardsById[board.id]) != _boardSignature(board))
+        if (_boardsById[board.id] == null ||
+            _boardSignature(_boardsById[board.id]) != _boardSignature(board))
           (board: board, previousBoard: _boardsById[board.id]),
     ];
-    if (changedBoards.isEmpty) {
+    final currentBoardIds = {
+      for (final board in _storyboardController.value.boards) board.id,
+    };
+    final deletedBoardIds = _boardsById.keys
+        .where((boardId) => !currentBoardIds.contains(boardId))
+        .toSet();
+    if (changedBoards.isEmpty && deletedBoardIds.isEmpty) {
       return;
     }
     _synchronize(() {
+      _shootingScriptController.deleteVideoLinkedScriptsForStoryboards(
+        deletedBoardIds,
+      );
       for (final change in changedBoards) {
-        _shootingScriptController.syncFromStoryboard(
-          change.board,
-          previousBoard: change.previousBoard,
-        );
+        if (change.previousBoard == null) {
+          _shootingScriptController.createForStoryboard(change.board);
+        } else {
+          _shootingScriptController.syncFromStoryboard(
+            change.board,
+            previousBoard: change.previousBoard,
+          );
+        }
       }
     });
   }

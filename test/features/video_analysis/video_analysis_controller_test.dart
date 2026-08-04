@@ -7,6 +7,7 @@ import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_service.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
@@ -136,6 +137,10 @@ void main() {
       repository: ShootingScriptRepository(database),
       directories: directories,
     );
+    final syncController = StoryboardShootingScriptSyncController(
+      storyboardController: storyboardController,
+      shootingScriptController: shootingScriptController,
+    );
     final now = DateTime.utc(2026, 8, 3);
     const videoId = 'video-chain';
     final frameFile = File(p.join(directories.frames.path, 'chain-frame.png'));
@@ -200,6 +205,7 @@ void main() {
     );
     addTearDown(() async {
       controller.dispose();
+      syncController.dispose();
       shootingScriptController.dispose();
       storyboardController.dispose();
       settingsController.dispose();
@@ -218,9 +224,33 @@ void main() {
     expect(script.sourceVideoId, videoId);
     expect(shootingScriptController.value.shots, hasLength(1));
     expect(controller.value.message, contains('已自动创建 1 个故事板、1 个拍摄脚本'));
+
+    storyboardController.deleteBoard(board.id);
+    expect(repository.listVideoFrames(videoId), hasLength(1));
+    expect(frameFile.existsSync(), isTrue);
+    expect(shootingScriptController.value.scripts, isEmpty);
+
+    expect(await controller.generateStoryboardForSelectedVideo(), isTrue);
+    expect(
+      storyboardController.value.boards.any((item) => item.id == board.id),
+      isTrue,
+    );
+    expect(shootingScriptController.value.scripts, hasLength(1));
+
+    storyboardController.deleteAssetGroup('external-image:video:$videoId');
+    expect(repository.listVideoFrames(videoId), hasLength(1));
+    expect(frameFile.existsSync(), isTrue);
+    expect(
+      storyboardController.value.boards.any((item) => item.id == board.id),
+      isFalse,
+    );
+    expect(shootingScriptController.value.scripts, isEmpty);
+
+    expect(await controller.generateStoryboardForSelectedVideo(), isTrue);
+    expect(shootingScriptController.value.scripts, hasLength(1));
   });
 
-  test('解析全部已添加视频会逐个处理所有视频', () async {
+  test('解析全部视频会跳过已经解析完成的视频帧', () async {
     final root = await Directory.systemTemp.createTemp('video_batch_analysis_');
     final directories = await AppDirectories.create(executableDirectory: root);
     final database = await AppDatabase.open(directories.databaseFile);
@@ -241,7 +271,10 @@ void main() {
       ..upsertSourceVideo(firstVideo)
       ..upsertSourceVideo(secondVideo)
       ..upsertVideoFrame(_frame(firstVideo.id, 'first-frame', 0, now))
-      ..upsertVideoFrame(_frame(secondVideo.id, 'second-frame', 0, now));
+      ..upsertVideoFrame(_frame(secondVideo.id, 'second-frame', 0, now))
+      ..upsertVideoFrameAnalysis(
+        _analysis(firstVideo.id, 'first-frame', 1, now),
+      );
     final analysisService = _CompletedVideoAnalysisService(
       repository: repository,
     );
@@ -258,9 +291,9 @@ void main() {
       await root.delete(recursive: true);
     });
 
-    await controller.startAnalysis(forceAll: true, allVideos: true);
+    await controller.startAnalysis(allVideos: true);
 
-    expect(analysisService.analyzedVideoIds, [secondVideo.id, firstVideo.id]);
+    expect(analysisService.analyzedVideoIds, [secondVideo.id]);
     expect(
       repository.listVideoFrameAnalyses(firstVideo.id).single.status,
       ProcessingStatus.completed,
@@ -268,6 +301,66 @@ void main() {
     expect(
       repository.listVideoFrameAnalyses(secondVideo.id).single.status,
       ProcessingStatus.completed,
+    );
+  });
+
+  test('解析当前视频会重新解析已完成的选中视频', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'video_current_reanalysis_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final repository = VideoAnalysisRepository(database);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final now = DateTime.utc(2026, 8, 3);
+    final firstVideo = _video('video-current-first', 'first.mp4', now);
+    final secondVideo = _video(
+      'video-current-second',
+      'second.mp4',
+      now.add(const Duration(seconds: 1)),
+    );
+    repository
+      ..upsertSourceVideo(firstVideo)
+      ..upsertSourceVideo(secondVideo)
+      ..upsertVideoFrame(_frame(firstVideo.id, 'first-frame', 0, now))
+      ..upsertVideoFrame(_frame(secondVideo.id, 'second-frame', 0, now))
+      ..upsertVideoFrameAnalysis(
+        _analysis(firstVideo.id, 'first-frame', 1, now),
+      )
+      ..upsertVideoFrameAnalysis(
+        _analysis(secondVideo.id, 'second-frame', 1, now),
+      );
+    final analysisService = _CompletedVideoAnalysisService(
+      repository: repository,
+    );
+    final controller = VideoAnalysisController(
+      directories: directories,
+      settingsController: settingsController,
+      repository: repository,
+      analysisService: analysisService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    controller.selectVideo(firstVideo.id);
+    await controller.startAnalysis(forceAll: true);
+
+    expect(analysisService.analyzedVideoIds, [firstVideo.id]);
+    expect(
+      repository.listVideoFrameAnalyses(firstVideo.id).single.rawResponse,
+      '{}',
+    );
+    expect(
+      repository.listVideoFrameAnalyses(secondVideo.id).single.rawResponse,
+      '{"before":"kept"}',
     );
   });
 }
@@ -336,6 +429,24 @@ VideoFrame _frame(String videoId, String id, int index, DateTime createdAt) =>
       errorMessage: '',
       createdAt: createdAt,
     );
+
+VideoFrameAnalysis _analysis(
+  String videoId,
+  String frameId,
+  int sequenceNo,
+  DateTime createdAt,
+) => VideoFrameAnalysis(
+  id: 'existing-$frameId',
+  videoId: videoId,
+  frameId: frameId,
+  sequenceNo: sequenceNo,
+  dimensions: const {'caption': '已有解析'},
+  rawResponse: '{"before":"kept"}',
+  status: ProcessingStatus.completed,
+  errorMessage: '',
+  createdAt: createdAt,
+  updatedAt: createdAt,
+);
 
 SourceVideo _video(String id, String fileName, DateTime createdAt) =>
     SourceVideo(

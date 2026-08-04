@@ -43,6 +43,7 @@ class ShootingAssetLibraryRepository {
     required ReplicateAssetType type,
     String name = '',
     String description = '',
+    List<String> aliases = const [],
   }) async {
     final items = await importItems([
       (
@@ -50,6 +51,7 @@ class ShootingAssetLibraryRepository {
         type: type,
         name: name,
         description: description,
+        aliases: aliases,
       ),
     ]);
     return items.firstOrNull;
@@ -62,6 +64,7 @@ class ShootingAssetLibraryRepository {
         ReplicateAssetType type,
         String name,
         String description,
+        List<String> aliases,
       })
     >
     requests,
@@ -84,6 +87,11 @@ class ShootingAssetLibraryRepository {
               ? p.basenameWithoutExtension(source.path)
               : request.name.trim(),
           description: request.description.trim(),
+          aliases: request.aliases
+              .map((item) => item.trim())
+              .where((item) => item.isNotEmpty)
+              .toSet()
+              .toList(growable: false),
           path: target.path,
           createdAt: now,
           updatedAt: now,
@@ -142,14 +150,15 @@ class ShootingAssetLibraryRepository {
         _database.executeStatement(
           '''
           INSERT INTO shooting_asset_library_items(
-            id, asset_type, name, description, path, created_at, updated_at
-          ) VALUES(?, ?, ?, ?, ?, ?, ?);
+            id, asset_type, name, description, aliases_json, path, created_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?);
           ''',
           [
             item.id,
             item.type.name,
             item.name,
             item.description,
+            jsonEncode(item.aliases),
             item.path,
             item.createdAt.toIso8601String(),
             item.updatedAt.toIso8601String(),
@@ -172,12 +181,13 @@ class ShootingAssetLibraryRepository {
         _database.executeStatement(
           '''
           INSERT INTO shooting_asset_library_items(
-            id, asset_type, name, description, path, created_at, updated_at
-          ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            id, asset_type, name, description, aliases_json, path, created_at, updated_at
+          ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             asset_type = excluded.asset_type,
             name = excluded.name,
             description = excluded.description,
+            aliases_json = excluded.aliases_json,
             path = excluded.path,
             updated_at = excluded.updated_at;
           ''',
@@ -186,6 +196,7 @@ class ShootingAssetLibraryRepository {
             item.type.name,
             item.name,
             item.description,
+            jsonEncode(item.aliases),
             item.path,
             item.createdAt.toIso8601String(),
             item.updatedAt.toIso8601String(),
@@ -229,6 +240,7 @@ class ShootingAssetLibraryRepository {
         ),
         name: row['name'] as String,
         description: row['description'] as String,
+        aliases: _aliasesFromJson(row['aliases_json'] as String? ?? '[]'),
         path: row['path'] as String,
         createdAt: DateTime.parse(row['created_at'] as String),
         updatedAt: DateTime.parse(row['updated_at'] as String),
@@ -259,6 +271,10 @@ class ShootingAssetLibraryRepository {
       ),
       name: (json['name'] as String?) ?? '未命名资产',
       description: (json['description'] as String?) ?? '',
+      aliases: _aliasesFromJson(
+        json['aliases_json'] as String? ??
+            jsonEncode(json['aliases'] is List ? json['aliases'] : const []),
+      ),
       path: (json['path'] as String?) ?? '',
       createdAt:
           DateTime.tryParse((json['createdAt'] as String?) ?? '') ??
@@ -267,6 +283,20 @@ class ShootingAssetLibraryRepository {
           DateTime.tryParse((json['updatedAt'] as String?) ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
     );
+  }
+
+  static List<String> _aliasesFromJson(String raw) {
+    try {
+      final value = jsonDecode(raw);
+      if (value is! List) return const [];
+      return value
+          .map((item) => item.toString().trim())
+          .where((item) => item.isNotEmpty)
+          .toSet()
+          .toList(growable: false);
+    } catch (_) {
+      return const [];
+    }
   }
 
   static Future<File> _uniqueFile(Directory directory, String name) async {

@@ -99,7 +99,16 @@ void main() {
 
     final prompt = controller.value.prompts.single;
     expect(prompt.assetIds, [hero.id]);
-    expect(prompt.prompt, contains('白衬衫人物'));
+    expect(controller.promptFormatFor(prompt), ShotPromptFormat.kling);
+    expect(prompt.prompt, contains('以图片1作为首帧和主体外观参考'));
+    expect(
+      controller.promptTextFor(prompt, ShotPromptFormat.sd2),
+      contains('白衬衫人物'),
+    );
     expect(prompt.prompt, isNot(contains('完全不同的森林')));
+    expect(
+      controller.promptTextFor(prompt, ShotPromptFormat.sd2),
+      isNot(contains('完全不同的森林')),
+    );
   });
 }

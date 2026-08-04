@@ -54,6 +54,7 @@ void main() {
         dialogue: '你好',
         sound: '轻音乐',
         prompt: '产品保持一致',
+        replicationInstructions: '这一镜头额外保留杯身高光',
         status: ProcessingStatus.completed,
         updatedAt: now,
       ),
@@ -65,5 +66,6 @@ void main() {
     expect(shot.composition, '居中构图');
     expect(shot.transitionHint, '叠化');
     expect(shot.prompt, '产品保持一致');
+    expect(shot.replicationInstructions, '这一镜头额外保留杯身高光');
   });
 }

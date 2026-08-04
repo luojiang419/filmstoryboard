@@ -13,7 +13,6 @@ import '../../../core/widgets/preview_file_image.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../application/video_analysis_controller.dart';
-import '../application/video_storyboard_bridge.dart';
 import '../data/analysis_report_export_service.dart';
 import '../domain/video_analysis_models.dart';
 
@@ -76,7 +75,7 @@ class VideoAnalysisPage extends ConsumerWidget {
                                     analysis.status ==
                                     ProcessingStatus.completed,
                               )
-                              ? () => _generateStoryboard(context, ref, state)
+                              ? () => _generateStoryboard(context, ref)
                               : null,
                         ),
                         if (state.isBusy ||
@@ -168,31 +167,32 @@ class VideoAnalysisPage extends ConsumerWidget {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('开始视频解析'),
-        content: const Text('解析全部已添加视频会逐个重新处理每个视频的全部帧；继续解析未完成仅处理当前视频尚未完成的帧。'),
+        content: const Text(
+          '解析当前视频会重新处理当前选中的视频；解析全部视频会处理所有未完成的视频帧，并跳过已经解析完成的帧。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('取消'),
           ),
           OutlinedButton(
-            onPressed: () => Navigator.of(
-              dialogContext,
-            ).pop(_AnalysisStartAction.unfinished),
-            child: const Text('继续解析未完成'),
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(_AnalysisStartAction.all),
+            child: const Text('解析全部视频'),
           ),
           FilledButton(
             onPressed: () =>
-                Navigator.of(dialogContext).pop(_AnalysisStartAction.all),
-            child: const Text('解析全部已添加视频'),
+                Navigator.of(dialogContext).pop(_AnalysisStartAction.current),
+            child: const Text('解析当前视频'),
           ),
         ],
       ),
     );
     switch (action) {
       case _AnalysisStartAction.all:
-        await controller.startAnalysis(forceAll: true, allVideos: true);
-      case _AnalysisStartAction.unfinished:
-        await controller.startAnalysis();
+        await controller.startAnalysis(allVideos: true);
+      case _AnalysisStartAction.current:
+        await controller.startAnalysis(forceAll: true);
       case null:
         return;
     }
@@ -267,42 +267,20 @@ class VideoAnalysisPage extends ConsumerWidget {
     }
   }
 
-  Future<void> _generateStoryboard(
-    BuildContext context,
-    WidgetRef ref,
-    VideoAnalysisState state,
-  ) async {
-    final video = state.selectedVideo;
-    if (video == null) {
-      return;
-    }
+  Future<void> _generateStoryboard(BuildContext context, WidgetRef ref) async {
     final videoController = ref.read(videoAnalysisControllerProvider);
-    final storyboard = VideoStoryboardBridge.build(
-      video: video,
-      frames: state.frames,
-      frameAnalyses: state.frameAnalyses,
-      shots: state.shots,
-      summary: state.summary,
-      resolveFramePath: (frame) => videoController.resolveFrame(frame).path,
-    );
-    final storyboardController = ref.read(storyboardControllerProvider);
-    final boardId = await storyboardController
-        .createOrReplaceBoardFromExternalImages(
-          sourceId: storyboard.sourceId,
-          boardName: storyboard.boardName,
-          images: storyboard.images,
-          summary: storyboard.summary,
-        );
+    final generated = await videoController
+        .generateStoryboardForSelectedVideo();
     if (!context.mounted) {
       return;
     }
-    if (boardId != null) {
+    if (generated) {
       onOpenStoryboard?.call();
     }
   }
 }
 
-enum _AnalysisStartAction { all, unfinished }
+enum _AnalysisStartAction { all, current }
 
 class _Toolbar extends StatelessWidget {
   const _Toolbar({

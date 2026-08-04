@@ -20,6 +20,8 @@ import '../../storyboard/data/vision_storyboard_service.dart';
 import '../../storyboard/domain/image_generation_provider_resolver.dart';
 import '../../story_design/domain/gemini_storyboard_prompt.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
+import '../../video_generation/domain/video_action_sequence.dart';
+import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
@@ -120,6 +122,18 @@ class ReplicateExportResult {
   final File xlsxFile;
 }
 
+class ReplicateImageExportResult {
+  const ReplicateImageExportResult({
+    required this.directory,
+    required this.copiedCount,
+    required this.missingCount,
+  });
+
+  final Directory directory;
+  final int copiedCount;
+  final int missingCount;
+}
+
 class ReplicateController extends ValueNotifier<ReplicateState> {
   ReplicateController({
     required ReplicateRepository repository,
@@ -167,7 +181,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsVisionService;
   final Uuid _uuid;
   bool _disposed = false;
-  bool _replicationBatchActive = false;
+  final _activeReplicationScriptIds = <String>{};
+  final _replicationMessagesByScriptId = <String, String>{};
 
   @override
   void dispose() {
@@ -235,6 +250,24 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   void refresh() => _restoreFromShootingScript();
 
+  void updateVideoGenerationStatus(
+    ProcessingStatus status, {
+    String message = '',
+  }) {
+    final run = value.run;
+    if (run == null) return;
+    final updated = run.copyWith(
+      generateVideosStatus: status,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertRun(updated);
+    value = value.copyWith(
+      run: updated,
+      message: message,
+      errorMessage: status == ProcessingStatus.failed ? message : '',
+    );
+  }
+
   void toggleShotConfirmed(String shotId, bool confirmed) {
     final run = value.run;
     if (run == null || !value.shots.any((shot) => shot.id == shotId)) {
@@ -270,9 +303,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       value = value.copyWith(errorMessage: '当前脚本暂无可用镜头', message: '');
       return false;
     }
-    if (step.index >= ReplicateStep.composePrompts.index &&
-        !_hasPromptAssets()) {
-      value = value.copyWith(errorMessage: '请先添加至少一个可用参考素材', message: '');
+    if (step.index >= ReplicateStep.generateVideos.index &&
+        value.prompts.isEmpty) {
+      value = value.copyWith(errorMessage: '请先完成步骤 3 生成提示词', message: '');
       return false;
     }
     final updated = run.copyWith(
@@ -311,6 +344,20 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       updatedAt: DateTime.now().toUtc(),
     );
     _persistRun(updated, message: '提示词规则已保存');
+  }
+
+  void updateReplicationInstructions(String instructions) {
+    final run = value.run;
+    if (run == null) return;
+    final normalized = instructions.trim();
+    if (normalized == run.replicationInstructions) return;
+    _persistRun(
+      run.copyWith(
+        replicationInstructions: normalized,
+        updatedAt: DateTime.now().toUtc(),
+      ),
+      message: normalized.isEmpty ? '已清除复刻补充说明' : '已保存复刻补充说明',
+    );
   }
 
   Future<ReplicateAsset?> importAsset({
@@ -610,23 +657,52 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _shootingScriptController.deleteShot(shotId);
   }
 
+  bool get startEndFrameModeEnabled =>
+      _settingsController.value.videoStartEndFrameModeEnabled;
+
   Future<bool> replicateShot(String shotId) async {
-    if (_replicationBatchActive || value.isBusy) return false;
+    final context = _replicationContext();
+    if (context == null ||
+        _activeReplicationScriptIds.contains(context.scriptId)) {
+      return false;
+    }
     final shot = _shotById(shotId);
     if (shot == null) return false;
+    final shots = _replicationEndpointsForShot(shot);
+    _activeReplicationScriptIds.add(context.scriptId);
     value = value.copyWith(
       isBusy: true,
-      message: '正在提交镜头 ${shot.shotNumber} 的复刻任务…',
+      message: startEndFrameModeEnabled && shots.length > 1
+          ? '正在提交镜头 ${shot.shotNumber} 的首尾帧复刻任务…'
+          : '正在提交镜头 ${shot.shotNumber} 的复刻任务…',
       errorMessage: '',
     );
-    final succeeded = await _generateReplicatedShot(shot);
+    _replicationMessagesByScriptId[context.scriptId] = value.message;
+    var succeededCount = 0;
+    for (final target in shots) {
+      final succeeded = await _generateReplicatedShot(target, context);
+      if (succeeded) succeededCount++;
+    }
+    final succeeded = succeededCount == shots.length;
+    _activeReplicationScriptIds.remove(context.scriptId);
     if (!_disposed) {
-      final error = _replicatedImageForShot(shot.id)?.errorMessage ?? '';
-      value = value.copyWith(
-        isBusy: false,
-        message: succeeded ? '镜头 ${shot.shotNumber} 复刻完成' : '',
-        errorMessage: succeeded ? '' : error,
-      );
+      final errors = [
+        for (final target in shots)
+          _replicatedImageError(context.run.id, target.id).trim(),
+      ].where((item) => item.isNotEmpty).toSet().join('；');
+      final message = succeeded
+          ? startEndFrameModeEnabled && shots.length > 1
+                ? '镜头 ${shot.shotNumber} 首尾帧复刻完成'
+                : '镜头 ${shot.shotNumber} 复刻完成'
+          : '';
+      _replicationMessagesByScriptId[context.scriptId] = message;
+      if (value.selectedScriptId == context.scriptId) {
+        value = value.copyWith(
+          isBusy: false,
+          message: message,
+          errorMessage: succeeded ? '' : errors,
+        );
+      }
     }
     return succeeded;
   }
@@ -635,31 +711,38 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     Duration stagger = const Duration(milliseconds: 450),
     int maxConcurrent = 3,
   }) async {
-    if (_replicationBatchActive || value.isBusy) return;
-    final shots = [...value.confirmedShots]
-      ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
+    final context = _replicationContext();
+    if (context == null ||
+        _activeReplicationScriptIds.contains(context.scriptId)) {
+      return;
+    }
+    final shots = _replicationTargetsForAll();
     if (shots.isEmpty) {
       value = value.copyWith(errorMessage: '当前脚本暂无可复刻的镜头', message: '');
       return;
     }
-    _replicationBatchActive = true;
+    _activeReplicationScriptIds.add(context.scriptId);
     value = value.copyWith(
       isBusy: true,
-      message: '准备错峰提交 ${shots.length} 个复刻任务…',
+      message: startEndFrameModeEnabled
+          ? '准备错峰提交 ${shots.length} 张首尾帧复刻任务…'
+          : '准备错峰提交 ${shots.length} 个复刻任务…',
       errorMessage: '',
     );
+    _replicationMessagesByScriptId[context.scriptId] = value.message;
     final active = <Future<bool>>[];
     var completed = 0;
     var succeeded = 0;
     Future<bool> tracked(ScriptShot shot) async {
-      final result = await _generateReplicatedShot(shot);
+      final result = await _generateReplicatedShot(shot, context);
       completed++;
       if (result) succeeded++;
-      if (!_disposed) {
-        value = value.copyWith(
-          message: '复刻进度 $completed/${shots.length}，成功 $succeeded 个',
-        );
-      }
+      _setReplicationMessage(
+        context.scriptId,
+        startEndFrameModeEnabled
+            ? '首尾帧复刻进度 $completed/${shots.length}，成功 $succeeded 张'
+            : '复刻进度 $completed/${shots.length}，成功 $succeeded 个',
+      );
       return result;
     }
 
@@ -676,23 +759,72 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       }
       await Future.wait(active);
     } finally {
-      _replicationBatchActive = false;
+      _activeReplicationScriptIds.remove(context.scriptId);
       if (!_disposed) {
         final failed = shots.length - succeeded;
-        value = value.copyWith(
-          isBusy: false,
-          message: failed == 0 ? '已完成 ${shots.length} 个镜头复刻' : '',
-          errorMessage: failed == 0 ? '' : '$failed 个镜头复刻失败，可单独重试',
-        );
+        final message = failed == 0
+            ? startEndFrameModeEnabled
+                  ? '已完成 ${shots.length} 张首尾帧复刻'
+                  : '已完成 ${shots.length} 个镜头复刻'
+            : '';
+        final error = failed == 0
+            ? ''
+            : startEndFrameModeEnabled
+            ? '$failed 张首尾帧复刻失败，可单独重试'
+            : '$failed 个镜头复刻失败，可单独重试';
+        _replicationMessagesByScriptId[context.scriptId] = message;
+        if (value.selectedScriptId == context.scriptId) {
+          value = value.copyWith(
+            isBusy: false,
+            message: message,
+            errorMessage: error,
+          );
+        }
       }
     }
   }
 
-  Future<bool> _generateReplicatedShot(ScriptShot shot) async {
-    final run = value.run;
-    if (run == null) return false;
+  List<ScriptShot> _replicationTargetsForAll() {
+    final shots = [...value.confirmedShots]
+      ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
+    if (!startEndFrameModeEnabled) return shots;
+    final targets = <ScriptShot>[];
+    final usedIds = <String>{};
+    for (final sequence in const VideoActionSequenceResolver().resolve(shots)) {
+      void add(ScriptShot shot) {
+        if (usedIds.add(shot.id)) targets.add(shot);
+      }
+
+      add(sequence.head);
+      if (sequence.hasDistinctTail) add(sequence.tail);
+    }
+    return targets;
+  }
+
+  List<ScriptShot> _replicationEndpointsForShot(ScriptShot shot) {
+    if (!startEndFrameModeEnabled) return [shot];
+    final sequence = const VideoActionSequenceResolver().sequenceFor(
+      value.shots,
+      shot.id,
+    );
+    if (!sequence.hasDistinctTail) return [shot];
+    return [
+      sequence.head,
+      if (sequence.tail.id != sequence.head.id) sequence.tail,
+    ];
+  }
+
+  Future<bool> _generateReplicatedShot(
+    ScriptShot shot,
+    _ReplicationContext context,
+  ) async {
+    final run = context.run;
     final original = File(shot.framePath);
-    final references = _replacementReferences(shot.id);
+    final references = _replacementReferences(
+      shot.id,
+      scriptId: context.scriptId,
+      stepAssets: context.assets,
+    );
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
     final model = _resolvedGenerationModel(run);
@@ -733,8 +865,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _saveReplicatedImage(record);
     try {
       if (!_disposed) {
-        value = value.copyWith(
-          message: '正在用视觉模型解析镜头 ${shot.shotNumber} 的画面维度…',
+        _setReplicationMessage(
+          context.scriptId,
+          '正在用视觉模型解析镜头 ${shot.shotNumber} 的画面维度…',
         );
       }
       final prompt = await _buildVisionEnhancedGenerationPrompt(
@@ -834,12 +967,113 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         columnIndex: shot.shotNumber - 1,
         allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
       );
-      return _generationPrompt(shot, references, model, analysis: analysis);
+      final prompt = await _resolveUserPriorityGenerationPrompt(
+        shot: shot,
+        references: references,
+        original: original,
+        automaticPrompt: _generationPrompt(
+          shot,
+          references,
+          model,
+          analysis: analysis,
+        ),
+      );
+      return _appendFinalTextSafetyCheck(prompt);
     } catch (_) {
       // 视觉模型不可用、超时或返回格式异常时，保留原有一键生成能力。
-      return _generationPrompt(shot, references, model);
+      final prompt = await _resolveUserPriorityGenerationPrompt(
+        shot: shot,
+        references: references,
+        original: original,
+        automaticPrompt: _generationPrompt(shot, references, model),
+      );
+      return _appendFinalTextSafetyCheck(prompt);
     }
   }
+
+  Future<String> _resolveUserPriorityGenerationPrompt({
+    required ScriptShot shot,
+    required List<_ReplacementReference> references,
+    required File original,
+    required String automaticPrompt,
+  }) async {
+    final instructions = shot.replicationInstructions.trim();
+    if (instructions.isEmpty) return automaticPrompt;
+    final fallback = _userPriorityFallbackPrompt(
+      automaticPrompt: automaticPrompt,
+      instructions: instructions,
+    );
+    try {
+      final resolved = await _visionService.complete(
+        settings: _settingsController.value,
+        imageFiles: [original],
+        maxTokens: 1800,
+        allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
+        prompt: _userPriorityResolutionPrompt(
+          shot: shot,
+          references: references,
+          automaticPrompt: automaticPrompt,
+          instructions: instructions,
+        ),
+      );
+      final normalized = resolved
+          .trim()
+          .replaceFirst(
+            RegExp(r'^```(?:text|markdown)?\s*', multiLine: true),
+            '',
+          )
+          .replaceFirst(RegExp(r'\s*```$', multiLine: true), '')
+          .trim();
+      return normalized.isEmpty ? fallback : normalized;
+    } catch (_) {
+      // 解析服务异常时仍把用户要求明确置于末尾最高优先级，避免静默丢失。
+      return fallback;
+    }
+  }
+
+  static String _userPriorityFallbackPrompt({
+    required String automaticPrompt,
+    required String instructions,
+  }) =>
+      '$automaticPrompt\n\n'
+      '【用户补充说明：最高优先级】$instructions\n'
+      '冲突处理：若以上自动解析、原帧描述、资产描述或固定约束与用户补充说明冲突，必须删除或改写冲突内容，始终按用户补充说明生成；不得保留原人物的服装、首饰、眼镜、帽子、包、手表或其他配饰，除非用户明确要求保留。\n'
+      '文字例外判定：只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才可开放该段指定文本；其他情况仍必须执行无文字、无 Logo 硬约束。';
+
+  static String _userPriorityResolutionPrompt({
+    required ScriptShot shot,
+    required List<_ReplacementReference> references,
+    required String automaticPrompt,
+    required String instructions,
+  }) =>
+      '''
+你是图像生成提示词编辑器。请根据图片1和以下文本，输出一份可直接提交给图片生成 API 的中文最终提示词。
+
+最高优先级规则：用户补充说明高于自动解析、原视频帧、镜头脚本和任何固定复刻规则。若两者冲突，必须删除或改写自动提示词中的冲突描述，绝不能把彼此矛盾的要求同时保留。
+
+镜头：${shot.shotNumber}
+当前绑定素材：${references.map((item) => '${_replacementTypeLabel(item.type)}「${item.name}」').join('、')}
+
+用户补充说明（最高优先级）：
+$instructions
+
+自动解析的提示词（仅作待清理草稿）：
+$automaticPrompt
+
+编辑要求：
+1. 保留与用户说明不冲突的镜头叙事、构图、动作、光影和已绑定素材要求。
+2. 用户要求替换、移除或不要出现的元素，必须明确写为“不出现/替换为”并移除原有相反表述；人物配饰包括首饰、眼镜、帽子、包、手表、发饰等。
+3. 不得复刻图片1原人物的身份、脸部、服装或配饰，除非用户明确要求保留；已绑定的新人物或产品始终优先使用。
+4. 必须完整保留自动提示词中的“画面文字与标识零容忍硬约束”。只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才允许该段指定文本；不得把参考图中的其他文字或 Logo 带入成图。
+5. 只输出最终提示词正文，不要解释、标题、Markdown、JSON 或分析过程。
+''';
+
+  static const _textAndLogoExclusionConstraint =
+      '【画面文字与标识零容忍硬约束】默认输出必须是纯净无字画面。图片1及其他参考图中出现的所有文字、数字、字母、符号组合、底部字幕、标题、贴纸文字、界面文字、水印、品牌 Logo、商标、台标、角标、二维码和条形码，都只能用于理解画面，严禁复制、临摹、变体重绘、替换或新增；必须将相关区域重建为符合场景的自然无字纹理或无标识造型。即使镜头脚本、视觉解析、资产名称、资产描述或产品包装提到了这些内容，也不得出现在成图中。唯一例外：用户在“复刻补充说明”中明确要求画面出现文本，并给出需要逐字呈现的具体内容；此时只允许生成该段指定文本，仍禁止参考图中的其他任何文字或 Logo。';
+
+  static String _appendFinalTextSafetyCheck(String prompt) =>
+      '${prompt.trim()}\n\n'
+      '【最终输出复核】若用户未在“复刻补充说明”中明确给出需要逐字出现的具体文本，成图必须完全不含任何文字、数字、字母、符号组合、字幕、水印、Logo、商标、台标、角标、二维码或条形码；若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。';
 
   String _generationPrompt(
     ScriptShot shot,
@@ -914,8 +1148,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final run = value.run;
     final shots = value.confirmedShots;
     final assets = _readyAssets(value.assets);
-    if (run == null || shots.isEmpty || !_hasPromptAssets(shots: shots)) {
-      value = value.copyWith(errorMessage: '需要可用镜头和参考素材', message: '');
+    if (run == null || shots.isEmpty) {
+      value = value.copyWith(errorMessage: '需要至少一个可用镜头', message: '');
       return;
     }
     final running = run.copyWith(
@@ -932,17 +1166,21 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       run: running,
       isBusy: true,
       prompts: const [],
-      message: '正在生成 0/${shots.length} 个提示词…',
+      message: '正在按已解析脚本字段合成 0/${shots.length} 个提示词…',
       errorMessage: '',
     );
     final prompts = <ShotPrompt>[];
     var completed = 0;
+    final sequences = startEndFrameModeEnabled
+        ? const VideoActionSequenceResolver().resolve(shots)
+        : const <VideoActionSequence>[];
     for (var index = 0; index < shots.length; index++) {
       final shot = shots[index];
       final prompt = _composePrompt(
         run: running,
         shot: shot,
         assets: assets,
+        actionSequence: _actionSequenceForPrompt(shot, sequences),
         previousShot: index > 0 ? shots[index - 1] : null,
         nextShot: index + 1 < shots.length ? shots[index + 1] : null,
       );
@@ -953,7 +1191,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       if (!_disposed) {
         value = value.copyWith(
           prompts: [...prompts],
-          message: '正在生成 ${prompts.length}/${shots.length} 个提示词…',
+          message: '正在按已解析脚本字段合成 ${prompts.length}/${shots.length} 个提示词…',
         );
       }
     }
@@ -978,7 +1216,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         run: finished,
         prompts: prompts,
         isBusy: false,
-        message: failed == 0 ? '已生成 ${prompts.length} 个 Seedance 2 提示词' : '',
+        message: failed == 0 ? '已生成 ${prompts.length} 个即梦 / 可灵双版本提示词' : '',
         errorMessage: finished.errorMessage,
       );
     }
@@ -1002,6 +1240,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       run: run,
       shot: shot,
       assets: _readyAssets(value.assets),
+      actionSequence: startEndFrameModeEnabled
+          ? const VideoActionSequenceResolver()
+                .sequenceFor(orderedShots, shot.id)
+                .shots
+          : const [],
       previousShot: shotIndex > 0 ? orderedShots[shotIndex - 1] : null,
       nextShot: shotIndex >= 0 && shotIndex + 1 < orderedShots.length
           ? orderedShots[shotIndex + 1]
@@ -1029,8 +1272,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (run == null || index < 0 || text.trim().isEmpty) {
       return;
     }
-    final updated = value.prompts[index].copyWith(
+    final existing = value.prompts[index];
+    final raw = _promptRaw(existing);
+    final format = promptFormatFor(existing);
+    raw[_promptKey(format)] = text.trim();
+    raw['selectedPromptFormat'] = format.name;
+    final updated = existing.copyWith(
       prompt: text.trim(),
+      rawResponse: jsonEncode(raw),
       status: ProcessingStatus.completed,
       errorMessage: '',
       updatedAt: DateTime.now().toUtc(),
@@ -1038,6 +1287,43 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _repository.upsertPrompt(updated);
     final prompts = [...value.prompts]..[index] = updated;
     _updatePromptProgress(run, prompts, message: '提示词已保存');
+    _syncScriptPromptFields(prompts);
+  }
+
+  ShotPromptFormat promptFormatFor(ShotPrompt prompt) {
+    final value = '${_promptRaw(prompt)['selectedPromptFormat']}';
+    return ShotPromptFormat.values.firstWhere(
+      (format) => format.name == value,
+      orElse: () => ShotPromptFormat.sd2,
+    );
+  }
+
+  String promptTextFor(ShotPrompt prompt, ShotPromptFormat format) {
+    final text = '${_promptRaw(prompt)[_promptKey(format)] ?? ''}'.trim();
+    return text.isEmpty ? prompt.prompt : text;
+  }
+
+  void selectPromptFormat(String promptId, ShotPromptFormat format) {
+    final index = value.prompts.indexWhere((prompt) => prompt.id == promptId);
+    final run = value.run;
+    if (run == null || index < 0) return;
+    final existing = value.prompts[index];
+    final raw = _promptRaw(existing);
+    final selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
+    if (selectedText.isEmpty) return;
+    raw['selectedPromptFormat'] = format.name;
+    final updated = existing.copyWith(
+      prompt: selectedText,
+      rawResponse: jsonEncode(raw),
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertPrompt(updated);
+    final prompts = [...value.prompts]..[index] = updated;
+    _updatePromptProgress(
+      run,
+      prompts,
+      message: format == ShotPromptFormat.sd2 ? '已选择即梦规则版' : '已选择可灵',
+    );
     _syncScriptPromptFields(prompts);
   }
 
@@ -1050,7 +1336,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     try {
       await _directories.prompts.create(recursive: true);
-      final base = '${_safeFileName(script.name)}-Seedance2提示词';
+      final base = '${_safeFileName(script.name)}-即梦2提示词';
       final xlsxFile = _uniqueFile(_directories.prompts, '$base.xlsx');
       final sorted = [
         ...value.prompts,
@@ -1069,6 +1355,69 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return ReplicateExportResult(xlsxFile: xlsxFile);
     } catch (error) {
       value = value.copyWith(message: '', errorMessage: '导出提示词失败：$error');
+      return null;
+    }
+  }
+
+  Future<ReplicateImageExportResult?> exportReplicatedImages() async {
+    final script = value.selectedScript;
+    if (script == null || value.isBusy) {
+      return null;
+    }
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在复制复刻分镜图…',
+      errorMessage: '',
+    );
+    try {
+      final directory = _uniqueDirectory(
+        _directories.scripts,
+        '${_safeFileName(script.name)}-复刻分镜图',
+      );
+      await directory.create(recursive: true);
+      final replicatedByShotId = {
+        for (final image in value.replicatedImages) image.scriptShotId: image,
+      };
+      var copied = 0;
+      var missing = 0;
+      for (final shot in value.shots) {
+        final sourcePath =
+            replicatedByShotId[shot.id]?.generatedFramePath.trim() ?? '';
+        final source = File(sourcePath);
+        if (sourcePath.isEmpty || !source.existsSync()) {
+          missing++;
+          continue;
+        }
+        final targetName =
+            '${shot.shotNumber.toString().padLeft(3, '0')}-'
+            '${_safeFileName(p.basenameWithoutExtension(source.path))}'
+            '${p.extension(source.path)}';
+        await source.copy(p.join(directory.path, targetName));
+        copied++;
+      }
+      if (copied == 0) {
+        await directory.delete(recursive: true);
+        throw const FileSystemException('脚本中没有可导出的复刻分镜图');
+      }
+      final result = ReplicateImageExportResult(
+        directory: directory,
+        copiedCount: copied,
+        missingCount: missing,
+      );
+      value = value.copyWith(
+        isBusy: _activeReplicationScriptIds.contains(value.selectedScriptId),
+        message: missing == 0
+            ? '已导出 $copied 张复刻分镜图到 ${directory.path}'
+            : '已导出 $copied 张复刻分镜图，另有 $missing 个镜头缺图',
+        errorMessage: '',
+      );
+      return result;
+    } catch (error) {
+      value = value.copyWith(
+        isBusy: _activeReplicationScriptIds.contains(value.selectedScriptId),
+        message: '',
+        errorMessage: '导出复刻分镜图失败：$error',
+      );
       return null;
     }
   }
@@ -1092,6 +1441,28 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return;
     }
     _restoreFromShootingScript();
+  }
+
+  _ReplicationContext? _replicationContext() {
+    final run = value.run;
+    final scriptId = value.selectedScriptId;
+    if (run == null || scriptId.isEmpty) {
+      return null;
+    }
+    return _ReplicationContext(
+      scriptId: scriptId,
+      run: run,
+      assets: [...value.assets],
+    );
+  }
+
+  void _setReplicationMessage(String scriptId, String message) {
+    if (_disposed) return;
+    _replicationMessagesByScriptId[scriptId] = message;
+    if (value.selectedScriptId != scriptId) {
+      return;
+    }
+    value = value.copyWith(message: message);
   }
 
   void _restoreFromShootingScript({String? selectScriptId}) {
@@ -1160,7 +1531,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     final assets = _repository.listAssets(run.id);
     final replicatedImages = _restoreReplicatedImages(run.id);
-    final prompts = _repository.listPrompts(run.id);
+    var prompts = _repository.listPrompts(run.id);
     final workflowAssetIdsByShot = _confirmedScriptAssetIdsByShot(
       scriptId,
       shooting.shots,
@@ -1197,7 +1568,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         updatedAt: DateTime.now().toUtc(),
       );
       _repository.upsertRun(run);
+      _repository.deletePrompts(run.id);
+      prompts = const [];
     }
+    final isReplicating = _activeReplicationScriptIds.contains(scriptId);
     value = value.copyWith(
       scripts: scripts,
       shots: shooting.shots,
@@ -1206,7 +1580,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       assets: assets,
       replicatedImages: replicatedImages,
       prompts: prompts,
-      isBusy: false,
+      isBusy: isReplicating,
+      message: isReplicating
+          ? (_replicationMessagesByScriptId[scriptId] ?? '')
+          : '',
+      errorMessage: '',
     );
   }
 
@@ -1244,7 +1622,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       run: run,
       message: message,
       errorMessage: errorMessage,
-      isBusy: false,
+      isBusy: _activeReplicationScriptIds.contains(value.selectedScriptId),
     );
   }
 
@@ -1287,6 +1665,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required ReplicateRun run,
     required ScriptShot shot,
     required List<ReplicateAsset> assets,
+    List<ScriptShot> actionSequence = const [],
     ScriptShot? previousShot,
     ScriptShot? nextShot,
   }) {
@@ -1309,17 +1688,28 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               previousShot: previousShot,
               nextShot: nextShot,
             );
+      final klingPrompt = const KlingVideoPromptAdapter().adapt(
+        shot,
+        sourcePrompt: '',
+        actionSequence: actionSequence,
+        availableImageReferences: actionSequence.length > 1 ? 2 : 1,
+        globalStyle: run.globalStyle,
+        constraints: run.constraints,
+      );
       return ShotPrompt(
         id: _promptId(run.id, shot.id),
         runId: run.id,
         shotNumber: shot.shotNumber,
         scriptShotId: shot.id,
         assetIds: result.assetIds,
-        prompt: result.prompt,
+        prompt: klingPrompt,
         model: promptModel,
         rawResponse: jsonEncode({
           'warnings': result.warnings,
           'shotFingerprint': _shotFingerprint(shot),
+          'sd2Prompt': result.prompt,
+          'klingPrompt': klingPrompt,
+          'selectedPromptFormat': ShotPromptFormat.kling.name,
         }),
         status: ProcessingStatus.completed,
         errorMessage: '',
@@ -1385,6 +1775,17 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _shootingScriptController.updateShotPrompts(promptsByShotId);
   }
 
+  List<ScriptShot> _actionSequenceForPrompt(
+    ScriptShot shot,
+    List<VideoActionSequence> sequences,
+  ) {
+    if (sequences.isEmpty) return const [];
+    for (final sequence in sequences) {
+      if (sequence.contains(shot.id)) return sequence.shots;
+    }
+    return const [];
+  }
+
   ReplicateAsset? _assetById(String id) {
     for (final asset in value.assets) {
       if (asset.id == id) {
@@ -1410,9 +1811,19 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     return null;
   }
 
+  String _replicatedImageError(String runId, String shotId) {
+    for (final image in _repository.listReplicatedShotImages(runId)) {
+      if (image.scriptShotId == shotId) return image.errorMessage;
+    }
+    return '';
+  }
+
   void _saveReplicatedImage(ReplicatedShotImage image) {
     _repository.upsertReplicatedShotImage(image);
     if (_disposed) return;
+    if (value.run?.id != image.runId) {
+      return;
+    }
     value = value.copyWith(
       replicatedImages: _repository.listReplicatedShotImages(image.runId),
     );
@@ -1453,8 +1864,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     return restored;
   }
 
-  List<_ReplacementReference> _replacementReferences(String shotId) {
-    final linked = _confirmedScriptAssets(shotId);
+  List<_ReplacementReference> _replacementReferences(
+    String shotId, {
+    String? scriptId,
+    List<ReplicateAsset>? stepAssets,
+  }) {
+    final linked = _confirmedScriptAssets(shotId, scriptId: scriptId);
     if (_workflowRepository != null) {
       return [
         for (final asset in linked)
@@ -1471,7 +1886,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       ];
     }
     return [
-      for (final asset in _readyAssets(value.assets))
+      for (final asset in _readyAssets(stepAssets ?? value.assets))
         if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
             asset.path.trim().isNotEmpty &&
             File(asset.path).existsSync())
@@ -1506,8 +1921,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           '人物必须使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型、服装和外观；'
               '图片1中的原人物只可作为姿态、表情、视线和动作阶段基准，严禁复用其身份或外观。',
         ReplicateAssetType.product =>
-          '产品必须使用$imageLabel 中“${reference.name}”的真实结构、包装、图案、纹理、材质、反光、比例和品牌特征；'
-              '产品主体必须清晰可辨，边缘、表面细节和包装信息不得模糊、变形或被不合理遮挡；'
+          '产品必须使用$imageLabel 中“${reference.name}”的真实结构、无字包装造型、非标识性色块、纹理、材质、反光和比例；'
+              '产品主体必须清晰可辨，边缘、表面材质和无字包装细节不得模糊、变形或被不合理遮挡；所有文字、Logo、商标及可识别品牌标记必须移除并自然重建；'
               '图片1中的原产品只可作为穿着方式、手部接触或摆放关系基准，严禁复用其外观。',
         ReplicateAssetType.scene =>
           '场景必须使用$imageLabel 中“${reference.name}”的环境元素；以图片1相同的镜位、透视、主体位置和空间层次重新搭建场景。',
@@ -1526,7 +1941,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       '严格复现图片1的画幅、景别、机位、构图、透视、主体数量、动作、表情、视线、遮挡、光源方向、色温、景深和叙事时刻。若同时提供人物、产品和场景参考，必须让该人物在该场景中穿着或使用该产品，并做出图片1相同动作。',
       '屏幕方向硬约束：以查看图片1时的画面左/右为唯一坐标系，不是人物自身左右，也不随图片2起素材的朝向变化。必须保持主体在画面内的左右位置、脸部/身体/视线朝向、身体倾斜、肢体动作、道具朝向及相对位置；严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图。若任何素材描述与此冲突，始终以图片1为准。',
       '色彩硬约束：以图片1的色彩风格、色温、明暗关系、对比度、光影层次和电影调色为唯一基准；新人物、产品、场景和道具必须融入该原帧色彩风格，任何通用风格描述都不得覆盖这一要求。',
-      '绝对不要：超分辨率、锐化、去噪、修复、放大、以图生图描摹、保留原帧像素、复制原帧的模糊或瑕疵；不要生成字幕、水印、额外 Logo 或无关文字。',
+      '绝对不要：超分辨率、锐化、去噪、修复、放大、以图生图描摹、保留原帧像素、复制原帧的模糊或瑕疵。',
+      _textAndLogoExclusionConstraint,
       if (shot.content.trim().isNotEmpty) '镜头内容：${shot.content.trim()}。',
       if (shot.shotSize.trim().isNotEmpty) '景别：${shot.shotSize.trim()}。',
       if (shot.composition.trim().isNotEmpty) '构图：${shot.composition.trim()}。',
@@ -1865,14 +2281,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   static bool _hasReadyAssets(List<ReplicateAsset> assets) =>
       _readyAssets(assets).isNotEmpty;
 
-  bool _hasPromptAssets({List<ScriptShot>? shots}) {
-    if (_hasReadyAssets(value.assets)) return true;
-    final targetShots = shots ?? value.confirmedShots;
-    return targetShots.any(
-      (shot) => _confirmedScriptAssets(shot.id).isNotEmpty,
-    );
-  }
-
   bool _hasWorkflowPromptAssets() {
     final targetShots = value.confirmedShots;
     return targetShots.any(
@@ -1880,12 +2288,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     );
   }
 
-  List<ScriptAsset> _confirmedScriptAssets(String shotId) {
+  List<ScriptAsset> _confirmedScriptAssets(String shotId, {String? scriptId}) {
     final repository = _workflowRepository;
-    final scriptId = value.selectedScriptId;
-    if (repository == null || scriptId.isEmpty) return const [];
+    final selectedScriptId = scriptId ?? value.selectedScriptId;
+    if (repository == null || selectedScriptId.isEmpty) return const [];
     final assetsById = {
-      for (final asset in repository.listScriptAssets(scriptId))
+      for (final asset in repository.listScriptAssets(selectedScriptId))
         asset.id: asset,
     };
     return [
@@ -1934,6 +2342,27 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   static String _promptId(String runId, String shotId) =>
       '$runId-prompt-$shotId';
 
+  static String _promptKey(ShotPromptFormat format) => switch (format) {
+    ShotPromptFormat.sd2 => 'sd2Prompt',
+    ShotPromptFormat.kling => 'klingPrompt',
+  };
+
+  static Map<String, Object?> _promptRaw(ShotPrompt prompt) {
+    try {
+      final decoded = jsonDecode(prompt.rawResponse);
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } catch (_) {
+      // 旧版单提示词记录在首次编辑或切换时自动升级为双版本结构。
+    }
+    return <String, Object?>{
+      'sd2Prompt': prompt.prompt,
+      'klingPrompt': prompt.prompt,
+      'selectedPromptFormat': ShotPromptFormat.kling.name,
+    };
+  }
+
   static String _replicatedImageId(String runId, String shotId) =>
       '$runId-replicated-$shotId';
 
@@ -1941,6 +2370,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     ReplicateStep.confirmShots => '步骤 1：确认脚本',
     ReplicateStep.prepareAssets => '步骤 2：准备素材',
     ReplicateStep.composePrompts => '步骤 3：生成提示词',
+    ReplicateStep.generateVideos => '步骤 4：生成视频',
   };
 
   static String _assetTypeLabel(ReplicateAssetType type) => switch (type) {
@@ -1977,6 +2407,28 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     return file;
   }
+
+  static Directory _uniqueDirectory(Directory parent, String name) {
+    var directory = Directory(p.join(parent.path, name));
+    var suffix = 2;
+    while (directory.existsSync()) {
+      directory = Directory(p.join(parent.path, '$name ($suffix)'));
+      suffix++;
+    }
+    return directory;
+  }
+}
+
+class _ReplicationContext {
+  const _ReplicationContext({
+    required this.scriptId,
+    required this.run,
+    required this.assets,
+  });
+
+  final String scriptId;
+  final ReplicateRun run;
+  final List<ReplicateAsset> assets;
 }
 
 class _ReplacementReference {

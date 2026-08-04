@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers/app_providers.dart';
+import '../core/widgets/middle_drag_auto_scroll.dart';
 import '../features/updater/domain/app_update_config.dart';
 import '../features/settings/domain/app_settings.dart';
 import 'app_theme.dart';
+import 'window_fullscreen_controller.dart';
 import '../features/projects/presentation/project_portal.dart';
 
-class StoryboardApp extends ConsumerWidget {
+class StoryboardApp extends ConsumerStatefulWidget {
   const StoryboardApp({
     super.key,
     this.enableWindowControls = true,
@@ -20,7 +22,20 @@ class StoryboardApp extends ConsumerWidget {
   final String? initialProjectIndexPath;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<StoryboardApp> createState() => _StoryboardAppState();
+}
+
+class _StoryboardAppState extends ConsumerState<StoryboardApp> {
+  late final MiddleDragAutoScrollController _middleDragScrollController;
+
+  @override
+  void initState() {
+    super.initState();
+    _middleDragScrollController = MiddleDragAutoScrollController();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final settingsController = ref.watch(settingsControllerProvider);
     return ValueListenableBuilder(
       valueListenable: settingsController,
@@ -31,7 +46,17 @@ class StoryboardApp extends ConsumerWidget {
           theme: AppTheme.light(),
           darkTheme: AppTheme.dark(),
           themeMode: settings.themePreference.themeMode,
-          home: ProjectPortal(initialProjectIndexPath: initialProjectIndexPath),
+          scrollBehavior: MiddleDragScrollBehavior(
+            controller: _middleDragScrollController,
+          ),
+          home: WindowFullscreenController(
+            child: MiddleDragAutoScroll(
+              controller: _middleDragScrollController,
+              child: ProjectPortal(
+                initialProjectIndexPath: widget.initialProjectIndexPath,
+              ),
+            ),
+          ),
         );
       },
     );

@@ -251,16 +251,14 @@ class ShootingScriptAssetBindingController
       message: '正在匹配 0/${shots.length} 个镜头…',
       errorMessage: '',
     );
-    var modelCount = 0;
     for (var index = 0; index < shots.length; index++) {
       if (_disposed) return;
-      final result = await _matchShot(
+      await _matchShot(
         script.id,
         shots[index],
         libraryItems,
         preferredItems: preferredItems,
       );
-      if (result.usedModel) modelCount++;
       if (!_disposed) {
         value = value.copyWith(
           message: '正在匹配 ${index + 1}/${shots.length} 个镜头…',
@@ -268,10 +266,7 @@ class ShootingScriptAssetBindingController
       }
     }
     refresh();
-    value = value.copyWith(
-      isBusy: false,
-      message: modelCount == 0 ? '已完成规则匹配' : '已完成多模态资产匹配',
-    );
+    value = value.copyWith(isBusy: false, message: '已完成本地名称匹配');
   }
 
   Future<void> autoMatchShot(
@@ -284,7 +279,7 @@ class ShootingScriptAssetBindingController
         .firstOrNull;
     if (script == null || shot == null) return;
     value = value.copyWith(isBusy: true, message: '正在匹配镜头 ${shot.shotNumber}…');
-    final result = await _matchShot(
+    await _matchShot(
       script.id,
       shot,
       _libraryController.value.items,
@@ -293,9 +288,7 @@ class ShootingScriptAssetBindingController
     refresh();
     value = value.copyWith(
       isBusy: false,
-      message: result.usedModel
-          ? '镜头 ${shot.shotNumber} 已完成模型匹配'
-          : '镜头 ${shot.shotNumber} 已完成规则匹配',
+      message: '镜头 ${shot.shotNumber} 已完成本地名称匹配',
     );
   }
 
@@ -349,9 +342,7 @@ class ShootingScriptAssetBindingController
       final now = DateTime.now().toUtc();
       _repository.upsertLink(
         existing?.copyWith(
-              matchSource: result.usedModel
-                  ? ScriptAssetMatchSource.model
-                  : ScriptAssetMatchSource.rule,
+              matchSource: ScriptAssetMatchSource.rule,
               confidence: candidate.confidence,
               matchReason: candidate.reason,
               confirmed: candidate.confidence >= 0.82,
@@ -360,9 +351,7 @@ class ShootingScriptAssetBindingController
             ScriptShotAssetLink(
               shotId: shot.id,
               scriptAssetId: scriptAsset.id,
-              matchSource: result.usedModel
-                  ? ScriptAssetMatchSource.model
-                  : ScriptAssetMatchSource.rule,
+              matchSource: ScriptAssetMatchSource.rule,
               confidence: candidate.confidence,
               matchReason: candidate.reason,
               confirmed: candidate.confidence >= 0.82,

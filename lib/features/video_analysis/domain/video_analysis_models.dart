@@ -15,13 +15,6 @@ enum ProcessingStatus {
 }
 
 const videoAnalysisDimensionGroups = <String, List<String>>{
-  '商业创意规则（ABCD + Hook-Body-Close）': [
-    'ABCD-注意力',
-    'ABCD-品牌识别',
-    'ABCD-情感连接',
-    'ABCD-行动指引',
-    'Hook-Body-Close结构',
-  ],
   '开头与注意力': ['开场类型', '黄金3秒内容', '留存钩子', '首帧冲击点', '中途留存机制', '视觉刺激手段'],
   '内容结构与节奏': ['视频结构', '镜头节奏', '信息密度', '冲突/问题', '叙事推进', '结果兑现', '结尾记忆点'],
   '品牌与产品表达': [

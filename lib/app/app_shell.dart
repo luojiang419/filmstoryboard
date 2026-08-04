@@ -22,6 +22,7 @@ import '../features/storyboard/presentation/storyboard_page.dart';
 import '../features/updater/application/updater_controller.dart';
 import '../features/updater/domain/app_update_config.dart';
 import '../features/video_analysis/presentation/video_analysis_page.dart';
+import '../features/video_generation/presentation/video_generation_page.dart';
 import 'window_title_bar.dart';
 
 class AppShell extends ConsumerStatefulWidget {
@@ -45,7 +46,7 @@ class AppShell extends ConsumerStatefulWidget {
 class _AppShellState extends ConsumerState<AppShell> {
   static const _selectedTabIndexKey = 'appShellSelectedTabIndex';
   static const _selectedTabIndexVersionKey = 'appShellSelectedTabIndexVersion';
-  static const _selectedTabIndexVersion = 4;
+  static const _selectedTabIndexVersion = 5;
 
   late int _tabIndex;
   late final UpdaterController _updaterController;
@@ -63,6 +64,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     _ShellTab('视频解析', Icons.video_file_rounded),
     _ShellTab('故事板', Icons.dashboard_customize_rounded),
     _ShellTab('拍摄脚本', Icons.table_chart_rounded),
+    _ShellTab('视频生成', Icons.movie_creation_outlined),
     _ShellTab('导出', Icons.ios_share_rounded),
     _ShellTab('设置', Icons.tune_rounded),
   ];
@@ -188,7 +190,8 @@ class _AppShellState extends ConsumerState<AppShell> {
           1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
           2 => const StoryboardPage(),
           3 => const ShootingScriptPage(),
-          4 => const ExporterPage(),
+          4 => const VideoGenerationPage(),
+          5 => const ExporterPage(),
           _ => const SettingsPage(),
         },
       ),
@@ -230,31 +233,31 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (version == '$_selectedTabIndexVersion') {
       return index;
     }
-    if (version == '3') {
-      return switch (index) {
+    final version4Index = switch (version) {
+      '4' => index,
+      '3' => switch (index) {
         0 => 0,
         1 => 1,
         2 => 2,
         3 || 4 => 3,
         5 => 4,
         _ => 5,
-      };
-    }
-    if (version == '2') {
-      return switch (index) {
+      },
+      '2' => switch (index) {
         0 => 0,
         1 => 1,
         2 => 2,
         3 => 4,
         _ => 5,
-      };
-    }
-    return switch (index) {
-      0 => 1,
-      1 => 2,
-      2 => 4,
-      _ => 5,
+      },
+      _ => switch (index) {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        _ => 5,
+      },
     };
+    return version4Index >= 4 ? version4Index + 1 : version4Index;
   }
 
   AppDatabase _globalDatabase() {

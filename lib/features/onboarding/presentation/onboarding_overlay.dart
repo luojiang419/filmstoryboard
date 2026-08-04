@@ -242,6 +242,7 @@ extension on OnboardingSection {
     OnboardingSection.videoAnalysis => Icons.video_file_rounded,
     OnboardingSection.storyboard => Icons.dashboard_customize_rounded,
     OnboardingSection.shootingScript => Icons.table_chart_rounded,
+    OnboardingSection.videoGeneration => Icons.movie_creation_outlined,
     OnboardingSection.exporter => Icons.ios_share_rounded,
     OnboardingSection.settings => Icons.tune_rounded,
   };

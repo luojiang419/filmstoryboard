@@ -1,6 +1,13 @@
 import '../../video_analysis/domain/video_analysis_models.dart';
 
-enum ReplicateStep { confirmShots, prepareAssets, composePrompts }
+enum ReplicateStep {
+  confirmShots,
+  prepareAssets,
+  composePrompts,
+  generateVideos,
+}
+
+enum ShotPromptFormat { sd2, kling }
 
 enum ReplicateAssetType {
   character,
@@ -20,6 +27,7 @@ class ReplicateRun {
     this.scriptId,
     this.globalStyle = '',
     this.constraints = '',
+    this.replicationInstructions = '',
     this.generationModel = '',
     this.generationAspectRatio = '16:9',
     this.generationImageSize = '',
@@ -33,6 +41,7 @@ class ReplicateRun {
     required this.confirmShotsStatus,
     required this.prepareAssetsStatus,
     required this.composePromptsStatus,
+    this.generateVideosStatus = ProcessingStatus.pending,
     required this.completedCount,
     required this.totalCount,
     required this.errorMessage,
@@ -45,6 +54,9 @@ class ReplicateRun {
   final String? scriptId;
   final String globalStyle;
   final String constraints;
+
+  /// 用户对当前复刻任务的补充要求；生成前会覆盖自动解析中冲突的内容。
+  final String replicationInstructions;
 
   /// 复刻任务专属的默认出图参数，不影响应用的全局图片生成设置。
   final String generationModel;
@@ -60,6 +72,7 @@ class ReplicateRun {
   final ProcessingStatus confirmShotsStatus;
   final ProcessingStatus prepareAssetsStatus;
   final ProcessingStatus composePromptsStatus;
+  final ProcessingStatus generateVideosStatus;
   final int completedCount;
   final int totalCount;
   final String errorMessage;
@@ -71,6 +84,7 @@ class ReplicateRun {
     String? scriptId,
     String? globalStyle,
     String? constraints,
+    String? replicationInstructions,
     String? generationModel,
     String? generationAspectRatio,
     String? generationImageSize,
@@ -84,6 +98,7 @@ class ReplicateRun {
     ProcessingStatus? confirmShotsStatus,
     ProcessingStatus? prepareAssetsStatus,
     ProcessingStatus? composePromptsStatus,
+    ProcessingStatus? generateVideosStatus,
     int? completedCount,
     int? totalCount,
     String? errorMessage,
@@ -94,6 +109,8 @@ class ReplicateRun {
     scriptId: scriptId ?? this.scriptId,
     globalStyle: globalStyle ?? this.globalStyle,
     constraints: constraints ?? this.constraints,
+    replicationInstructions:
+        replicationInstructions ?? this.replicationInstructions,
     generationModel: generationModel ?? this.generationModel,
     generationAspectRatio: generationAspectRatio ?? this.generationAspectRatio,
     generationImageSize: generationImageSize ?? this.generationImageSize,
@@ -107,6 +124,7 @@ class ReplicateRun {
     confirmShotsStatus: confirmShotsStatus ?? this.confirmShotsStatus,
     prepareAssetsStatus: prepareAssetsStatus ?? this.prepareAssetsStatus,
     composePromptsStatus: composePromptsStatus ?? this.composePromptsStatus,
+    generateVideosStatus: generateVideosStatus ?? this.generateVideosStatus,
     completedCount: completedCount ?? this.completedCount,
     totalCount: totalCount ?? this.totalCount,
     errorMessage: errorMessage ?? this.errorMessage,

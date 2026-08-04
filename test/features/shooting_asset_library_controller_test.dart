@@ -39,11 +39,13 @@ void main() {
       type: ReplicateAssetType.character,
       name: '现代模特',
       description: '短发白衬衫',
+      aliases: const ['女主', '小夏'],
     );
 
     expect(item, isNotNull);
     expect(controller.value.items, hasLength(1));
     expect(controller.value.items.single.name, '现代模特');
+    expect(controller.value.items.single.aliases, ['女主', '小夏']);
     expect(File(controller.value.items.single.path).existsSync(), isTrue);
     expect(controller.value.items.single.path, isNot(source.path));
 
@@ -59,6 +61,7 @@ void main() {
     addTearDown(restored.dispose);
     expect(restored.value.items, hasLength(1));
     expect(restored.value.items.single.description, contains('银色耳饰'));
+    expect(restored.value.items.single.aliases, ['女主', '小夏']);
 
     final copiedPath = restored.value.items.single.path;
     await restored.deleteItem(restored.value.items.single.id);
@@ -100,6 +103,7 @@ void main() {
           type: ReplicateAssetType.character,
           name: '',
           description: '',
+          aliases: const <String>[],
         ),
     ]);
 

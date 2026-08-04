@@ -50,6 +50,19 @@ void main() {
           .readBytes()!,
     );
     expect(workbook, contains('<sheet name="多维度分析" sheetId="1"'));
+    final dimensionSheet = utf8.decode(
+      archive
+          .firstWhere((entry) => entry.name == 'xl/worksheets/sheet1.xml')
+          .readBytes()!,
+    );
+    expect(dimensionSheet, contains('证据：可见画面事实'));
+    expect(dimensionSheet, contains('商业作用：帮助用户理解卖点'));
+    expect(dimensionSheet, contains('优化建议：补充产品特写'));
+    expect(videoAnalysisDimensionFields, isNot(contains('ABCD-注意力')));
+    expect(
+      videoAnalysisDimensionGroups.keys,
+      isNot(contains('商业创意规则（ABCD + Hook-Body-Close）')),
+    );
 
     final pdf = await service.export(
       format: AnalysisReportFormat.pdf,
@@ -177,7 +190,8 @@ _ReportFixture _fixture() {
     scope: 'video',
     dimensions: {
       for (final group in videoAnalysisDimensionGroups.values)
-        for (final field in group) field: '$field 的专业分析结果',
+        for (final field in group)
+          field: '证据：可见画面事实\n商业作用：帮助用户理解卖点\n优化建议：补充产品特写',
     },
     rawResponse: '{}',
     status: ProcessingStatus.completed,

@@ -35,9 +35,12 @@ class SettingsRepository {
   static const _videoFrameIntervalSecondsKey = 'videoFrameIntervalSeconds';
   static const _videoSceneThresholdKey = 'videoSceneThreshold';
   static const _videoMinimumSharpnessKey = 'videoMinimumSharpness';
+  static const _videoPreviewPaddingSecondsKey = 'videoPreviewPaddingSeconds';
   static const _videoAnalysisThinkingEnabledKey =
       'videoAnalysisThinkingEnabled';
   static const _fullAutomationEnabledKey = 'fullAutomationEnabled';
+  static const _videoStartEndFrameModeEnabledKey =
+      'videoStartEndFrameModeEnabled';
   static const _replicateDefaultGlobalStyleKey = 'replicateDefaultGlobalStyle';
   static const _replicateDefaultConstraintsKey = 'replicateDefaultConstraints';
   static const _cutImageNumberEnabledKey = 'cutImageNumberEnabled';
@@ -172,10 +175,18 @@ class SettingsRepository {
         min: 0,
         max: 1,
       ),
+      videoPreviewPaddingSeconds: _getDoubleSetting(
+        _videoPreviewPaddingSecondsKey,
+        1.5,
+        min: 0.1,
+        max: 30,
+      ),
       videoAnalysisThinkingEnabled:
           _database.getSetting(_videoAnalysisThinkingEnabledKey) == 'true',
       fullAutomationEnabled:
           _database.getSetting(_fullAutomationEnabledKey) == 'true',
+      videoStartEndFrameModeEnabled:
+          _database.getSetting(_videoStartEndFrameModeEnabledKey) == 'true',
       replicateDefaultGlobalStyle:
           _database.getSetting(_replicateDefaultGlobalStyleKey) ??
           AppSettings.defaultReplicateGlobalStyle,
@@ -253,12 +264,20 @@ class SettingsRepository {
         settings.videoMinimumSharpness.toStringAsFixed(2),
       )
       ..setSetting(
+        _videoPreviewPaddingSecondsKey,
+        settings.videoPreviewPaddingSeconds.toStringAsFixed(2),
+      )
+      ..setSetting(
         _videoAnalysisThinkingEnabledKey,
         settings.videoAnalysisThinkingEnabled.toString(),
       )
       ..setSetting(
         _fullAutomationEnabledKey,
         settings.fullAutomationEnabled.toString(),
+      )
+      ..setSetting(
+        _videoStartEndFrameModeEnabledKey,
+        settings.videoStartEndFrameModeEnabled.toString(),
       )
       ..setSetting(
         _replicateDefaultGlobalStyleKey,
@@ -377,8 +396,10 @@ class SettingsRepository {
       videoFrameIntervalSeconds: 1,
       videoSceneThreshold: 0.3,
       videoMinimumSharpness: 0.08,
+      videoPreviewPaddingSeconds: 1.5,
       videoAnalysisThinkingEnabled: false,
       fullAutomationEnabled: false,
+      videoStartEndFrameModeEnabled: false,
       replicateDefaultGlobalStyle: AppSettings.defaultReplicateGlobalStyle,
       replicateDefaultConstraints: AppSettings.defaultReplicateConstraints,
       cutImageNumberEnabled: false,

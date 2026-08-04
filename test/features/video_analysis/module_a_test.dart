@@ -172,6 +172,10 @@ void main() {
         colorPalette: '暖白',
         visualFocus: '人物面部',
         transitionHint: '接近景',
+        movementTrend: '向前走入',
+        actionStage: '进行',
+        continuesFromPrevious: true,
+        continuesToNext: true,
         scene: '室内',
         productCode: '',
         productStyling: '',
@@ -250,6 +254,10 @@ void main() {
     expect(scriptShot.colorPalette, '暖白');
     expect(scriptShot.visualFocus, '人物面部');
     expect(scriptShot.transitionHint, '接近景');
+    expect(scriptShot.movementTrend, '向前走入');
+    expect(scriptShot.actionStage, '进行');
+    expect(scriptShot.continuesFromPrevious, isTrue);
+    expect(scriptShot.continuesToNext, isTrue);
     expect(
       repository.getReplicateRun('run-1')!.currentStep,
       ReplicateStep.prepareAssets,
@@ -453,6 +461,8 @@ class _BlockingVisionStoryboardService extends VisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     if (!started.isCompleted) {
@@ -482,6 +492,8 @@ class _ConcurrentVisionStoryboardService extends VisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     _activeRequests++;

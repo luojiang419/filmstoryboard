@@ -10,6 +10,7 @@ import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_m
 import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
+import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -36,6 +37,11 @@ void main() {
       _frame('frame-1', video.id, 0, firstFrame.path, now),
       _frame('frame-2', video.id, 1, secondFrame.path, now),
     ];
+    final videoRepository = VideoAnalysisRepository(fixture.database);
+    videoRepository.upsertSourceVideo(video);
+    for (final frame in frames) {
+      videoRepository.upsertVideoFrame(frame);
+    }
     final analyses = [
       _analysis(
         'analysis-1',
@@ -47,6 +53,9 @@ void main() {
         shotSize: '中景',
         movement: '推',
         scene: '摄影棚',
+        movementTrend: '向前移动',
+        actionStage: '准备',
+        continuesToNext: true,
       ),
       _analysis(
         'analysis-2',
@@ -57,7 +66,9 @@ void main() {
         caption: '纹理细节特写',
         shotSize: '特写',
         movement: '固定',
-        scene: '桌面',
+        scene: '摄影棚',
+        movementTrend: '完成向前移动',
+        actionStage: '结果',
       ),
     ];
     final sourceShots = [
@@ -77,6 +88,8 @@ void main() {
     expect(fixture.controller.value.shots.first.content, '镜头叙事 1');
     expect(fixture.controller.value.shots.first.shotSize, '中景');
     expect(fixture.controller.value.shots.first.durationSeconds, 1.2);
+    expect(fixture.controller.value.shots.first.continuesToNext, isTrue);
+    expect(fixture.controller.value.shots[1].continuesFromPrevious, isTrue);
 
     final first = fixture.controller.value.shots.first;
     fixture.controller.updateShot(
@@ -164,6 +177,27 @@ void main() {
     expect(script.name, '新画板 1 · 拍摄脚本');
     expect(fixture.controller.value.selectedScript?.id, script.id);
     expect(fixture.controller.value.shots, isEmpty);
+  });
+
+  test('故事板同步器发现手动新画板时自动创建主拍摄脚本', () async {
+    final fixture = await _createFixture();
+    final storyboardController = StoryboardController(
+      database: fixture.database,
+    );
+    addTearDown(storyboardController.dispose);
+    final syncController = StoryboardShootingScriptSyncController(
+      storyboardController: storyboardController,
+      shootingScriptController: fixture.controller,
+    );
+    addTearDown(syncController.dispose);
+
+    final board = storyboardController.addBoard();
+
+    final script = fixture.controller.value.scripts.singleWhere(
+      (item) => item.sourceStoryboardId == board.id,
+    );
+    expect(script.sourceVideoId, isNull);
+    expect(script.name, '${board.name} · 拍摄脚本');
   });
 
   test('从视频创建的故事板脚本同时保留故事板和源视频关联', () async {
@@ -264,6 +298,11 @@ void main() {
     expect(originals, isNotNull);
     expect(originals!.copiedCount, 1);
     expect(originals.missingCount, 0);
+    expect(
+      p.isWithin(fixture.directories.scripts.path, originals.directory.path),
+      isTrue,
+    );
+    expect(p.basename(originals.directory.path), '商品 A 脚本-原分镜图');
     final copied = originals.directory.listSync().whereType<File>().single;
     expect(await copied.readAsBytes(), await source.readAsBytes());
 
@@ -377,6 +416,10 @@ VideoFrameAnalysis _analysis(
   required String shotSize,
   required String movement,
   required String scene,
+  String movementTrend = '',
+  String actionStage = '',
+  bool continuesFromPrevious = false,
+  bool continuesToNext = false,
 }) => VideoFrameAnalysis(
   id: id,
   videoId: videoId,
@@ -388,6 +431,10 @@ VideoFrameAnalysis _analysis(
     'shotSize': shotSize,
     'cameraMovement': movement,
     'scene': scene,
+    'movementTrend': movementTrend,
+    'actionStage': actionStage,
+    'continuesFromPrevious': continuesFromPrevious.toString(),
+    'continuesToNext': continuesToNext.toString(),
   },
   rawResponse: '{}',
   status: ProcessingStatus.completed,

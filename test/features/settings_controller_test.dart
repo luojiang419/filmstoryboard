@@ -134,6 +134,7 @@ void main() {
       frameIntervalSeconds: 0,
       sceneThreshold: 2,
       minimumSharpness: -1,
+      previewPaddingSeconds: 45,
       thinkingEnabled: true,
     );
 
@@ -146,10 +147,31 @@ void main() {
     expect(restored.videoFrameIntervalSeconds, 0.1);
     expect(restored.videoSceneThreshold, 0.95);
     expect(restored.videoMinimumSharpness, 0);
+    expect(restored.videoPreviewPaddingSeconds, 30);
     expect(restored.videoAnalysisThinkingEnabled, isTrue);
   });
 
-  test('Seedance 提示词默认规则会持久化且空值恢复安全默认值', () async {
+  test('实验性首尾帧模式默认关闭并可持久化', () async {
+    final root = await Directory.systemTemp.createTemp('settings_tail_frame_');
+    addTearDown(() => root.delete(recursive: true));
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    expect(controller.value.videoStartEndFrameModeEnabled, isFalse);
+    await controller.setVideoStartEndFrameModeEnabled(true);
+
+    expect(repository.load().videoStartEndFrameModeEnabled, isTrue);
+    expect(database.getSetting('videoStartEndFrameModeEnabled'), 'true');
+  });
+
+  test('即梦提示词默认规则会持久化且空值恢复安全默认值', () async {
     final root = await Directory.systemTemp.createTemp('settings_replicate_');
     addTearDown(() => root.delete(recursive: true));
 

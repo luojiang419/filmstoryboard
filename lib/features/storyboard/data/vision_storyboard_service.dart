@@ -60,6 +60,8 @@ class VisionImageAnalysis {
     this.colorPalette = '',
     this.narrativeFunction = '',
     this.transitionHint = '',
+    this.continuesFromPrevious = false,
+    this.continuesToNext = false,
     this.recoveryMode = VisionImageRecoveryMode.none,
     this.requestCount = 1,
     this.recoveryErrors = const [],
@@ -88,6 +90,8 @@ class VisionImageAnalysis {
   final String colorPalette;
   final String narrativeFunction;
   final String transitionHint;
+  final bool continuesFromPrevious;
+  final bool continuesToNext;
   final VisionImageRecoveryMode recoveryMode;
   final int requestCount;
   final List<String> recoveryErrors;
@@ -130,6 +134,8 @@ class VisionImageAnalysis {
       colorPalette: colorPalette,
       narrativeFunction: narrativeFunction,
       transitionHint: transitionHint,
+      continuesFromPrevious: continuesFromPrevious,
+      continuesToNext: continuesToNext,
       recoveryMode: recoveryMode,
       requestCount: requestCount,
       recoveryErrors: recoveryErrors,
@@ -232,12 +238,24 @@ class VisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     _validateSettings(settings);
-    final bytes = await imageFile.readAsBytes();
-    final mimeType = _mimeTypeForPath(imageFile.path);
-    final imageDataUrl = 'data:$mimeType;base64,${base64Encode(bytes)}';
+    final imageFiles = <File>[
+      if (previousImageFile?.existsSync() == true) previousImageFile!,
+      imageFile,
+      if (nextImageFile?.existsSync() == true) nextImageFile!,
+    ];
+    final imageDataUrls = <String>[];
+    for (final file in imageFiles) {
+      final bytes = await file.readAsBytes();
+      final mimeType = _mimeTypeForPath(file.path);
+      imageDataUrls.add('data:$mimeType;base64,${base64Encode(bytes)}');
+    }
+    final hasPrevious = previousImageFile?.existsSync() == true;
+    final hasNext = nextImageFile?.existsSync() == true;
     final requestGeneration = _cancelGeneration;
     final responses = <String>[];
     final recoveryErrors = <String>[];
@@ -245,7 +263,7 @@ class VisionStoryboardService {
 
     Future<String> request({
       required String prompt,
-      String? image,
+      List<String> images = const [],
       required int maxTokens,
     }) async {
       _throwIfCancelled(requestGeneration);
@@ -253,7 +271,7 @@ class VisionStoryboardService {
       final content = await _createChatCompletion(
         settings: settings,
         prompt: prompt,
-        imageDataUrl: image,
+        imageDataUrls: images,
         maxTokens: maxTokens,
         allowThinking: allowThinking,
       );
@@ -264,8 +282,14 @@ class VisionStoryboardService {
     String? initialContent;
     try {
       initialContent = await request(
-        prompt: _imagePrompt(sequenceNo, rowIndex, columnIndex),
-        image: imageDataUrl,
+        prompt: _imagePrompt(
+          sequenceNo,
+          rowIndex,
+          columnIndex,
+          hasPrevious: hasPrevious,
+          hasNext: hasNext,
+        ),
+        images: imageDataUrls,
         maxTokens: 1400,
       );
       return _analysisFromContent(
@@ -306,8 +330,14 @@ class VisionStoryboardService {
     try {
       onRecovery?.call(VisionImageRecoveryMode.imageRetry);
       final retryContent = await request(
-        prompt: _imageRetryPrompt(sequenceNo, rowIndex, columnIndex),
-        image: imageDataUrl,
+        prompt: _imageRetryPrompt(
+          sequenceNo,
+          rowIndex,
+          columnIndex,
+          hasPrevious: hasPrevious,
+          hasNext: hasNext,
+        ),
+        images: imageDataUrls,
         maxTokens: 1400,
       );
       return _analysisFromContent(
@@ -326,7 +356,7 @@ class VisionStoryboardService {
       onRecovery?.call(VisionImageRecoveryMode.simplifiedFallback);
       final fallbackContent = await request(
         prompt: _simplifiedImagePrompt(sequenceNo, rowIndex, columnIndex),
-        image: imageDataUrl,
+        images: imageDataUrls,
         maxTokens: 800,
       );
       return _analysisFromContent(
@@ -426,6 +456,14 @@ class VisionStoryboardService {
       transitionHint: _firstStringValue(json, const [
         'transition_hint',
         'transitionHint',
+      ]),
+      continuesFromPrevious: _boolValue(json, const [
+        'continues_from_previous',
+        'continuesFromPrevious',
+      ]),
+      continuesToNext: _boolValue(json, const [
+        'continues_to_next',
+        'continuesToNext',
       ]),
       recoveryMode: recoveryMode,
       requestCount: requestCount,
@@ -863,10 +901,26 @@ class VisionStoryboardService {
     }
   }
 
-  String _imagePrompt(int sequenceNo, int rowIndex, int columnIndex) {
+  String _imagePrompt(
+    int sequenceNo,
+    int rowIndex,
+    int columnIndex, {
+    bool hasPrevious = false,
+    bool hasNext = false,
+  }) {
+    final sequenceGuide = switch ((hasPrevious, hasNext)) {
+      (true, true) =>
+        '本次按时间顺序提供三张图：上一帧、当前帧、下一帧。所有主体、动作和运动字段必须以当前帧为中心，结合前后帧的可见变化判断。',
+      (true, false) => '本次按时间顺序提供两张图：上一帧、当前帧。所有主体、动作和运动字段必须以第二张当前帧为中心，结合上一帧判断。',
+      (false, true) => '本次按时间顺序提供两张图：当前帧、下一帧。所有主体、动作和运动字段必须以第一张当前帧为中心，结合下一帧判断。',
+      (false, false) => '本次只提供当前帧；无法可靠判断运动方向时必须明确写不明显。',
+    };
     return '''
 你正在为故事板自动生成画面描述，并为后续自动重排序提取专业镜头线索。
 请分析第 $sequenceNo 张图片，它位于第 ${rowIndex + 1} 行、第 ${columnIndex + 1} 列。
+$sequenceGuide
+禁止根据单帧姿态猜测运动：只有前后帧出现可见位移、姿态推进或动作结果时，才能判断运动趋势和动作阶段。
+请判断当前动作是否承接上一帧、是否继续到下一帧；必须同时满足人物/主体、场景和动作因果连续，单纯处于同一场景不算同一组动作。
 描述要有镜头画面感：把主体、环境、动作、情绪、光线、视觉焦点和镜头意图连成一句自然中文。
 称呼规范：成年女性统一称为“女模特”，成年男性统一称为“男模特”，不要使用“女子”“男子”。
 请额外细分神态、姿态动作、运动趋势、景别、构图、人物朝向、视线方向、动作阶段、空间关系、时间进度线索、机位角度、视觉焦点、光线情绪、色彩调性、镜头叙事功能和剪辑承接。
@@ -904,17 +958,25 @@ JSON 字段：
   "color_palette": "主要色彩和风格倾向，例如冷蓝灰、暖金色、黑白高反差、清爽白绿、品牌主色",
   "narrative_function": "镜头叙事功能，例如建立、推进、揭示、证明、反应、转折、结果、收束、广告产品记忆点、静态展示",
   "transition_hint": "剪辑承接建议，例如适合开场、承接上一动作、作为中段插入细节、接反应镜头、回到结果、适合收尾"
+  ,"continues_from_previous": "布尔字符串 true 或 false；当前动作是否明确承接上一帧，没有上一帧时必须为 false"
+  ,"continues_to_next": "布尔字符串 true 或 false；当前动作是否明确继续到下一帧，没有下一帧时必须为 false"
 }
 ''';
   }
 
-  String _imageRetryPrompt(int sequenceNo, int rowIndex, int columnIndex) {
+  String _imageRetryPrompt(
+    int sequenceNo,
+    int rowIndex,
+    int columnIndex, {
+    bool hasPrevious = false,
+    bool hasNext = false,
+  }) {
     return '''
 上一次解析第 $sequenceNo 张图片时，模型响应无法通过标准 JSON 校验。
 请重新观察图片并完整分析，不要复用上一次的错误格式。
 特别注意：JSON 字符串内部禁止出现未转义英文双引号；画面文字统一使用中文引号“”。
 
-${_imagePrompt(sequenceNo, rowIndex, columnIndex)}
+${_imagePrompt(sequenceNo, rowIndex, columnIndex, hasPrevious: hasPrevious, hasNext: hasNext)}
 ''';
   }
 
@@ -1024,16 +1086,10 @@ JSON 字段：
     final buffer = StringBuffer()
       ..writeln('你是一名资深短视频广告策略师、剪辑导演和转化分析师。')
       ..writeln('请基于下面可见的逐镜头事实，完成整条参考视频的多维度专业拆解。')
-      ..writeln(
-        '商业规则参考：Google ABCD（Attention、Branding、Connection、Direction），以及 TikTok Creative Codes 的 Hook-Body-Close、刺激留存、声音和明确 CTA。',
-      )
       ..writeln('只返回一个扁平 JSON 对象，不要 Markdown，不要解释，不要新增字段。')
       ..writeln('不得编造画面中不存在的产品、品牌、价格、福利、证明、评论或 CTA；无法确认时明确写“未在可见画面中确认”。')
       ..writeln(
-        '每个字段尽量写“可见证据 → 商业作用 → 缺口/优化建议”，至少一个完整句子；不要只写“吸引用户、节奏较快、画面高级”等空泛结论。',
-      )
-      ..writeln(
-        'ABCD 字段必须分别判断注意力、品牌识别、人与内容的情感连接、行动指引是否成立；Hook-Body-Close 必须标出三段内容和断点。',
+        '每个字段必须按三行返回："证据：…\\n商业作用：…\\n优化建议：…"。即使某项未确认，也要保留三行并说明原因；不要只写“吸引用户、节奏较快、画面高级”等空泛结论。',
       )
       ..writeln('如果某项只依赖音频、字幕、落地页或视频比例而当前输入没有事实，必须明确标记未确认，不要用行业常识代替证据。')
       ..writeln('JSON 必须包含以下全部字段，键名必须完全一致：')
@@ -1043,7 +1099,9 @@ JSON 字段：
     for (var index = 0; index < videoAnalysisDimensionFields.length; index++) {
       final field = videoAnalysisDimensionFields[index];
       final comma = index == videoAnalysisDimensionFields.length - 1 ? '' : ',';
-      buffer.writeln('  "$field": "证据；商业作用；缺口或优化建议"$comma');
+      buffer.writeln(
+        '  "$field": "证据：可见画面事实\\n商业作用：该事实对留存、理解或转化的作用\\n优化建议：可执行的优化方向"$comma',
+      );
     }
     buffer
       ..writeln('}')
@@ -1326,6 +1384,21 @@ JSON 字段：
       }
     }
     return '';
+  }
+
+  bool _boolValue(Map<String, dynamic> json, List<String> keys) {
+    for (final key in keys) {
+      final value = json[key];
+      if (value is bool) return value;
+      final normalized = '$value'.trim().toLowerCase();
+      if (const {'true', '1', 'yes', '是', '连续', '承接'}.contains(normalized)) {
+        return true;
+      }
+      if (const {'false', '0', 'no', '否', '不连续', '不承接'}.contains(normalized)) {
+        return false;
+      }
+    }
+    return false;
   }
 
   List<int> _orderListValue(Map<String, dynamic> json, int expectedCount) {

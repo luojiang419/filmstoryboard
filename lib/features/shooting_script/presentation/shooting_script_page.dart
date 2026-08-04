@@ -88,6 +88,11 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                       _PageHeader(
                         state: state,
                         controller: controller,
+                        onExportStoryboardImages: () => _exportStoryboardImages(
+                          context,
+                          controller,
+                          replicateController,
+                        ),
                         onRename: () =>
                             _renameScript(context, controller, state),
                         onDelete: () =>
@@ -370,7 +375,13 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     );
     await controller.importItems([
       for (final file in files)
-        (sourcePath: file.path, type: type, name: '', description: ''),
+        (
+          sourcePath: file.path,
+          type: type,
+          name: '',
+          description: '',
+          aliases: const <String>[],
+        ),
     ]);
   }
 
@@ -394,6 +405,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
       type: result.type,
       name: result.name,
       description: result.description,
+      aliases: result.aliases,
     );
   }
 
@@ -408,6 +420,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
       initialType: item.type,
       initialName: item.name,
       initialDescription: item.description,
+      initialAliases: item.aliases.join(', '),
       initialPath: item.path,
       allowTypeChange: true,
       includePath: false,
@@ -420,6 +433,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
         type: result.type,
         name: result.name,
         description: result.description,
+        aliases: result.aliases,
       ),
     );
   }
@@ -430,6 +444,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     required ReplicateAssetType initialType,
     String initialName = '',
     String initialDescription = '',
+    String initialAliases = '',
     String initialPath = '',
     required bool allowTypeChange,
     required bool includePath,
@@ -439,6 +454,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     final descriptionController = TextEditingController(
       text: initialDescription,
     );
+    final aliasesController = TextEditingController(text: initialAliases);
     final pathController = TextEditingController(text: initialPath);
     final result = await showDialog<_LibraryAssetEditorResult>(
       context: context,
@@ -487,6 +503,14 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                     alignLabelWithHint: true,
                   ),
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: aliasesController,
+                  decoration: const InputDecoration(
+                    labelText: '匹配别名（用逗号分隔）',
+                    helperText: '用于故事板名称自动绑定，不参与视觉识别',
+                  ),
+                ),
               ],
             ),
           ),
@@ -501,6 +525,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                   type: type,
                   name: nameController.text.trim(),
                   description: descriptionController.text.trim(),
+                  aliases: _parseAliases(aliasesController.text),
                   path: pathController.text.trim(),
                 ),
               ),
@@ -512,9 +537,17 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     );
     nameController.dispose();
     descriptionController.dispose();
+    aliasesController.dispose();
     pathController.dispose();
     return result;
   }
+
+  static List<String> _parseAliases(String value) => value
+      .split(RegExp(r'[,，;；\n\r]+'))
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .toSet()
+      .toList(growable: false);
 
   Future<void> _createScript(
     BuildContext context,
@@ -523,6 +556,55 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     final name = await _askName(context, title: '新建拍摄脚本', initial: '新建脚本');
     if (name != null) {
       controller.createEmpty(name: name);
+    }
+  }
+
+  Future<void> _exportStoryboardImages(
+    BuildContext context,
+    ShootingScriptController scriptController,
+    ReplicateController replicateController,
+  ) async {
+    final choice = await showDialog<_StoryboardImageExportChoice>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('导出分镜图片'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              key: const ValueKey('export-original-storyboard-images'),
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('导出原分镜图'),
+              onTap: () => Navigator.of(
+                context,
+              ).pop(_StoryboardImageExportChoice.original),
+            ),
+            ListTile(
+              key: const ValueKey('export-replicated-storyboard-images'),
+              leading: const Icon(Icons.auto_awesome_motion_rounded),
+              title: const Text('导出复刻分镜图'),
+              onTap: () => Navigator.of(
+                context,
+              ).pop(_StoryboardImageExportChoice.replicated),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    switch (choice) {
+      case _StoryboardImageExportChoice.original:
+        await scriptController.exportOriginalImages();
+        break;
+      case _StoryboardImageExportChoice.replicated:
+        await replicateController.exportReplicatedImages();
+        break;
     }
   }
 
@@ -616,16 +698,20 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
   }
 }
 
+enum _StoryboardImageExportChoice { original, replicated }
+
 class _PageHeader extends StatelessWidget {
   const _PageHeader({
     required this.state,
     required this.controller,
+    required this.onExportStoryboardImages,
     required this.onRename,
     required this.onDelete,
   });
 
   final ShootingScriptState state;
   final ShootingScriptController controller;
+  final VoidCallback onExportStoryboardImages;
   final VoidCallback onRename;
   final VoidCallback onDelete;
 
@@ -702,9 +788,9 @@ class _PageHeader extends StatelessWidget {
                         state.isExporting ||
                         state.shots.isEmpty
                     ? null
-                    : controller.exportOriginalImages,
+                    : onExportStoryboardImages,
                 icon: const Icon(Icons.photo_library_outlined),
-                label: const Text('导出原图'),
+                label: const Text('导出分镜图片'),
               ),
               IconButton(
                 tooltip: '打开脚本导出目录',
@@ -1779,7 +1865,6 @@ class _ScriptTableRow extends StatelessWidget {
         key: ValueKey('${shot.id}-$label'),
         initialValue: value,
         label: label,
-        maxLines: 4,
         onSaved: onSaved,
       ),
     ),
@@ -1840,13 +1925,11 @@ class _CommitTextField extends StatefulWidget {
     required this.initialValue,
     required this.label,
     required this.onSaved,
-    this.maxLines = 1,
   });
 
   final String initialValue;
   final String label;
   final ValueChanged<String> onSaved;
-  final int maxLines;
 
   @override
   State<_CommitTextField> createState() => _CommitTextFieldState();
@@ -1903,8 +1986,10 @@ class _CommitTextFieldState extends State<_CommitTextField> {
     return TextField(
       controller: _controller,
       focusNode: _focusNode,
-      maxLines: widget.maxLines,
-      minLines: 1,
+      maxLines: null,
+      minLines: null,
+      expands: true,
+      textAlignVertical: TextAlignVertical.top,
       decoration: InputDecoration(
         labelText: widget.label,
         isDense: true,
@@ -1920,12 +2005,14 @@ class _LibraryAssetEditorResult {
     required this.type,
     required this.name,
     required this.description,
+    this.aliases = const [],
     required this.path,
   });
 
   final ReplicateAssetType type;
   final String name;
   final String description;
+  final List<String> aliases;
   final String path;
 }
 

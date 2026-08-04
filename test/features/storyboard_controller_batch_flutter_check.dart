@@ -398,6 +398,7 @@ void main() {
     final controller = fixture.controller;
 
     controller.setAssetsUsed([_asset(1)], true);
+    controller.setCaptionFontSize(30);
     final beforeHeight = controller.value.selectedBoard!.height;
     controller.updateCaption(
       0,
@@ -1021,7 +1022,7 @@ void main() {
     expect(item.flipHorizontal, isTrue);
   });
 
-  test('资源失效刷新后会清理画板并保存', () async {
+  test('手动画板的失效资源会保留为可移除占位符并保存', () async {
     final root = await Directory.systemTemp.createTemp('storyboard_cleanup_');
     final database = await AppDatabase.open(
       File(p.join(root.path, 'storyboard.sqlite')),
@@ -1040,11 +1041,53 @@ void main() {
 
     await File(asset.path).delete();
     await controller.refreshAssets();
+    expect(controller.value.selectedBoard!.items, hasLength(1));
+    expect(
+      controller.value.selectedBoard!.items.single.resourceRemoved,
+      isTrue,
+    );
+
+    controller.removeAsset(asset.id);
     expect(controller.value.selectedBoard!.items, isEmpty);
 
     final restored = StoryboardController(database: database);
     addTearDown(restored.dispose);
     expect(restored.value.selectedBoard!.items, isEmpty);
+  });
+
+  test('删除自动故事板的裁切资源会关闭并移除对应画板', () async {
+    final fixture = await _createFixture();
+    final controller = fixture.controller;
+    final source = File(p.join(fixture.root.path, 'external-source.png'));
+    final image = img.Image(width: 16, height: 9);
+    await source.writeAsBytes(img.encodePng(image));
+
+    final boardId = await controller.createOrReplaceBoardFromExternalImages(
+      sourceId: 'video-1',
+      boardName: '自动故事板',
+      images: [
+        StoryboardExternalImage(
+          stableId: 'frame-1',
+          sourceName: 'external-source.png',
+          path: source.path,
+          width: image.width,
+          height: image.height,
+        ),
+      ],
+    );
+
+    expect(boardId, 'external-board:video-1');
+    expect(controller.value.selectedBoardId, boardId);
+
+    controller.deleteAssetGroup('external-image:video-1');
+
+    expect(
+      controller.value.boards.where((board) => board.id == boardId),
+      isEmpty,
+    );
+    expect(controller.value.openBoardIds, isNot(contains(boardId)));
+    expect(controller.value.selectedBoardId, isNot(boardId));
+    expect(source.existsSync(), isTrue);
   });
 
   test('总图片目录编组会清理旧编组中的来源及子图引用', () async {
@@ -1213,7 +1256,11 @@ void main() {
     folder = controller.value.folders.single;
     expect(folder.assets, hasLength(1));
     expect(folder.assets.any((asset) => asset.id == deletedAsset.id), isFalse);
-    expect(controller.value.selectedBoard!.items, isEmpty);
+    expect(controller.value.selectedBoard!.items, hasLength(1));
+    expect(
+      controller.value.selectedBoard!.items.single.resourceRemoved,
+      isTrue,
+    );
   });
 
   test('自定义文件夹可以创建资源编组', () async {
@@ -2780,6 +2827,8 @@ class _FakeVisionStoryboardService extends VisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeImageCount++;
@@ -2955,6 +3004,8 @@ class _BlockingVisionStoryboardService extends _FakeVisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     if (!analysisStarted.isCompleted) {
@@ -2967,6 +3018,9 @@ class _BlockingVisionStoryboardService extends _FakeVisionStoryboardService {
       sequenceNo: sequenceNo,
       rowIndex: rowIndex,
       columnIndex: columnIndex,
+      allowThinking: allowThinking,
+      previousImageFile: previousImageFile,
+      nextImageFile: nextImageFile,
       onRecovery: onRecovery,
     );
   }

@@ -440,6 +440,8 @@ class _FakeVideoStoryboardVisionService extends VisionStoryboardService {
     required int rowIndex,
     required int columnIndex,
     bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeImageCount++;

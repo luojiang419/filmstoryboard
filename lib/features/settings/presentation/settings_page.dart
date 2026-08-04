@@ -46,6 +46,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   late final TextEditingController _videoFrameIntervalController;
   late final TextEditingController _videoSceneThresholdController;
   late final TextEditingController _videoMinimumSharpnessController;
+  late final TextEditingController _videoPreviewPaddingController;
   late final TextEditingController _replicateGlobalStyleController;
   late final TextEditingController _replicateConstraintsController;
   late final TextEditingController _updateManualProxyUrlController;
@@ -75,6 +76,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _videoMinimumSharpnessController = TextEditingController(
       text: controller.value.videoMinimumSharpness.toStringAsFixed(2),
     );
+    _videoPreviewPaddingController = TextEditingController(
+      text: controller.value.videoPreviewPaddingSeconds.toStringAsFixed(2),
+    );
     _replicateGlobalStyleController = TextEditingController(
       text: controller.value.replicateDefaultGlobalStyle,
     );
@@ -98,6 +102,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _videoFrameIntervalController.dispose();
     _videoSceneThresholdController.dispose();
     _videoMinimumSharpnessController.dispose();
+    _videoPreviewPaddingController.dispose();
     _replicateGlobalStyleController.dispose();
     _replicateConstraintsController.dispose();
     _updateManualProxyUrlController.dispose();
@@ -127,6 +132,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     if (_videoMinimumSharpnessController.text != minimumSharpness) {
       _videoMinimumSharpnessController.text = minimumSharpness;
     }
+    final previewPadding = settings.videoPreviewPaddingSeconds.toStringAsFixed(
+      2,
+    );
+    if (_videoPreviewPaddingController.text != previewPadding) {
+      _videoPreviewPaddingController.text = previewPadding;
+    }
     if (_replicateGlobalStyleController.text !=
         settings.replicateDefaultGlobalStyle) {
       _replicateGlobalStyleController.text =
@@ -154,6 +165,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           double.tryParse(_videoSceneThresholdController.text) ?? 0.3,
       minimumSharpness:
           double.tryParse(_videoMinimumSharpnessController.text) ?? 0.08,
+      previewPaddingSeconds:
+          double.tryParse(_videoPreviewPaddingController.text) ?? 1.5,
       thinkingEnabled: controller.value.videoAnalysisThinkingEnabled,
     );
   }
@@ -592,6 +605,19 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     ],
                   ),
                   const SizedBox(height: 12),
+                  TextField(
+                    key: const ValueKey('video-preview-padding-field'),
+                    controller: _videoPreviewPaddingController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: '播放视频帧前后（秒）',
+                      helperText: '控制原视频缩略图弹窗的 I/O 点；范围 0.1–30 秒',
+                      prefixIcon: Icon(Icons.play_circle_outline_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   Align(
                     alignment: Alignment.centerLeft,
                     child: FilledButton.icon(
@@ -607,7 +633,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ),
             const SizedBox(height: 14),
             _CollapsibleSection(
-              title: 'Seedance 提示词默认规则',
+              title: '即梦提示词默认规则',
               expanded: _sectionExpanded(_SettingsSection.promptDefaults),
               onToggle: () => _toggleSection(_SettingsSection.promptDefaults),
               child: Column(

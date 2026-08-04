@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 9;
+  static const currentSchemaVersion = 14;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -536,6 +536,7 @@ class AppDatabase {
           id TEXT PRIMARY KEY,
           script_id TEXT NOT NULL REFERENCES shooting_scripts(id) ON DELETE CASCADE,
           source_storyboard_asset_id TEXT,
+          source_video_frame_id TEXT REFERENCES video_frames(id) ON DELETE SET NULL,
           shot_number INTEGER NOT NULL,
           duration_seconds REAL NOT NULL DEFAULT 0,
           frame_path TEXT NOT NULL DEFAULT '',
@@ -550,12 +551,17 @@ class AppDatabase {
           color_palette TEXT NOT NULL DEFAULT '',
           visual_focus TEXT NOT NULL DEFAULT '',
           transition_hint TEXT NOT NULL DEFAULT '',
+          movement_trend TEXT NOT NULL DEFAULT '',
+          action_stage TEXT NOT NULL DEFAULT '',
+          continues_from_previous INTEGER NOT NULL DEFAULT 0,
+          continues_to_next INTEGER NOT NULL DEFAULT 0,
           scene TEXT NOT NULL DEFAULT '',
           product_code TEXT NOT NULL DEFAULT '',
           product_styling TEXT NOT NULL DEFAULT '',
           dialogue TEXT NOT NULL DEFAULT '',
           sound TEXT NOT NULL DEFAULT '',
           prompt TEXT NOT NULL DEFAULT '',
+          replication_instructions TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'pending',
           updated_at TEXT NOT NULL,
           UNIQUE(script_id, shot_number)
@@ -566,8 +572,9 @@ class AppDatabase {
           id TEXT PRIMARY KEY,
           video_id TEXT,
           script_id TEXT NOT NULL DEFAULT '',
-          global_style TEXT NOT NULL DEFAULT '',
-          constraints_text TEXT NOT NULL DEFAULT '',
+           global_style TEXT NOT NULL DEFAULT '',
+           constraints_text TEXT NOT NULL DEFAULT '',
+           replication_instructions TEXT NOT NULL DEFAULT '',
           confirmed_shot_ids_json TEXT NOT NULL DEFAULT '[]',
           image_reference_count INTEGER NOT NULL DEFAULT 0,
           video_reference_count INTEGER NOT NULL DEFAULT 0,
@@ -577,6 +584,7 @@ class AppDatabase {
           confirm_shots_status TEXT NOT NULL DEFAULT 'pending',
           prepare_assets_status TEXT NOT NULL DEFAULT 'pending',
           compose_prompts_status TEXT NOT NULL DEFAULT 'pending',
+          generate_videos_status TEXT NOT NULL DEFAULT 'pending',
           completed_count INTEGER NOT NULL DEFAULT 0,
           total_count INTEGER NOT NULL DEFAULT 0,
           error_message TEXT NOT NULL DEFAULT '',
@@ -770,6 +778,111 @@ class AppDatabase {
       _ensureTextColumn('replicate_runs', 'generation_image_size');
       _ensureTextColumn('replicate_runs', 'generation_quality');
       _database.execute('PRAGMA user_version = 9;');
+    }
+    if (version < 10) {
+      _ensureTextColumn('shooting_asset_library_items', 'aliases_json');
+      _database.execute(
+        "UPDATE shooting_asset_library_items SET aliases_json = '[]' "
+        "WHERE aliases_json = '';",
+      );
+      _database.execute('PRAGMA user_version = 10;');
+    }
+    if (version < 11) {
+      _ensureTextColumn('replicate_runs', 'replication_instructions');
+      _database.execute('PRAGMA user_version = 11;');
+    }
+    if (version < 12) {
+      _ensureTextColumn('script_shots', 'replication_instructions');
+      _database.execute('PRAGMA user_version = 12;');
+    }
+    if (version < 13) {
+      _ensureNullableTextColumn('script_shots', 'source_video_frame_id');
+      _ensureTextColumn('replicate_runs', 'generate_videos_status');
+      _database
+        ..execute(
+          "UPDATE replicate_runs SET generate_videos_status = 'pending' "
+          "WHERE generate_videos_status = '';",
+        )
+        ..execute('''
+          UPDATE script_shots
+          SET source_video_frame_id = (
+            SELECT frame.id
+            FROM shooting_scripts AS script
+            INNER JOIN video_frames AS frame
+              ON frame.video_id = script.source_video_id
+            WHERE script.id = script_shots.script_id
+              AND lower(frame.path) = lower(script_shots.frame_path)
+            LIMIT 1
+          )
+          WHERE source_video_frame_id IS NULL
+            AND frame_path <> '';
+        ''')
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS video_generation_profiles (
+            script_id TEXT PRIMARY KEY REFERENCES shooting_scripts(id) ON DELETE CASCADE,
+            model TEXT NOT NULL DEFAULT '',
+            parameters_json TEXT NOT NULL DEFAULT '{}',
+            prompt_mode TEXT NOT NULL DEFAULT 'klingOptimized',
+            prefer_without_watermark INTEGER NOT NULL DEFAULT 1,
+            directory_name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+        ''')
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS video_generation_drafts (
+            id TEXT PRIMARY KEY,
+            script_id TEXT NOT NULL REFERENCES shooting_scripts(id) ON DELETE CASCADE,
+            shot_id TEXT NOT NULL UNIQUE REFERENCES script_shots(id) ON DELETE CASCADE,
+            source_prompt TEXT NOT NULL DEFAULT '',
+            kling_prompt TEXT NOT NULL DEFAULT '',
+            edited_prompt TEXT NOT NULL DEFAULT '',
+            prompt_mode TEXT NOT NULL DEFAULT 'klingOptimized',
+            updated_at TEXT NOT NULL
+          );
+        ''')
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS video_generation_tasks (
+            id TEXT PRIMARY KEY,
+            script_id TEXT NOT NULL REFERENCES shooting_scripts(id) ON DELETE CASCADE,
+            shot_id TEXT NOT NULL REFERENCES script_shots(id) ON DELETE CASCADE,
+            generation_id TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL,
+            parameters_json TEXT NOT NULL DEFAULT '{}',
+            duration_seconds INTEGER NOT NULL,
+            prompt_mode TEXT NOT NULL,
+            prompt_text TEXT NOT NULL,
+            credits_before INTEGER,
+            credits_after INTEGER,
+            status TEXT NOT NULL DEFAULT 'draft',
+            result_url TEXT NOT NULL DEFAULT '',
+            result_without_watermark_url TEXT NOT NULL DEFAULT '',
+            local_path TEXT NOT NULL DEFAULT '',
+            tail_image_path TEXT NOT NULL DEFAULT '',
+            used_watermarked_fallback INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+          );
+        ''')
+        ..execute('''
+          CREATE INDEX IF NOT EXISTS idx_video_generation_tasks_script_shot
+          ON video_generation_tasks(script_id, shot_id, created_at DESC);
+        ''')
+        ..execute('''
+          CREATE INDEX IF NOT EXISTS idx_video_generation_tasks_status
+          ON video_generation_tasks(status, updated_at DESC);
+        ''')
+        ..execute('PRAGMA user_version = 13;');
+    }
+    if (version < 14) {
+      _ensureTextColumn('script_shots', 'movement_trend');
+      _ensureTextColumn('script_shots', 'action_stage');
+      _ensureIntegerColumn('script_shots', 'continues_from_previous');
+      _ensureIntegerColumn('script_shots', 'continues_to_next');
+      _ensureTextColumn('video_generation_tasks', 'tail_image_path');
+      _database.execute('PRAGMA user_version = 14;');
     }
   }
 

@@ -82,8 +82,19 @@ void main() {
         tester.view.physicalSize.width / tester.view.devicePixelRatio;
     expect(bottomTabsCenter.dx, closeTo(logicalWidth / 2, 0.5));
     expect(database.getSetting('appShellSelectedTabIndex'), '1');
-    expect(database.getSetting('appShellSelectedTabIndexVersion'), '4');
+    expect(database.getSetting('appShellSelectedTabIndexVersion'), '5');
     expect(find.byKey(const ValueKey('app-shell-tab-一键复刻')), findsNothing);
+    final shootingTab = tester.getCenter(
+      find.byKey(const ValueKey('app-shell-tab-拍摄脚本')),
+    );
+    final videoGenerationTab = tester.getCenter(
+      find.byKey(const ValueKey('app-shell-tab-视频生成')),
+    );
+    final exportTab = tester.getCenter(
+      find.byKey(const ValueKey('app-shell-tab-导出')),
+    );
+    expect(shootingTab.dx, lessThan(videoGenerationTab.dx));
+    expect(videoGenerationTab.dx, lessThan(exportTab.dx));
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));
     await tester.pumpAndSettle();
@@ -140,7 +151,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('外观'), findsOneWidget);
-    expect(database.getSetting('appShellSelectedTabIndex'), '5');
+    expect(database.getSetting('appShellSelectedTabIndex'), '6');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -321,7 +332,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-导出')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(database.getSetting('appShellSelectedTabIndex'), '4');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.tap(find.byKey(const ValueKey('show-onboarding-help')));
     await tester.pump(const Duration(milliseconds: 100));
@@ -329,12 +340,12 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(find.byKey(const ValueKey('onboarding-next')));
     await tester.pump(const Duration(milliseconds: 240));
-    expect(database.getSetting('appShellSelectedTabIndex'), '4');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.tap(find.byKey(const ValueKey('onboarding-skip')));
     await tester.pump(const Duration(milliseconds: 240));
     expect(find.byKey(const ValueKey('onboarding-overlay')), findsNothing);
-    expect(database.getSetting('appShellSelectedTabIndex'), '4');
+    expect(database.getSetting('appShellSelectedTabIndex'), '5');
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

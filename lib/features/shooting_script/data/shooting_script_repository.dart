@@ -51,10 +51,30 @@ class ShootingScriptRepository {
   void replaceShots(String scriptId, List<ScriptShot> shots) {
     _database.executeStatement('BEGIN IMMEDIATE;');
     try {
-      _database.executeStatement(
-        'DELETE FROM script_shots WHERE script_id = ?;',
-        [scriptId],
-      );
+      final shotIds = [for (final shot in shots) shot.id];
+      if (shotIds.isEmpty) {
+        _database.executeStatement(
+          'DELETE FROM script_shots WHERE script_id = ?;',
+          [scriptId],
+        );
+      } else {
+        final placeholders = List.filled(shotIds.length, '?').join(', ');
+        _database.executeStatement(
+          '''
+          DELETE FROM script_shots
+          WHERE script_id = ? AND id NOT IN ($placeholders);
+          ''',
+          [scriptId, ...shotIds],
+        );
+        _database.executeStatement(
+          '''
+          UPDATE script_shots
+          SET shot_number = shot_number + 1000000
+          WHERE script_id = ?;
+          ''',
+          [scriptId],
+        );
+      }
       for (final shot in shots) {
         _insertShot(shot);
       }
@@ -75,21 +95,54 @@ class ShootingScriptRepository {
     _database.executeStatement(
       '''
       INSERT INTO script_shots(
-        id, script_id, source_storyboard_asset_id, shot_number,
+        id, script_id, source_storyboard_asset_id, source_video_frame_id, shot_number,
         duration_seconds, frame_path, visual,
         content, shot_size, camera_movement, camera_notes, composition,
         camera_angle, lighting_mood, color_palette, visual_focus,
-        transition_hint, scene, product_code, product_styling, dialogue,
-        sound, prompt, status, updated_at
+        transition_hint, movement_trend, action_stage, continues_from_previous,
+        continues_to_next, scene, product_code, product_styling, dialogue,
+        sound, prompt, replication_instructions, status, updated_at
       ) VALUES(
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      );
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        script_id = excluded.script_id,
+        source_storyboard_asset_id = excluded.source_storyboard_asset_id,
+        source_video_frame_id = excluded.source_video_frame_id,
+        shot_number = excluded.shot_number,
+        duration_seconds = excluded.duration_seconds,
+        frame_path = excluded.frame_path,
+        visual = excluded.visual,
+        content = excluded.content,
+        shot_size = excluded.shot_size,
+        camera_movement = excluded.camera_movement,
+        camera_notes = excluded.camera_notes,
+        composition = excluded.composition,
+        camera_angle = excluded.camera_angle,
+        lighting_mood = excluded.lighting_mood,
+        color_palette = excluded.color_palette,
+        visual_focus = excluded.visual_focus,
+        transition_hint = excluded.transition_hint,
+        movement_trend = excluded.movement_trend,
+        action_stage = excluded.action_stage,
+        continues_from_previous = excluded.continues_from_previous,
+        continues_to_next = excluded.continues_to_next,
+        scene = excluded.scene,
+        product_code = excluded.product_code,
+        product_styling = excluded.product_styling,
+        dialogue = excluded.dialogue,
+        sound = excluded.sound,
+        prompt = excluded.prompt,
+        replication_instructions = excluded.replication_instructions,
+        status = excluded.status,
+        updated_at = excluded.updated_at;
       ''',
       [
         shot.id,
         shot.scriptId,
         shot.sourceStoryboardAssetId,
+        shot.sourceVideoFrameId,
         shot.shotNumber,
         shot.durationSeconds,
         shot.framePath,
@@ -104,12 +157,17 @@ class ShootingScriptRepository {
         shot.colorPalette,
         shot.visualFocus,
         shot.transitionHint,
+        shot.movementTrend,
+        shot.actionStage,
+        shot.continuesFromPrevious ? 1 : 0,
+        shot.continuesToNext ? 1 : 0,
         shot.scene,
         shot.productCode,
         shot.productStyling,
         shot.dialogue,
         shot.sound,
         shot.prompt,
+        shot.replicationInstructions,
         shot.status.name,
         shot.updatedAt.toIso8601String(),
       ],
@@ -144,6 +202,7 @@ class ShootingScriptRepository {
       id: row['id'] as String,
       scriptId: row['script_id'] as String,
       sourceStoryboardAssetId: row['source_storyboard_asset_id'] as String?,
+      sourceVideoFrameId: row['source_video_frame_id'] as String?,
       shotNumber: row['shot_number'] as int,
       durationSeconds: (row['duration_seconds'] as num).toDouble(),
       framePath: row['frame_path'] as String,
@@ -158,12 +217,17 @@ class ShootingScriptRepository {
       colorPalette: valueOrLegacy('color_palette', legacy.colorPalette),
       visualFocus: valueOrLegacy('visual_focus', legacy.visualFocus),
       transitionHint: valueOrLegacy('transition_hint', legacy.transitionHint),
+      movementTrend: text('movement_trend'),
+      actionStage: text('action_stage'),
+      continuesFromPrevious: (row['continues_from_previous'] as int? ?? 0) != 0,
+      continuesToNext: (row['continues_to_next'] as int? ?? 0) != 0,
       scene: row['scene'] as String,
       productCode: row['product_code'] as String,
       productStyling: row['product_styling'] as String,
       dialogue: row['dialogue'] as String,
       sound: row['sound'] as String,
       prompt: row['prompt'] as String,
+      replicationInstructions: text('replication_instructions'),
       status: ProcessingStatus.fromStorage(row['status']),
       updatedAt: DateTime.parse(row['updated_at'] as String),
     );

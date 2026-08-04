@@ -11,7 +11,7 @@ import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_mod
 import 'package:test/test.dart';
 
 void main() {
-  test('资产名称和描述会产生可解释的规则候选', () async {
+  test('资产标准名称会在本地命中且不调用视觉模型', () async {
     final root = await Directory.systemTemp.createTemp('asset_match_');
     addTearDown(() => root.delete(recursive: true));
     final directories = await AppDirectories.create(executableDirectory: root);
@@ -66,8 +66,84 @@ void main() {
     );
 
     expect(result.usedModel, isFalse);
-    expect(result.candidates, isNotEmpty);
-    expect(result.candidates.first.assetId, anyOf('asset-hero', 'asset-scene'));
-    expect(result.candidates.first.reason, isNotEmpty);
+    expect(
+      result.candidates.map((item) => item.assetId),
+      containsAll(['asset-hero', 'asset-scene']),
+    );
+    expect(
+      result.candidates,
+      everyElement(
+        predicate<ScriptAssetMatchCandidate>((item) => item.confidence == 1),
+      ),
+    );
+  });
+
+  test('别名可命中，重复名称不会自动绑定', () async {
+    final root = await Directory.systemTemp.createTemp('asset_match_');
+    addTearDown(() => root.delete(recursive: true));
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final settings = SettingsRepository(database, directories).load();
+    const service = ScriptAssetMatchingService();
+
+    final result = await service.match(
+      settings: settings,
+      shot: ScriptShot(
+        id: 'shot-1',
+        scriptId: 'script-1',
+        shotNumber: 1,
+        durationSeconds: 2,
+        framePath: '',
+        visual: '小夏拿起红伞',
+        content: '',
+        shotSize: '',
+        cameraMovement: '',
+        cameraNotes: '',
+        scene: '',
+        productCode: '',
+        productStyling: '',
+        dialogue: '',
+        sound: '',
+        prompt: '',
+        status: ProcessingStatus.completed,
+        updatedAt: DateTime.utc(2026, 1, 1),
+      ),
+      assets: [
+        ShootingAssetLibraryItem(
+          id: 'hero',
+          type: ReplicateAssetType.character,
+          name: '林夏',
+          description: '',
+          aliases: const ['小夏'],
+          path: '',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+        ShootingAssetLibraryItem(
+          id: 'umbrella-a',
+          type: ReplicateAssetType.prop,
+          name: '红伞',
+          description: '',
+          path: '',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+        ShootingAssetLibraryItem(
+          id: 'umbrella-b',
+          type: ReplicateAssetType.prop,
+          name: '红伞',
+          description: '',
+          path: '',
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      ],
+    );
+
+    expect(result.candidates, hasLength(1));
+    expect(result.candidates.single.assetId, 'hero');
+    expect(result.candidates.single.confidence, 0.96);
+    expect(result.candidates.single.reason, contains('别名'));
   });
 }

@@ -4,7 +4,7 @@ class OnboardingRepository {
   const OnboardingRepository(this._database);
 
   static const completedVersionKey = 'onboardingCompletedVersion';
-  static const currentVersion = 1;
+  static const currentVersion = 2;
   static const pendingVersion = 0;
 
   final AppDatabase _database;

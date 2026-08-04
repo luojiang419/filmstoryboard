@@ -11,6 +11,7 @@ import '../../exporter/data/shooting_script_export_service.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/shooting_script_repository.dart';
+import '../domain/script_shot_continuity_refiner.dart';
 import '../domain/shooting_script_models.dart';
 
 final shootingScriptControllerProvider = Provider<ShootingScriptController>((
@@ -243,6 +244,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
         ScriptShot(
           id: _uuid.v4(),
           scriptId: script.id,
+          sourceVideoFrameId: frame.id,
           shotNumber: index + 1,
           durationSeconds: sourceShot == null
               ? 0
@@ -265,6 +267,10 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           colorPalette: dimensions['colorPalette'] ?? '',
           visualFocus: dimensions['visualFocus'] ?? '',
           transitionHint: dimensions['transitionHint'] ?? '',
+          movementTrend: dimensions['movementTrend'] ?? '',
+          actionStage: dimensions['actionStage'] ?? '',
+          continuesFromPrevious: dimensions['continuesFromPrevious'] == 'true',
+          continuesToNext: dimensions['continuesToNext'] == 'true',
           scene: dimensions['scene'] ?? '',
           productCode: '',
           productStyling: '',
@@ -276,11 +282,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
         ),
       );
     }
+    final refinedShots = const ScriptShotContinuityRefiner().refine(shots);
     _repository.upsertScript(script);
-    _repository.replaceShots(script.id, shots);
+    _repository.replaceShots(script.id, refinedShots);
     refresh(selectScriptId: script.id);
     value = value.copyWith(
-      message: '已从视频生成 ${shots.length} 个脚本镜头',
+      message: '已从视频生成 ${refinedShots.length} 个脚本镜头',
       errorMessage: '',
     );
     return script;
@@ -462,6 +469,10 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
             colorPalette: shot.colorPalette,
             visualFocus: shot.visualFocus,
             transitionHint: shot.transitionHint,
+            movementTrend: shot.movementTrend,
+            actionStage: shot.actionStage,
+            continuesFromPrevious: shot.continuesFromPrevious,
+            continuesToNext: shot.continuesToNext,
             scene: shot.scene,
             productCode: shot.productCode,
             productStyling: shot.productStyling,
@@ -538,6 +549,30 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     _repository.deleteScript(script.id);
     refresh();
     value = value.copyWith(message: '已删除 ${script.name}', errorMessage: '');
+  }
+
+  /// A video-generated script has no meaning after its source storyboard has
+  /// been removed. Manual scripts and standalone storyboard scripts are kept.
+  int deleteVideoLinkedScriptsForStoryboards(Iterable<String> boardIds) {
+    final ids = boardIds.toSet();
+    if (ids.isEmpty) return 0;
+    final removed = value.scripts
+        .where(
+          (script) =>
+              script.sourceVideoId != null &&
+              ids.contains(script.sourceStoryboardId),
+        )
+        .toList(growable: false);
+    if (removed.isEmpty) return 0;
+    for (final script in removed) {
+      _repository.deleteScript(script.id);
+    }
+    refresh();
+    value = value.copyWith(
+      message: '已移除 ${removed.length} 个已失去视频故事板的拍摄脚本',
+      errorMessage: '',
+    );
+    return removed.length;
   }
 
   ScriptShot? addShot({int? afterIndex}) {
@@ -771,13 +806,13 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     }
     value = value.copyWith(
       isExporting: true,
-      message: '正在复制镜头原图…',
+      message: '正在复制原分镜图…',
       errorMessage: '',
     );
     try {
       final directory = _uniqueDirectory(
         _directories.scripts,
-        '${_safeFileName(script.name)}-原图',
+        '${_safeFileName(script.name)}-原分镜图',
       );
       await directory.create(recursive: true);
       var copied = 0;
@@ -795,7 +830,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       }
       if (copied == 0) {
         await directory.delete(recursive: true);
-        throw const FileSystemException('脚本中没有可导出的原图');
+        throw const FileSystemException('脚本中没有可导出的原分镜图');
       }
       final result = ShootingScriptOriginalExportResult(
         directory: directory,
@@ -805,8 +840,8 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       value = value.copyWith(
         isExporting: false,
         message: missing == 0
-            ? '已导出 $copied 张原图到 ${directory.path}'
-            : '已导出 $copied 张原图，另有 $missing 个镜头缺图',
+            ? '已导出 $copied 张原分镜图到 ${directory.path}'
+            : '已导出 $copied 张原分镜图，另有 $missing 个镜头缺图',
         errorMessage: '',
       );
       return result;
@@ -814,7 +849,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       value = value.copyWith(
         isExporting: false,
         message: '',
-        errorMessage: '导出原图失败：$error',
+        errorMessage: '导出原分镜图失败：$error',
       );
       return null;
     }
