@@ -155,6 +155,7 @@ void main() {
       repository.listRecoverableTasks().single.generationId,
       'generation-1',
     );
+    expect(repository.listRecoverableTasks(includeTimedOut: false), isEmpty);
     expect(repository.getTask('task-1')?.prompt, '提交时固定文本');
     expect(repository.getTask('task-1')?.tailImagePath, 'frames/tail.png');
   });

@@ -4,6 +4,7 @@ import '../data/settings_repository.dart';
 import '../domain/api_endpoint_normalizer.dart';
 import '../domain/app_settings.dart';
 import '../domain/image_generation_api_config.dart';
+import '../domain/video_generation_api_config.dart';
 import '../domain/vision_api_config.dart';
 import '../../storyboard/domain/image_generation_model_catalog.dart';
 
@@ -548,6 +549,79 @@ class SettingsController extends ValueNotifier<AppSettings> {
         configs[matchingConfigIndex],
       );
     }
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> saveVideoGenerationApiConfig(
+    VideoGenerationApiConfig config,
+  ) async {
+    final normalized = config.isKlingCli
+        ? config.copyWith(
+            name: config.name.trim().isEmpty ? '可灵 CLI' : config.name.trim(),
+            kind: VideoGenerationApiConfigKind.klingCli,
+            baseUrl: '',
+            apiKey: '',
+            model: AppSettings.defaultKlingCliVideoGenerationModel,
+          )
+        : config.copyWith(
+            name: config.name.trim().isEmpty
+                ? '未命名视频生成 API'
+                : config.name.trim(),
+            kind: VideoGenerationApiConfigKind.httpApi,
+            baseUrl: config.baseUrl.trim(),
+            apiKey: config.apiKey.trim(),
+            model: config.model.trim().isEmpty
+                ? AppSettings.defaultVideoGenerationModel
+                : config.model.trim(),
+          );
+    final exists = value.videoGenerationApiConfigs.any(
+      (item) => item.id == normalized.id,
+    );
+    final configs = [
+      for (final item in value.videoGenerationApiConfigs)
+        if (item.id == normalized.id) normalized else item,
+      if (!exists) normalized,
+    ];
+    final activeId = exists
+        ? value.activeVideoGenerationApiConfigId
+        : normalized.id;
+    final active = configs.firstWhere(
+      (item) => item.id == activeId,
+      orElse: () => configs.first,
+    );
+    final next = value.copyWith(
+      videoGenerationApiConfigs: configs,
+      activeVideoGenerationApiConfigId: active.id,
+    );
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setActiveVideoGenerationApiConfig(String configId) async {
+    final config = value.videoGenerationApiConfigs.firstWhere(
+      (item) => item.id == configId,
+      orElse: () => throw ArgumentError.value(configId, 'configId'),
+    );
+    final next = value.copyWith(activeVideoGenerationApiConfigId: config.id);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> deleteVideoGenerationApiConfig(String configId) async {
+    if (value.videoGenerationApiConfigs.length <= 1) return;
+    if (configId == AppSettings.defaultKlingCliVideoGenerationConfigId) return;
+    final configs = value.videoGenerationApiConfigs
+        .where((item) => item.id != configId)
+        .toList();
+    final active = configs.firstWhere(
+      (item) => item.id == value.activeVideoGenerationApiConfigId,
+      orElse: () => configs.first,
+    );
+    final next = value.copyWith(
+      videoGenerationApiConfigs: configs,
+      activeVideoGenerationApiConfigId: active.id,
+    );
     _repository.save(next);
     value = next;
   }

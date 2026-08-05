@@ -167,6 +167,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }
 
   static const promptModel = 'Seedance 2';
+  static const defaultBatchReplicateConcurrency = 1000;
+  static const defaultBatchReplicateStagger = Duration(milliseconds: 20);
 
   final ReplicateRepository _repository;
   final ShootingScriptController _shootingScriptController;
@@ -181,6 +183,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsVisionService;
   final Uuid _uuid;
   bool _disposed = false;
+  String? _pendingStartFrameShotId;
   final _activeReplicationScriptIds = <String>{};
   final _replicationMessagesByScriptId = <String, String>{};
 
@@ -660,6 +663,105 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   bool get startEndFrameModeEnabled =>
       _settingsController.value.videoStartEndFrameModeEnabled;
 
+  String? get pendingStartFrameShotId => _pendingStartFrameShotId;
+
+  List<VideoActionSequence> startEndSequencesFor(List<ScriptShot> shots) {
+    final run = value.run;
+    if (run == null || !startEndFrameModeEnabled) {
+      return [
+        for (final shot in shots) VideoActionSequence([shot]),
+      ];
+    }
+    return const VideoActionSequenceResolver().resolveManual(
+      shots,
+      run.startEndPairs,
+    );
+  }
+
+  List<ScriptShot> get startEndRows {
+    if (!startEndFrameModeEnabled) return [...value.shots];
+    return startEndSequencesFor(
+      value.shots,
+    ).map((sequence) => sequence.head).toList(growable: false);
+  }
+
+  ScriptShot? tailShotForDisplay(ScriptShot shot) {
+    if (!startEndFrameModeEnabled) return null;
+    final sequence = const VideoActionSequenceResolver().manualSequenceFor(
+      value.shots,
+      value.run?.startEndPairs ?? const [],
+      shot.id,
+    );
+    return sequence.head.id == shot.id && sequence.hasDistinctTail
+        ? sequence.tail
+        : null;
+  }
+
+  bool canSelectStartFrame(String shotId) {
+    if (!startEndFrameModeEnabled) return false;
+    return _shotById(shotId) != null && _pairContainingShot(shotId) == null;
+  }
+
+  bool canSelectTailFrame(String shotId) {
+    if (!startEndFrameModeEnabled) return false;
+    final startId = _pendingStartFrameShotId;
+    if (startId == null || startId == shotId) return false;
+    final start = _shotById(startId);
+    final tail = _shotById(shotId);
+    if (start == null || tail == null || tail.shotNumber <= start.shotNumber) {
+      return false;
+    }
+    final candidates = _normalizedStartEndPairs([
+      ...?value.run?.startEndPairs,
+      StartEndFramePair(startShotId: startId, tailShotId: shotId),
+    ], value.shots);
+    return candidates.any(
+      (pair) => pair.startShotId == startId && pair.tailShotId == shotId,
+    );
+  }
+
+  void selectStartFrame(String shotId) {
+    if (!canSelectStartFrame(shotId)) return;
+    _pendingStartFrameShotId = shotId;
+    final shot = _shotById(shotId);
+    value = value.copyWith(
+      message: shot == null
+          ? '请选择尾帧'
+          : '已选择镜头 ${shot.shotNumber} 为首帧，请右键后续镜头设为尾帧',
+      errorMessage: '',
+    );
+  }
+
+  void setTailFrame(String tailShotId) {
+    final run = value.run;
+    final startId = _pendingStartFrameShotId;
+    if (run == null || startId == null || !canSelectTailFrame(tailShotId)) {
+      value = value.copyWith(errorMessage: '请选择首帧之后未被占用的镜头作为尾帧', message: '');
+      return;
+    }
+    _pendingStartFrameShotId = null;
+    _persistStartEndPairs([
+      ...run.startEndPairs,
+      StartEndFramePair(startShotId: startId, tailShotId: tailShotId),
+    ], message: '已设置首尾帧配对');
+  }
+
+  void clearStartEndPair(String shotId) {
+    final run = value.run;
+    if (run == null) return;
+    final pair = _pairContainingShot(shotId);
+    if (pair == null) return;
+    if (_pendingStartFrameShotId == pair.startShotId) {
+      _pendingStartFrameShotId = null;
+    }
+    _persistStartEndPairs([
+      for (final item in run.startEndPairs)
+        if (item.startShotId != pair.startShotId ||
+            item.tailShotId != pair.tailShotId)
+          item,
+    ], message: '已取消首尾帧配对');
+  }
+
   Future<bool> replicateShot(String shotId) async {
     final context = _replicationContext();
     if (context == null ||
@@ -708,8 +810,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }
 
   Future<void> replicateAllShots({
-    Duration stagger = const Duration(milliseconds: 450),
-    int maxConcurrent = 3,
+    Duration stagger = defaultBatchReplicateStagger,
+    int maxConcurrent = defaultBatchReplicateConcurrency,
   }) async {
     final context = _replicationContext();
     if (context == null ||
@@ -725,8 +827,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     value = value.copyWith(
       isBusy: true,
       message: startEndFrameModeEnabled
-          ? '准备错峰提交 ${shots.length} 张首尾帧复刻任务…'
-          : '准备错峰提交 ${shots.length} 个复刻任务…',
+          ? '准备高并发提交 ${shots.length} 张首尾帧复刻任务…'
+          : '准备高并发提交 ${shots.length} 个复刻任务…',
       errorMessage: '',
     );
     _replicationMessagesByScriptId[context.scriptId] = value.message;
@@ -747,7 +849,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
 
     try {
-      final concurrency = maxConcurrent.clamp(1, 6);
+      final concurrency = maxConcurrent
+          .clamp(1, defaultBatchReplicateConcurrency)
+          .toInt();
       for (var index = 0; index < shots.length; index++) {
         if (index > 0 && stagger > Duration.zero) {
           await Future<void>.delayed(stagger);
@@ -788,23 +892,22 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final shots = [...value.confirmedShots]
       ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
     if (!startEndFrameModeEnabled) return shots;
-    final targets = <ScriptShot>[];
-    final usedIds = <String>{};
-    for (final sequence in const VideoActionSequenceResolver().resolve(shots)) {
-      void add(ScriptShot shot) {
-        if (usedIds.add(shot.id)) targets.add(shot);
-      }
-
-      add(sequence.head);
-      if (sequence.hasDistinctTail) add(sequence.tail);
-    }
-    return targets;
+    return startEndSequencesFor(shots)
+        .expand(
+          (sequence) => [
+            sequence.head,
+            if (sequence.hasDistinctTail) sequence.tail,
+          ],
+        )
+        .toSet()
+        .toList(growable: false);
   }
 
   List<ScriptShot> _replicationEndpointsForShot(ScriptShot shot) {
     if (!startEndFrameModeEnabled) return [shot];
-    final sequence = const VideoActionSequenceResolver().sequenceFor(
+    final sequence = const VideoActionSequenceResolver().manualSequenceFor(
       value.shots,
+      value.run?.startEndPairs ?? const [],
       shot.id,
     );
     if (!sequence.hasDistinctTail) return [shot];
@@ -820,10 +923,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   ) async {
     final run = context.run;
     final original = File(shot.framePath);
+    final fallbackReferenceShotId = _fallbackReferenceShotIdFor(shot, run);
     final references = _replacementReferences(
       shot.id,
       scriptId: context.scriptId,
       stepAssets: context.assets,
+      fallbackShotId: fallbackReferenceShotId,
     );
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
@@ -1146,7 +1251,9 @@ $automaticPrompt
 
   Future<void> composeAllPrompts() async {
     final run = value.run;
-    final shots = value.confirmedShots;
+    final shots = startEndFrameModeEnabled
+        ? startEndRows
+        : value.confirmedShots;
     final assets = _readyAssets(value.assets);
     if (run == null || shots.isEmpty) {
       value = value.copyWith(errorMessage: '需要至少一个可用镜头', message: '');
@@ -1172,7 +1279,7 @@ $automaticPrompt
     final prompts = <ShotPrompt>[];
     var completed = 0;
     final sequences = startEndFrameModeEnabled
-        ? const VideoActionSequenceResolver().resolve(shots)
+        ? startEndSequencesFor(value.confirmedShots)
         : const <VideoActionSequence>[];
     for (var index = 0; index < shots.length; index++) {
       final shot = shots[index];
@@ -1242,7 +1349,7 @@ $automaticPrompt
       assets: _readyAssets(value.assets),
       actionSequence: startEndFrameModeEnabled
           ? const VideoActionSequenceResolver()
-                .sequenceFor(orderedShots, shot.id)
+                .manualSequenceFor(orderedShots, run.startEndPairs, shot.id)
                 .shots
           : const [],
       previousShot: shotIndex > 0 ? orderedShots[shotIndex - 1] : null,
@@ -1541,6 +1648,21 @@ $automaticPrompt
       run = normalizedRun;
       _repository.upsertRun(run);
     }
+    final normalizedPairs = _normalizedStartEndPairs(
+      run.startEndPairs,
+      shooting.shots,
+    );
+    if (!_sameStartEndPairs(normalizedPairs, run.startEndPairs)) {
+      run = run.copyWith(
+        startEndPairs: normalizedPairs,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertRun(run);
+    }
+    if (_pendingStartFrameShotId != null &&
+        !shooting.shots.any((shot) => shot.id == _pendingStartFrameShotId)) {
+      _pendingStartFrameShotId = null;
+    }
     final hasWorkflowAssets = workflowAssetIdsByShot.isNotEmpty;
     final workflowPrepareStatus = hasWorkflowAssets
         ? ProcessingStatus.completed
@@ -1775,6 +1897,104 @@ $automaticPrompt
     _shootingScriptController.updateShotPrompts(promptsByShotId);
   }
 
+  void _persistStartEndPairs(
+    List<StartEndFramePair> pairs, {
+    required String message,
+  }) {
+    final run = value.run;
+    if (run == null) return;
+    final normalized = _normalizedStartEndPairs(pairs, value.shots);
+    final updated = run.copyWith(
+      startEndPairs: normalized,
+      status: value.prompts.isEmpty ? run.status : ProcessingStatus.pending,
+      composePromptsStatus: value.prompts.isEmpty
+          ? run.composePromptsStatus
+          : ProcessingStatus.pending,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertRun(updated);
+    if (value.prompts.isNotEmpty) {
+      _repository.deletePrompts(run.id);
+    }
+    value = value.copyWith(
+      run: updated,
+      prompts: const [],
+      message: message,
+      errorMessage: '',
+    );
+  }
+
+  StartEndFramePair? _pairContainingShot(String shotId) {
+    final pairs = value.run?.startEndPairs ?? const <StartEndFramePair>[];
+    final indexById = <String, int>{
+      for (var index = 0; index < value.shots.length; index++)
+        value.shots[index].id: index,
+    };
+    final targetIndex = indexById[shotId];
+    if (targetIndex == null) return null;
+    for (final pair in pairs) {
+      final startIndex = indexById[pair.startShotId];
+      final tailIndex = indexById[pair.tailShotId];
+      if (startIndex == null || tailIndex == null) continue;
+      if (targetIndex >= startIndex && targetIndex <= tailIndex) return pair;
+    }
+    return null;
+  }
+
+  List<StartEndFramePair> _normalizedStartEndPairs(
+    List<StartEndFramePair> pairs,
+    List<ScriptShot> shots,
+  ) {
+    final ordered = [...shots]
+      ..sort((first, second) => first.shotNumber.compareTo(second.shotNumber));
+    final indexById = <String, int>{
+      for (var index = 0; index < ordered.length; index++)
+        ordered[index].id: index,
+    };
+    final occupied = <int>{};
+    final result = <StartEndFramePair>[];
+    final sortedPairs = [...pairs]
+      ..sort((first, second) {
+        final firstIndex = indexById[first.startShotId] ?? 1 << 30;
+        final secondIndex = indexById[second.startShotId] ?? 1 << 30;
+        return firstIndex.compareTo(secondIndex);
+      });
+    for (final pair in sortedPairs) {
+      final startIndex = indexById[pair.startShotId];
+      final tailIndex = indexById[pair.tailShotId];
+      if (startIndex == null || tailIndex == null || tailIndex <= startIndex) {
+        continue;
+      }
+      var overlaps = false;
+      for (var index = startIndex; index <= tailIndex; index++) {
+        if (occupied.contains(index)) {
+          overlaps = true;
+          break;
+        }
+      }
+      if (overlaps) continue;
+      result.add(pair);
+      for (var index = startIndex; index <= tailIndex; index++) {
+        occupied.add(index);
+      }
+    }
+    return List.unmodifiable(result);
+  }
+
+  bool _sameStartEndPairs(
+    List<StartEndFramePair> first,
+    List<StartEndFramePair> second,
+  ) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index].startShotId != second[index].startShotId ||
+          first[index].tailShotId != second[index].tailShotId) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   List<ScriptShot> _actionSequenceForPrompt(
     ScriptShot shot,
     List<VideoActionSequence> sequences,
@@ -1868,10 +2088,11 @@ $automaticPrompt
     String shotId, {
     String? scriptId,
     List<ReplicateAsset>? stepAssets,
+    String? fallbackShotId,
   }) {
     final linked = _confirmedScriptAssets(shotId, scriptId: scriptId);
     if (_workflowRepository != null) {
-      return [
+      final references = [
         for (final asset in linked)
           if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
               asset.path.trim().isNotEmpty &&
@@ -1884,6 +2105,14 @@ $automaticPrompt
               path: asset.path,
             ),
       ];
+      if (references.isNotEmpty || fallbackShotId == null) {
+        return references;
+      }
+      return _replacementReferences(
+        fallbackShotId,
+        scriptId: scriptId,
+        stepAssets: stepAssets,
+      );
     }
     return [
       for (final asset in _readyAssets(stepAssets ?? value.assets))
@@ -1898,6 +2127,17 @@ $automaticPrompt
             path: asset.path,
           ),
     ];
+  }
+
+  String? _fallbackReferenceShotIdFor(ScriptShot shot, ReplicateRun run) {
+    if (!startEndFrameModeEnabled) return null;
+    final sequence = const VideoActionSequenceResolver().manualSequenceFor(
+      value.shots,
+      run.startEndPairs,
+      shot.id,
+    );
+    if (sequence.head.id == shot.id || !sequence.hasDistinctTail) return null;
+    return sequence.head.id;
   }
 
   String _replacementPrompt(

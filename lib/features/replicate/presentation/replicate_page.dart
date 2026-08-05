@@ -16,7 +16,6 @@ import '../../shooting_script/application/script_asset_binding_controller.dart';
 import '../../shooting_script/application/shooting_asset_library_controller.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
-import '../../video_generation/domain/video_action_sequence.dart';
 import '../../video_generation/presentation/video_generation_page.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../../storyboard/data/image_generation_service.dart';
@@ -219,6 +218,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
                       assetBindingController: assetBindingController,
                       assetLibraryState: assetLibraryState,
                       onImport: _importAssets,
+                      onImportLocalAsset: _importSingleAsset,
                       onGenerate: _generateAsset,
                       onEdit: _editAsset,
                       onReplace: _replaceAsset,
@@ -242,22 +242,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
   }
 
   Future<void> _importAssets(ReplicateAssetType type) async {
-    if (_isOpeningAssetPicker) {
-      return;
-    }
-    setState(() => _isOpeningAssetPicker = true);
-    late final List<XFile> files;
-    try {
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) {
-        return;
-      }
-      files = await openFiles(acceptedTypeGroups: const [_assetTypes]);
-    } finally {
-      if (mounted) {
-        setState(() => _isOpeningAssetPicker = false);
-      }
-    }
+    final files = await _pickAssetFiles();
     for (final file in files) {
       final initialType = _normalizedTypeForPath(type, file.path);
       final result = await _showAssetEditor(
@@ -276,6 +261,25 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
         description: result.description,
       );
     }
+  }
+
+  Future<ReplicateAsset?> _importSingleAsset(ReplicateAssetType type) async {
+    final file = await _pickAssetFile();
+    if (file == null) return null;
+    final initialType = _normalizedTypeForPath(type, file.path);
+    final result = await _showAssetEditor(
+      title: '添加并绑定参考素材',
+      initialType: initialType,
+      initialName: p.basenameWithoutExtension(file.path),
+      allowTypeChange: true,
+    );
+    if (result == null) return null;
+    return _controller.importAsset(
+      sourcePath: file.path,
+      type: _normalizedTypeForPath(result.type, file.path),
+      name: result.name,
+      description: result.description,
+    );
   }
 
   Future<void> _generateAsset(ReplicateAssetType initialType) async {
@@ -312,9 +316,45 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
   }
 
   Future<void> _replaceAsset(ReplicateAsset asset) async {
-    final file = await openFile(acceptedTypeGroups: const [_assetTypes]);
+    final file = await _pickAssetFile();
     if (file != null) {
       await _controller.replaceAssetFile(asset.id, file.path);
+    }
+  }
+
+  Future<List<XFile>> _pickAssetFiles() async {
+    if (_isOpeningAssetPicker) return const [];
+    setState(() => _isOpeningAssetPicker = true);
+    try {
+      if (!mounted) return const [];
+      return await openFiles(acceptedTypeGroups: const [_assetTypes]);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开文件选择器失败：$error')));
+      }
+      return const [];
+    } finally {
+      if (mounted) setState(() => _isOpeningAssetPicker = false);
+    }
+  }
+
+  Future<XFile?> _pickAssetFile() async {
+    if (_isOpeningAssetPicker) return null;
+    setState(() => _isOpeningAssetPicker = true);
+    try {
+      if (!mounted) return null;
+      return await openFile(acceptedTypeGroups: const [_assetTypes]);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开文件选择器失败：$error')));
+      }
+      return null;
+    } finally {
+      if (mounted) setState(() => _isOpeningAssetPicker = false);
     }
   }
 
@@ -999,15 +1039,11 @@ class _ComposePromptTable extends StatelessWidget {
       for (final prompt in state.prompts)
         if (prompt.scriptShotId != null) prompt.scriptShotId!: prompt,
     };
-    final shots = [...state.confirmedShots]
-      ..sort((first, second) => first.shotNumber.compareTo(second.shotNumber));
-    final sequences = startEndFrameMode
-        ? const VideoActionSequenceResolver().resolve(shots)
-        : const <VideoActionSequence>[];
-    final sequenceByShotId = <String, VideoActionSequence>{
-      for (final sequence in sequences)
-        for (final shot in sequence.shots) shot.id: sequence,
-    };
+    final shots = startEndFrameMode
+        ? controller.startEndRows
+        : ([...state.confirmedShots]..sort(
+            (first, second) => first.shotNumber.compareTo(second.shotNumber),
+          ));
     final columnWidths = startEndFrameMode
         ? const {
             0: FixedColumnWidth(210),
@@ -1054,7 +1090,7 @@ class _ComposePromptTable extends StatelessWidget {
                   _composePromptRow(
                     shot: shot,
                     prompt: prompts[shot.id],
-                    sequence: sequenceByShotId[shot.id],
+                    tailShot: controller.tailShotForDisplay(shot),
                     replicatedByShotId: replicatedByShotId,
                     controller: controller,
                     startEndFrameMode: startEndFrameMode,
@@ -1071,7 +1107,7 @@ class _ComposePromptTable extends StatelessWidget {
 TableRow _composePromptRow({
   required ScriptShot shot,
   required ShotPrompt? prompt,
-  required VideoActionSequence? sequence,
+  required ScriptShot? tailShot,
   required Map<String, ReplicatedShotImage> replicatedByShotId,
   required ReplicateController controller,
   required bool startEndFrameMode,
@@ -1091,7 +1127,6 @@ TableRow _composePromptRow({
       ],
     );
   }
-  final tailShot = _tailShotForDisplay(shot, sequence);
   return TableRow(
     children: [
       _ComposeImageCell(
@@ -1115,18 +1150,6 @@ TableRow _composePromptRow({
       _ComposePromptCell(prompt: prompt, controller: controller),
     ],
   );
-}
-
-ScriptShot? _tailShotForDisplay(
-  ScriptShot shot,
-  VideoActionSequence? sequence,
-) {
-  if (sequence == null ||
-      !sequence.hasDistinctTail ||
-      sequence.head.id != shot.id) {
-    return null;
-  }
-  return sequence.tail;
 }
 
 class _ComposeTableHeaderCell extends StatelessWidget {
@@ -1300,8 +1323,9 @@ class _NewShotTable extends StatefulWidget {
   });
 
   static double totalWidth(bool startEndFrameMode) =>
-      3371.0 + (startEndFrameMode ? 336.0 : 0.0);
+      3385.0 + (startEndFrameMode ? 336.0 : 0.0);
   static const rowHeight = 112.0;
+  static const textCellMaxLines = 4;
 
   final ReplicateState state;
   final ReplicateController controller;
@@ -1335,13 +1359,9 @@ class _NewShotTableState extends State<_NewShotTable> {
       for (final image in widget.state.replicatedImages)
         image.scriptShotId: image,
     };
-    final sequences = widget.startEndFrameMode
-        ? const VideoActionSequenceResolver().resolve(widget.state.shots)
-        : const <VideoActionSequence>[];
-    final sequenceByShotId = <String, VideoActionSequence>{
-      for (final sequence in sequences)
-        for (final shot in sequence.shots) shot.id: sequence,
-    };
+    final rows = widget.startEndFrameMode
+        ? widget.controller.startEndRows
+        : widget.state.shots;
     final table = DecoratedBox(
       decoration: BoxDecoration(
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
@@ -1359,16 +1379,16 @@ class _NewShotTableState extends State<_NewShotTable> {
                       thumbVisibility: true,
                       child: ListView.builder(
                         controller: _verticalController,
-                        itemCount: widget.state.shots.length,
+                        itemCount: rows.length,
                         itemBuilder: (context, index) {
-                          final shot = widget.state.shots[index];
+                          final shot = rows[index];
+                          final shotIndex = widget.state.shots.indexOf(shot);
                           return _NewShotTableRow(
                             key: ValueKey('new-shot-row-${shot.id}'),
                             index: index,
                             shot: shot,
-                            tailShot: _tailShotForDisplay(
+                            tailShot: widget.controller.tailShotForDisplay(
                               shot,
-                              sequenceByShotId[shot.id],
                             ),
                             replicatedImage: replicaByShotId[shot.id],
                             replicatedByShotId: replicaByShotId,
@@ -1379,8 +1399,10 @@ class _NewShotTableState extends State<_NewShotTable> {
                             onOpenPrompt: widget.onOpenPrompt,
                             onOpenFrame: widget.onOpenFrame == null
                                 ? null
-                                : (showOriginal) =>
-                                      widget.onOpenFrame!(index, showOriginal),
+                                : (showOriginal) => widget.onOpenFrame!(
+                                    shotIndex < 0 ? index : shotIndex,
+                                    showOriginal,
+                                  ),
                           );
                         },
                       ),
@@ -1415,12 +1437,12 @@ class _NewShotTableHeader extends StatelessWidget {
       color: scheme.surfaceContainerHighest,
       child: Row(
         children: [
+          const _NewHeaderCell('镜号', 48),
           _NewHeaderCell(startEndFrameMode ? '首帧' : '原图', 168),
           if (startEndFrameMode) const _NewHeaderCell('尾帧', 168),
           _NewHeaderCell(startEndFrameMode ? '复刻首帧' : '复刻分镜', 168),
           if (startEndFrameMode) const _NewHeaderCell('复刻尾帧', 168),
-          const _NewHeaderCell('镜号', 48),
-          const _NewHeaderCell('时长', 50),
+          const _NewHeaderCell('时长', 64),
           const _NewHeaderCell('画面描述', 680),
           const _NewHeaderCell('景别', 58),
           const _NewHeaderCell('构图', 220),
@@ -1524,11 +1546,21 @@ class _NewShotTableRow extends StatelessWidget {
         height: _NewShotTable.rowHeight,
         child: Row(
           children: [
+            _NewShotNumberCell(
+              shot: shot,
+              confirmed: confirmed,
+              enabled: false,
+              controller: controller,
+            ),
             _ShotFrameCell(
               shot: shot,
               replicatedImage: replicatedImage,
               showOriginal: true,
               labelOverride: startEndFrameMode ? '首帧' : null,
+              contextMenuItems: startEndFrameMode
+                  ? () => _startEndFrameMenuItems(context)
+                  : null,
+              onContextMenuSelected: _handleStartEndFrameAction,
               onOpen: onOpenFrame == null ? null : () => onOpenFrame!(true),
             ),
             if (startEndFrameMode)
@@ -1564,21 +1596,18 @@ class _NewShotTableRow extends StatelessWidget {
                 keySuffix: 'tail-replica',
                 onOpen: null,
               ),
-            _NewShotNumberCell(
-              shot: shot,
-              confirmed: confirmed,
-              enabled: false,
-              controller: controller,
-            ),
-            _NewTextCell(
-              _durationText(shot.durationSeconds),
-              50,
-              centered: true,
+            _NewDurationCell(
+              key: ValueKey('shot-duration-${shot.id}'),
+              value: shot.durationSeconds,
+              width: 64,
+              onCommit: (seconds) => controller.updateShot(
+                shot.copyWith(durationSeconds: seconds),
+              ),
             ),
             _NewInlineCell(
               value: shot.content,
               width: 680,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(content: value)),
             ),
@@ -1591,63 +1620,63 @@ class _NewShotTableRow extends StatelessWidget {
             _NewInlineCell(
               value: shot.composition,
               width: 220,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(composition: value)),
             ),
             _NewInlineCell(
               value: shot.cameraAngle,
               width: 150,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(cameraAngle: value)),
             ),
             _NewInlineCell(
               value: shot.lightingMood,
               width: 235,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(lightingMood: value)),
             ),
             _NewInlineCell(
               value: shot.colorPalette,
               width: 200,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(colorPalette: value)),
             ),
             _NewInlineCell(
               value: shot.visualFocus,
               width: 220,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(visualFocus: value)),
             ),
             _NewInlineCell(
               value: shot.transitionHint,
               width: 220,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(transitionHint: value)),
             ),
             _NewInlineCell(
               value: shot.dialogue,
               width: 365,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(dialogue: value)),
             ),
             _NewInlineCell(
               value: shot.sound,
               width: 223,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(sound: value)),
             ),
             _NewInlineCell(
               value: shot.cameraMovement,
               width: 223,
-              maxLines: 2,
+              maxLines: _NewShotTable.textCellMaxLines,
               onCommit: (value) =>
                   controller.updateShot(shot.copyWith(cameraMovement: value)),
             ),
@@ -1695,12 +1724,85 @@ class _NewShotTableRow extends StatelessWidget {
     );
   }
 
-  static String _durationText(double seconds) {
-    if (seconds == seconds.roundToDouble()) {
-      return '${seconds.toInt()}s';
+  List<PopupMenuEntry<String>> _startEndFrameMenuItems(BuildContext context) {
+    final pendingStartId = controller.pendingStartFrameShotId;
+    final hasTail = tailShot != null;
+    if (hasTail) {
+      return const [PopupMenuItem(value: 'clear-pair', child: Text('取消首尾帧配对'))];
     }
-    return '${seconds.toStringAsFixed(1)}s';
+    if (pendingStartId != null) {
+      if (pendingStartId == shot.id) {
+        return const [PopupMenuItem(enabled: false, child: Text('已设为首帧'))];
+      }
+      if (controller.canSelectTailFrame(shot.id)) {
+        return const [PopupMenuItem(value: 'set-tail', child: Text('设为尾帧'))];
+      }
+      return const [PopupMenuItem(enabled: false, child: Text('只能选择后续未占用镜头'))];
+    }
+    return [
+      PopupMenuItem(
+        value: controller.canSelectStartFrame(shot.id) ? 'set-start' : null,
+        enabled: controller.canSelectStartFrame(shot.id),
+        child: const Text('设为首帧'),
+      ),
+      const PopupMenuItem(enabled: false, child: Text('设为尾帧')),
+    ];
   }
+
+  void _handleStartEndFrameAction(String action) {
+    switch (action) {
+      case 'set-start':
+        controller.selectStartFrame(shot.id);
+        break;
+      case 'set-tail':
+        controller.setTailFrame(shot.id);
+        break;
+      case 'clear-pair':
+        controller.clearStartEndPair(shot.id);
+        break;
+    }
+  }
+}
+
+class _NewDurationCell extends StatelessWidget {
+  const _NewDurationCell({
+    super.key,
+    required this.value,
+    required this.width,
+    required this.onCommit,
+  });
+
+  final double value;
+  final double width;
+  final ValueChanged<double> onCommit;
+
+  @override
+  Widget build(BuildContext context) => _NewInlineCell(
+    value: _durationText(value),
+    width: width,
+    onCommit: (text) {
+      final seconds = _parseDurationSeconds(text);
+      if (seconds != null) onCommit(seconds);
+    },
+  );
+}
+
+String _durationText(double seconds) {
+  if (seconds == seconds.roundToDouble()) {
+    return '${seconds.toInt()}s';
+  }
+  return '${seconds.toStringAsFixed(1)}s';
+}
+
+double? _parseDurationSeconds(String value) {
+  var normalized = value.trim().toLowerCase();
+  normalized = normalized.replaceAll('秒', '');
+  normalized = normalized.replaceFirst(RegExp(r's$'), '').trim();
+  final seconds = double.tryParse(normalized);
+  if (seconds == null || !seconds.isFinite || seconds < 0) {
+    return null;
+  }
+  return seconds;
 }
 
 class _NewTextCell extends StatelessWidget {
@@ -1738,6 +1840,8 @@ class _ShotFrameCell extends StatelessWidget {
     this.emptyLabel,
     this.forceEmpty = false,
     this.keySuffix = '',
+    this.contextMenuItems,
+    this.onContextMenuSelected,
     this.onOpen,
   });
 
@@ -1748,6 +1852,8 @@ class _ShotFrameCell extends StatelessWidget {
   final String? emptyLabel;
   final bool forceEmpty;
   final String keySuffix;
+  final List<PopupMenuEntry<String>> Function()? contextMenuItems;
+  final ValueChanged<String>? onContextMenuSelected;
   final VoidCallback? onOpen;
 
   @override
@@ -1765,16 +1871,40 @@ class _ShotFrameCell extends StatelessWidget {
       width: 168,
       child: Padding(
         padding: const EdgeInsets.all(5),
-        child: _ShotFrameThumbnail(
-          key: ValueKey(
-            'replicate-shot-${showOriginal ? 'original' : 'replica'}-thumbnail-${shot.id}${keySuffix.isEmpty ? '' : '-$keySuffix'}',
-          ),
-          path: selectedPath,
-          label: selectedPath.isEmpty ? emptyLabel ?? label : label,
-          emptyIcon: showOriginal
-              ? Icons.video_library_outlined
-              : Icons.auto_awesome_outlined,
-          onTap: onOpen,
+        child: Builder(
+          builder: (context) {
+            final thumbnail = _ShotFrameThumbnail(
+              key: ValueKey(
+                'replicate-shot-${showOriginal ? 'original' : 'replica'}-thumbnail-${shot.id}${keySuffix.isEmpty ? '' : '-$keySuffix'}',
+              ),
+              path: selectedPath,
+              label: selectedPath.isEmpty ? emptyLabel ?? label : label,
+              emptyIcon: showOriginal
+                  ? Icons.video_library_outlined
+                  : Icons.auto_awesome_outlined,
+              onTap: onOpen,
+            );
+            if (contextMenuItems == null || onContextMenuSelected == null) {
+              return thumbnail;
+            }
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onSecondaryTapDown: (details) async {
+                final selected = await showMenu<String>(
+                  context: context,
+                  position: RelativeRect.fromLTRB(
+                    details.globalPosition.dx,
+                    details.globalPosition.dy,
+                    details.globalPosition.dx,
+                    details.globalPosition.dy,
+                  ),
+                  items: contextMenuItems!(),
+                );
+                if (selected != null) onContextMenuSelected!(selected);
+              },
+              child: thumbnail,
+            );
+          },
         ),
       ),
     );
@@ -2087,6 +2217,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
     required this.assetBindingController,
     required this.assetLibraryState,
     required this.onImport,
+    required this.onImportLocalAsset,
     required this.onGenerate,
     required this.onEdit,
     required this.onReplace,
@@ -2098,6 +2229,8 @@ class _NewPrepareAssetsStep extends StatelessWidget {
   final ShootingScriptAssetBindingController assetBindingController;
   final ShootingAssetLibraryState assetLibraryState;
   final ValueChanged<ReplicateAssetType> onImport;
+  final Future<ReplicateAsset?> Function(ReplicateAssetType type)
+  onImportLocalAsset;
   final ValueChanged<ReplicateAssetType> onGenerate;
   final ValueChanged<ReplicateAsset> onEdit;
   final ValueChanged<ReplicateAsset> onReplace;
@@ -2208,6 +2341,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
                         bindingState: bindingState,
                         assetBindingController: assetBindingController,
                         assetLibraryState: assetLibraryState,
+                        onImportLocalAsset: onImportLocalAsset,
                       ),
                       const SizedBox(height: 14),
                       _AssetReferenceTable(
@@ -2245,6 +2379,7 @@ class _PrepareAssetsContent extends StatelessWidget {
     required this.bindingState,
     required this.assetBindingController,
     required this.assetLibraryState,
+    required this.onImportLocalAsset,
   });
 
   final ReplicateState state;
@@ -2252,11 +2387,18 @@ class _PrepareAssetsContent extends StatelessWidget {
   final ScriptAssetBindingState bindingState;
   final ShootingScriptAssetBindingController assetBindingController;
   final ShootingAssetLibraryState assetLibraryState;
+  final Future<ReplicateAsset?> Function(ReplicateAssetType type)
+  onImportLocalAsset;
 
   @override
   Widget build(BuildContext context) {
     final bindingBoard = _ShotAssetBindingBoard(
       state: state,
+      startEndFrameMode: controller.startEndFrameModeEnabled,
+      rows: controller.startEndFrameModeEnabled
+          ? controller.startEndRows
+          : state.shots,
+      tailShotForDisplay: controller.tailShotForDisplay,
       bindingState: bindingState,
       libraryState: assetLibraryState,
       onDrop: (item, shotId, replaceScriptAssetId) =>
@@ -2277,6 +2419,15 @@ class _PrepareAssetsContent extends StatelessWidget {
             shotId,
             replaceScriptAssetId: replaceScriptAssetId,
           ),
+      onSelectLocalAsset: (type, shotId, replaceScriptAssetId) async {
+        final asset = await onImportLocalAsset(type);
+        if (asset == null) return;
+        await assetBindingController.addStepAssetToShot(
+          asset,
+          shotId,
+          replaceScriptAssetId: replaceScriptAssetId,
+        );
+      },
       onRemove: assetBindingController.removeAssetFromShot,
       onMatchShot: (shotId) => assetBindingController.autoMatchShot(
         shotId,
@@ -2440,11 +2591,15 @@ String _selectedCatalogValue(
 class _ShotAssetBindingBoard extends StatefulWidget {
   const _ShotAssetBindingBoard({
     required this.state,
+    required this.startEndFrameMode,
+    required this.rows,
+    required this.tailShotForDisplay,
     required this.bindingState,
     required this.libraryState,
     required this.onDrop,
     required this.onSelectStepAsset,
     required this.onSelectLibraryAsset,
+    required this.onSelectLocalAsset,
     required this.onRemove,
     required this.onMatchShot,
     required this.onUpdateInstructions,
@@ -2453,6 +2608,9 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   });
 
   final ReplicateState state;
+  final bool startEndFrameMode;
+  final List<ScriptShot> rows;
+  final ScriptShot? Function(ScriptShot shot) tailShotForDisplay;
   final ScriptAssetBindingState bindingState;
   final ShootingAssetLibraryState libraryState;
   final Future<void> Function(
@@ -2473,6 +2631,12 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     String? replaceScriptAssetId,
   )
   onSelectLibraryAsset;
+  final Future<void> Function(
+    ReplicateAssetType type,
+    String shotId,
+    String? replaceScriptAssetId,
+  )
+  onSelectLocalAsset;
   final void Function(String shotId, String scriptAssetId) onRemove;
   final Future<void> Function(String shotId) onMatchShot;
   final void Function(ScriptShot shot, String instructions)
@@ -2493,7 +2657,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
   bool get wantKeepAlive => true;
 
   void _toggleAllShotScripts() {
-    final shotIds = widget.state.shots.map((shot) => shot.id).toSet();
+    final shotIds = widget.rows.map((shot) => shot.id).toSet();
     final areAllExpanded =
         shotIds.isNotEmpty && _expandedShotIds.containsAll(shotIds);
     setState(() {
@@ -2513,7 +2677,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
   Widget build(BuildContext context) {
     super.build(context);
     final scheme = Theme.of(context).colorScheme;
-    final shotIds = widget.state.shots.map((shot) => shot.id).toSet();
+    final shotIds = widget.rows.map((shot) => shot.id).toSet();
     final areAllExpanded =
         shotIds.isNotEmpty && _expandedShotIds.containsAll(shotIds);
     final replicatedByShotId = {
@@ -2532,7 +2696,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
         runningReplicationCount > 0 ||
         (widget.state.isBusy && replicationMessage.contains('复刻'));
     _expandedShotIds.removeWhere(
-      (id) => !widget.state.shots.any((shot) => shot.id == id),
+      (id) => !widget.rows.any((shot) => shot.id == id),
     );
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -2563,9 +2727,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                         ? 'collapse-all-shot-scripts'
                         : 'expand-all-shot-scripts',
                   ),
-                  onPressed: widget.state.shots.isEmpty
-                      ? null
-                      : _toggleAllShotScripts,
+                  onPressed: widget.rows.isEmpty ? null : _toggleAllShotScripts,
                   icon: Icon(
                     areAllExpanded
                         ? Icons.unfold_less_rounded
@@ -2625,12 +2787,15 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                 child: Text('资产库暂无内容；仍可直接使用本步骤已上传的资产。'),
               ),
             const Divider(height: 16),
-            if (widget.state.shots.isEmpty)
+            if (widget.rows.isEmpty)
               const Text('当前脚本暂无镜头')
             else if (_isShotListVisible)
-              for (final shot in widget.state.shots) ...[
+              for (final shot in widget.rows) ...[
                 _ShotAssetDropRow(
                   shot: shot,
+                  tailShot: widget.tailShotForDisplay(shot),
+                  replicatedByShotId: replicatedByShotId,
+                  startEndFrameMode: widget.startEndFrameMode,
                   links: widget.bindingState.linksForShot(shot.id),
                   bindingState: widget.bindingState,
                   libraryItems: widget.libraryState.items,
@@ -2647,6 +2812,8 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                       widget.onSelectStepAsset(item, shot.id, replaceId),
                   onSelectLibraryAsset: (item, replaceId) =>
                       widget.onSelectLibraryAsset(item, shot.id, replaceId),
+                  onSelectLocalAsset: (type, replaceId) =>
+                      widget.onSelectLocalAsset(type, shot.id, replaceId),
                   onRemove: (assetId) => widget.onRemove(shot.id, assetId),
                   onMatch: () => widget.onMatchShot(shot.id),
                   onUpdateInstructions: (instructions) =>
@@ -2655,7 +2822,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                   onReplicate: () => widget.onReplicateShot(shot.id),
                   onOpenFrame: () => widget.onOpenFrame(shot),
                 ),
-                if (shot != widget.state.shots.last) const SizedBox(height: 8),
+                if (shot != widget.rows.last) const SizedBox(height: 8),
               ],
           ],
         ),
@@ -2667,6 +2834,9 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
 class _ShotAssetDropRow extends StatelessWidget {
   const _ShotAssetDropRow({
     required this.shot,
+    required this.tailShot,
+    required this.replicatedByShotId,
+    required this.startEndFrameMode,
     required this.links,
     required this.bindingState,
     required this.libraryItems,
@@ -2676,6 +2846,7 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onDrop,
     required this.onSelectStepAsset,
     required this.onSelectLibraryAsset,
+    required this.onSelectLocalAsset,
     required this.onRemove,
     required this.onMatch,
     required this.onUpdateInstructions,
@@ -2685,6 +2856,9 @@ class _ShotAssetDropRow extends StatelessWidget {
   });
 
   final ScriptShot shot;
+  final ScriptShot? tailShot;
+  final Map<String, ReplicatedShotImage> replicatedByShotId;
+  final bool startEndFrameMode;
   final List<ScriptShotAssetLink> links;
   final ScriptAssetBindingState bindingState;
   final List<ShootingAssetLibraryItem> libraryItems;
@@ -2697,6 +2871,8 @@ class _ShotAssetDropRow extends StatelessWidget {
   onSelectStepAsset;
   final Future<void> Function(ShootingAssetLibraryItem item, String? replaceId)
   onSelectLibraryAsset;
+  final Future<void> Function(ReplicateAssetType type, String? replaceId)
+  onSelectLocalAsset;
   final ValueChanged<String> onRemove;
   final VoidCallback onMatch;
   final ValueChanged<String> onUpdateInstructions;
@@ -2708,6 +2884,16 @@ class _ShotAssetDropRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final assetSlots = _buildAssetSlots(context);
+    final frameStrip = _ShotAssetFrameStrip(
+      shot: shot,
+      tailShot: tailShot,
+      replicatedImage: replicatedImage,
+      tailReplicatedImage: tailShot == null
+          ? null
+          : replicatedByShotId[tailShot!.id],
+      startEndFrameMode: startEndFrameMode,
+      onOpenFrame: onOpenFrame,
+    );
     final instructionsField = _ShotReplicationInstructionsField(
       key: ValueKey('replicate-user-instructions-${shot.id}'),
       value: shot.replicationInstructions,
@@ -2781,12 +2967,17 @@ class _ShotAssetDropRow extends StatelessWidget {
                       onPressed: onMatch,
                       icon: const Icon(Icons.auto_awesome_rounded, size: 18),
                     ),
-                    ?replicationStatus,
+                    // ignore: use_null_aware_elements
+                    if (replicationStatus != null) replicationStatus,
                     OutlinedButton.icon(
                       key: ValueKey('replicate-shot-image-${shot.id}'),
                       onPressed: links.isNotEmpty ? onReplicate : null,
                       icon: const Icon(Icons.compare_arrows_rounded, size: 16),
-                      label: const Text('一键替换产品'),
+                      label: Text(
+                        startEndFrameMode && tailShot != null
+                            ? '复刻首尾帧'
+                            : '一键替换产品',
+                      ),
                     ),
                   ],
                 ),
@@ -2794,21 +2985,12 @@ class _ShotAssetDropRow extends StatelessWidget {
                 LayoutBuilder(
                   key: ValueKey('shot-asset-visual-row-${shot.id}'),
                   builder: (context, constraints) {
-                    final frame = SizedBox(
-                      width: 142,
-                      height: 118,
-                      child: _ShotFrameThumbnail(
-                        path: shot.framePath,
-                        label: '原视频帧',
-                        emptyIcon: Icons.video_library_outlined,
-                        onTap: onOpenFrame,
-                      ),
-                    );
+                    final frameWidth = startEndFrameMode ? 304.0 : 142.0;
                     if (constraints.maxWidth >= 760) {
                       return Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          frame,
+                          SizedBox(width: frameWidth, child: frameStrip),
                           const SizedBox(width: 8),
                           Expanded(child: assetSlots),
                           const SizedBox(width: 10),
@@ -2822,7 +3004,7 @@ class _ShotAssetDropRow extends StatelessWidget {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            frame,
+                            SizedBox(width: frameWidth, child: frameStrip),
                             const SizedBox(width: 8),
                             Expanded(child: assetSlots),
                           ],
@@ -2845,14 +3027,18 @@ class _ShotAssetDropRow extends StatelessWidget {
                     onPressed: onToggleExpanded,
                     icon: const Icon(Icons.keyboard_arrow_down_rounded),
                   ),
-                  ?replicationStatus,
+                  // ignore: use_null_aware_elements
+                  if (replicationStatus != null) replicationStatus,
                   const SizedBox(width: 4),
                 ];
+                final frameWidth = startEndFrameMode ? 304.0 : 142.0;
                 if (constraints.maxWidth >= 720) {
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       ...leading,
+                      SizedBox(width: frameWidth, child: frameStrip),
+                      const SizedBox(width: 8),
                       Expanded(child: assetSlots),
                       const SizedBox(width: 10),
                       SizedBox(width: 280, child: instructionsField),
@@ -2868,6 +3054,8 @@ class _ShotAssetDropRow extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           ...leading,
+                          SizedBox(width: frameWidth, child: frameStrip),
+                          const SizedBox(width: 8),
                           Expanded(child: assetSlots),
                         ],
                       ),
@@ -2949,6 +3137,13 @@ class _ShotAssetDropRow extends StatelessWidget {
                 ),
         ),
         actions: [
+          TextButton.icon(
+            key: ValueKey('select-local-shot-asset-$shot.id'),
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(_ShotAssetChoice.local()),
+            icon: const Icon(Icons.folder_open_rounded),
+            label: const Text('从本地文件添加'),
+          ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('取消'),
@@ -2957,7 +3152,12 @@ class _ShotAssetDropRow extends StatelessWidget {
       ),
     );
     if (selected == null) return;
-    if (selected.stepAsset != null) {
+    if (selected.isLocalFile) {
+      await onSelectLocalAsset(
+        ReplicateAssetType.reference,
+        replaceScriptAssetId,
+      );
+    } else if (selected.stepAsset != null) {
       await onSelectStepAsset(selected.stepAsset!, replaceScriptAssetId);
     } else if (selected.libraryItem != null) {
       await onSelectLibraryAsset(selected.libraryItem!, replaceScriptAssetId);
@@ -3048,8 +3248,105 @@ class _ShotReplicationInstructionsFieldState
   }
 }
 
+class _ShotAssetFrameStrip extends StatelessWidget {
+  const _ShotAssetFrameStrip({
+    required this.shot,
+    required this.tailShot,
+    required this.replicatedImage,
+    required this.tailReplicatedImage,
+    required this.startEndFrameMode,
+    required this.onOpenFrame,
+  });
+
+  final ScriptShot shot;
+  final ScriptShot? tailShot;
+  final ReplicatedShotImage? replicatedImage;
+  final ReplicatedShotImage? tailReplicatedImage;
+  final bool startEndFrameMode;
+  final VoidCallback onOpenFrame;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!startEndFrameMode) {
+      return SizedBox(
+        width: 142,
+        height: 118,
+        child: _ShotFrameThumbnail(
+          key: ValueKey('prepare-asset-frame-${shot.id}'),
+          path: shot.framePath,
+          label: '原视频帧',
+          emptyIcon: Icons.video_library_outlined,
+          onTap: onOpenFrame,
+        ),
+      );
+    }
+    final firstReplicaPath = _completedReplicatedPath(replicatedImage);
+    final tailReplicaPath = _completedReplicatedPath(tailReplicatedImage);
+    return Wrap(
+      key: ValueKey('prepare-asset-start-end-strip-${shot.id}'),
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        _smallFrame(
+          shot: shot,
+          path: shot.framePath,
+          label: '首帧',
+          icon: Icons.video_library_outlined,
+          onTap: onOpenFrame,
+        ),
+        _smallFrame(
+          shot: tailShot ?? shot,
+          path: tailShot?.framePath ?? '',
+          label: tailShot == null ? '无尾帧' : '尾帧',
+          icon: Icons.video_library_outlined,
+        ),
+        _smallFrame(
+          shot: shot,
+          path: firstReplicaPath,
+          label: '复刻首帧',
+          icon: Icons.auto_awesome_outlined,
+        ),
+        _smallFrame(
+          shot: tailShot ?? shot,
+          path: tailShot == null ? '' : tailReplicaPath,
+          label: tailShot == null ? '待尾帧' : '复刻尾帧',
+          icon: Icons.auto_awesome_outlined,
+        ),
+      ],
+    );
+  }
+
+  Widget _smallFrame({
+    required ScriptShot shot,
+    required String path,
+    required String label,
+    required IconData icon,
+    VoidCallback? onTap,
+  }) => SizedBox(
+    width: 149,
+    height: 56,
+    child: _ShotFrameThumbnail(
+      key: ValueKey('prepare-asset-$label-${shot.id}'),
+      path: path,
+      label: label,
+      emptyIcon: icon,
+      onTap: onTap,
+    ),
+  );
+
+  static String _completedReplicatedPath(ReplicatedShotImage? image) {
+    if (image?.status != ProcessingStatus.completed) return '';
+    final path = image?.generatedFramePath.trim() ?? '';
+    return path.isNotEmpty && File(path).existsSync() ? path : '';
+  }
+}
+
 class _ShotAssetChoice {
-  const _ShotAssetChoice._({this.stepAsset, this.libraryItem});
+  const _ShotAssetChoice._({
+    this.stepAsset,
+    this.libraryItem,
+    this.isLocalFile = false,
+  });
 
   factory _ShotAssetChoice.step(ReplicateAsset asset) =>
       _ShotAssetChoice._(stepAsset: asset);
@@ -3057,8 +3354,12 @@ class _ShotAssetChoice {
   factory _ShotAssetChoice.library(ShootingAssetLibraryItem item) =>
       _ShotAssetChoice._(libraryItem: item);
 
+  factory _ShotAssetChoice.local() =>
+      const _ShotAssetChoice._(isLocalFile: true);
+
   final ReplicateAsset? stepAsset;
   final ShootingAssetLibraryItem? libraryItem;
+  final bool isLocalFile;
 
   String get name => stepAsset?.name ?? libraryItem!.name;
   String get description => stepAsset?.description ?? libraryItem!.description;
@@ -3258,8 +3559,11 @@ Future<void> _confirmReplicateAll(
     builder: (dialogContext) => AlertDialog(
       title: const Text('确认一键复刻'),
       content: Text(
-        '将按镜号顺序提交 $confirmed 个镜头，任务之间错开约 450 毫秒，'
-        '最多同时处理 3 个请求，结果会逐条返回并保存。'
+        '将按镜号顺序提交 $confirmed 个镜头，任务之间间隔约 '
+        '${ReplicateController.defaultBatchReplicateStagger.inMilliseconds} 毫秒，'
+        '最多同时处理 '
+        '${ReplicateController.defaultBatchReplicateConcurrency} 个请求，'
+        '结果会逐条返回并保存。'
         '${existing > 0 ? '\n\n已有 $existing 个结果会重新生成。' : ''}',
       ),
       actions: [
@@ -4052,7 +4356,13 @@ class _ConfirmShotRow extends StatelessWidget {
               ),
             ),
             _TextCell('${shot.shotNumber}'.padLeft(2, '0'), 66),
-            _TextCell('${shot.durationSeconds.toStringAsFixed(1)}s', 80),
+            _DurationCommitCell(
+              value: shot.durationSeconds,
+              width: 80,
+              onCommit: (seconds) => controller.updateShot(
+                shot.copyWith(durationSeconds: seconds),
+              ),
+            ),
             _CommitCell(
               value: shot.content,
               width: 270,
@@ -5013,6 +5323,28 @@ class _CommitCellState extends State<_CommitCell> {
         ),
       ),
     ),
+  );
+}
+
+class _DurationCommitCell extends StatelessWidget {
+  const _DurationCommitCell({
+    required this.value,
+    required this.width,
+    required this.onCommit,
+  });
+
+  final double value;
+  final double width;
+  final ValueChanged<double> onCommit;
+
+  @override
+  Widget build(BuildContext context) => _CommitCell(
+    value: _durationText(value),
+    width: width,
+    onCommit: (text) {
+      final seconds = _parseDurationSeconds(text);
+      if (seconds != null) onCommit(seconds);
+    },
   );
 }
 

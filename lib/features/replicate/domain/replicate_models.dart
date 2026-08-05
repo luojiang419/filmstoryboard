@@ -1,4 +1,5 @@
 import '../../video_analysis/domain/video_analysis_models.dart';
+import '../../video_generation/domain/video_action_sequence.dart';
 
 enum ReplicateStep {
   confirmShots,
@@ -33,6 +34,7 @@ class ReplicateRun {
     this.generationImageSize = '',
     this.generationQuality = '',
     this.confirmedShotIds = const [],
+    this.startEndPairs = const [],
     this.imageReferenceCount = 0,
     this.videoReferenceCount = 0,
     this.audioReferenceCount = 0,
@@ -64,6 +66,7 @@ class ReplicateRun {
   final String generationImageSize;
   final String generationQuality;
   final List<String> confirmedShotIds;
+  final List<StartEndFramePair> startEndPairs;
   final int imageReferenceCount;
   final int videoReferenceCount;
   final int audioReferenceCount;
@@ -90,6 +93,7 @@ class ReplicateRun {
     String? generationImageSize,
     String? generationQuality,
     List<String>? confirmedShotIds,
+    List<StartEndFramePair>? startEndPairs,
     int? imageReferenceCount,
     int? videoReferenceCount,
     int? audioReferenceCount,
@@ -116,6 +120,7 @@ class ReplicateRun {
     generationImageSize: generationImageSize ?? this.generationImageSize,
     generationQuality: generationQuality ?? this.generationQuality,
     confirmedShotIds: confirmedShotIds ?? this.confirmedShotIds,
+    startEndPairs: startEndPairs ?? this.startEndPairs,
     imageReferenceCount: imageReferenceCount ?? this.imageReferenceCount,
     videoReferenceCount: videoReferenceCount ?? this.videoReferenceCount,
     audioReferenceCount: audioReferenceCount ?? this.audioReferenceCount,

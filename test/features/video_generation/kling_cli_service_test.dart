@@ -2,11 +2,16 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/features/settings/domain/video_generation_api_config.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_task_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_resolver.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_service.dart';
+import 'package:filmstoryboard/features/video_generation/data/minimax_video_api_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/video_generation_repository.dart';
 import 'package:filmstoryboard/features/video_generation/domain/video_generation_models.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
@@ -52,6 +57,57 @@ void main() {
     expect(environment.isReady, isTrue);
     expect(environment.klingPath, endsWith('kling.cmd'));
     expect(KlingCliResolver.parseNodeMajor('v17.9.1'), 17);
+  });
+
+  test('CLI 解析器在 PATH 缺失时回退查找 npm 全局目录', () async {
+    final root = await Directory.systemTemp.createTemp('kling-npm-prefix-');
+    addTearDown(() async {
+      if (root.existsSync()) await root.delete(recursive: true);
+    });
+    final kling = File(
+      p.join(root.path, Platform.isWindows ? 'kling.cmd' : 'kling'),
+    );
+    await kling.writeAsString('');
+
+    Future<ProcessResult> runner(
+      String executable,
+      List<String> arguments, {
+      required bool runInShell,
+    }) async {
+      if (executable == 'where.exe') {
+        final command = arguments.single;
+        if (command == 'node') {
+          return ProcessResult(1, 0, r'C:\bin\node.exe', '');
+        }
+        if (command == 'npm.cmd') {
+          return ProcessResult(1, 0, r'C:\bin\npm.cmd', '');
+        }
+        if (command == 'kling.cmd') {
+          return ProcessResult(1, 1, '', 'not found');
+        }
+      }
+      if (arguments.length == 1 &&
+          arguments.single == '--version' &&
+          executable.endsWith('node.exe')) {
+        return ProcessResult(1, 0, 'v24.15.0', '');
+      }
+      if (arguments.length == 2 &&
+          arguments[0] == 'prefix' &&
+          arguments[1] == '-g') {
+        return ProcessResult(1, 0, root.path, '');
+      }
+      if (arguments.length == 1 &&
+          arguments.single == '--version' &&
+          executable == kling.path) {
+        return ProcessResult(1, 0, 'kling-cli 0.1.3', '');
+      }
+      return ProcessResult(1, 1, '', 'unexpected $executable $arguments');
+    }
+
+    final environment = await KlingCliResolver(processRunner: runner).resolve();
+
+    expect(environment.isReady, isTrue);
+    expect(p.normalize(environment.klingPath), p.normalize(kling.path));
   });
 
   test('CLI 服务兼容 camel/snake JSON 并以独立参数提交', () async {
@@ -150,6 +206,173 @@ void main() {
       containsAllInOrder(['--tailImage', r'C:\frames\replicated 03.png']),
     );
     expect(submitArguments.last, '人物缓慢转身，镜头轻推');
+  });
+
+  test('MiniMax 本地视频 API 非首尾帧按多参考图 multipart 提交', () async {
+    final root = await Directory.systemTemp.createTemp('minimax-api-ref-');
+    addTearDown(() async {
+      if (root.existsSync()) await root.delete(recursive: true);
+    });
+    final image = File('${root.path}/reference.png')
+      ..writeAsBytesSync([1, 2, 3]);
+    final requests = <http.BaseRequest>[];
+    final client = MockClient.streaming((request, bodyStream) async {
+      requests.add(request);
+      if (request.url.path == '/api/generate-upload') {
+        expect(request, isA<http.MultipartRequest>());
+        final multipart = request as http.MultipartRequest;
+        expect(multipart.headers['Authorization'], 'Bearer local-key');
+        expect(multipart.fields['mode'], 'references');
+        expect(multipart.fields['prompt'], '镜头缓慢运动');
+        expect(multipart.fields['resolution'], '0.2MP 16:9 - 608x352');
+        expect(multipart.fields['duration'], '2');
+        expect(multipart.files.map((file) => file.field), ['reference_images']);
+        return http.StreamedResponse(
+          Stream.value(utf8.encode('{"id":"job-ref"}')),
+          200,
+        );
+      }
+      if (request.url.path == '/api/jobs/job-ref') {
+        expect(request.headers['Authorization'], 'Bearer local-key');
+        return http.StreamedResponse(
+          Stream.value(
+            utf8.encode(
+              '{"status":"completed","content_url":"/outputs/ref.mp4"}',
+            ),
+          ),
+          200,
+        );
+      }
+      return http.StreamedResponse(Stream.value(const []), 404);
+    });
+
+    final service = MiniMaxVideoApiService(client: client);
+    const config = VideoGenerationApiConfig(
+      id: 'minimax',
+      name: 'MiniMax H3 本地',
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: 'local-key',
+      model: 'minimax-h3-local',
+    );
+
+    final submission = await service.submitImageToVideo(
+      config: config,
+      imagePath: image.path,
+      parameters: const {'resolution': '0.2MP 16:9 - 608x352', 'duration': '2'},
+      prompt: '镜头缓慢运动',
+    );
+    final result = await service.queryTask(
+      config: config,
+      generationId: submission.generationId,
+    );
+
+    expect(submission.generationId, 'job-ref');
+    expect(result.status, VideoGenerationTaskStatus.completed);
+    expect(result.url, 'http://127.0.0.1:7860/outputs/ref.mp4');
+    expect(requests.map((request) => request.url.path), [
+      '/api/generate-upload',
+      '/api/jobs/job-ref',
+    ]);
+  });
+
+  test('MiniMax 本地视频 API 首尾帧按 keyframes multipart 提交', () async {
+    final root = await Directory.systemTemp.createTemp('minimax-api-');
+    addTearDown(() async {
+      if (root.existsSync()) await root.delete(recursive: true);
+    });
+    final image = File('${root.path}/first.png')..writeAsBytesSync([1, 2, 3]);
+    final tail = File('${root.path}/last.png')..writeAsBytesSync([4, 5, 6]);
+    final requests = <http.BaseRequest>[];
+    final client = MockClient.streaming((request, bodyStream) async {
+      requests.add(request);
+      if (request.url.path == '/api/generate-upload') {
+        expect(request, isA<http.MultipartRequest>());
+        final multipart = request as http.MultipartRequest;
+        expect(multipart.headers['Authorization'], 'Bearer local-key');
+        expect(multipart.fields['mode'], 'keyframes');
+        expect(multipart.fields['prompt'], '镜头缓慢运动');
+        expect(multipart.fields['resolution'], '0.2MP 16:9 - 608x352');
+        expect(multipart.fields['duration'], '2');
+        expect(
+          multipart.files.map((file) => file.field),
+          containsAllInOrder(['first_frame', 'last_frame']),
+        );
+        return http.StreamedResponse(
+          Stream.value(utf8.encode('{"id":"job-1"}')),
+          200,
+        );
+      }
+      if (request.url.path == '/api/jobs/job-1') {
+        expect(request.headers['Authorization'], 'Bearer local-key');
+        return http.StreamedResponse(
+          Stream.value(
+            utf8.encode(
+              '{"status":"completed","content_url":"/outputs/result.mp4"}',
+            ),
+          ),
+          200,
+        );
+      }
+      return http.StreamedResponse(Stream.value(const []), 404);
+    });
+
+    final service = MiniMaxVideoApiService(client: client);
+    const config = VideoGenerationApiConfig(
+      id: 'minimax',
+      name: 'MiniMax H3 本地',
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: 'local-key',
+      model: 'minimax-h3-local',
+    );
+
+    final submission = await service.submitImageToVideo(
+      config: config,
+      imagePath: image.path,
+      tailImagePath: tail.path,
+      parameters: const {'resolution': '0.2MP 16:9 - 608x352', 'duration': '2'},
+      prompt: '镜头缓慢运动',
+    );
+    final result = await service.queryTask(
+      config: config,
+      generationId: submission.generationId,
+    );
+
+    expect(submission.generationId, 'job-1');
+    expect(result.status, VideoGenerationTaskStatus.completed);
+    expect(result.url, 'http://127.0.0.1:7860/outputs/result.mp4');
+    expect(requests.map((request) => request.url.path), [
+      '/api/generate-upload',
+      '/api/jobs/job-1',
+    ]);
+  });
+
+  test('MiniMax 运行中 message 不作为错误状态提示', () async {
+    final client = MockClient((request) async {
+      expect(request.url.path, '/api/jobs/job-running');
+      return http.Response.bytes(
+        utf8.encode(
+          '{"status":"running","message":"正在启动隐藏 ComfyUI 后端并加载 H3 模型"}',
+        ),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+    final service = MiniMaxVideoApiService(client: client);
+    const config = VideoGenerationApiConfig(
+      id: 'minimax',
+      name: 'MiniMax H3 本地',
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: '',
+      model: 'minimax-h3-local',
+    );
+
+    final result = await service.queryTask(
+      config: config,
+      generationId: 'job-running',
+    );
+
+    expect(result.status, VideoGenerationTaskStatus.running);
+    expect(result.errorMessage, isEmpty);
   });
 
   group('任务编排', () {
@@ -253,6 +476,50 @@ void main() {
       expect(recovered.single.usedWatermarkedFallback, isFalse);
     });
 
+    test('MiniMax 恢复查询遇到任务不存在会立即结束等待并标记可重试', () async {
+      var queryCount = 0;
+      final client = MockClient((request) async {
+        queryCount++;
+        expect(request.url.path, '/api/jobs/missing-job');
+        return http.Response('{"detail":"任务不存在"}', 404);
+      });
+      const config = VideoGenerationApiConfig(
+        id: 'minimax',
+        name: 'MiniMax H3 本地',
+        baseUrl: 'http://127.0.0.1:7860',
+        apiKey: '',
+        model: 'minimax-h3-local',
+      );
+      final now = DateTime.utc(2026, 8, 4);
+      final staleTask = _task(1).copyWith(
+        generationId: 'missing-job',
+        status: VideoGenerationTaskStatus.running,
+        localPath: '${root.path}/result-1.mp4',
+        updatedAt: now,
+      );
+      repository.upsertTask(staleTask);
+
+      final recovered = await VideoGenerationTaskService(
+        repository: repository,
+        cliService: const KlingCliService(),
+        videoApiConfig: config,
+        videoApiService: MiniMaxVideoApiService(client: client),
+        pollInterval: Duration.zero,
+        delay: (_) {
+          fail('任务不存在时不应继续等待下一轮轮询');
+        },
+      ).resumePending(outputForTask: (_) => File('${root.path}/result-1.mp4'));
+
+      expect(queryCount, 1);
+      expect(recovered.single.status, VideoGenerationTaskStatus.failed);
+      expect(
+        VideoGenerationTaskService.shouldRetryMissingVideoApiTask(
+          recovered.single,
+        ),
+        isTrue,
+      );
+    });
+
     test('批量生成最多同时执行两个付费提交', () async {
       var activeSubmissions = 0;
       var maximumSubmissions = 0;
@@ -304,6 +571,63 @@ void main() {
       expect(results, hasLength(3));
       expect(maximumSubmissions, 2);
       expect(results.every((task) => task.status.isTerminal), isTrue);
+    });
+
+    test('批量生成指定并发 1 时按队列串行提交', () async {
+      var activeSubmissions = 0;
+      var maximumSubmissions = 0;
+      var generationIndex = 0;
+      Future<ProcessResult> runner(
+        String executable,
+        List<String> arguments, {
+        required bool runInShell,
+      }) async {
+        if (arguments.first == 'account') {
+          return _jsonResult({'availableRemainCredits': 100});
+        }
+        if (arguments.first == 'image_to_video') {
+          activeSubmissions++;
+          maximumSubmissions = maximumSubmissions < activeSubmissions
+              ? activeSubmissions
+              : maximumSubmissions;
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          activeSubmissions--;
+          generationIndex++;
+          return _jsonResult({'generationId': 'generation-$generationIndex'});
+        }
+        if (arguments.first == 'query_tasks') {
+          return _jsonResult({
+            'status': 'COMPLETED',
+            'works': [
+              {'url': 'https://example.test/result.mp4'},
+            ],
+          });
+        }
+        fail('未知命令：$arguments');
+      }
+
+      final service = VideoGenerationTaskService(
+        repository: repository,
+        cliService: KlingCliService(processRunner: runner),
+        download: (url, target) async => target..writeAsBytesSync([7]),
+        pollInterval: Duration.zero,
+      );
+      final results = await service.submitBatch([
+        for (var index = 1; index <= 3; index++)
+          VideoGenerationSubmission(
+            task: _task(index),
+            sourceImagePath: '${root.path}/image-$index.png',
+            outputFile: File('${root.path}/result-$index.mp4'),
+          ),
+      ], concurrency: localVideoApiBatchConcurrency);
+
+      expect(results, hasLength(3));
+      expect(maximumSubmissions, 1);
+      expect(results.map((task) => task.generationId), [
+        'generation-1',
+        'generation-2',
+        'generation-3',
+      ]);
     });
   });
 }

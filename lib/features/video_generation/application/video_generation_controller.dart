@@ -12,6 +12,8 @@ import '../../../core/services/workspace_directories.dart';
 import '../../replicate/application/replicate_controller.dart';
 import '../../replicate/domain/replicate_models.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../settings/domain/app_settings.dart';
+import '../../settings/domain/video_generation_api_config.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
@@ -75,6 +77,7 @@ class VideoGenerationState {
     this.account,
     this.isLoadingEnvironment = false,
     this.isBusy = false,
+    this.isGeneratingAll = false,
     this.loginAuthorizationStatus = KlingLoginAuthorizationStatus.idle,
     this.loginAuthorizationMessage = '',
     this.message = '',
@@ -93,6 +96,7 @@ class VideoGenerationState {
   final KlingAccount? account;
   final bool isLoadingEnvironment;
   final bool isBusy;
+  final bool isGeneratingAll;
   final KlingLoginAuthorizationStatus loginAuthorizationStatus;
   final String loginAuthorizationMessage;
   final String message;
@@ -118,6 +122,7 @@ class VideoGenerationState {
     Object? account = _sentinel,
     bool? isLoadingEnvironment,
     bool? isBusy,
+    bool? isGeneratingAll,
     KlingLoginAuthorizationStatus? loginAuthorizationStatus,
     String? loginAuthorizationMessage,
     String? message,
@@ -143,6 +148,7 @@ class VideoGenerationState {
         : account as KlingAccount?,
     isLoadingEnvironment: isLoadingEnvironment ?? this.isLoadingEnvironment,
     isBusy: isBusy ?? this.isBusy,
+    isGeneratingAll: isGeneratingAll ?? this.isGeneratingAll,
     loginAuthorizationStatus:
         loginAuthorizationStatus ?? this.loginAuthorizationStatus,
     loginAuthorizationMessage:
@@ -194,11 +200,43 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   final Duration _loginAuthorizationTimeout;
   final Duration _loginAuthorizationPollInterval;
   final Uuid _uuid;
+  KlingCliEnvironment? _cachedKlingEnvironment;
+  KlingIdentity? _cachedKlingIdentity;
+  KlingAccount? _cachedKlingAccount;
+  Future<void>? _activeEnvironmentInitialization;
   KlingLoginProcess? _loginProcess;
   Completer<void>? _loginCancelCompleter;
   Future<KlingLoginAuthorizationStatus>? _activeLoginAuthorization;
+  Future<void> _generationQueue = Future<void>.value();
+  var _disposed = false;
 
   Future<void> initializeEnvironment() async {
+    final active = _activeEnvironmentInitialization;
+    if (active != null) return active;
+    final future = _initializeEnvironment();
+    _activeEnvironmentInitialization = future;
+    future.whenComplete(() => _activeEnvironmentInitialization = null);
+    return future;
+  }
+
+  Future<void> _initializeEnvironment() async {
+    if (usesConfiguredVideoGenerationApi) {
+      _cacheKlingState();
+      value = value.copyWith(
+        environment: null,
+        identity: null,
+        account: null,
+        isLoadingEnvironment: false,
+        message: '视频生成 API 已就绪',
+        errorMessage: '',
+      );
+      unawaited(_resumePendingTasks());
+      return;
+    }
+    if (_restoreCachedKlingState()) {
+      unawaited(_resumePendingTasks());
+      return;
+    }
     value = value.copyWith(isLoadingEnvironment: true, errorMessage: '');
     KlingCliEnvironment? environment;
     try {
@@ -373,6 +411,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   Future<void> _refreshKlingAccount({required String successMessage}) async {
     final identity = await _cliService.whoAmI();
     final account = await _cliService.account();
+    final environment = value.environment;
+    if (environment != null && environment.isReady) {
+      _cachedKlingEnvironment = environment;
+    }
+    _cachedKlingIdentity = identity;
+    _cachedKlingAccount = account;
     value = value.copyWith(
       identity: identity,
       account: account,
@@ -512,10 +556,119 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   bool get startEndFrameModeEnabled =>
       _settingsController.value.videoStartEndFrameModeEnabled;
 
+  bool get usesConfiguredVideoGenerationApi =>
+      _settingsController.value.activeVideoGenerationApiConfig?.isHttpApi ==
+          true &&
+      _settingsController.value.activeVideoGenerationApiConfig?.baseUrl
+              .trim()
+              .isNotEmpty ==
+          true;
+
+  VideoGenerationApiConfig? get activeVideoGenerationApiConfig =>
+      _settingsController.value.activeVideoGenerationApiConfig;
+
+  String get activeVideoGenerationApiModel {
+    final model = activeVideoGenerationApiConfig?.model.trim() ?? '';
+    return model.isEmpty ? AppSettings.defaultVideoGenerationModel : model;
+  }
+
+  List<String> get videoApiAspectRatios => _minimaxApiAspectRatios;
+
+  String get selectedVideoApiAspectRatio {
+    final parameters = value.profile?.parameters ?? const <String, String>{};
+    final stored = _allowedMiniMaxAspectRatio(
+      parameters[_minimaxApiAspectRatioKey],
+    );
+    if (stored != null) return stored;
+    final resolution = selectedVideoApiResolution;
+    return _aspectRatioForMiniMaxResolution(resolution) ?? '16:9';
+  }
+
+  String get selectedVideoApiResolution {
+    final parameters = value.profile?.parameters ?? const <String, String>{};
+    final stored =
+        parameters[_minimaxApiResolutionKey] ?? parameters['resolution'];
+    if (_isMiniMaxResolution(stored)) return stored!;
+    return '0.2MP 16:9 - 608x352';
+  }
+
+  int get selectedVideoApiSteps {
+    final parameters = value.profile?.parameters ?? const <String, String>{};
+    return _normalizeMiniMaxSteps(
+      parameters[_minimaxApiStepsKey] ?? parameters['steps'],
+    );
+  }
+
+  List<String> videoApiResolutionsForAspect(String aspectRatio) {
+    final normalized = _allowedMiniMaxAspectRatio(aspectRatio) ?? '16:9';
+    return [
+      for (final preset in _minimaxApiResolutionPresets)
+        if (preset.aspectRatio == normalized) preset.label,
+    ];
+  }
+
+  void updateVideoApiAspectRatio(String aspectRatio) {
+    final profile = value.profile;
+    final normalized = _allowedMiniMaxAspectRatio(aspectRatio);
+    if (profile == null || normalized == null) return;
+    final resolution = _defaultMiniMaxResolutionForAspect(normalized);
+    final updated = profile.copyWith(
+      parameters: {
+        ...profile.parameters,
+        _minimaxApiAspectRatioKey: normalized,
+        _minimaxApiResolutionKey: resolution,
+      },
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertProfile(updated);
+    value = value.copyWith(profile: updated);
+  }
+
+  void updateVideoApiResolution(String resolution) {
+    final profile = value.profile;
+    if (profile == null || !_isMiniMaxResolution(resolution)) return;
+    final updated = profile.copyWith(
+      parameters: {
+        ...profile.parameters,
+        _minimaxApiAspectRatioKey:
+            _aspectRatioForMiniMaxResolution(resolution) ?? '16:9',
+        _minimaxApiResolutionKey: resolution,
+      },
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertProfile(updated);
+    value = value.copyWith(profile: updated);
+  }
+
+  void updateVideoApiSteps(int steps) {
+    final profile = value.profile;
+    if (profile == null) return;
+    final updated = profile.copyWith(
+      parameters: {
+        ...profile.parameters,
+        _minimaxApiStepsKey: '${steps.clamp(4, 30)}',
+      },
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertProfile(updated);
+    value = value.copyWith(profile: updated);
+  }
+
+  String get videoApiParameterSummary =>
+      '生成比例：$selectedVideoApiAspectRatio\n'
+      '分辨率：$selectedVideoApiResolution\n'
+      '步数：$selectedVideoApiSteps';
+
+  Map<String, String> get selectedVideoApiSubmissionParameters =>
+      _miniMaxApiParametersForSubmission(
+        value.profile?.parameters ?? const <String, String>{},
+      );
+
   VideoActionSequence actionSequenceFor(ScriptShot shot) {
     if (!startEndFrameModeEnabled) return VideoActionSequence([shot]);
-    return const VideoActionSequenceResolver().sequenceFor(
+    return const VideoActionSequenceResolver().manualSequenceFor(
       value.shots,
+      _replicateController.value.run?.startEndPairs ?? const [],
       shot.id,
     );
   }
@@ -536,22 +689,47 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   List<ScriptShot> generationTargets() {
-    if (!startEndFrameModeEnabled) {
-      return value.shots.where(canGenerateShot).toList(growable: false);
+    int compareShotNumber(ScriptShot first, ScriptShot second) {
+      final byNumber = first.shotNumber.compareTo(second.shotNumber);
+      return byNumber != 0 ? byNumber : first.id.compareTo(second.id);
     }
-    return const VideoActionSequenceResolver()
-        .resolve(value.shots)
+
+    if (!startEndFrameModeEnabled) {
+      return value.shots.where(canGenerateShot).toList(growable: false)
+        ..sort(compareShotNumber);
+    }
+    return (_replicateController
+        .startEndSequencesFor(value.shots)
         .map((sequence) => sequence.head)
         .where(canGenerateShot)
-        .toList(growable: false);
+        .toList(growable: false)
+      ..sort(compareShotNumber));
   }
 
   Future<void> generateShot(ScriptShot shot) async {
-    await _generate([generationOwnerFor(shot)]);
+    final submissions = await _prepareGenerationSubmissions([
+      generationOwnerFor(shot),
+    ]);
+    if (submissions.isEmpty) return;
+    await _enqueueGeneration(
+      submissions,
+      isBatch: false,
+      queuedMessage: '已加入生成队列，等待前序任务完成',
+    );
   }
 
   Future<void> generateAll() async {
-    await _generate(generationTargets());
+    final submissions = await _prepareGenerationSubmissions(
+      generationTargets(),
+    );
+    if (submissions.isEmpty) return;
+    await _enqueueGeneration(
+      submissions,
+      isBatch: true,
+      queuedMessage: usesConfiguredVideoGenerationApi
+          ? '已按镜号排队，正在串行生成 ${submissions.length} 个视频…'
+          : '已按镜号排队，正在并发生成 ${submissions.length} 个可灵视频…',
+    );
   }
 
   Future<void> openOutputDirectory() async {
@@ -589,6 +767,37 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       task.copyWith(localPath: renamed.path, updatedAt: DateTime.now().toUtc()),
     );
     _refreshData();
+  }
+
+  Future<File?> saveGeneratedVideoCopy(
+    VideoGenerationTask task,
+    String targetPath,
+  ) async {
+    final source = File(task.localPath);
+    if (!source.existsSync()) {
+      value = value.copyWith(errorMessage: '本地生成视频不存在，无法下载保存');
+      return null;
+    }
+    final requested = targetPath.trim();
+    if (requested.isEmpty) return null;
+    final normalizedPath = p.extension(requested).isEmpty
+        ? '$requested.mp4'
+        : requested;
+    final target = File(normalizedPath);
+    if (p.normalize(source.absolute.path) ==
+        p.normalize(target.absolute.path)) {
+      value = value.copyWith(message: '视频已在该位置，无需重复保存', errorMessage: '');
+      return target;
+    }
+    try {
+      await target.parent.create(recursive: true);
+      final saved = await source.copy(target.path);
+      value = value.copyWith(message: '视频已保存到：${saved.path}', errorMessage: '');
+      return saved;
+    } catch (error) {
+      value = value.copyWith(errorMessage: '保存视频失败：$error');
+      return null;
+    }
   }
 
   Future<void> retryDownload(VideoGenerationTask task) async {
@@ -636,25 +845,37 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     }
   }
 
-  Future<void> _generate(List<ScriptShot> shots) async {
+  Future<List<VideoGenerationSubmission>> _prepareGenerationSubmissions(
+    List<ScriptShot> shots,
+  ) async {
     final profile = value.profile;
+    final videoApiConfig =
+        _settingsController.value.activeVideoGenerationApiConfig;
+    final usesVideoApi =
+        videoApiConfig != null &&
+        videoApiConfig.isHttpApi &&
+        videoApiConfig.baseUrl.trim().isNotEmpty;
     final model = profile == null ? null : _model(profile.model);
     if (shots.isEmpty) {
       value = value.copyWith(errorMessage: '没有具备首帧图的可生成镜头');
-      return;
+      return const [];
     }
-    if (profile == null || model == null || value.identity == null) {
+    if (!usesVideoApi &&
+        (profile == null || model == null || value.identity == null)) {
       value = value.copyWith(errorMessage: '请先登录可灵并选择可用模型');
-      return;
+      return const [];
     }
     final hasStartEndSequence = shots.any(
       (shot) => actionSequenceFor(shot).hasDistinctTail,
     );
-    if (hasStartEndSequence && !model.supportsStartEndFrames) {
+    if (!usesVideoApi &&
+        hasStartEndSequence &&
+        model != null &&
+        !model.supportsStartEndFrames) {
       value = value.copyWith(
         errorMessage: '当前模型不支持首尾帧输入，请切换到可灵 3.0 Omni 或支持尾帧图的模型后再提交。',
       );
-      return;
+      return const [];
     }
     final directories = await _generationDirectories();
     final submissions = <VideoGenerationSubmission>[];
@@ -674,10 +895,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         if (tailFile == null) continue;
         tailImagePath = tailFile.path;
       }
-      final duration = const KlingDurationMatcher().forModel(
-        desiredSeconds: desiredDurationFor(shot),
-        model: model,
-      );
+      final duration = usesVideoApi
+          ? desiredDurationFor(shot).round().clamp(1, 15).toInt()
+          : const KlingDurationMatcher().forModel(
+              desiredSeconds: desiredDurationFor(shot),
+              model: model!,
+            );
       final taskId = _uuid.v4();
       final output = _outputFile(
         directories,
@@ -690,12 +913,18 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
             id: taskId,
             scriptId: shot.scriptId,
             shotId: shot.id,
-            model: profile.model,
-            parameters: _parametersForSubmission(
-              profile.parameters,
-              model: model,
-              hasTailImage: tailImagePath.isNotEmpty,
-            ),
+            model: usesVideoApi
+                ? activeVideoGenerationApiModel
+                : profile!.model,
+            parameters: usesVideoApi
+                ? _miniMaxApiParametersForSubmission(
+                    profile?.parameters ?? const <String, String>{},
+                  )
+                : _parametersForSubmission(
+                    profile!.parameters,
+                    model: model!,
+                    hasTailImage: tailImagePath.isNotEmpty,
+                  ),
             durationSeconds: duration,
             promptMode: draft.promptMode,
             prompt: draft.selectedPrompt,
@@ -712,15 +941,76 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     }
     if (submissions.isEmpty) {
       value = value.copyWith(errorMessage: '所选镜头缺少本地首帧图或提示词');
-      return;
+      return const [];
     }
-    value = value.copyWith(isBusy: true, message: '正在提交视频生成任务…');
+    return submissions;
+  }
+
+  Future<void> _enqueueGeneration(
+    List<VideoGenerationSubmission> submissions, {
+    required bool isBatch,
+    required String queuedMessage,
+  }) async {
+    final videoApiConfig =
+        _settingsController.value.activeVideoGenerationApiConfig;
+    final usesVideoApi =
+        videoApiConfig != null &&
+        videoApiConfig.isHttpApi &&
+        videoApiConfig.baseUrl.trim().isNotEmpty;
+    final activeTasks = [
+      for (final submission in submissions)
+        submission.task.copyWith(
+          localPath: submission.outputFile.path,
+          updatedAt: DateTime.now().toUtc(),
+        ),
+    ];
+    final activeTaskIds = activeTasks.map((task) => task.id).toSet();
+    for (final task in activeTasks) {
+      _repository.upsertTask(task);
+    }
+    value = value.copyWith(
+      isBusy: isBatch ? true : value.isBusy,
+      isGeneratingAll: isBatch ? true : value.isGeneratingAll,
+      tasks: [
+        ...activeTasks,
+        for (final task in value.tasks)
+          if (!activeTaskIds.contains(task.id)) task,
+      ],
+      message: queuedMessage,
+      errorMessage: '',
+    );
     _replicateController.updateVideoGenerationStatus(ProcessingStatus.running);
+    final run = _generationQueue.then(
+      (_) => _runQueuedGeneration(
+        submissions,
+        usesVideoApi: usesVideoApi,
+        videoApiConfig: videoApiConfig,
+        isBatch: isBatch,
+      ),
+    );
+    _generationQueue = run.catchError((_) {});
+    await run;
+  }
+
+  Future<void> _runQueuedGeneration(
+    List<VideoGenerationSubmission> submissions, {
+    required bool usesVideoApi,
+    required VideoGenerationApiConfig? videoApiConfig,
+    required bool isBatch,
+  }) async {
+    final concurrency = submissions.length == 1
+        ? 1
+        : usesVideoApi
+        ? localVideoApiBatchConcurrency
+        : klingCliBatchConcurrency;
     try {
       final results = await VideoGenerationTaskService(
         repository: _repository,
         cliService: _cliService,
-      ).submitBatch(submissions);
+        onTaskChanged: _handleTaskChanged,
+        videoApiConfig: usesVideoApi ? videoApiConfig : null,
+      ).submitBatch(submissions, concurrency: concurrency);
+      if (_disposed) return;
       final completed = results
           .where(
             (task) =>
@@ -739,44 +1029,163 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
       _refreshData();
       value = value.copyWith(
-        isBusy: false,
+        isBusy: isBatch ? false : value.isBusy,
+        isGeneratingAll: isBatch ? false : value.isGeneratingAll,
         message: '视频生成完成 $completed/${results.length}',
         errorMessage: status == ProcessingStatus.failed ? '本批任务均未完成' : '',
       );
     } catch (error) {
+      if (_disposed) return;
       _replicateController.updateVideoGenerationStatus(
         ProcessingStatus.failed,
         message: '$error',
       );
-      value = value.copyWith(isBusy: false, errorMessage: '视频生成失败：$error');
+      value = value.copyWith(
+        isBusy: isBatch ? false : value.isBusy,
+        isGeneratingAll: isBatch ? false : value.isGeneratingAll,
+        errorMessage: '视频生成失败：$error',
+      );
     }
   }
 
   Future<void> _resumePendingTasks() async {
-    final pending = _repository.listRecoverableTasks();
+    final pending = _repository.listRecoverableTasks(includeTimedOut: false);
     if (pending.isEmpty) return;
+    final videoApiConfig =
+        _settingsController.value.activeVideoGenerationApiConfig;
     value = value.copyWith(
       isBusy: true,
-      message: '正在恢复查询 ${pending.length} 个可灵任务…',
+      message: usesConfiguredVideoGenerationApi
+          ? '正在恢复查询 ${pending.length} 个视频 API 任务…'
+          : '正在恢复查询 ${pending.length} 个可灵任务…',
     );
     try {
-      await VideoGenerationTaskService(
-        repository: _repository,
-        cliService: _cliService,
-      ).resumePending(outputForTask: (task) => File(task.localPath));
+      final recovered =
+          await VideoGenerationTaskService(
+            repository: _repository,
+            cliService: _cliService,
+            onTaskChanged: _handleTaskChanged,
+            videoApiConfig: usesConfiguredVideoGenerationApi
+                ? videoApiConfig
+                : null,
+          ).resumePending(
+            outputForTask: (task) => File(task.localPath),
+            includeTimedOut: false,
+            concurrency: usesConfiguredVideoGenerationApi
+                ? localVideoApiBatchConcurrency
+                : klingCliBatchConcurrency,
+          );
+      if (_disposed) return;
       _refreshData();
+      if (usesConfiguredVideoGenerationApi) {
+        final retryShots = _shotsForMissingVideoApiTasks(recovered);
+        if (retryShots.isNotEmpty) {
+          value = value.copyWith(isBusy: false);
+          final submissions = await _prepareGenerationSubmissions(retryShots);
+          if (submissions.isNotEmpty) {
+            await _enqueueGeneration(
+              submissions,
+              isBatch: false,
+              queuedMessage: '历史视频 API 任务不存在，已重新加入生成队列',
+            );
+          }
+          return;
+        }
+      }
       value = value.copyWith(
         isBusy: false,
-        message: '已恢复查询 ${pending.length} 个可灵任务',
+        message: usesConfiguredVideoGenerationApi
+            ? '已恢复查询 ${pending.length} 个视频 API 任务'
+            : '已恢复查询 ${pending.length} 个可灵任务',
       );
     } catch (error) {
-      value = value.copyWith(isBusy: false, errorMessage: '恢复可灵任务查询失败：$error');
+      if (_disposed) return;
+      value = value.copyWith(
+        isBusy: false,
+        errorMessage: usesConfiguredVideoGenerationApi
+            ? '恢复视频 API 任务查询失败：$error'
+            : '恢复可灵任务查询失败：$error',
+      );
     }
+  }
+
+  List<ScriptShot> _shotsForMissingVideoApiTasks(
+    List<VideoGenerationTask> tasks,
+  ) {
+    final retryShotIds = tasks
+        .where(VideoGenerationTaskService.shouldRetryMissingVideoApiTask)
+        .map((task) => task.shotId)
+        .toSet();
+    if (retryShotIds.isEmpty) return const [];
+    return [
+      for (final shot in value.shots)
+        if (retryShotIds.contains(shot.id)) shot,
+    ];
+  }
+
+  void _handleTaskChanged(VideoGenerationTask updated) {
+    if (_disposed) return;
+    final tasks = [
+      updated,
+      for (final task in value.tasks)
+        if (task.id != updated.id) task,
+    ];
+    value = value.copyWith(tasks: tasks);
   }
 
   void _handleSourcesChanged() => _refreshData();
 
-  void _handleSettingsChanged() => value = value.copyWith();
+  void _handleSettingsChanged() {
+    if (usesConfiguredVideoGenerationApi) {
+      _cacheKlingState();
+      value = value.copyWith(
+        environment: null,
+        identity: null,
+        account: null,
+        isLoadingEnvironment: false,
+        message: '视频生成 API 已就绪',
+        errorMessage: '',
+      );
+      return;
+    }
+    unawaited(initializeEnvironment());
+    if (_restoreCachedKlingState()) return;
+    value = value.copyWith();
+  }
+
+  void _cacheKlingState() {
+    final environment = value.environment;
+    if (environment != null && environment.isReady) {
+      _cachedKlingEnvironment = environment;
+    }
+    final identity = value.identity;
+    if (identity != null) _cachedKlingIdentity = identity;
+    final account = value.account;
+    if (account != null) _cachedKlingAccount = account;
+  }
+
+  bool _restoreCachedKlingState() {
+    final environment = _cachedKlingEnvironment;
+    final identity = _cachedKlingIdentity;
+    final account = _cachedKlingAccount;
+    if (environment == null ||
+        !environment.isReady ||
+        identity == null ||
+        account == null) {
+      return false;
+    }
+    _cliService = KlingCliService(executable: environment.klingPath);
+    value = value.copyWith(
+      environment: environment,
+      identity: identity,
+      account: account,
+      isLoadingEnvironment: false,
+      message: '可灵账号已连接',
+      errorMessage: '',
+    );
+    _ensureProfileModel();
+    return true;
+  }
 
   void _refreshData() {
     final shooting = _shootingScriptController.value;
@@ -814,7 +1223,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         draft.shotId: draft,
     };
     final sequences = startEndFrameModeEnabled
-        ? const VideoActionSequenceResolver().resolve(shooting.shots)
+        ? _replicateController.startEndSequencesFor(shooting.shots)
         : const <VideoActionSequence>[];
     final drafts = <String, VideoGenerationDraft>{};
     for (final shot in shooting.shots) {
@@ -961,6 +1370,20 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return adjusted;
   }
 
+  Map<String, String> _miniMaxApiParametersForSubmission(
+    Map<String, String> parameters,
+  ) {
+    final resolution =
+        parameters[_minimaxApiResolutionKey] ?? parameters['resolution'];
+    return {
+      'resolution': _isMiniMaxResolution(resolution)
+          ? resolution!
+          : '0.2MP 16:9 - 608x352',
+      'steps':
+          '${_normalizeMiniMaxSteps(parameters[_minimaxApiStepsKey] ?? parameters['steps'])}',
+    };
+  }
+
   Future<VideoGenerationDirectories> _generationDirectories() async {
     final script = value.selectedScript;
     if (script == null) throw StateError('尚未选择拍摄脚本');
@@ -1027,6 +1450,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   @override
   void dispose() {
+    _disposed = true;
     _loginProcess?.kill();
     _completeLoginCancelSignal();
     _shootingScriptController.removeListener(_handleSourcesChanged);
@@ -1034,6 +1458,66 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _settingsController.removeListener(_handleSettingsChanged);
     super.dispose();
   }
+}
+
+class _MiniMaxResolutionPreset {
+  const _MiniMaxResolutionPreset(this.label, this.aspectRatio);
+
+  final String label;
+  final String aspectRatio;
+}
+
+const _minimaxApiAspectRatioKey = 'minimax_api_aspect_ratio';
+const _minimaxApiResolutionKey = 'minimax_api_resolution';
+const _minimaxApiStepsKey = 'minimax_api_steps';
+
+const _minimaxApiAspectRatios = ['16:9', '9:16', '1:1'];
+const _minimaxApiResolutionPresets = [
+  _MiniMaxResolutionPreset('0.2MP 16:9 - 608x352', '16:9'),
+  _MiniMaxResolutionPreset('0.3MP 16:9 - 736x416', '16:9'),
+  _MiniMaxResolutionPreset('0.4MP 16:9 - 864x480', '16:9'),
+  _MiniMaxResolutionPreset('0.5MP 16:9 - 960x544', '16:9'),
+  _MiniMaxResolutionPreset('0.6MP 16:9 - 1056x608', '16:9'),
+  _MiniMaxResolutionPreset('0.2MP 9:16 - 352x608', '9:16'),
+  _MiniMaxResolutionPreset('0.3MP 9:16 - 416x736', '9:16'),
+  _MiniMaxResolutionPreset('0.4MP 9:16 - 480x864', '9:16'),
+  _MiniMaxResolutionPreset('Square 512x512', '1:1'),
+];
+
+String? _allowedMiniMaxAspectRatio(String? value) {
+  final normalized = value?.trim();
+  if (normalized == null || normalized.isEmpty) return null;
+  for (final aspectRatio in _minimaxApiAspectRatios) {
+    if (aspectRatio == normalized) return aspectRatio;
+  }
+  return null;
+}
+
+bool _isMiniMaxResolution(String? value) {
+  if (value == null || value.trim().isEmpty) return false;
+  for (final preset in _minimaxApiResolutionPresets) {
+    if (preset.label == value.trim()) return true;
+  }
+  return false;
+}
+
+String? _aspectRatioForMiniMaxResolution(String resolution) {
+  for (final preset in _minimaxApiResolutionPresets) {
+    if (preset.label == resolution.trim()) return preset.aspectRatio;
+  }
+  return null;
+}
+
+String _defaultMiniMaxResolutionForAspect(String aspectRatio) {
+  for (final preset in _minimaxApiResolutionPresets) {
+    if (preset.aspectRatio == aspectRatio) return preset.label;
+  }
+  return '0.2MP 16:9 - 608x352';
+}
+
+int _normalizeMiniMaxSteps(String? value) {
+  final parsed = int.tryParse(value?.trim() ?? '') ?? 12;
+  return parsed.clamp(4, 30).toInt();
 }
 
 const _sentinel = Object();

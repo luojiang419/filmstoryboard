@@ -85,7 +85,7 @@ void main() {
 
     expect(script, isNotNull);
     expect(fixture.controller.value.shots, hasLength(2));
-    expect(fixture.controller.value.shots.first.content, '镜头叙事 1');
+    expect(fixture.controller.value.shots.first.content, '产品进入画面');
     expect(fixture.controller.value.shots.first.shotSize, '中景');
     expect(fixture.controller.value.shots.first.durationSeconds, 1.2);
     expect(fixture.controller.value.shots.first.continuesToNext, isTrue);
@@ -155,6 +155,170 @@ void main() {
     addTearDown(restored.dispose);
     expect(restored.value.scripts, hasLength(2));
     expect(restored.value.scripts.any((item) => item.name == '正式拍摄脚本'), isTrue);
+  });
+
+  test('加载旧工程脚本时将相对帧图路径转换为可显示路径', () async {
+    final fixture = await _createFixture();
+    final source = await _writeImage(
+      fixture.directories.frames,
+      'legacy-frame.png',
+      img.ColorRgb8(120, 90, 220),
+    );
+    final script = fixture.controller.createEmpty(name: '旧工程脚本');
+    final relativePath = p
+        .relative(source.path, from: fixture.directories.workspaceRoot.path)
+        .replaceAll('\\', '/');
+    final now = DateTime.now().toUtc();
+    ShootingScriptRepository(fixture.database).replaceShots(script.id, [
+      ScriptShot(
+        id: 'legacy-shot-1',
+        scriptId: script.id,
+        shotNumber: 1,
+        durationSeconds: 1,
+        framePath: relativePath,
+        visual: '',
+        content: '旧工程相对路径镜头',
+        shotSize: '',
+        cameraMovement: '',
+        cameraNotes: '',
+        composition: '',
+        cameraAngle: '',
+        lightingMood: '',
+        colorPalette: '',
+        visualFocus: '',
+        transitionHint: '',
+        movementTrend: '',
+        actionStage: '',
+        continuesFromPrevious: false,
+        continuesToNext: false,
+        scene: '',
+        productCode: '',
+        productStyling: '',
+        dialogue: '',
+        sound: '',
+        prompt: '',
+        status: ProcessingStatus.completed,
+        updatedAt: now,
+      ),
+    ]);
+
+    final restored = ShootingScriptController(
+      repository: ShootingScriptRepository(fixture.database),
+      directories: fixture.directories,
+    );
+    addTearDown(restored.dispose);
+
+    expect(
+      p.normalize(restored.value.shots.single.framePath),
+      p.normalize(source.path),
+    );
+    expect(File(restored.value.shots.single.framePath).existsSync(), isTrue);
+  });
+
+  test('加载现有视频脚本时按帧修复误写为叙事功能的内容列', () async {
+    final fixture = await _createFixture();
+    final now = DateTime.utc(2026, 8, 5);
+    final firstFrame = await _writeImage(
+      fixture.directories.frames,
+      'legacy-video-frame-1.png',
+      img.ColorRgb8(200, 70, 50),
+    );
+    final secondFrame = await _writeImage(
+      fixture.directories.frames,
+      'legacy-video-frame-2.png',
+      img.ColorRgb8(50, 120, 210),
+    );
+    final video = _video(now);
+    final frames = [
+      _frame('legacy-frame-1', video.id, 0, firstFrame.path, now),
+      _frame('legacy-frame-2', video.id, 1, secondFrame.path, now),
+    ];
+    final analyses = [
+      _analysis(
+        'legacy-analysis-1',
+        video.id,
+        'legacy-frame-1',
+        1,
+        now,
+        caption: '模特站在门口展示黑色外套',
+        shotSize: '中景',
+        movement: '固定',
+        scene: '街边门口',
+      ),
+      _analysis(
+        'legacy-analysis-2',
+        video.id,
+        'legacy-frame-2',
+        2,
+        now,
+        caption: '模特向右侧抬手示意',
+        shotSize: '中景',
+        movement: '固定',
+        scene: '街边门口',
+      ),
+    ];
+    final videoRepository = VideoAnalysisRepository(fixture.database)
+      ..upsertSourceVideo(video);
+    for (final frame in frames) {
+      videoRepository.upsertVideoFrame(frame);
+    }
+    for (final analysis in analyses) {
+      videoRepository.upsertVideoFrameAnalysis(analysis);
+    }
+    final sourceShots = [
+      _videoShot('legacy-shot-1', video.id, 'legacy-frame-1', 1, 0, 1200, now),
+      _videoShot(
+        'legacy-shot-2',
+        video.id,
+        'legacy-frame-2',
+        2,
+        1200,
+        2400,
+        now,
+      ),
+    ];
+    for (final sourceShot in sourceShots) {
+      videoRepository.upsertVideoShot(sourceShot);
+    }
+
+    final script = fixture.controller.createFromVideo(
+      video: video,
+      frames: frames,
+      videoShots: sourceShots,
+      analyses: analyses,
+    )!;
+    final repository = ShootingScriptRepository(fixture.database);
+    repository.upsertScript(
+      ShootingScript(
+        id: script.id,
+        name: script.name,
+        sourceStoryboardId: script.sourceStoryboardId,
+        sourceVideoId: null,
+        status: script.status,
+        version: script.version + 1,
+        createdAt: script.createdAt,
+        updatedAt: now,
+      ),
+    );
+    final oldShots = repository.listShots(script.id);
+    repository.replaceShots(script.id, [
+      oldShots[0].copyWith(content: '广告产品记忆点'),
+      oldShots[1].copyWith(content: '人工保留的画面内容'),
+    ]);
+
+    final restored = ShootingScriptController(
+      repository: repository,
+      videoRepository: videoRepository,
+      directories: fixture.directories,
+    );
+    addTearDown(restored.dispose);
+
+    expect(restored.value.shots[0].content, '模特站在门口展示黑色外套');
+    expect(restored.value.shots[1].content, '人工保留的画面内容');
+    expect(repository.listShots(script.id).map((shot) => shot.content), [
+      '模特站在门口展示黑色外套',
+      '人工保留的画面内容',
+    ]);
   });
 
   test('手动新建空故事板时创建关联的空拍摄脚本', () async {
@@ -430,6 +594,7 @@ VideoFrameAnalysis _analysis(
     'detail': '$caption 的摄影细节',
     'shotSize': shotSize,
     'cameraMovement': movement,
+    'narrativeFunction': '叙事功能 $sequence',
     'scene': scene,
     'movementTrend': movementTrend,
     'actionStage': actionStage,

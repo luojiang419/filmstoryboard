@@ -1,4 +1,5 @@
 import 'image_generation_api_config.dart';
+import 'video_generation_api_config.dart';
 import 'vision_api_config.dart';
 
 enum AppThemePreference {
@@ -128,6 +129,8 @@ class AppSettings {
     required this.imageGenerationModel,
     this.imageGenerationApiConfigs = const [],
     this.activeImageGenerationApiConfigId = '',
+    this.videoGenerationApiConfigs = const [],
+    this.activeVideoGenerationApiConfigId = '',
     required this.updateReleaseApiUrl,
     required this.autoInstallUpdates,
     required this.updateDownloadMode,
@@ -140,6 +143,12 @@ class AppSettings {
       'https://api.apimart.ai';
   static const defaultImageGenerationGeminiApiBaseUrl =
       'https://www.shiying-api.com';
+  static const defaultKlingCliVideoGenerationConfigId = 'default-kling-cli';
+  static const defaultMiniMaxVideoGenerationConfigId =
+      'default-minimax-h3-local';
+  static const defaultVideoGenerationApiBaseUrl = 'http://127.0.0.1:7860';
+  static const defaultVideoGenerationModel = 'minimax-h3-local';
+  static const defaultKlingCliVideoGenerationModel = 'kling-cli';
   static const defaultReplicateGlobalStyle = '高清电影广告质感，细节丰富，色彩自然，光影层次清晰';
   static const defaultReplicateConstraints =
       '保持主体外观、服装、产品结构与场景连续稳定；人物面部和身体比例自然，动作连续，无卡顿、无闪烁、无穿模；保持无字幕，避免生成任何文字或字幕，不要生成 Logo，不要生成水印，不出现重复人物或同款分身';
@@ -199,6 +208,18 @@ class AppSettings {
         : imageGenerationApiConfigs.first;
   }
 
+  final List<VideoGenerationApiConfig> videoGenerationApiConfigs;
+  final String activeVideoGenerationApiConfigId;
+
+  VideoGenerationApiConfig? get activeVideoGenerationApiConfig {
+    for (final config in videoGenerationApiConfigs) {
+      if (config.id == activeVideoGenerationApiConfigId) return config;
+    }
+    return videoGenerationApiConfigs.isEmpty
+        ? null
+        : videoGenerationApiConfigs.first;
+  }
+
   final String updateReleaseApiUrl;
   final bool autoInstallUpdates;
   final UpdateDownloadMode updateDownloadMode;
@@ -240,6 +261,8 @@ class AppSettings {
     String? imageGenerationModel,
     List<ImageGenerationApiConfig>? imageGenerationApiConfigs,
     String? activeImageGenerationApiConfigId,
+    List<VideoGenerationApiConfig>? videoGenerationApiConfigs,
+    String? activeVideoGenerationApiConfigId,
     String? updateReleaseApiUrl,
     bool? autoInstallUpdates,
     UpdateDownloadMode? updateDownloadMode,
@@ -309,6 +332,11 @@ class AppSettings {
       activeImageGenerationApiConfigId:
           activeImageGenerationApiConfigId ??
           this.activeImageGenerationApiConfigId,
+      videoGenerationApiConfigs:
+          videoGenerationApiConfigs ?? this.videoGenerationApiConfigs,
+      activeVideoGenerationApiConfigId:
+          activeVideoGenerationApiConfigId ??
+          this.activeVideoGenerationApiConfigId,
       updateReleaseApiUrl: updateReleaseApiUrl ?? this.updateReleaseApiUrl,
       autoInstallUpdates: autoInstallUpdates ?? this.autoInstallUpdates,
       updateDownloadMode: updateDownloadMode ?? this.updateDownloadMode,

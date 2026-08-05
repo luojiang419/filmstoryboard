@@ -220,6 +220,11 @@ void main() {
     );
     final script = shootingScriptController.value.scripts.single;
     expect(board.items, hasLength(1));
+    expect(
+      p.normalize(board.items.single.asset.path),
+      p.normalize(frameFile.path),
+    );
+    expect(File(board.items.single.asset.path).existsSync(), isTrue);
     expect(script.sourceStoryboardId, board.id);
     expect(script.sourceVideoId, videoId);
     expect(shootingScriptController.value.shots, hasLength(1));
@@ -230,6 +235,14 @@ void main() {
     expect(
       shootingScriptController.value.shots.single.sourceVideoFrameId,
       frame.id,
+    );
+    expect(
+      p.normalize(shootingScriptController.value.shots.single.framePath),
+      p.normalize(frameFile.path),
+    );
+    expect(
+      File(shootingScriptController.value.shots.single.framePath).existsSync(),
+      isTrue,
     );
     expect(shootingScriptController.value.shots.single.content, '自动生成的测试镜头');
     expect(controller.value.message, contains('已自动创建 1 个故事板、1 个拍摄脚本'));

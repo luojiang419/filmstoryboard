@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../../../core/database/app_database.dart';
 import '../../replicate/domain/replicate_models.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
+import '../../video_generation/domain/video_action_sequence.dart';
 import '../domain/video_analysis_models.dart';
 
 class VideoAnalysisRepository {
@@ -285,6 +286,46 @@ class VideoAnalysisRepository {
       .map(_videoFrameAnalysis)
       .toList();
 
+  Map<String, VideoFrameAnalysis> completedFrameAnalysesByFrameIds(
+    Iterable<String> frameIds,
+  ) {
+    final ids = frameIds.where((id) => id.trim().isNotEmpty).toSet();
+    if (ids.isEmpty) {
+      return const {};
+    }
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = _database.selectRows(
+      '''
+      SELECT * FROM video_frame_analyses
+      WHERE frame_id IN ($placeholders) AND status = ?
+      ORDER BY sequence_no;
+      ''',
+      [...ids, ProcessingStatus.completed.name],
+    );
+    return {
+      for (final analysis in rows.map(_videoFrameAnalysis))
+        analysis.frameId: analysis,
+    };
+  }
+
+  Map<String, String> videoShotStoryFlowByFrameIds(Iterable<String> frameIds) {
+    final ids = frameIds.where((id) => id.trim().isNotEmpty).toSet();
+    if (ids.isEmpty) {
+      return const {};
+    }
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = _database.selectRows('''
+      SELECT vsf.frame_id AS frame_id, vs.story_flow AS story_flow
+      FROM video_shot_frames vsf
+      INNER JOIN video_shots vs ON vs.id = vsf.shot_id
+      WHERE vsf.frame_id IN ($placeholders);
+      ''', ids.toList());
+    return {
+      for (final row in rows)
+        row['frame_id'] as String: row['story_flow'] as String? ?? '',
+    };
+  }
+
   void upsertVideoSummary(VideoSummary summary) {
     _database.executeStatement(
       '''
@@ -447,12 +488,13 @@ class VideoAnalysisRepository {
         replication_instructions,
         generation_model, generation_aspect_ratio, generation_image_size,
         generation_quality,
-        confirmed_shot_ids_json, image_reference_count, video_reference_count,
+        confirmed_shot_ids_json, start_end_pairs_json,
+        image_reference_count, video_reference_count,
         audio_reference_count, current_step, status, confirm_shots_status,
         prepare_assets_status, compose_prompts_status, completed_count,
         generate_videos_status,
         total_count, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         script_id = excluded.script_id,
@@ -464,6 +506,7 @@ class VideoAnalysisRepository {
         generation_image_size = excluded.generation_image_size,
         generation_quality = excluded.generation_quality,
         confirmed_shot_ids_json = excluded.confirmed_shot_ids_json,
+        start_end_pairs_json = excluded.start_end_pairs_json,
         image_reference_count = excluded.image_reference_count,
         video_reference_count = excluded.video_reference_count,
         audio_reference_count = excluded.audio_reference_count,
@@ -490,6 +533,7 @@ class VideoAnalysisRepository {
         run.generationImageSize,
         run.generationQuality,
         jsonEncode(run.confirmedShotIds),
+        _encodeStartEndPairs(run.startEndPairs),
         run.imageReferenceCount,
         run.videoReferenceCount,
         run.audioReferenceCount,
@@ -796,6 +840,7 @@ class VideoAnalysisRepository {
       confirmedShotIds: confirmedJson is List
           ? confirmedJson.map((value) => '$value').toList()
           : const [],
+      startEndPairs: _decodeStartEndPairs(row['start_end_pairs_json']),
       imageReferenceCount: row['image_reference_count'] as int? ?? 0,
       videoReferenceCount: row['video_reference_count'] as int? ?? 0,
       audioReferenceCount: row['audio_reference_count'] as int? ?? 0,
@@ -822,6 +867,33 @@ class VideoAnalysisRepository {
       createdAt: _parseDate(row['created_at']),
       updatedAt: _parseDate(row['updated_at']),
     );
+  }
+
+  String _encodeStartEndPairs(List<StartEndFramePair> pairs) => jsonEncode([
+    for (final pair in pairs)
+      {'startShotId': pair.startShotId, 'tailShotId': pair.tailShotId},
+  ]);
+
+  List<StartEndFramePair> _decodeStartEndPairs(Object? value) {
+    try {
+      final decoded = jsonDecode(value as String? ?? '[]');
+      if (decoded is! List) return const [];
+      return [
+            for (final item in decoded)
+              if (item is Map)
+                StartEndFramePair(
+                  startShotId: '${item['startShotId'] ?? ''}',
+                  tailShotId: '${item['tailShotId'] ?? ''}',
+                ),
+          ]
+          .where((pair) {
+            return pair.startShotId.trim().isNotEmpty &&
+                pair.tailShotId.trim().isNotEmpty;
+          })
+          .toList(growable: false);
+    } catch (_) {
+      return const [];
+    }
   }
 
   ReplicateAsset _replicateAsset(Map<String, Object?> row) => ReplicateAsset(

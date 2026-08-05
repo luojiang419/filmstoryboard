@@ -15,6 +15,7 @@ import '../../updater/domain/update_models.dart';
 import '../application/settings_controller.dart';
 import '../domain/app_settings.dart';
 import '../domain/image_generation_api_config.dart';
+import '../domain/video_generation_api_config.dart';
 import '../domain/vision_api_config.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
@@ -32,6 +33,7 @@ enum _SettingsSection {
   videoAnalysis,
   promptDefaults,
   imageGenerationApi,
+  videoGenerationApi,
   updater,
   dataDirectories,
 }
@@ -696,6 +698,20 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 onSelect: settingsController.setActiveImageGenerationApiConfig,
                 onSave: settingsController.saveImageGenerationApiConfig,
                 onDelete: settingsController.deleteImageGenerationApiConfig,
+              ),
+            ),
+            const SizedBox(height: 14),
+            _CollapsibleSection(
+              title: '视频生成 API',
+              expanded: _sectionExpanded(_SettingsSection.videoGenerationApi),
+              onToggle: () =>
+                  _toggleSection(_SettingsSection.videoGenerationApi),
+              child: _VideoGenerationApiConfigSection(
+                configs: settings.videoGenerationApiConfigs,
+                activeId: settings.activeVideoGenerationApiConfigId,
+                onSelect: settingsController.setActiveVideoGenerationApiConfig,
+                onSave: settingsController.saveVideoGenerationApiConfig,
+                onDelete: settingsController.deleteVideoGenerationApiConfig,
               ),
             ),
             const SizedBox(height: 14),
@@ -1521,6 +1537,357 @@ class _ImageGenerationApiConfigDialogState
               baseUrl: _baseUrlController.text.trim(),
               apiKey: _apiKeyController.text.trim(),
               model: _model,
+            ),
+          ),
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+
+class _VideoGenerationApiConfigSection extends StatelessWidget {
+  const _VideoGenerationApiConfigSection({
+    required this.configs,
+    required this.activeId,
+    required this.onSelect,
+    required this.onSave,
+    required this.onDelete,
+  });
+
+  final List<VideoGenerationApiConfig> configs;
+  final String activeId;
+  final Future<void> Function(String id) onSelect;
+  final Future<void> Function(VideoGenerationApiConfig config) onSave;
+  final Future<void> Function(String id) onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '点击卡片即可设为默认；可灵 CLI 使用本机登录与命令行能力，MiniMax H3 本地 API 默认地址为 http://127.0.0.1:7860。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            for (final config in configs)
+              _VideoGenerationApiConfigCard(
+                config: config,
+                selected: config.id == activeId,
+                deleteEnabled:
+                    configs.length > 1 &&
+                    config.id !=
+                        AppSettings.defaultKlingCliVideoGenerationConfigId,
+                onSelect: () => onSelect(config.id),
+                onEdit: () => _edit(context, config),
+                onDelete: () => onDelete(config.id),
+              ),
+            _AddVideoGenerationApiConfigCard(
+              onPressed: () => _edit(context, null),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _edit(
+    BuildContext context,
+    VideoGenerationApiConfig? current,
+  ) async {
+    final config = await showDialog<VideoGenerationApiConfig>(
+      context: context,
+      builder: (_) => _VideoGenerationApiConfigDialog(config: current),
+    );
+    if (config == null || !context.mounted) return;
+    await onSave(config);
+  }
+}
+
+class _VideoGenerationApiConfigCard extends StatelessWidget {
+  const _VideoGenerationApiConfigCard({
+    required this.config,
+    required this.selected,
+    required this.deleteEnabled,
+    required this.onSelect,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final VideoGenerationApiConfig config;
+  final bool selected;
+  final bool deleteEnabled;
+  final VoidCallback onSelect;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final model = config.isKlingCli
+        ? '本机可灵 CLI'
+        : (config.model.trim().isEmpty ? '未设置模型' : config.model);
+    final baseUrl = config.isKlingCli
+        ? '使用可灵登录状态与命令行能力'
+        : (config.baseUrl.trim().isEmpty
+              ? '未设置 API 地址'
+              : config.baseUrl.trim());
+    return SizedBox(
+      width: 272,
+      child: Material(
+        color: selected ? scheme.primaryContainer : scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          key: ValueKey('video-generation-api-config-${config.id}'),
+          borderRadius: BorderRadius.circular(14),
+          onTap: onSelect,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? 2 : 1,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      config.isKlingCli
+                          ? Icons.terminal_rounded
+                          : Icons.movie_creation_outlined,
+                      color: selected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        config.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '编辑配置',
+                      onPressed: onEdit,
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                    if (deleteEnabled)
+                      IconButton(
+                        tooltip: '删除配置',
+                        onPressed: onDelete,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  model,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  baseUrl,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  selected ? '当前默认配置' : '点击设为默认',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddVideoGenerationApiConfigCard extends StatelessWidget {
+  const _AddVideoGenerationApiConfigCard({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 180,
+      height: 180,
+      child: OutlinedButton.icon(
+        key: const ValueKey('add-video-generation-api-config'),
+        onPressed: onPressed,
+        icon: const Icon(Icons.add_circle_outline_rounded),
+        label: const Text('添加 API 卡片'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: scheme.primary,
+          side: BorderSide(color: scheme.outlineVariant),
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoGenerationApiConfigDialog extends StatefulWidget {
+  const _VideoGenerationApiConfigDialog({this.config});
+
+  final VideoGenerationApiConfig? config;
+
+  @override
+  State<_VideoGenerationApiConfigDialog> createState() =>
+      _VideoGenerationApiConfigDialogState();
+}
+
+class _VideoGenerationApiConfigDialogState
+    extends State<_VideoGenerationApiConfigDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _baseUrlController;
+  late final TextEditingController _apiKeyController;
+  late final TextEditingController _modelController;
+  late VideoGenerationApiConfigKind _kind;
+  var _apiKeyObscured = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final config = widget.config;
+    _kind = config?.kind ?? VideoGenerationApiConfigKind.httpApi;
+    _nameController = TextEditingController(text: config?.name ?? '');
+    _baseUrlController = TextEditingController(
+      text: config?.isKlingCli == true
+          ? ''
+          : config?.baseUrl ?? AppSettings.defaultVideoGenerationApiBaseUrl,
+    );
+    _apiKeyController = TextEditingController(text: config?.apiKey ?? '');
+    _modelController = TextEditingController(
+      text: config?.isKlingCli == true
+          ? ''
+          : config?.model ?? AppSettings.defaultVideoGenerationModel,
+    );
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _baseUrlController.dispose();
+    _apiKeyController.dispose();
+    _modelController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isHttpApi = _kind == VideoGenerationApiConfigKind.httpApi;
+    return AlertDialog(
+      title: Text(widget.config == null ? '添加视频生成 API' : '编辑视频生成 API'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SegmentedButton<VideoGenerationApiConfigKind>(
+                segments: const [
+                  ButtonSegment(
+                    value: VideoGenerationApiConfigKind.klingCli,
+                    label: Text('可灵 CLI'),
+                    icon: Icon(Icons.terminal_rounded),
+                  ),
+                  ButtonSegment(
+                    value: VideoGenerationApiConfigKind.httpApi,
+                    label: Text('HTTP API'),
+                    icon: Icon(Icons.http_rounded),
+                  ),
+                ],
+                selected: {_kind},
+                onSelectionChanged: (selection) {
+                  setState(() => _kind = selection.first);
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _nameController,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: '配置名称'),
+            ),
+            const SizedBox(height: 12),
+            if (isHttpApi) ...[
+              TextField(
+                controller: _baseUrlController,
+                decoration: const InputDecoration(
+                  labelText: 'API 地址',
+                  hintText: AppSettings.defaultVideoGenerationApiBaseUrl,
+                  helperText: '填写 Base URL，保存时不会追加具体路径',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _apiKeyController,
+                obscureText: _apiKeyObscured,
+                decoration: InputDecoration(
+                  labelText: 'API Key',
+                  suffixIcon: IconButton(
+                    tooltip: _apiKeyObscured ? '显示 Key' : '隐藏 Key',
+                    onPressed: () =>
+                        setState(() => _apiKeyObscured = !_apiKeyObscured),
+                    icon: Icon(
+                      _apiKeyObscured
+                          ? Icons.visibility_rounded
+                          : Icons.visibility_off_rounded,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _modelController,
+                decoration: const InputDecoration(
+                  labelText: '模型名称',
+                  hintText: AppSettings.defaultVideoGenerationModel,
+                ),
+              ),
+            ] else
+              const Text('可灵 CLI 会复用本机可灵命令行、登录状态和模型配置；这里只保存一个默认入口卡片。'),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(
+            VideoGenerationApiConfig(
+              id:
+                  widget.config?.id ??
+                  'video-${DateTime.now().microsecondsSinceEpoch}',
+              name: _nameController.text.trim(),
+              kind: _kind,
+              baseUrl: isHttpApi ? _baseUrlController.text.trim() : '',
+              apiKey: isHttpApi ? _apiKeyController.text.trim() : '',
+              model: isHttpApi
+                  ? _modelController.text.trim()
+                  : AppSettings.defaultKlingCliVideoGenerationModel,
             ),
           ),
           child: const Text('保存'),

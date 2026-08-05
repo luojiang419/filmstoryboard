@@ -9,6 +9,7 @@ import '../../storyboard/domain/image_generation_model_catalog.dart';
 import '../../updater/domain/app_update_config.dart';
 import '../domain/app_settings.dart';
 import '../domain/image_generation_api_config.dart';
+import '../domain/video_generation_api_config.dart';
 import '../domain/vision_api_config.dart';
 
 class SettingsRepository {
@@ -70,6 +71,9 @@ class SettingsRepository {
   static const _imageGenerationApiConfigsKey = 'imageGenerationApiConfigs';
   static const _activeImageGenerationApiConfigIdKey =
       'activeImageGenerationApiConfigId';
+  static const _videoGenerationApiConfigsKey = 'videoGenerationApiConfigs';
+  static const _activeVideoGenerationApiConfigIdKey =
+      'activeVideoGenerationApiConfigId';
   static const _updateReleaseApiUrlKey = 'updateReleaseApiUrl';
   static const _autoInstallUpdatesKey = 'autoInstallUpdates';
   static const _updateDownloadModeKey = 'updateDownloadMode';
@@ -135,6 +139,11 @@ class SettingsRepository {
       imageGenerationApiConfigs,
       _database.getSetting(_activeImageGenerationApiConfigIdKey),
       legacyImageGeneration.model,
+    );
+    final videoGenerationApiConfigs = _loadVideoGenerationApiConfigs();
+    final activeVideoGenerationApiConfig = _activeVideoGenerationApiConfig(
+      videoGenerationApiConfigs,
+      _database.getSetting(_activeVideoGenerationApiConfigIdKey),
     );
     return AppSettings(
       exportDirectory:
@@ -226,6 +235,8 @@ class SettingsRepository {
       imageGenerationModel: activeImageGenerationApiConfig.model,
       imageGenerationApiConfigs: imageGenerationApiConfigs,
       activeImageGenerationApiConfigId: activeImageGenerationApiConfig.id,
+      videoGenerationApiConfigs: videoGenerationApiConfigs,
+      activeVideoGenerationApiConfigId: activeVideoGenerationApiConfig.id,
       updateReleaseApiUrl:
           _database.getSetting(_updateReleaseApiUrlKey) ??
           AppUpdateConfig.defaultReleaseRepositoryUrl,
@@ -357,6 +368,17 @@ class SettingsRepository {
         _activeImageGenerationApiConfigIdKey,
         settings.activeImageGenerationApiConfigId,
       )
+      ..setSetting(
+        _videoGenerationApiConfigsKey,
+        jsonEncode([
+          for (final config in settings.videoGenerationApiConfigs)
+            config.toJson(),
+        ]),
+      )
+      ..setSetting(
+        _activeVideoGenerationApiConfigIdKey,
+        settings.activeVideoGenerationApiConfigId,
+      )
       ..setSetting(_updateReleaseApiUrlKey, settings.updateReleaseApiUrl)
       ..setSetting(
         _autoInstallUpdatesKey,
@@ -447,6 +469,26 @@ class SettingsRepository {
         ),
       ],
       activeImageGenerationApiConfigId: 'default-grsai-image',
+      videoGenerationApiConfigs: const [
+        VideoGenerationApiConfig(
+          id: AppSettings.defaultKlingCliVideoGenerationConfigId,
+          name: '可灵 CLI',
+          kind: VideoGenerationApiConfigKind.klingCli,
+          baseUrl: '',
+          apiKey: '',
+          model: AppSettings.defaultKlingCliVideoGenerationModel,
+        ),
+        VideoGenerationApiConfig(
+          id: AppSettings.defaultMiniMaxVideoGenerationConfigId,
+          name: 'MiniMax H3 本地',
+          kind: VideoGenerationApiConfigKind.httpApi,
+          baseUrl: AppSettings.defaultVideoGenerationApiBaseUrl,
+          apiKey: '',
+          model: AppSettings.defaultVideoGenerationModel,
+        ),
+      ],
+      activeVideoGenerationApiConfigId:
+          AppSettings.defaultKlingCliVideoGenerationConfigId,
       updateReleaseApiUrl: AppUpdateConfig.defaultReleaseRepositoryUrl,
       autoInstallUpdates: false,
       updateDownloadMode: UpdateDownloadMode.automatic,
@@ -636,6 +678,69 @@ class SettingsRepository {
         (config) => config.model == legacyModel,
         orElse: () => configs.first,
       ),
+    );
+  }
+
+  List<VideoGenerationApiConfig> _loadVideoGenerationApiConfigs() {
+    final encoded = _database.getSetting(_videoGenerationApiConfigsKey);
+    if (encoded != null && encoded.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(encoded);
+        if (decoded is List) {
+          final configs = decoded
+              .whereType<Map>()
+              .map(
+                (value) => VideoGenerationApiConfig.fromJson(
+                  Map<String, dynamic>.from(value),
+                ),
+              )
+              .where((config) => config.id.trim().isNotEmpty)
+              .toList();
+          if (configs.isNotEmpty) {
+            return _withBuiltInVideoGenerationConfigs(configs);
+          }
+        }
+      } on FormatException {
+        // 配置损坏时回退到内置视频生成配置，避免阻断启动。
+      }
+    }
+    return _withBuiltInVideoGenerationConfigs(const []);
+  }
+
+  List<VideoGenerationApiConfig> _withBuiltInVideoGenerationConfigs(
+    List<VideoGenerationApiConfig> configs,
+  ) {
+    const klingCli = VideoGenerationApiConfig(
+      id: AppSettings.defaultKlingCliVideoGenerationConfigId,
+      name: '可灵 CLI',
+      kind: VideoGenerationApiConfigKind.klingCli,
+      baseUrl: '',
+      apiKey: '',
+      model: AppSettings.defaultKlingCliVideoGenerationModel,
+    );
+    const miniMax = VideoGenerationApiConfig(
+      id: AppSettings.defaultMiniMaxVideoGenerationConfigId,
+      name: 'MiniMax H3 本地',
+      kind: VideoGenerationApiConfigKind.httpApi,
+      baseUrl: AppSettings.defaultVideoGenerationApiBaseUrl,
+      apiKey: '',
+      model: AppSettings.defaultVideoGenerationModel,
+    );
+    final normalized = [
+      if (!configs.any((config) => config.id == klingCli.id)) klingCli,
+      for (final config in configs) config,
+      if (!configs.any((config) => config.id == miniMax.id)) miniMax,
+    ];
+    return normalized;
+  }
+
+  VideoGenerationApiConfig _activeVideoGenerationApiConfig(
+    List<VideoGenerationApiConfig> configs,
+    String? activeId,
+  ) {
+    return configs.firstWhere(
+      (config) => config.id == activeId,
+      orElse: () => configs.first,
     );
   }
 

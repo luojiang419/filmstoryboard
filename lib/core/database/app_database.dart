@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 14;
+  static const currentSchemaVersion = 15;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -574,8 +574,9 @@ class AppDatabase {
           script_id TEXT NOT NULL DEFAULT '',
            global_style TEXT NOT NULL DEFAULT '',
            constraints_text TEXT NOT NULL DEFAULT '',
-           replication_instructions TEXT NOT NULL DEFAULT '',
+          replication_instructions TEXT NOT NULL DEFAULT '',
           confirmed_shot_ids_json TEXT NOT NULL DEFAULT '[]',
+          start_end_pairs_json TEXT NOT NULL DEFAULT '[]',
           image_reference_count INTEGER NOT NULL DEFAULT 0,
           video_reference_count INTEGER NOT NULL DEFAULT 0,
           audio_reference_count INTEGER NOT NULL DEFAULT 0,
@@ -883,6 +884,14 @@ class AppDatabase {
       _ensureIntegerColumn('script_shots', 'continues_to_next');
       _ensureTextColumn('video_generation_tasks', 'tail_image_path');
       _database.execute('PRAGMA user_version = 14;');
+    }
+    if (version < 15) {
+      _ensureTextColumn('replicate_runs', 'start_end_pairs_json');
+      _database.execute(
+        "UPDATE replicate_runs SET start_end_pairs_json = '[]' "
+        "WHERE start_end_pairs_json = '';",
+      );
+      _database.execute('PRAGMA user_version = 15;');
     }
   }
 

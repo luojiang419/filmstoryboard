@@ -108,15 +108,22 @@ class VideoGenerationRepository {
         .toList();
   }
 
-  List<VideoGenerationTask> listRecoverableTasks() => _database
-      .selectRows('''
+  List<VideoGenerationTask> listRecoverableTasks({
+    bool includeTimedOut = true,
+  }) {
+    final statuses = includeTimedOut
+        ? "'submitting', 'queued', 'running', 'timedOut'"
+        : "'submitting', 'queued', 'running'";
+    return _database
+        .selectRows('''
         SELECT * FROM video_generation_tasks
         WHERE generation_id <> ''
-          AND status IN ('submitting', 'queued', 'running', 'timedOut')
+          AND status IN ($statuses)
         ORDER BY updated_at;
       ''')
-      .map(_task)
-      .toList();
+        .map(_task)
+        .toList();
+  }
 
   void upsertTask(VideoGenerationTask task) {
     _database.executeStatement(

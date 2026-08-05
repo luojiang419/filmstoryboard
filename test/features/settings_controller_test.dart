@@ -6,6 +6,7 @@ import 'package:filmstoryboard/features/settings/application/settings_controller
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:filmstoryboard/features/settings/domain/image_generation_api_config.dart';
+import 'package:filmstoryboard/features/settings/domain/video_generation_api_config.dart';
 import 'package:filmstoryboard/features/settings/domain/vision_api_config.dart';
 import 'package:test/test.dart';
 
@@ -110,6 +111,64 @@ void main() {
     expect(
       restored.imageGenerationApiConfigs.map((item) => item.id),
       contains(config.id),
+    );
+  });
+
+  test('视频生成 API 卡片可新增、设为默认并持久化', () async {
+    final root = await Directory.systemTemp.createTemp('settings_video_api_');
+    addTearDown(() => root.delete(recursive: true));
+
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    expect(
+      controller.value.activeVideoGenerationApiConfig?.id,
+      AppSettings.defaultKlingCliVideoGenerationConfigId,
+    );
+    expect(controller.value.activeVideoGenerationApiConfig?.isKlingCli, isTrue);
+    expect(
+      controller.value.videoGenerationApiConfigs.map((item) => item.id),
+      contains(AppSettings.defaultMiniMaxVideoGenerationConfigId),
+    );
+
+    const config = VideoGenerationApiConfig(
+      id: 'test-minimax-h3',
+      name: 'MiniMax H3 测试',
+      kind: VideoGenerationApiConfigKind.httpApi,
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: 'local-key',
+      model: 'minimax-h3-local',
+    );
+    await controller.saveVideoGenerationApiConfig(config);
+
+    expect(controller.value.activeVideoGenerationApiConfigId, config.id);
+    expect(
+      controller.value.activeVideoGenerationApiConfig?.apiKey,
+      config.apiKey,
+    );
+
+    final restored = repository.load();
+    expect(restored.activeVideoGenerationApiConfigId, config.id);
+    expect(restored.activeVideoGenerationApiConfig?.isHttpApi, isTrue);
+    expect(restored.activeVideoGenerationApiConfig?.model, config.model);
+    expect(
+      restored.videoGenerationApiConfigs.map((item) => item.id),
+      contains(config.id),
+    );
+
+    await controller.deleteVideoGenerationApiConfig(
+      AppSettings.defaultKlingCliVideoGenerationConfigId,
+    );
+    expect(
+      controller.value.videoGenerationApiConfigs.map((item) => item.id),
+      contains(AppSettings.defaultKlingCliVideoGenerationConfigId),
     );
   });
 

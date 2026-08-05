@@ -9,6 +9,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../exporter/data/shooting_script_export_service.dart';
 import '../../storyboard/domain/storyboard_models.dart';
+import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/shooting_script_repository.dart';
 import '../domain/script_shot_continuity_refiner.dart';
@@ -19,6 +20,7 @@ final shootingScriptControllerProvider = Provider<ShootingScriptController>((
 ) {
   final controller = ShootingScriptController(
     repository: ShootingScriptRepository(ref.watch(appDatabaseProvider)),
+    videoRepository: VideoAnalysisRepository(ref.watch(appDatabaseProvider)),
     directories: ref.watch(projectDirectoriesProvider),
   );
   ref.onDispose(controller.dispose);
@@ -96,11 +98,13 @@ class ShootingScriptOriginalExportResult {
 class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
   ShootingScriptController({
     required ShootingScriptRepository repository,
+    VideoAnalysisRepository? videoRepository,
     required WorkspaceDirectories directories,
     ShootingScriptExportService exportService =
         const ShootingScriptExportService(),
     Uuid uuid = const Uuid(),
   }) : _repository = repository,
+       _videoRepository = videoRepository,
        _directories = directories,
        _exportService = exportService,
        _uuid = uuid,
@@ -109,6 +113,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
   }
 
   final ShootingScriptRepository _repository;
+  final VideoAnalysisRepository? _videoRepository;
   final WorkspaceDirectories _directories;
   final ShootingScriptExportService _exportService;
   final Uuid _uuid;
@@ -122,7 +127,9 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
             : (scripts.isEmpty ? '' : scripts.first.id));
     final shots = selectedScriptId.isEmpty
         ? const <ScriptShot>[]
-        : _repository.listShots(selectedScriptId);
+        : _repairLegacyVideoContent(
+            _repository.listShots(selectedScriptId),
+          ).map(_withRuntimeFramePath).toList(growable: false);
     final selectedShotId =
         selectShotId ??
         (shots.any((shot) => shot.id == value.selectedShotId)
@@ -264,13 +271,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
               ? 0
               : ((sourceShot.endMs - sourceShot.startMs).clamp(0, 3600000) /
                     1000),
-          framePath: frame.path,
+          framePath: _runtimePath(frame.path),
           visual: '',
           content: _firstNotEmpty([
-            sourceShot?.storyFlow,
-            sourceShot?.description,
-            dimensions['narrativeFunction'],
             dimensions['caption'],
+            sourceShot?.description,
+            dimensions['detail'],
           ]),
           shotSize: dimensions['shotSize'] ?? '',
           cameraMovement: dimensions['cameraMovement'] ?? '',
@@ -1012,6 +1018,112 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       suffix++;
     }
     return directory;
+  }
+
+  List<ScriptShot> _repairLegacyVideoContent(List<ScriptShot> shots) {
+    final videoRepository = _videoRepository;
+    if (videoRepository == null || shots.isEmpty) {
+      return shots;
+    }
+    final sourceFrameIds = shots
+        .map((shot) => shot.sourceVideoFrameId?.trim() ?? '')
+        .where((frameId) => frameId.isNotEmpty)
+        .toSet();
+    if (sourceFrameIds.isEmpty) {
+      return shots;
+    }
+    final analysisByFrameId = videoRepository.completedFrameAnalysesByFrameIds(
+      sourceFrameIds,
+    );
+    if (analysisByFrameId.isEmpty) {
+      return shots;
+    }
+    final storyFlowByFrameId = videoRepository.videoShotStoryFlowByFrameIds(
+      sourceFrameIds,
+    );
+
+    final now = DateTime.now().toUtc();
+    final repairedShots = [
+      for (final shot in shots)
+        _repairLegacyVideoShotContent(
+          shot,
+          analysisByFrameId[shot.sourceVideoFrameId],
+          storyFlowByFrameId[shot.sourceVideoFrameId],
+          now,
+        ),
+    ];
+    final repaired = List.generate(
+      shots.length,
+      (index) => !identical(shots[index], repairedShots[index]),
+    ).any((value) => value);
+    if (!repaired) {
+      return shots;
+    }
+    _repository.replaceShots(shots.first.scriptId, repairedShots);
+    return repairedShots;
+  }
+
+  ScriptShot _repairLegacyVideoShotContent(
+    ScriptShot shot,
+    VideoFrameAnalysis? analysis,
+    String? storyFlow,
+    DateTime now,
+  ) {
+    if (analysis == null || shot.sourceVideoFrameId == null) {
+      return shot;
+    }
+    final current = shot.content.trim();
+    if (current.isEmpty) {
+      return shot;
+    }
+    final dimensions = analysis.dimensions;
+    final caption = (dimensions['caption'] ?? '').trim();
+    if (caption.isEmpty || current == caption) {
+      return shot;
+    }
+    final legacyValues = <String>{
+      (dimensions['narrativeFunction'] ?? '').trim(),
+      (dimensions['narrative_function'] ?? '').trim(),
+      (storyFlow ?? '').trim(),
+    }..removeWhere((value) => value.isEmpty);
+    if (!legacyValues.contains(current) &&
+        !_legacyNarrativeLabels.contains(current)) {
+      return shot;
+    }
+    return shot.copyWith(content: caption, updatedAt: now);
+  }
+
+  static const _legacyNarrativeLabels = {
+    '建立',
+    '推进',
+    '揭示',
+    '证明',
+    '反应',
+    '转折',
+    '结果',
+    '收束',
+    '广告产品记忆点',
+    '静态展示',
+    '画面建立',
+  };
+
+  String _runtimePath(String path) {
+    if (p.isAbsolute(path)) {
+      return path;
+    }
+    final normalized = path.replaceAll('/', Platform.pathSeparator);
+    return p.normalize(p.join(_directories.workspaceRoot.path, normalized));
+  }
+
+  ScriptShot _withRuntimeFramePath(ScriptShot shot) {
+    final framePath = shot.framePath.trim();
+    if (framePath.isEmpty) {
+      return shot;
+    }
+    final runtimePath = _runtimePath(framePath);
+    return runtimePath == shot.framePath
+        ? shot
+        : shot.copyWith(framePath: runtimePath);
   }
 }
 

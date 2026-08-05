@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 typedef KlingProcessRunner =
     Future<ProcessResult> Function(
       String executable,
@@ -59,10 +61,10 @@ class KlingCliResolver {
     }
     final npmPath = await _find(Platform.isWindows ? 'npm.cmd' : 'npm');
     if (npmPath.isEmpty) return _error('未检测到 npm，无法安装或更新可灵 CLI。');
-    final klingPath = await _find(Platform.isWindows ? 'kling.cmd' : 'kling');
+    final klingPath = await _findKlingCli(npmPath);
     if (klingPath.isEmpty) {
       return _error(
-        '未检测到中国区可灵 CLI，请安装 @klingai/cli-cn。',
+        '未检测到可灵 CLI。请先按官方说明安装可灵 Skill：npx skills add klingai-tech/skills；如果需要本软件直接调用命令行，请安装 @klingai/cli-cn。',
         nodePath: nodePath,
         nodeVersion: nodeVersion,
         npmPath: npmPath,
@@ -106,6 +108,48 @@ class KlingCliResolver {
         .map((value) => value.trim())
         .where((value) => value.isNotEmpty);
     return candidates.isEmpty ? '' : candidates.first;
+  }
+
+  Future<String> _findKlingCli(String npmPath) async {
+    final command = Platform.isWindows ? 'kling.cmd' : 'kling';
+    final fromPath = await _find(command);
+    if (fromPath.isNotEmpty) return fromPath;
+    for (final candidate in await _klingCliCandidates(npmPath, command)) {
+      if (File(candidate).existsSync()) return candidate;
+    }
+    return '';
+  }
+
+  Future<List<String>> _klingCliCandidates(
+    String npmPath,
+    String command,
+  ) async {
+    final candidates = <String>[];
+    Future<void> addNpmPrefix() async {
+      if (npmPath.trim().isEmpty) return;
+      final result = await processRunner(npmPath, const [
+        'prefix',
+        '-g',
+      ], runInShell: Platform.isWindows);
+      if (result.exitCode != 0) return;
+      final prefix = '${result.stdout}'.trim();
+      if (prefix.isEmpty) return;
+      candidates.add(p.join(prefix, command));
+      if (!Platform.isWindows) candidates.add(p.join(prefix, 'bin', command));
+    }
+
+    await addNpmPrefix();
+    if (Platform.isWindows) {
+      final appData = Platform.environment['APPDATA']?.trim() ?? '';
+      if (appData.isNotEmpty) candidates.add(p.join(appData, 'npm', command));
+      final userProfile = Platform.environment['USERPROFILE']?.trim() ?? '';
+      if (userProfile.isNotEmpty) {
+        candidates.add(
+          p.join(userProfile, 'AppData', 'Roaming', 'npm', command),
+        );
+      }
+    }
+    return candidates;
   }
 
   KlingCliEnvironment _error(

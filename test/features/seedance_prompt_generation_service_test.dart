@@ -69,6 +69,7 @@ void main() {
     expect(result.prompt, contains('参考视频1中的主要运镜'));
     expect(result.prompt, contains('参考音频1中的音色'));
     expect(result.prompt, contains('镜头1：近景，缓慢推镜'));
+    expect(result.prompt, contains('时长：3秒'));
     expect(result.prompt, contains('构图：主体位于画面右侧，左侧留白'));
     expect(result.prompt, contains('机位：平视角度'));
     expect(result.prompt, contains('光影/氛围：自然漫射光，明亮清新'));

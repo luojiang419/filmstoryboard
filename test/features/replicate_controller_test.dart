@@ -577,7 +577,7 @@ void main() {
     ]);
   });
 
-  test('首尾帧模式一键复刻只提交连续动作组端点帧', () async {
+  test('首尾帧模式一键复刻只提交手动配对端点帧', () async {
     final root = await Directory.systemTemp.createTemp('replicate_start_end_');
     final directories = await AppDirectories.create(executableDirectory: root);
     final database = await AppDatabase.open(directories.databaseFile);
@@ -649,25 +649,23 @@ void main() {
         updatedAt: now,
       ),
     );
-    for (final shot in [first, tail]) {
-      workflowRepository.upsertLink(
-        ScriptShotAssetLink(
-          shotId: shot.id,
-          scriptAssetId: productAssetId,
-          matchSource: ScriptAssetMatchSource.manual,
-          confidence: 1,
-          matchReason: '测试绑定产品',
-          confirmed: true,
-          locked: true,
-          sortOrder: 0,
-          createdAt: now,
-          updatedAt: now,
-        ),
-      );
-    }
+    workflowRepository.upsertLink(
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: productAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定产品',
+        confirmed: true,
+        locked: true,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
     final imageService = _RecordingImageGenerationService();
     final visionService = _RecordingVisionStoryboardService();
-    final controller = ReplicateController(
+    var controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
       directories: directories,
@@ -685,6 +683,24 @@ void main() {
       await root.delete(recursive: true);
     });
 
+    controller.selectStartFrame(first.id);
+    controller.setTailFrame(tail.id);
+    expect(controller.value.run!.startEndPairs, hasLength(1));
+    expect(controller.startEndRows.map((shot) => shot.id), [first.id]);
+
+    controller.dispose();
+    controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      workflowRepository: workflowRepository,
+      imageGenerationService: imageService,
+      visionService: visionService,
+    );
+    expect(controller.value.run!.startEndPairs, hasLength(1));
+    expect(controller.startEndRows.map((shot) => shot.id), [first.id]);
+
     await controller.replicateAllShots(
       stagger: Duration.zero,
       maxConcurrent: 1,
@@ -693,6 +709,15 @@ void main() {
     expect(imageService.requests, hasLength(2));
     expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
     expect(imageService.requests[1].referenceImagePaths.first, frame3.path);
+    expect(
+      imageService.requests[0].referenceImagePaths,
+      contains(product.path),
+    );
+    expect(
+      imageService.requests[1].referenceImagePaths,
+      contains(product.path),
+      reason: '尾帧没有独立绑定资产时，应继承同一首尾帧组首帧的资产图',
+    );
     expect(
       imageService.requests.map((request) => request.referenceImagePaths.first),
       isNot(contains(frame2.path)),

@@ -92,6 +92,7 @@ class SeedancePromptGenerationService {
     ].join('；');
     final body = <String>[
       if (shotOpening.isNotEmpty) shotOpening,
+      if (shot.durationSeconds > 0) '时长：${_durationText(shot.durationSeconds)}',
       clean(shot.content),
       if (clean(shot.scene).isNotEmpty) '场景位于${clean(shot.scene)}',
       if (visualAnalysis.isNotEmpty) '综合视觉分析：$visualAnalysis',
@@ -241,6 +242,13 @@ class SeedancePromptGenerationService {
 
   static String _stripBrackets(String value) =>
       value.replaceAll(RegExp(r'[{}<>【】]'), '').trim();
+
+  static String _durationText(double seconds) {
+    if (seconds == seconds.roundToDouble()) {
+      return '${seconds.toInt()}秒';
+    }
+    return '${seconds.toStringAsFixed(1)}秒';
+  }
 
   static String _singleCameraMovement(String value) {
     if (value.isEmpty) {

@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
+import '../../settings/domain/video_generation_api_config.dart';
 import '../data/kling_cli_models.dart';
 import '../data/kling_cli_service.dart';
+import '../data/minimax_video_api_service.dart';
 import '../data/video_generation_repository.dart';
 import '../domain/video_generation_models.dart';
 
@@ -29,19 +31,34 @@ class VideoGenerationTaskService {
     required KlingCliService cliService,
     VideoResultDownload? download,
     VideoGenerationDelay? delay,
+    void Function(VideoGenerationTask task)? onTaskChanged,
     this.pollInterval = const Duration(seconds: 3),
     this.pollTimeout = const Duration(minutes: 15),
+    VideoGenerationApiConfig? videoApiConfig,
+    MiniMaxVideoApiService? videoApiService,
   }) : _repository = repository,
        _cliService = cliService,
        _download = download ?? const KlingResultDownloader().download,
-       _delay = delay ?? Future<void>.delayed;
+       _delay = delay ?? Future<void>.delayed,
+       _onTaskChanged = onTaskChanged,
+       _videoApiConfig = videoApiConfig,
+       _videoApiService = videoApiService ?? MiniMaxVideoApiService();
 
   final VideoGenerationRepository _repository;
   final KlingCliService _cliService;
   final VideoResultDownload _download;
   final VideoGenerationDelay _delay;
+  final void Function(VideoGenerationTask task)? _onTaskChanged;
+  final VideoGenerationApiConfig? _videoApiConfig;
+  final MiniMaxVideoApiService _videoApiService;
   final Duration pollInterval;
   final Duration pollTimeout;
+
+  static const missingVideoApiTaskRetryMessage = 'MiniMax 视频任务不存在，已自动重新提交。';
+
+  static bool shouldRetryMissingVideoApiTask(VideoGenerationTask task) =>
+      task.status == VideoGenerationTaskStatus.failed &&
+      task.errorMessage == missingVideoApiTaskRetryMessage;
 
   Future<VideoGenerationTask> submitAndTrack(
     VideoGenerationSubmission submission, {
@@ -59,6 +76,16 @@ class VideoGenerationTaskService {
         !File(submission.tailImagePath).existsSync()) {
       throw const KlingCliException('首尾帧模式缺少尾帧图，已阻止提交。');
     }
+    final videoApiConfig = _videoApiConfig;
+    if (videoApiConfig != null &&
+        videoApiConfig.isHttpApi &&
+        videoApiConfig.baseUrl.trim().isNotEmpty) {
+      return _submitAndTrackVideoApi(
+        submission,
+        videoApiConfig,
+        isCanceled: isCanceled,
+      );
+    }
     KlingAccount? account;
     try {
       account = await _cliService.account();
@@ -71,14 +98,14 @@ class VideoGenerationTaskService {
       localPath: submission.outputFile.path,
       updatedAt: DateTime.now().toUtc(),
     );
-    _repository.upsertTask(current);
+    _upsertTask(current);
     if (isCanceled?.call() == true) {
       current = current.copyWith(
         status: VideoGenerationTaskStatus.canceled,
         updatedAt: DateTime.now().toUtc(),
         completedAt: DateTime.now().toUtc(),
       );
-      _repository.upsertTask(current);
+      _upsertTask(current);
       return current;
     }
     try {
@@ -97,7 +124,7 @@ class VideoGenerationTaskService {
         status: VideoGenerationTaskStatus.queued,
         updatedAt: DateTime.now().toUtc(),
       );
-      _repository.upsertTask(current);
+      _upsertTask(current);
       return pollExisting(
         current,
         outputFile: submission.outputFile,
@@ -110,8 +137,176 @@ class VideoGenerationTaskService {
         updatedAt: DateTime.now().toUtc(),
         completedAt: DateTime.now().toUtc(),
       );
-      _repository.upsertTask(current);
+      _upsertTask(current);
       return current;
+    }
+  }
+
+  Future<VideoGenerationTask> _submitAndTrackVideoApi(
+    VideoGenerationSubmission submission,
+    VideoGenerationApiConfig config, {
+    bool Function()? isCanceled,
+  }) async {
+    final task = submission.task;
+    var current = task.copyWith(
+      status: VideoGenerationTaskStatus.submitting,
+      localPath: submission.outputFile.path,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _upsertTask(current);
+    if (isCanceled?.call() == true) {
+      current = current.copyWith(
+        status: VideoGenerationTaskStatus.canceled,
+        updatedAt: DateTime.now().toUtc(),
+        completedAt: DateTime.now().toUtc(),
+      );
+      _upsertTask(current);
+      return current;
+    }
+    try {
+      final submissionResult = await _videoApiService.submitImageToVideo(
+        config: config,
+        imagePath: submission.sourceImagePath,
+        tailImagePath: submission.tailImagePath,
+        parameters: {
+          ...current.parameters,
+          'duration': '${current.durationSeconds}',
+        },
+        prompt: current.prompt,
+      );
+      current = current.copyWith(
+        generationId: submissionResult.generationId,
+        status: VideoGenerationTaskStatus.queued,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _upsertTask(current);
+      return _pollExistingVideoApi(
+        current,
+        config,
+        outputFile: submission.outputFile,
+        isCanceled: isCanceled,
+      );
+    } catch (error) {
+      current = current.copyWith(
+        status: VideoGenerationTaskStatus.failed,
+        errorMessage: '$error',
+        updatedAt: DateTime.now().toUtc(),
+        completedAt: DateTime.now().toUtc(),
+      );
+      _upsertTask(current);
+      return current;
+    }
+  }
+
+  Future<VideoGenerationTask> _pollExistingVideoApi(
+    VideoGenerationTask task,
+    VideoGenerationApiConfig config, {
+    required File outputFile,
+    bool Function()? isCanceled,
+  }) async {
+    var current = task;
+    final deadline = DateTime.now().toUtc().add(pollTimeout);
+    while (DateTime.now().toUtc().isBefore(deadline)) {
+      if (isCanceled?.call() == true) {
+        current = current.copyWith(
+          status: VideoGenerationTaskStatus.canceled,
+          updatedAt: DateTime.now().toUtc(),
+          completedAt: DateTime.now().toUtc(),
+        );
+        _upsertTask(current);
+        return current;
+      }
+      try {
+        final result = await _videoApiService.queryTask(
+          config: config,
+          generationId: current.generationId,
+        );
+        current = await _applyVideoApiQueryResult(current, result, outputFile);
+        _upsertTask(current);
+        if (current.status.isTerminal) return current;
+      } on MiniMaxVideoApiTaskNotFoundException {
+        current = _markMissingVideoApiTaskForRetry(current);
+        _upsertTask(current);
+        return current;
+      } catch (error) {
+        if (_isMissingVideoApiTaskError(error)) {
+          current = _markMissingVideoApiTaskForRetry(current);
+          _upsertTask(current);
+          return current;
+        }
+        current = current.copyWith(
+          errorMessage: '$error',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _upsertTask(current);
+      }
+      await _delay(pollInterval);
+    }
+    current = current.copyWith(
+      status: VideoGenerationTaskStatus.timedOut,
+      errorMessage: '查询超过 15 分钟，可稍后继续查询；不会自动重新提交。',
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _upsertTask(current);
+    return current;
+  }
+
+  VideoGenerationTask _markMissingVideoApiTaskForRetry(
+    VideoGenerationTask task,
+  ) => task.copyWith(
+    status: VideoGenerationTaskStatus.failed,
+    errorMessage: missingVideoApiTaskRetryMessage,
+    updatedAt: DateTime.now().toUtc(),
+    completedAt: DateTime.now().toUtc(),
+  );
+
+  bool _isMissingVideoApiTaskError(Object error) =>
+      error is MiniMaxVideoApiTaskNotFoundException ||
+      '$error'.contains('MiniMax 视频任务不存在') ||
+      '$error'.contains('任务不存在');
+
+  Future<VideoGenerationTask> _applyVideoApiQueryResult(
+    VideoGenerationTask task,
+    MiniMaxVideoApiTaskResult result,
+    File outputFile,
+  ) async {
+    final now = DateTime.now().toUtc();
+    if (result.status != VideoGenerationTaskStatus.completed) {
+      return task.copyWith(
+        status: result.status,
+        errorMessage: result.errorMessage,
+        updatedAt: now,
+        completedAt: result.status.isTerminal ? now : null,
+      );
+    }
+    if (result.url.trim().isEmpty) {
+      return task.copyWith(
+        status: VideoGenerationTaskStatus.failed,
+        errorMessage: 'MiniMax 视频任务已完成，但响应中没有可下载的视频地址。',
+        updatedAt: now,
+        completedAt: now,
+      );
+    }
+    try {
+      final file = await _download(result.url, outputFile);
+      return task.copyWith(
+        status: result.status,
+        resultUrl: result.url,
+        resultWithoutWatermarkUrl: result.url,
+        localPath: file.path,
+        usedWatermarkedFallback: false,
+        errorMessage: '',
+        updatedAt: now,
+        completedAt: now,
+      );
+    } catch (error) {
+      return task.copyWith(
+        status: VideoGenerationTaskStatus.failed,
+        resultUrl: result.url,
+        errorMessage: '视频生成完成，但下载失败：$error',
+        updatedAt: now,
+        completedAt: now,
+      );
     }
   }
 
@@ -123,6 +318,17 @@ class VideoGenerationTaskService {
     if (task.generationId.isEmpty) {
       throw const KlingCliException('缺少 generationId，不能恢复查询。');
     }
+    final videoApiConfig = _videoApiConfig;
+    if (videoApiConfig != null &&
+        videoApiConfig.isHttpApi &&
+        videoApiConfig.baseUrl.trim().isNotEmpty) {
+      return _pollExistingVideoApi(
+        task,
+        videoApiConfig,
+        outputFile: outputFile,
+        isCanceled: isCanceled,
+      );
+    }
     var current = task;
     final deadline = DateTime.now().toUtc().add(pollTimeout);
     while (DateTime.now().toUtc().isBefore(deadline)) {
@@ -132,13 +338,13 @@ class VideoGenerationTaskService {
           updatedAt: DateTime.now().toUtc(),
           completedAt: DateTime.now().toUtc(),
         );
-        _repository.upsertTask(current);
+        _upsertTask(current);
         return current;
       }
       try {
         final result = await _cliService.queryTask(current.generationId);
         current = await _applyQueryResult(current, result, outputFile);
-        _repository.upsertTask(current);
+        _upsertTask(current);
         if (current.status.isTerminal) return current;
         if (current.status == VideoGenerationTaskStatus.timedOut) {
           return current;
@@ -148,7 +354,7 @@ class VideoGenerationTaskService {
           errorMessage: '$error',
           updatedAt: DateTime.now().toUtc(),
         );
-        _repository.upsertTask(current);
+        _upsertTask(current);
       }
       await _delay(pollInterval);
     }
@@ -157,33 +363,43 @@ class VideoGenerationTaskService {
       errorMessage: '查询超过 15 分钟，可稍后继续查询；不会自动重新提交。',
       updatedAt: DateTime.now().toUtc(),
     );
-    _repository.upsertTask(current);
+    _upsertTask(current);
     return current;
   }
 
   Future<List<VideoGenerationTask>> submitBatch(
     List<VideoGenerationSubmission> submissions, {
     bool Function()? isCanceled,
+    int? concurrency,
   }) => _runWithConcurrency(
     submissions,
-    2,
+    concurrency ?? defaultVideoGenerationBatchConcurrency,
     (submission) => submitAndTrack(submission, isCanceled: isCanceled),
   );
 
   Future<List<VideoGenerationTask>> resumePending({
     required File Function(VideoGenerationTask task) outputForTask,
     bool Function()? isCanceled,
+    bool includeTimedOut = true,
+    int? concurrency,
   }) {
-    final tasks = _repository.listRecoverableTasks();
+    final tasks = _repository.listRecoverableTasks(
+      includeTimedOut: includeTimedOut,
+    );
     return _runWithConcurrency(
       tasks,
-      2,
+      concurrency ?? defaultVideoGenerationBatchConcurrency,
       (task) => pollExisting(
         task,
         outputFile: outputForTask(task),
         isCanceled: isCanceled,
       ),
     );
+  }
+
+  void _upsertTask(VideoGenerationTask task) {
+    _repository.upsertTask(task);
+    _onTaskChanged?.call(task);
   }
 
   Future<VideoGenerationTask> _applyQueryResult(
@@ -251,6 +467,7 @@ class VideoGenerationTaskService {
     Future<R> Function(T item) action,
   ) async {
     if (items.isEmpty) return const [];
+    final workerCount = concurrency.clamp(1, items.length);
     final results = List<R?>.filled(items.length, null);
     var nextIndex = 0;
     Future<void> worker() async {
@@ -260,9 +477,11 @@ class VideoGenerationTaskService {
       }
     }
 
-    await Future.wait(
-      List.generate(items.length.clamp(1, concurrency), (_) => worker()),
-    );
+    await Future.wait(List.generate(workerCount, (_) => worker()));
     return results.cast<R>();
   }
 }
+
+const localVideoApiBatchConcurrency = 1;
+const klingCliBatchConcurrency = 2;
+const defaultVideoGenerationBatchConcurrency = klingCliBatchConcurrency;

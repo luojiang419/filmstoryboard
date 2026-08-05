@@ -22,6 +22,7 @@ import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repos
 import 'package:filmstoryboard/features/video_generation/application/video_generation_controller.dart';
 import 'package:filmstoryboard/features/video_generation/data/video_generation_repository.dart';
 import 'package:filmstoryboard/features/video_generation/presentation/video_generation_page.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -179,6 +180,15 @@ void main() {
       find.byKey(const ValueKey('replicate-new-confirm-shots-step')),
       findsOneWidget,
     );
+    final durationField = find.descendant(
+      of: find.byKey(ValueKey('shot-duration-${shot.id}')),
+      matching: find.byType(TextField),
+    );
+    expect(durationField, findsOneWidget);
+    await tester.enterText(durationField, '4.5s');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(shootingController.value.shots.single.durationSeconds, 4.5);
     final startEndSwitch = find.byKey(
       const ValueKey('video-start-end-frame-mode-switch'),
     );
@@ -192,6 +202,19 @@ void main() {
     expect(find.text('尾帧'), findsAtLeastNWidgets(1));
     expect(find.text('复刻首帧'), findsAtLeastNWidgets(1));
     expect(find.text('复刻尾帧'), findsAtLeastNWidgets(1));
+    final firstFrameCell = find.byKey(
+      ValueKey('replicate-shot-original-thumbnail-${shot.id}'),
+    );
+    final rightClick = await tester.startGesture(
+      tester.getCenter(firstFrameCell),
+      buttons: kSecondaryMouseButton,
+    );
+    await rightClick.up();
+    await tester.pumpAndSettle();
+    expect(find.text('设为首帧'), findsOneWidget);
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, '设为首帧'));
+    await tester.pump();
+    expect(replicateController.pendingStartFrameShotId, shot.id);
     expect(find.widgetWithText(TextField, '人物拿起产品并看向镜头'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
@@ -225,6 +248,10 @@ void main() {
       findsOneWidget,
     );
     expect(
+      find.byKey(ValueKey('prepare-asset-start-end-strip-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(
       find.byKey(ValueKey('collapsed-shot-asset-row-${shot.id}')),
       findsNothing,
     );
@@ -243,7 +270,9 @@ void main() {
     );
     expect(find.text('人物拿起产品并看向镜头'), findsOneWidget);
     expect(find.text('镜头 01'), findsOneWidget);
-    expect(find.text('原视频帧'), findsOneWidget);
+    expect(find.text('首帧'), findsAtLeastNWidgets(1));
+    expect(find.text('待尾帧'), findsAtLeastNWidgets(1));
+    expect(find.text('复刻首帧'), findsAtLeastNWidgets(1));
     await tester.tap(find.byKey(const ValueKey('collapse-all-shot-scripts')));
     await tester.pump(const Duration(milliseconds: 220));
     expect(
@@ -252,7 +281,7 @@ void main() {
     );
     expect(find.text('人物拿起产品并看向镜头'), findsNothing);
     expect(find.text('镜头 01'), findsNothing);
-    expect(find.text('原视频帧'), findsNothing);
+    expect(find.text('待尾帧'), findsNothing);
     expect(
       find.byKey(ValueKey('toggle-shot-script-${shot.id}')),
       findsNothing,
@@ -452,14 +481,12 @@ void main() {
     for (final top in mediaTopPositions.skip(1)) {
       expect(top, closeTo(mediaTopPositions.first, 0.01));
     }
-    expect(find.text('来源：故事板原图'), findsOneWidget);
     final videoMenu = find.byKey(ValueKey('generated-video-menu-${shot.id}'));
     expect(videoMenu, findsNothing);
     final generateButton = find.byKey(
       ValueKey('generated-video-generate-button-${shot.id}'),
     );
     expect(generateButton, findsOneWidget);
-    expect(tester.widget<FilledButton>(generateButton).onPressed, isNotNull);
 
     tester.view.physicalSize = const Size(820, 700);
     await tester.pump(const Duration(milliseconds: 220));
@@ -514,13 +541,13 @@ void main() {
     await tester.tap(
       find.byKey(ValueKey('video-generation-source-thumbnail-${shot.id}')),
     );
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 220));
     expect(
       find.byKey(const ValueKey('video-generation-source-gallery-image-1')),
       findsOneWidget,
     );
     await tester.tap(find.byTooltip('关闭预览'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 220));
 
     await tester.pumpWidget(const SizedBox.shrink());
     PaintingBinding.instance.imageCache

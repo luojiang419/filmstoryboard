@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
@@ -130,6 +131,7 @@ class _VideoGenerationWorkspaceState
     VideoGenerationState state,
     VideoGenerationController controller,
   ) {
+    if (controller.usesConfiguredVideoGenerationApi) return;
     if (_loginPromptShown ||
         _loginPromptOpen ||
         state.isLoadingEnvironment ||
@@ -269,6 +271,35 @@ class _VideoGenerationWorkspaceState
   ) async {
     final shots = controller.generationTargets();
     if (shots.isEmpty) return;
+    if (controller.usesConfiguredVideoGenerationApi) {
+      final config = controller.activeVideoGenerationApiConfig;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('确认批量生成'),
+          content: Text(
+            '镜头数：${shots.length}\n'
+            'API：${config?.name ?? '视频生成 API'}\n'
+            '模型：${controller.activeVideoGenerationApiModel}\n\n'
+            '${controller.videoApiParameterSummary}\n\n'
+            '任务会提交到当前默认视频生成 API。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: const ValueKey('confirm-video-api-batch'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认生成'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) await controller.generateAll();
+      return;
+    }
     final model = _selectedModel(state);
     if (model == null) return;
     final mappings = [
@@ -287,7 +318,7 @@ class _VideoGenerationWorkspaceState
             children: [
               Text('镜头数：${shots.length}'),
               if (controller.startEndFrameModeEnabled)
-                const Text('首尾帧模式：已开启，连续动作组按一条请求计费'),
+                const Text('首尾帧模式：已开启，手动配对按一条请求计费'),
               Text('模型：${model.model}'),
               Text('当前灵感值：${state.account?.availableCredits ?? '未知'}'),
               const SizedBox(height: 8),
@@ -319,6 +350,41 @@ class _VideoGenerationWorkspaceState
     VideoGenerationController controller,
     ScriptShot shot,
   ) async {
+    if (controller.usesConfiguredVideoGenerationApi) {
+      final config = controller.activeVideoGenerationApiConfig;
+      final sequence = controller.actionSequenceFor(shot);
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            sequence.hasDistinctTail
+                ? '确认生成动作组 ${sequence.head.shotNumber}–${sequence.tail.shotNumber}'
+                : '确认生成镜头 ${shot.shotNumber}',
+          ),
+          content: Text(
+            'API：${config?.name ?? '视频生成 API'}\n'
+            '模型：${controller.activeVideoGenerationApiModel}\n'
+            '时长：${controller.desiredDurationFor(shot).toStringAsFixed(1)}s\n'
+            '${sequence.hasDistinctTail ? '尾帧：镜头 ${sequence.tail.shotNumber}\n' : ''}\n'
+            '${controller.videoApiParameterSummary}\n\n'
+            '任务会提交到当前默认视频生成 API。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: ValueKey('confirm-video-api-shot-${shot.id}'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认生成'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) await controller.generateShot(shot);
+      return;
+    }
     final model = _selectedModel(state);
     if (model == null) return;
     final duration = const KlingDurationMatcher().forModel(
@@ -391,6 +457,12 @@ class _Toolbar extends StatelessWidget {
     final selectedModel = models
         .where((model) => model.model == state.profile?.model)
         .firstOrNull;
+    final selectedVideoApiAspectRatio = controller.selectedVideoApiAspectRatio;
+    final selectedVideoApiResolution = controller.selectedVideoApiResolution;
+    final videoApiResolutions = controller.videoApiResolutionsForAspect(
+      selectedVideoApiAspectRatio,
+    );
+    final selectedVideoApiSteps = controller.selectedVideoApiSteps;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -446,24 +518,30 @@ class _Toolbar extends StatelessWidget {
                 ),
               ),
             _StatusChip(
-              icon: state.environment?.isReady == true
+              icon:
+                  controller.usesConfiguredVideoGenerationApi ||
+                      state.environment?.isReady == true
                   ? Icons.check_circle_outline
                   : Icons.warning_amber_rounded,
-              label: state.environment?.isReady == true
+              label: controller.usesConfiguredVideoGenerationApi
+                  ? '视频 API'
+                  : state.environment?.isReady == true
                   ? 'CLI ${state.environment!.klingVersion}'
                   : '环境未就绪',
             ),
             if (controller.startEndFrameModeEnabled)
               const _StatusChip(icon: Icons.science_outlined, label: '首尾帧模式'),
-            _StatusChip(
-              icon: state.identity == null
-                  ? Icons.login_rounded
-                  : Icons.account_circle_outlined,
-              label: state.identity == null
-                  ? '未登录'
-                  : '${state.account?.membershipDescription ?? '已登录'} · ${state.account?.availableCredits ?? 0} 灵感值',
-            ),
-            if (state.identity == null)
+            if (!controller.usesConfiguredVideoGenerationApi)
+              _StatusChip(
+                icon: state.identity == null
+                    ? Icons.login_rounded
+                    : Icons.account_circle_outlined,
+                label: state.identity == null
+                    ? '未登录'
+                    : '${state.account?.membershipDescription ?? '已登录'} · ${state.account?.availableCredits ?? 0} 灵感值',
+              ),
+            if (!controller.usesConfiguredVideoGenerationApi &&
+                state.identity == null)
               OutlinedButton.icon(
                 onPressed: state.isLoadingEnvironment ? null : onLogin,
                 icon: const Icon(Icons.login_rounded),
@@ -494,6 +572,99 @@ class _Toolbar extends StatelessWidget {
                       ? null
                       : (value) {
                           if (value != null) controller.selectModel(value);
+                        },
+                ),
+              ),
+            if (controller.usesConfiguredVideoGenerationApi)
+              _StatusChip(
+                icon: Icons.smart_display_outlined,
+                label: controller.activeVideoGenerationApiModel,
+              ),
+            if (controller.usesConfiguredVideoGenerationApi)
+              SizedBox(
+                width: 130,
+                child: DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  key: ValueKey(
+                    'video-api-aspect-ratio-$selectedVideoApiAspectRatio',
+                  ),
+                  initialValue: selectedVideoApiAspectRatio,
+                  decoration: const InputDecoration(
+                    labelText: '生成比例',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (final aspectRatio in controller.videoApiAspectRatios)
+                      DropdownMenuItem(
+                        value: aspectRatio,
+                        child: Text(aspectRatio),
+                      ),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            controller.updateVideoApiAspectRatio(value);
+                          }
+                        },
+                ),
+              ),
+            if (controller.usesConfiguredVideoGenerationApi)
+              SizedBox(
+                width: 230,
+                child: DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  key: ValueKey(
+                    'video-api-resolution-$selectedVideoApiAspectRatio-$selectedVideoApiResolution',
+                  ),
+                  initialValue:
+                      videoApiResolutions.contains(selectedVideoApiResolution)
+                      ? selectedVideoApiResolution
+                      : videoApiResolutions.firstOrNull,
+                  decoration: const InputDecoration(
+                    labelText: '分辨率',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (final resolution in videoApiResolutions)
+                      DropdownMenuItem(
+                        value: resolution,
+                        child: Text(
+                          resolution,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            controller.updateVideoApiResolution(value);
+                          }
+                        },
+                ),
+              ),
+            if (controller.usesConfiguredVideoGenerationApi)
+              SizedBox(
+                width: 110,
+                child: DropdownButtonFormField<int>(
+                  isExpanded: true,
+                  key: ValueKey('video-api-steps-$selectedVideoApiSteps'),
+                  initialValue: selectedVideoApiSteps,
+                  decoration: const InputDecoration(
+                    labelText: '步数',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (var steps = 4; steps <= 30; steps++)
+                      DropdownMenuItem(value: steps, child: Text('$steps')),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            controller.updateVideoApiSteps(value);
+                          }
                         },
                 ),
               ),
@@ -532,11 +703,14 @@ class _Toolbar extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: controller.openOutputDirectory,
               icon: const Icon(Icons.folder_open_rounded),
-              label: const Text('打开目录'),
+              label: const Text('打开视频目录'),
             ),
             FilledButton.icon(
               key: const ValueKey('generate-all-videos'),
-              onPressed: state.isBusy || state.identity == null
+              onPressed:
+                  state.isBusy ||
+                      (!controller.usesConfiguredVideoGenerationApi &&
+                          state.identity == null)
                   ? null
                   : onGenerateAll,
               icon: const Icon(Icons.movie_creation_outlined),
@@ -597,7 +771,7 @@ class _GenerationTable extends StatelessWidget {
                       _GeneratedVideoCell(
                         shot: shot,
                         controller: controller,
-                        enabled: !state.isBusy,
+                        enabled: !state.isGeneratingAll,
                         onGenerate: () => onGenerateShot(shot),
                       ),
                       _PromptCell(
@@ -827,6 +1001,7 @@ class _GeneratedVideoCell extends StatelessWidget {
     final localFile = latest == null ? null : File(latest.localPath);
     final hasLocalVideo = localFile?.existsSync() == true;
     final canGenerate = controller.canGenerateShot(owner);
+    final isGenerating = latest != null && _isActiveVideoTask(latest);
     return _Cell(
       child: _VideoShotCellLayout(
         shot: shot,
@@ -841,6 +1016,11 @@ class _GeneratedVideoCell extends StatelessWidget {
                   icon: Icons.join_inner_rounded,
                   message:
                       '已并入镜头 ${sequence.head.shotNumber}–${sequence.tail.shotNumber} 的连续动作组\n由镜头 ${sequence.head.shotNumber} 统一生成',
+                )
+              else if (isGenerating)
+                _GeneratingVideoProgress(
+                  key: ValueKey('generated-video-progress-${latest.id}'),
+                  task: latest,
                 )
               else if (hasLocalVideo)
                 _InlineGeneratedVideoPlayer(
@@ -869,39 +1049,6 @@ class _GeneratedVideoCell extends StatelessWidget {
                         )
                       : null,
                 ),
-              Positioned(
-                left: 8,
-                top: 8,
-                right: 52,
-                child: Align(
-                  alignment: Alignment.topLeft,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.66),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      child: Text(
-                        isGroupContinuation
-                            ? '首尾帧动作组'
-                            : (latest == null
-                                  ? '尚未生成'
-                                  : '状态：${latest.status.name}'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
               if (!isGroupContinuation &&
                   latest?.usedWatermarkedFallback == true)
                 const Positioned(
@@ -910,6 +1057,7 @@ class _GeneratedVideoCell extends StatelessWidget {
                   child: _VideoNotice('已保存带水印结果'),
                 ),
               if (!isGroupContinuation &&
+                  !isGenerating &&
                   latest?.errorMessage.isNotEmpty == true)
                 Positioned(
                   left: 8,
@@ -947,6 +1095,11 @@ class _GeneratedVideoCell extends StatelessWidget {
                             );
                           }
                           break;
+                        case 'download':
+                          if (latest != null) {
+                            await _download(context, latest);
+                          }
+                          break;
                         case 'retry':
                           if (latest != null) {
                             await controller.retryDownload(latest);
@@ -970,6 +1123,29 @@ class _GeneratedVideoCell extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _download(BuildContext context, VideoGenerationTask task) async {
+    final source = File(task.localPath);
+    if (!source.existsSync()) return;
+    final location = await getSaveLocation(
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'MP4 视频', extensions: ['mp4']),
+      ],
+      initialDirectory: source.parent.path,
+      suggestedName: source.uri.pathSegments.isEmpty
+          ? '生成视频.mp4'
+          : source.uri.pathSegments.last,
+      confirmButtonText: '保存',
+      canCreateDirectories: true,
+    );
+    if (location == null) return;
+    final saved = await controller.saveGeneratedVideoCopy(task, location.path);
+    if (saved != null && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('视频已保存到：${saved.path}')));
+    }
   }
 
   Future<void> _history(
@@ -1063,6 +1239,77 @@ class _GeneratedVideoCell extends StatelessWidget {
   }
 }
 
+class _GeneratingVideoProgress extends StatelessWidget {
+  const _GeneratingVideoProgress({super.key, required this.task});
+
+  final VideoGenerationTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final elapsed = _elapsedFor(task);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: scheme.primaryContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(11),
+                  child: Icon(
+                    Icons.hourglass_top_rounded,
+                    color: scheme.onPrimaryContainer,
+                    size: 28,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                _activeVideoTaskLabel(task.status),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '已等待 ${_formatElapsed(elapsed)}',
+                key: ValueKey('generated-video-elapsed-${task.id}'),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: scheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '视频生成通常需要几分钟，请保持页面打开',
+                textAlign: TextAlign.center,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static Duration _elapsedFor(VideoGenerationTask task) {
+    final elapsed = DateTime.now().toUtc().difference(task.createdAt);
+    return elapsed.isNegative ? Duration.zero : elapsed;
+  }
+}
+
 class _GeneratedVideoPlaceholder extends StatelessWidget {
   const _GeneratedVideoPlaceholder({
     required this.icon,
@@ -1090,88 +1337,6 @@ class _GeneratedVideoPlaceholder extends StatelessWidget {
           if (action != null) ...[const SizedBox(height: 12), action!],
         ],
       ),
-    ),
-  );
-}
-
-class _VideoNotice extends StatelessWidget {
-  const _VideoNotice(this.message, {this.isError = false});
-
-  final String message;
-  final bool isError;
-
-  @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: isError
-          ? Theme.of(context).colorScheme.errorContainer
-          : Colors.black.withValues(alpha: 0.66),
-      borderRadius: BorderRadius.circular(6),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: Text(
-        message,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: isError
-              ? Theme.of(context).colorScheme.onErrorContainer
-              : Colors.white,
-          fontSize: 11,
-        ),
-      ),
-    ),
-  );
-}
-
-class _GeneratedVideoMenu extends StatelessWidget {
-  const _GeneratedVideoMenu({
-    super.key,
-    required this.enabled,
-    required this.canGenerate,
-    required this.hasLocalVideo,
-    required this.canRetryDownload,
-    required this.hasHistory,
-    required this.hasGenerated,
-    required this.onSelected,
-  });
-
-  final bool enabled;
-  final bool canGenerate;
-  final bool hasLocalVideo;
-  final bool canRetryDownload;
-  final bool hasHistory;
-  final bool hasGenerated;
-  final ValueChanged<String> onSelected;
-
-  @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.black.withValues(alpha: 0.72),
-    shape: const CircleBorder(),
-    elevation: 4,
-    child: PopupMenuButton<String>(
-      tooltip: '视频操作',
-      enabled: enabled,
-      onSelected: onSelected,
-      icon: const Icon(Icons.more_horiz_rounded, color: Colors.white),
-      itemBuilder: (_) => [
-        PopupMenuItem(
-          value: 'generate',
-          enabled: canGenerate,
-          child: Text(hasGenerated ? '重新生成' : '生成视频'),
-        ),
-        if (hasLocalVideo)
-          const PopupMenuItem(value: 'fullscreen', child: Text('全屏播放')),
-        if (canRetryDownload)
-          const PopupMenuItem(value: 'retry', child: Text('重新下载')),
-        if (hasLocalVideo) ...[
-          const PopupMenuItem(value: 'rename', child: Text('重命名')),
-          const PopupMenuItem(value: 'delete', child: Text('删除')),
-        ],
-        if (hasHistory)
-          const PopupMenuItem(value: 'history', child: Text('历史版本')),
-      ],
     ),
   );
 }
@@ -1245,7 +1410,13 @@ class _InlineGeneratedVideoPlayerState
           if (_error.isEmpty)
             Video(controller: _videoController, controls: null)
           else
-            Center(child: Text(_error, textAlign: TextAlign.center)),
+            Center(
+              child: Text(
+                _error,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
           if (_error.isEmpty)
             Material(
               color: Colors.transparent,
@@ -1286,6 +1457,121 @@ class _InlineGeneratedVideoPlayerState
           ),
         ],
       ),
+    ),
+  );
+}
+
+bool _isActiveVideoTask(VideoGenerationTask task) => switch (task.status) {
+  VideoGenerationTaskStatus.draft ||
+  VideoGenerationTaskStatus.submitting ||
+  VideoGenerationTaskStatus.queued ||
+  VideoGenerationTaskStatus.running => true,
+  _ => false,
+};
+
+String _activeVideoTaskLabel(VideoGenerationTaskStatus status) =>
+    switch (status) {
+      VideoGenerationTaskStatus.draft => '排队等待中',
+      VideoGenerationTaskStatus.submitting => '正在提交生成任务',
+      VideoGenerationTaskStatus.queued => '排队等待中',
+      VideoGenerationTaskStatus.running => '视频生成中',
+      _ => '视频生成中',
+    };
+
+String _formatElapsed(Duration duration) {
+  final totalSeconds = duration.inSeconds;
+  final hours = totalSeconds ~/ 3600;
+  final minutes = (totalSeconds % 3600) ~/ 60;
+  final seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return '${hours.toString().padLeft(2, '0')}:'
+        '${minutes.toString().padLeft(2, '0')}:'
+        '${seconds.toString().padLeft(2, '0')}';
+  }
+  return '${minutes.toString().padLeft(2, '0')}:'
+      '${seconds.toString().padLeft(2, '0')}';
+}
+
+class _VideoNotice extends StatelessWidget {
+  const _VideoNotice(this.message, {this.isError = false});
+
+  final String message;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: isError
+          ? Theme.of(context).colorScheme.errorContainer
+          : Colors.black.withValues(alpha: 0.66),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Text(
+        message,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: isError
+              ? Theme.of(context).colorScheme.onErrorContainer
+              : Colors.white,
+          fontSize: 11,
+        ),
+      ),
+    ),
+  );
+}
+
+class _GeneratedVideoMenu extends StatelessWidget {
+  const _GeneratedVideoMenu({
+    super.key,
+    required this.enabled,
+    required this.canGenerate,
+    required this.hasLocalVideo,
+    required this.canRetryDownload,
+    required this.hasHistory,
+    required this.hasGenerated,
+    required this.onSelected,
+  });
+
+  final bool enabled;
+  final bool canGenerate;
+  final bool hasLocalVideo;
+  final bool canRetryDownload;
+  final bool hasHistory;
+  final bool hasGenerated;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.black.withValues(alpha: 0.72),
+    shape: const CircleBorder(),
+    elevation: 4,
+    child: PopupMenuButton<String>(
+      tooltip: '视频操作',
+      enabled: enabled,
+      onSelected: onSelected,
+      icon: const Icon(Icons.more_horiz_rounded, color: Colors.white),
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: 'generate',
+          enabled: canGenerate,
+          child: Text(hasGenerated ? '重新生成' : '生成视频'),
+        ),
+        if (hasLocalVideo)
+          const PopupMenuItem(value: 'fullscreen', child: Text('全屏播放')),
+        if (hasLocalVideo)
+          const PopupMenuItem(value: 'download', child: Text('下载/另存为')),
+        if (canRetryDownload)
+          const PopupMenuItem(value: 'retry', child: Text('重新下载')),
+        if (hasLocalVideo) ...[
+          const PopupMenuItem(value: 'rename', child: Text('重命名')),
+          const PopupMenuItem(value: 'delete', child: Text('删除')),
+        ],
+        if (hasHistory)
+          const PopupMenuItem(value: 'history', child: Text('历史版本')),
+      ],
     ),
   );
 }

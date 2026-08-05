@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,18 +17,33 @@ import '../application/video_analysis_controller.dart';
 import '../data/analysis_report_export_service.dart';
 import '../domain/video_analysis_models.dart';
 
-class VideoAnalysisPage extends ConsumerWidget {
+class VideoAnalysisPage extends ConsumerStatefulWidget {
   const VideoAnalysisPage({super.key, this.onOpenStoryboard});
 
   final VoidCallback? onOpenStoryboard;
 
+  @override
+  ConsumerState<VideoAnalysisPage> createState() => _VideoAnalysisPageState();
+}
+
+class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
   static const _videoTypes = XTypeGroup(
     label: '视频',
     extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v'],
   );
+  static const _videoExtensions = {
+    '.mp4',
+    '.mov',
+    '.mkv',
+    '.avi',
+    '.webm',
+    '.m4v',
+  };
+
+  var _isDraggingOver = false;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final controller = ref.watch(videoAnalysisControllerProvider);
     final storyboardController = ref.watch(storyboardControllerProvider);
     return CallbackShortcuts(
@@ -44,103 +60,128 @@ class VideoAnalysisPage extends ConsumerWidget {
       },
       child: Focus(
         autofocus: true,
-        child: ValueListenableBuilder<VideoAnalysisState>(
-          valueListenable: controller,
-          builder: (context, state, _) =>
-              ValueListenableBuilder<StoryboardState>(
-                valueListenable: storyboardController,
-                builder: (context, storyboardState, _) => ColoredBox(
-                  key: const ValueKey('video-analysis-page'),
-                  color: Colors.transparent,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
+        child: DropTarget(
+          key: const ValueKey('video-analysis-drop-target'),
+          onDragEntered: (_) => setState(() => _isDraggingOver = true),
+          onDragExited: (_) => setState(() => _isDraggingOver = false),
+          onDragDone: (details) => _handleDroppedVideos(
+            context,
+            controller,
+            details.files.map((file) => file.path).toList(),
+          ),
+          child: ValueListenableBuilder<VideoAnalysisState>(
+            valueListenable: controller,
+            builder: (context, state, _) =>
+                ValueListenableBuilder<StoryboardState>(
+                  valueListenable: storyboardController,
+                  builder: (context, storyboardState, _) => ColoredBox(
+                    key: const ValueKey('video-analysis-page'),
+                    color: Colors.transparent,
+                    child: Stack(
                       children: [
-                        _Toolbar(
-                          controller: controller,
-                          state: state,
-                          storyboardBusy: storyboardState.isAnalyzing,
-                          onImport: () => _pickVideo(context, controller),
-                          onStartAnalysis: () =>
-                              _chooseAnalysisMode(context, controller),
-                          onReanalyze: state.summary == null
-                              ? null
-                              : () => _confirmReanalyze(context, controller),
-                          onExport: state.summary == null
-                              ? null
-                              : () => _chooseReportFormat(context, controller),
-                          onGenerateStoryboard:
-                              state.frameAnalyses.any(
-                                (analysis) =>
-                                    analysis.status ==
-                                    ProcessingStatus.completed,
-                              )
-                              ? () => _generateStoryboard(context, ref)
-                              : null,
-                        ),
-                        if (state.isBusy ||
-                            state.isPaused ||
-                            storyboardState.isAnalyzing) ...[
-                          const SizedBox(height: 10),
-                          LinearProgressIndicator(
-                            value:
-                                storyboardState.isAnalyzing ||
-                                    state.totalProgress <= 0
-                                ? null
-                                : state.completedProgress / state.totalProgress,
-                          ),
-                        ],
-                        if (state.message.isNotEmpty ||
-                            state.errorMessage.isNotEmpty ||
-                            storyboardState.isAnalyzing) ...[
-                          const SizedBox(height: 8),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              storyboardState.isAnalyzing
-                                  ? storyboardState.message
-                                  : state.errorMessage.isNotEmpty
-                                  ? state.errorMessage
-                                  : state.message,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: state.errorMessage.isNotEmpty
-                                    ? Theme.of(context).colorScheme.error
-                                    : Theme.of(
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            children: [
+                              _Toolbar(
+                                controller: controller,
+                                state: state,
+                                storyboardBusy: storyboardState.isAnalyzing,
+                                onImport: () => _pickVideo(context, controller),
+                                onStartAnalysis: () =>
+                                    _chooseAnalysisMode(context, controller),
+                                onReanalyze: state.summary == null
+                                    ? null
+                                    : () => _confirmReanalyze(
                                         context,
-                                      ).colorScheme.onSurfaceVariant,
+                                        controller,
+                                      ),
+                                onExport: state.summary == null
+                                    ? null
+                                    : () => _chooseReportFormat(
+                                        context,
+                                        controller,
+                                      ),
+                                onGenerateStoryboard:
+                                    state.frameAnalyses.any(
+                                      (analysis) =>
+                                          analysis.status ==
+                                          ProcessingStatus.completed,
+                                    )
+                                    ? () => _generateStoryboard(context)
+                                    : null,
                               ),
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        Expanded(
-                          child: state.videos.isEmpty
-                              ? _EmptyState(
-                                  onImport: () =>
-                                      _pickVideo(context, controller),
-                                )
-                              : LayoutBuilder(
-                                  builder: (context, constraints) {
-                                    if (constraints.maxWidth < 900) {
-                                      return _CompactWorkspace(
-                                        controller: controller,
-                                        state: state,
-                                      );
-                                    }
-                                    return _WideWorkspace(
-                                      controller: controller,
-                                      state: state,
-                                    );
-                                  },
+                              if (state.isBusy ||
+                                  state.isPaused ||
+                                  storyboardState.isAnalyzing) ...[
+                                const SizedBox(height: 10),
+                                LinearProgressIndicator(
+                                  value:
+                                      storyboardState.isAnalyzing ||
+                                          state.totalProgress <= 0
+                                      ? null
+                                      : state.completedProgress /
+                                            state.totalProgress,
                                 ),
+                              ],
+                              if (state.message.isNotEmpty ||
+                                  state.errorMessage.isNotEmpty ||
+                                  storyboardState.isAnalyzing) ...[
+                                const SizedBox(height: 8),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    storyboardState.isAnalyzing
+                                        ? storyboardState.message
+                                        : state.errorMessage.isNotEmpty
+                                        ? state.errorMessage
+                                        : state.message,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: state.errorMessage.isNotEmpty
+                                          ? Theme.of(context).colorScheme.error
+                                          : Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 12),
+                              Expanded(
+                                child: state.videos.isEmpty
+                                    ? _EmptyState(
+                                        onImport: () =>
+                                            _pickVideo(context, controller),
+                                      )
+                                    : LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          if (constraints.maxWidth < 900) {
+                                            return _CompactWorkspace(
+                                              controller: controller,
+                                              state: state,
+                                            );
+                                          }
+                                          return _WideWorkspace(
+                                            controller: controller,
+                                            state: state,
+                                          );
+                                        },
+                                      ),
+                              ),
+                            ],
+                          ),
                         ),
+                        if (_isDraggingOver)
+                          Positioned.fill(
+                            child: _VideoDropOverlay(isBusy: state.isBusy),
+                          ),
                       ],
                     ),
                   ),
                 ),
-              ),
+          ),
         ),
       ),
     );
@@ -157,6 +198,54 @@ class VideoAnalysisPage extends ConsumerWidget {
     await controller.importVideos(
       results.map((result) => File(result.path)).toList(),
     );
+  }
+
+  Future<void> _handleDroppedVideos(
+    BuildContext context,
+    VideoAnalysisController controller,
+    List<String> paths,
+  ) async {
+    if (mounted) {
+      setState(() => _isDraggingOver = false);
+    }
+    if (controller.value.isBusy) {
+      _showDropMessage(context, '当前正在处理视频，请完成后再拖入添加');
+      return;
+    }
+    final files = paths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty && _isSupportedVideoPath(path))
+        .map(File.new)
+        .toList(growable: false);
+    if (files.isEmpty) {
+      _showDropMessage(context, '未找到支持的视频文件，可拖入 mp4、mov、mkv、avi、webm 或 m4v');
+      return;
+    }
+    final ignoredCount = paths.length - files.length;
+    if (ignoredCount > 0) {
+      _showDropMessage(
+        context,
+        '已添加 ${files.length} 个视频，忽略 $ignoredCount 个非视频文件',
+      );
+    }
+    await controller.importVideos(files);
+  }
+
+  void _showDropMessage(BuildContext context, String message) {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  static bool _isSupportedVideoPath(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot < 0) {
+      return false;
+    }
+    return _videoExtensions.contains(path.substring(dot).toLowerCase());
   }
 
   Future<void> _chooseAnalysisMode(
@@ -267,7 +356,7 @@ class VideoAnalysisPage extends ConsumerWidget {
     }
   }
 
-  Future<void> _generateStoryboard(BuildContext context, WidgetRef ref) async {
+  Future<void> _generateStoryboard(BuildContext context) async {
     final videoController = ref.read(videoAnalysisControllerProvider);
     final generated = await videoController
         .generateStoryboardForSelectedVideo();
@@ -275,7 +364,7 @@ class VideoAnalysisPage extends ConsumerWidget {
       return;
     }
     if (generated) {
-      onOpenStoryboard?.call();
+      widget.onOpenStoryboard?.call();
     }
   }
 }
@@ -1480,6 +1569,72 @@ class _EmptyState extends StatelessWidget {
                   label: const Text('选择视频'),
                 ),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoDropOverlay extends StatelessWidget {
+  const _VideoDropOverlay({required this.isBusy});
+
+  final bool isBusy;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IgnorePointer(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: scheme.scrim.withValues(alpha: 0.42),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: scheme.primary, width: 2),
+          ),
+          child: Center(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.surface.withValues(alpha: 0.96),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: scheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 20,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isBusy
+                          ? Icons.hourglass_top_rounded
+                          : Icons.video_file_rounded,
+                      color: isBusy ? scheme.tertiary : scheme.primary,
+                      size: 42,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      isBusy ? '当前正在处理视频' : '松开添加视频',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      isBusy
+                          ? '请等待导入或解析完成后再拖入新视频'
+                          : '支持 mp4、mov、mkv、avi、webm、m4v',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
