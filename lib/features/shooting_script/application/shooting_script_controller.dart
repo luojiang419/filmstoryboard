@@ -11,6 +11,7 @@ import '../../exporter/data/shooting_script_export_service.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
+import '../data/script_multimodal_analysis_service.dart';
 import '../data/shooting_script_repository.dart';
 import '../domain/script_shot_continuity_refiner.dart';
 import '../domain/shooting_script_models.dart';
@@ -284,7 +285,10 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           composition: dimensions['composition'] ?? '',
           cameraAngle: dimensions['cameraAngle'] ?? '',
           lightingMood: dimensions['lightingMood'] ?? '',
-          colorPalette: dimensions['colorPalette'] ?? '',
+          colorPalette:
+              ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+                dimensions['colorPalette'] ?? '',
+              ),
           visualFocus: dimensions['visualFocus'] ?? '',
           transitionHint: dimensions['transitionHint'] ?? '',
           movementTrend: dimensions['movementTrend'] ?? '',
@@ -293,7 +297,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           continuesToNext: dimensions['continuesToNext'] == 'true',
           scene: dimensions['scene'] ?? '',
           productCode: '',
-          productStyling: '',
+          productStyling: _firstNotEmpty([
+            dimensions['productStyling'],
+            ScriptMultimodalAnalysisService.wardrobeSlotsFromText(
+              dimensions.values.join(' '),
+            ),
+          ]),
           dialogue: '',
           sound: '',
           prompt: '',

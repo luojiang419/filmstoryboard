@@ -55,7 +55,8 @@ class ScriptAssetMatchingService {
     final contexts = [
       (label: '镜头文案', value: '${shot.visual} ${shot.content} ${shot.prompt}'),
       (label: '场景字段', value: shot.scene),
-      (label: '产品字段', value: '${shot.productCode} ${shot.productStyling}'),
+      (label: '产品编码字段', value: shot.productCode),
+      (label: '穿搭字段', value: shot.productStyling),
     ];
     final names = <String, List<_NameEntry>>{};
     for (final asset in assets) {
@@ -89,9 +90,64 @@ class ScriptAssetMatchingService {
         }
       }
     }
+    for (final candidate in _matchWardrobeSlots(shot, assets)) {
+      candidates.putIfAbsent(candidate.assetId, () => candidate);
+    }
     final result = candidates.values.toList()
       ..sort((a, b) => b.confidence.compareTo(a.confidence));
     return result;
+  }
+
+  List<ScriptAssetMatchCandidate> _matchWardrobeSlots(
+    ScriptShot shot,
+    List<ShootingAssetLibraryItem> assets,
+  ) {
+    final styling = _normalize(shot.productStyling);
+    if (styling.isEmpty) return const [];
+    final result = <ScriptAssetMatchCandidate>[];
+    for (final slot in _wardrobeSlots.entries) {
+      if (!slot.value.any((term) => styling.contains(_normalize(term)))) {
+        continue;
+      }
+      final matches = [
+        for (final asset in assets)
+          if (_isWardrobeAsset(asset) &&
+              _assetMatchesWardrobeSlot(asset, slot.value))
+            asset,
+      ];
+      if (matches.length != 1) continue;
+      final asset = matches.single;
+      result.add(
+        ScriptAssetMatchCandidate(
+          assetId: asset.id,
+          confidence: 0.9,
+          reason: '资产类别“${slot.key}”命中穿搭字段',
+        ),
+      );
+    }
+    return result;
+  }
+
+  static bool _isWardrobeAsset(ShootingAssetLibraryItem asset) =>
+      switch (asset.type) {
+        ReplicateAssetType.product ||
+        ReplicateAssetType.prop ||
+        ReplicateAssetType.reference ||
+        ReplicateAssetType.other => true,
+        _ => false,
+      };
+
+  static bool _assetMatchesWardrobeSlot(
+    ShootingAssetLibraryItem asset,
+    List<String> slotTerms,
+  ) {
+    final values = [asset.name, ...asset.aliases].map(_normalize);
+    final normalizedTerms = slotTerms.map(_normalize).toList(growable: false);
+    return values.any(
+      (value) => normalizedTerms.any(
+        (term) => value == term || value.startsWith(term),
+      ),
+    );
   }
 
   void _addName(
@@ -111,6 +167,13 @@ class ScriptAssetMatchingService {
 
   static String _normalize(String value) =>
       value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff]'), '');
+
+  static const _wardrobeSlots = <String, List<String>>{
+    '上装': ['上装', '上衣', '外套', '衬衫', 'T恤', 't恤', '马甲'],
+    '下装': ['下装', '裤', '裙'],
+    '鞋子': ['鞋子', '鞋', '靴'],
+    '配饰': ['配饰', '包', '帽', '眼镜', '首饰', '项链', '耳环', '腰带'],
+  };
 }
 
 class _NameEntry {

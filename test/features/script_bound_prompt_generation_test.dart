@@ -105,6 +105,14 @@ void main() {
       controller.promptTextFor(prompt, ShotPromptFormat.sd2),
       contains('白衬衫人物'),
     );
+    expect(
+      controller.promptTextFor(prompt, ShotPromptFormat.h3),
+      contains('【参考素材说明】'),
+    );
+    expect(
+      controller.promptTextFor(prompt, ShotPromptFormat.h3),
+      contains('人物参考'),
+    );
     expect(prompt.prompt, isNot(contains('完全不同的森林')));
     expect(
       controller.promptTextFor(prompt, ShotPromptFormat.sd2),

@@ -57,11 +57,12 @@ class VideoGenerationRepository {
       '''
       INSERT INTO video_generation_drafts(
         id, script_id, shot_id, source_prompt, kling_prompt,
-        edited_prompt, prompt_mode, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        h3_prompt, edited_prompt, prompt_mode, updated_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(shot_id) DO UPDATE SET
         source_prompt = excluded.source_prompt,
         kling_prompt = excluded.kling_prompt,
+        h3_prompt = excluded.h3_prompt,
         edited_prompt = excluded.edited_prompt,
         prompt_mode = excluded.prompt_mode,
         updated_at = excluded.updated_at;
@@ -72,6 +73,7 @@ class VideoGenerationRepository {
         draft.shotId,
         draft.sourcePrompt,
         draft.klingPrompt,
+        draft.h3Prompt,
         draft.editedPrompt,
         draft.promptMode.name,
         draft.updatedAt.toIso8601String(),
@@ -201,6 +203,7 @@ class VideoGenerationRepository {
     shotId: row['shot_id'] as String,
     sourcePrompt: row['source_prompt'] as String? ?? '',
     klingPrompt: row['kling_prompt'] as String? ?? '',
+    h3Prompt: row['h3_prompt'] as String? ?? '',
     editedPrompt: row['edited_prompt'] as String? ?? '',
     promptMode: _promptMode(row['prompt_mode']),
     updatedAt: DateTime.parse(row['updated_at'] as String),

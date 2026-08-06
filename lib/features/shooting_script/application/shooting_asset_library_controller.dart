@@ -147,6 +147,41 @@ class ShootingAssetLibraryController
     );
   }
 
+  Future<ShootingAssetLibraryItem?> replaceItemFile({
+    required String id,
+    required String sourcePath,
+  }) async {
+    final existing = value.items.where((item) => item.id == id).firstOrNull;
+    if (existing == null || sourcePath.trim().isEmpty) {
+      return null;
+    }
+    value = value.copyWith(isBusy: true, message: '正在替换资产…', errorMessage: '');
+    try {
+      final updated = await _repository.replaceItemFile(
+        id: id,
+        sourcePath: sourcePath,
+        type: _normalizedTypeForPath(existing.type, sourcePath),
+      );
+      if (updated == null) {
+        throw const FileSystemException('资产文件不存在');
+      }
+      value = value.copyWith(
+        items: _repository.listItems(),
+        isBusy: false,
+        message: '已替换 ${updated.name}',
+        errorMessage: '',
+      );
+      return updated;
+    } catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: '替换资产失败：$error',
+      );
+      return null;
+    }
+  }
+
   Future<void> deleteItem(String id) async {
     await _repository.deleteItem(id);
     value = value.copyWith(

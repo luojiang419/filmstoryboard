@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,7 +14,12 @@ import 'package:filmstoryboard/features/grid_cut/data/grid_crop_service.dart';
 import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
+import 'package:filmstoryboard/features/shooting_script/application/shooting_asset_library_controller.dart';
+import 'package:filmstoryboard/features/shooting_script/data/shooting_asset_library_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_asset_library_models.dart';
 import 'package:filmstoryboard/features/story_design/application/story_design_controller.dart';
+import 'package:filmstoryboard/features/story_design/domain/story_design_models.dart';
 import 'package:filmstoryboard/features/story_design/presentation/story_design_page.dart';
 import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
 
@@ -297,6 +303,156 @@ void main() {
       everyElement(isNot('00:00')),
     );
   });
+
+  testWidgets('设计分镜结果右键可添加为资产库资产', (tester) async {
+    tester.view
+      ..physicalSize = const Size(1200, 720)
+      ..devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view
+        ..resetPhysicalSize()
+        ..resetDevicePixelRatio();
+    });
+
+    late final Directory root;
+    late final AppDatabase database;
+    late final AppDirectories directories;
+    late final SettingsController settingsController;
+    late final GridCutController gridCutController;
+    late final StoryDesignController storyDesignController;
+    late final _RecordingShootingAssetLibraryController assetLibraryController;
+    late final File resultFile;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('story_design_asset_');
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+      final repository = SettingsRepository(database, directories);
+      settingsController = SettingsController(
+        repository: repository,
+        initialSettings: repository.load(),
+      );
+      gridCutController = GridCutController(
+        directories: directories,
+        database: database,
+        detectionService: const GridDetectionService(),
+        cropService: const GridCropService(),
+      );
+      resultFile = File('${root.path}${Platform.pathSeparator}设计资产.png')
+        ..writeAsBytesSync(_tinyPngBytes);
+      storyDesignController = StoryDesignController(
+        directories: directories,
+        settingsController: settingsController,
+        gridCutController: gridCutController,
+      );
+      assetLibraryController = _RecordingShootingAssetLibraryController(
+        repository: ShootingAssetLibraryRepository(
+          database: database,
+          directories: directories,
+        ),
+        directories: directories,
+      );
+      storyDesignController.value = storyDesignController.value.copyWith(
+        results: [
+          StoryDesignResult(
+            id: 'design-result-1',
+            path: resultFile.path,
+            remoteUrl: '',
+            prompt: '银色产品海报资产',
+            model: 'nano-banana-fast',
+            aspectRatio: '16:9',
+            imageSize: '2K',
+            quality: 'high',
+            createdAt: DateTime.utc(2026, 1, 1),
+          ),
+        ],
+      );
+    });
+    addTearDown(() async {
+      PaintingBinding.instance.imageCache.clearLiveImages();
+      PaintingBinding.instance.imageCache.clear();
+      storyDesignController.dispose();
+      assetLibraryController.dispose();
+      gridCutController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(database),
+          projectDirectoriesProvider.overrideWithValue(directories),
+          shootingAssetLibraryControllerProvider.overrideWithValue(
+            assetLibraryController,
+          ),
+          storyDesignControllerProvider.overrideWithValue(
+            storyDesignController,
+          ),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.dark(),
+          home: const Scaffold(body: StoryDesignPage()),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(
+      ProviderScope.containerOf(
+        tester.element(find.byType(StoryDesignPage)),
+      ).read(shootingAssetLibraryControllerProvider),
+      same(assetLibraryController),
+    );
+
+    final tile = find.byKey(
+      const ValueKey('story-design-result-design-result-1'),
+    );
+    expect(tile, findsOneWidget);
+    await tester.tapAt(tester.getCenter(tile), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.text('添加为资产'), findsOneWidget);
+
+    await tester.tap(find.text('添加为资产'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('story-design-add-asset-name')),
+      findsOneWidget,
+    );
+    expect(find.text('银色产品海报资产'), findsOneWidget);
+
+    final confirmAddAsset = find.byKey(
+      const ValueKey('story-design-confirm-add-asset'),
+    );
+    await tester.ensureVisible(confirmAddAsset);
+    await tester.tapAt(tester.getCenter(confirmAddAsset));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.runAsync(() async {
+      for (var index = 0; index < 20; index++) {
+        if (assetLibraryController.value.items.isNotEmpty ||
+            assetLibraryController.value.errorMessage.isNotEmpty) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    });
+
+    final items = assetLibraryController.value.items;
+    expect(assetLibraryController.value.errorMessage, isEmpty);
+    expect(
+      items,
+      hasLength(1),
+      reason:
+          'busy=${assetLibraryController.value.isBusy}; '
+          'message=${assetLibraryController.value.message}; '
+          'error=${assetLibraryController.value.errorMessage}',
+    );
+    expect(items.single.name, '设计资产');
+    expect(items.single.description, '银色产品海报资产');
+    expect(items.single.type, ReplicateAssetType.reference);
+    expect(items.single.path, resultFile.path);
+  });
 }
 
 class _BlockingStoryDesignImageService extends ImageGenerationService {
@@ -315,3 +471,109 @@ class _BlockingStoryDesignImageService extends ImageGenerationService {
   @override
   void close() {}
 }
+
+class _RecordingShootingAssetLibraryController
+    extends ShootingAssetLibraryController {
+  _RecordingShootingAssetLibraryController({
+    required super.repository,
+    required super.directories,
+  });
+
+  @override
+  Future<ShootingAssetLibraryItem?> importItem({
+    required String sourcePath,
+    required ReplicateAssetType type,
+    String name = '',
+    String description = '',
+    List<String> aliases = const [],
+  }) async {
+    final now = DateTime.utc(2026, 1, 1);
+    final item = ShootingAssetLibraryItem(
+      id: 'recorded-asset',
+      type: type,
+      name: name.isEmpty ? '未命名资产' : name,
+      description: description,
+      path: sourcePath,
+      createdAt: now,
+      updatedAt: now,
+    );
+    value = value.copyWith(
+      items: [item],
+      isBusy: false,
+      message: '已添加 ${item.name}',
+      errorMessage: '',
+    );
+    return item;
+  }
+}
+
+const _tinyPngBytes = [
+  137,
+  80,
+  78,
+  71,
+  13,
+  10,
+  26,
+  10,
+  0,
+  0,
+  0,
+  13,
+  73,
+  72,
+  68,
+  82,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  1,
+  8,
+  6,
+  0,
+  0,
+  0,
+  31,
+  21,
+  196,
+  137,
+  0,
+  0,
+  0,
+  13,
+  73,
+  68,
+  65,
+  84,
+  120,
+  156,
+  99,
+  248,
+  15,
+  4,
+  0,
+  9,
+  251,
+  3,
+  253,
+  160,
+  111,
+  168,
+  213,
+  0,
+  0,
+  0,
+  0,
+  73,
+  69,
+  78,
+  68,
+  174,
+  66,
+  96,
+  130,
+];

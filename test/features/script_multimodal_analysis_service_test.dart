@@ -58,6 +58,53 @@ void main() {
     expect(patch.fieldConfidence['content'], greaterThan(0.8));
   });
 
+  test('色彩字段只保留整体调色风格并剥离服装配饰对象颜色', () {
+    final cleaned = ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+      '暖米灰石墙融合为底，深棕皮革、棕白条纹衣袖、肤色与银饰点缀，整体低饱和大地色系；'
+      '黑白条纹与米白长裤的暖中性色调，黑色铁艺提供沉稳深色对比',
+    );
+
+    expect(cleaned, contains('低饱和大地色系'));
+    expect(cleaned, contains('暖中性色调'));
+    expect(cleaned, isNot(contains('皮革')));
+    expect(cleaned, isNot(contains('衣袖')));
+    expect(cleaned, isNot(contains('长裤')));
+    expect(cleaned, isNot(contains('肤色')));
+    expect(cleaned, isNot(contains('银饰')));
+    expect(cleaned, isNot(contains('铁艺')));
+    expect(cleaned, isNot(contains('条纹')));
+  });
+
+  test('视觉解析写入拍摄脚本时净化色彩列', () {
+    final patch = ScriptMultimodalAnalysisService.fromVisionAnalysis(
+      VisionImageAnalysis(
+        caption: '女模特站在复古石墙前',
+        detail: '女模特穿着皮夹克和长裤，站在暖灰石墙前。',
+        scene: '复古石墙前',
+        props: '铁艺栏杆',
+        people: '女模特站立',
+        expression: '平静',
+        bodyAction: '站立',
+        movementTrend: '静止不明显',
+        shotSize: '中景',
+        composition: '主体居中',
+        subjectDirection: '正面',
+        gazeDirection: '看向镜头',
+        actionStage: '静态',
+        spatialRelation: '人物位于墙前',
+        chronologyCue: '静态展示',
+        colorPalette: '暖灰石墙为底，搭配深棕皮革、黑白条纹与米白长裤的暖中性色调',
+        rawResponse: '{}',
+      ),
+    );
+
+    expect(patch.values['colorPalette'], contains('暖中性色调'));
+    expect(patch.values['colorPalette'], isNot(contains('皮革')));
+    expect(patch.values['colorPalette'], isNot(contains('长裤')));
+    expect(patch.values['colorPalette'], isNot(contains('条纹')));
+    expect(patch.values['colorPalette'], isNot(contains('石墙')));
+  });
+
   test('兼容读取旧版复合摄影备注并拆分到独立视觉字段', () {
     final fields = ScriptShotVisualFields.fromLegacyCameraNotes(
       '构图：主体居中略偏右；机位：平视角度；光影：自然漫射光；'

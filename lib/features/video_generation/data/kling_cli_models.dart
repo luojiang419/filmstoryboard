@@ -59,6 +59,19 @@ class KlingModelSpec {
 
   bool get supportsStartEndFrames =>
       supportsInput('tail_image') || supportsInput('image_2');
+
+  bool get supportsNumberedImageReferences => supportsInput('image_1');
+
+  int get maxNumberedImageReferences {
+    var max = 0;
+    for (final input in inputs) {
+      final match = RegExp(r'^image_(\d+)$').firstMatch(input.name);
+      if (match == null) continue;
+      final number = int.tryParse(match.group(1) ?? '') ?? 0;
+      if (number > max) max = number;
+    }
+    return max;
+  }
 }
 
 class KlingIdentity {

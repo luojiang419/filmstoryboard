@@ -55,6 +55,7 @@ void main() {
         scene: '摄影棚',
         movementTrend: '向前移动',
         actionStage: '准备',
+        colorPalette: '暖灰石墙为底，搭配深棕皮革、黑白条纹与米白长裤的暖中性色调',
         continuesToNext: true,
       ),
       _analysis(
@@ -87,6 +88,18 @@ void main() {
     expect(fixture.controller.value.shots, hasLength(2));
     expect(fixture.controller.value.shots.first.content, '产品进入画面');
     expect(fixture.controller.value.shots.first.shotSize, '中景');
+    expect(
+      fixture.controller.value.shots.first.colorPalette,
+      contains('暖中性色调'),
+    );
+    expect(
+      fixture.controller.value.shots.first.colorPalette,
+      isNot(contains('皮革')),
+    );
+    expect(
+      fixture.controller.value.shots.first.colorPalette,
+      isNot(contains('长裤')),
+    );
     expect(fixture.controller.value.shots.first.durationSeconds, 1.2);
     expect(fixture.controller.value.shots.first.continuesToNext, isTrue);
     expect(fixture.controller.value.shots[1].continuesFromPrevious, isTrue);
@@ -582,6 +595,7 @@ VideoFrameAnalysis _analysis(
   required String scene,
   String movementTrend = '',
   String actionStage = '',
+  String colorPalette = '',
   bool continuesFromPrevious = false,
   bool continuesToNext = false,
 }) => VideoFrameAnalysis(
@@ -598,6 +612,7 @@ VideoFrameAnalysis _analysis(
     'scene': scene,
     'movementTrend': movementTrend,
     'actionStage': actionStage,
+    'colorPalette': colorPalette,
     'continuesFromPrevious': continuesFromPrevious.toString(),
     'continuesToNext': continuesToNext.toString(),
   },

@@ -164,6 +164,8 @@ void main() {
     expect(prompt, contains('视觉焦点'));
     expect(prompt, contains('光线情绪'));
     expect(prompt, contains('色彩调性'));
+    expect(prompt, contains('色彩调性只能描述整张画面的色温'));
+    expect(prompt, contains('禁止写服装、配饰、道具、墙面、地面、皮革、条纹、肤色、头发等具体对象的颜色'));
     expect(prompt, contains('镜头叙事功能'));
     expect(prompt, contains('剪辑承接'));
     final imagePart = content.last as Map<String, dynamic>;

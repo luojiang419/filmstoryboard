@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,8 @@ import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/image_file_context_menu.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
+import '../../replicate/domain/replicate_models.dart';
+import '../../shooting_script/application/shooting_asset_library_controller.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../storyboard/presentation/widgets/image_generation_model_selector.dart';
 import '../application/story_design_controller.dart';
@@ -38,6 +41,17 @@ bool _sameDesignResultState(StoryDesignState previous, StoryDesignState next) {
   return identical(previous.results, next.results) &&
       identical(previous.generationTasks, next.generationTasks);
 }
+
+const _designAssetTypes = [
+  ReplicateAssetType.character,
+  ReplicateAssetType.product,
+  ReplicateAssetType.scene,
+  ReplicateAssetType.prop,
+  ReplicateAssetType.reference,
+  ReplicateAssetType.other,
+];
+
+enum _DesignResultMenuAction { addAsAsset }
 
 class StoryDesignPage extends ConsumerStatefulWidget {
   const StoryDesignPage({super.key, this.onOpenGridCutPage});
@@ -137,6 +151,7 @@ class _StoryDesignPageState extends ConsumerState<StoryDesignPage> {
                         controller: controller,
                         state: state,
                         onOpenGridCutPage: widget.onOpenGridCutPage,
+                        onAddAsAsset: _addResultAsAsset,
                       ),
                     ),
               ),
@@ -197,6 +212,119 @@ class _StoryDesignPageState extends ConsumerState<StoryDesignPage> {
       math.min(_maxInputPanelWidth, contentWidth - resultReserve),
     );
     return width.clamp(minWidth, maxWidth).toDouble();
+  }
+
+  Future<void> _addResultAsAsset(StoryDesignResult result) async {
+    final file = File(result.path);
+    if (!file.existsSync()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('结果图片文件不存在')));
+      return;
+    }
+    await _showDesignAssetDialog(result);
+  }
+
+  Future<void> _importDesignResultAsset(
+    StoryDesignResult result,
+    _DesignAssetEditorResult asset,
+  ) async {
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    PaintingBinding.instance.imageCache.clear();
+    await FileImage(File(result.path)).evict();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    final imported = await ref
+        .read(shootingAssetLibraryControllerProvider)
+        .importItem(
+          sourcePath: result.path,
+          type: asset.type,
+          name: asset.name,
+          description: asset.description,
+        );
+    if (!mounted || imported == null) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已添加为资产：${imported.name}')));
+  }
+
+  Future<void> _showDesignAssetDialog(StoryDesignResult result) async {
+    var type = ReplicateAssetType.reference;
+    final name = TextEditingController(
+      text: p.basenameWithoutExtension(result.path),
+    );
+    final description = TextEditingController(text: result.prompt);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('添加为资产'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<ReplicateAssetType>(
+                  key: const ValueKey('story-design-add-asset-type'),
+                  initialValue: type,
+                  decoration: const InputDecoration(labelText: '资产类型'),
+                  items: [
+                    for (final item in _designAssetTypes)
+                      DropdownMenuItem(value: item, child: Text(item.label)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setDialogState(() => type = value);
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const ValueKey('story-design-add-asset-name'),
+                  controller: name,
+                  decoration: const InputDecoration(labelText: '资产名称'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const ValueKey('story-design-add-asset-description'),
+                  controller: description,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    labelText: '特征或备注',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton.icon(
+              key: const ValueKey('story-design-confirm-add-asset'),
+              onPressed: () async {
+                final asset = _DesignAssetEditorResult(
+                  type: type,
+                  name: name.text.trim(),
+                  description: description.text.trim(),
+                );
+                await _importDesignResultAsset(result, asset);
+                if (dialogContext.mounted) {
+                  Navigator.of(dialogContext).pop();
+                }
+              },
+              icon: const Icon(Icons.add_photo_alternate_outlined),
+              label: const Text('添加资产'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    description.dispose();
   }
 }
 
@@ -780,11 +908,13 @@ class _DesignResultPanel extends StatelessWidget {
     required this.controller,
     required this.state,
     required this.onOpenGridCutPage,
+    required this.onAddAsAsset,
   });
 
   final StoryDesignController controller;
   final StoryDesignState state;
   final VoidCallback? onOpenGridCutPage;
+  final Future<void> Function(StoryDesignResult result) onAddAsAsset;
 
   @override
   Widget build(BuildContext context) {
@@ -817,6 +947,7 @@ class _DesignResultPanel extends StatelessWidget {
                     controller: controller,
                     results: state.results,
                     tasks: visibleTasks,
+                    onAddAsAsset: onAddAsAsset,
                   ),
           ),
         ],
@@ -918,11 +1049,13 @@ class _ResultGrid extends StatelessWidget {
     required this.controller,
     required this.results,
     required this.tasks,
+    required this.onAddAsAsset,
   });
 
   final StoryDesignController controller;
   final List<StoryDesignResult> results;
   final List<StoryDesignGenerationTask> tasks;
+  final Future<void> Function(StoryDesignResult result) onAddAsAsset;
 
   @override
   Widget build(BuildContext context) {
@@ -955,12 +1088,14 @@ class _ResultGrid extends StatelessWidget {
             final resultIndex = index - tasks.length;
             final result = results[resultIndex];
             return _ResultTile(
+              key: ValueKey('story-design-result-${result.id}'),
               result: result,
               imagePaths: imagePaths,
               index: resultIndex,
               onSelected: (selected) =>
                   controller.toggleResultSelection(result.id, selected),
               onRemove: () => controller.removeResult(result.id),
+              onAddAsAsset: () => onAddAsAsset(result),
             );
           },
         );
@@ -1141,11 +1276,13 @@ class _GenerationTaskTileState extends State<_GenerationTaskTile> {
 
 class _ResultTile extends StatelessWidget {
   const _ResultTile({
+    super.key,
     required this.result,
     required this.imagePaths,
     required this.index,
     required this.onSelected,
     required this.onRemove,
+    required this.onAddAsAsset,
   });
 
   final StoryDesignResult result;
@@ -1153,6 +1290,7 @@ class _ResultTile extends StatelessWidget {
   final int index;
   final ValueChanged<bool> onSelected;
   final VoidCallback onRemove;
+  final Future<void> Function() onAddAsAsset;
 
   @override
   Widget build(BuildContext context) {
@@ -1164,11 +1302,23 @@ class _ResultTile extends StatelessWidget {
         initialIndex: index,
         itemBuilder: (context, path) => _FullscreenResultImage(path: path),
       ),
-      onSecondaryTapDown: (details) => showImageFileContextMenu(
-        context,
-        globalPosition: details.globalPosition,
-        imagePath: result.path,
-      ),
+      onSecondaryTapDown: (details) async {
+        final action = await showImageFileContextMenu<_DesignResultMenuAction>(
+          context,
+          globalPosition: details.globalPosition,
+          imagePath: result.path,
+          leadingActions: const [
+            ImageFileContextMenuAction(
+              value: _DesignResultMenuAction.addAsAsset,
+              icon: Icons.add_photo_alternate_outlined,
+              label: '添加为资产',
+            ),
+          ],
+        );
+        if (action == _DesignResultMenuAction.addAsAsset) {
+          await onAddAsAsset();
+        }
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
         decoration: BoxDecoration(
@@ -1342,4 +1492,29 @@ class _FullscreenResultImage extends StatelessWidget {
       },
     );
   }
+}
+
+class _DesignAssetEditorResult {
+  const _DesignAssetEditorResult({
+    required this.type,
+    required this.name,
+    required this.description,
+  });
+
+  final ReplicateAssetType type;
+  final String name;
+  final String description;
+}
+
+extension on ReplicateAssetType {
+  String get label => switch (this) {
+    ReplicateAssetType.character => '人物',
+    ReplicateAssetType.product => '产品',
+    ReplicateAssetType.scene => '场景',
+    ReplicateAssetType.prop => '道具',
+    ReplicateAssetType.video => '视频',
+    ReplicateAssetType.audio => '音频',
+    ReplicateAssetType.reference => '综合参考',
+    ReplicateAssetType.other => '其他',
+  };
 }

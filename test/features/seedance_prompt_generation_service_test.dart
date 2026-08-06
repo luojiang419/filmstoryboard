@@ -131,6 +131,67 @@ void main() {
     expect(result.prompt, contains('整体约束：'));
   });
 
+  test('合成提示词会净化色彩列里的原帧服装和配饰颜色', () {
+    final result = service.generate(
+      shot: _shot(now).copyWith(colorPalette: '暖灰石墙为底，搭配深棕皮革、黑白条纹与米白长裤的暖中性色调'),
+      assets: const [],
+      globalStyle: '',
+      constraints: '',
+    );
+
+    expect(result.prompt, contains('暖中性色调'));
+    expect(result.prompt, isNot(contains('皮革')));
+    expect(result.prompt, isNot(contains('条纹')));
+    expect(result.prompt, isNot(contains('长裤')));
+    expect(result.prompt, isNot(contains('石墙')));
+  });
+
+  test('镜头字段会剥离具体服装配饰和旧物件但保留动作与资产定义', () {
+    final result = service.generate(
+      shot: _shot(now).copyWith(
+        content: '女模特穿白色阔腿裤和条纹衬衫，右手自然垂挂黑色皮质手提包，缓慢转向镜头',
+        composition: '主体位于画面右侧，品牌字 YERAD 居中叠加',
+        visualFocus: '黑色软质手提包和彩色条纹',
+        sound: '黑色软质手提包产生轻微接触声',
+      ),
+      assets: [
+        _asset(
+          now,
+          id: 'hero',
+          type: ReplicateAssetType.character,
+          name: '新模特',
+          description: '短发、白衬衫、银色耳饰的女人',
+          path: 'hero.png',
+          number: 1,
+        ),
+        _asset(
+          now,
+          id: 'product',
+          type: ReplicateAssetType.product,
+          name: '新品背包',
+          description: '纯黑通勤双肩包',
+          path: 'bag.png',
+          number: 2,
+        ),
+      ],
+      globalStyle: '',
+      constraints: '',
+    );
+
+    expect(result.prompt, contains('短发、白衬衫、银色耳饰的女人'));
+    expect(result.prompt, contains('新品背包'));
+    expect(result.prompt, contains('缓慢转向镜头'));
+    expect(result.prompt, contains('右手自然垂挂'));
+    expect(result.prompt, contains('轻微接触声'));
+    expect(result.prompt, isNot(contains('白色阔腿裤')));
+    expect(result.prompt, isNot(contains('条纹衬衫')));
+    expect(result.prompt, isNot(contains('黑色皮质手提包')));
+    expect(result.prompt, isNot(contains('黑色软质手提包')));
+    expect(result.prompt, isNot(contains('彩色条纹')));
+    expect(result.prompt, isNot(contains('YERAD')));
+    expect(result.prompt, isNot(contains('品牌字')));
+  });
+
   test('根据画面动作和相邻景别生成差异化动态运镜', () {
     final asset = _asset(
       now,

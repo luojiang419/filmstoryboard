@@ -1,6 +1,7 @@
 import 'package:path/path.dart' as p;
 
 import '../../settings/domain/app_settings.dart';
+import '../../shooting_script/data/script_multimodal_analysis_service.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../domain/replicate_models.dart';
@@ -50,6 +51,9 @@ class SeedancePromptGenerationService {
       return result.replaceAll(RegExp(r'\s+'), ' ');
     }
 
+    String cleanShotText(String value) =>
+        stripSpecificWardrobeAndObjectDetails(clean(value));
+
     final definitions = <String>[];
     for (final asset in readyAssets) {
       final reference = referenceLabel(asset);
@@ -76,30 +80,40 @@ class SeedancePromptGenerationService {
       nextShot: nextShot,
     );
     final shotOpening = [
-      clean(shot.shotSize),
+      cleanShotText(shot.shotSize),
       movement,
     ].where((value) => value.isNotEmpty).join('，');
+    final colorStyle = clean(
+      ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+        shot.colorPalette,
+      ),
+    );
     final visualAnalysis = <String>[
-      if (clean(shot.composition).isNotEmpty) '构图：${clean(shot.composition)}',
-      if (clean(shot.cameraAngle).isNotEmpty) '机位：${clean(shot.cameraAngle)}',
-      if (clean(shot.lightingMood).isNotEmpty)
-        '光影/氛围：${clean(shot.lightingMood)}',
-      if (clean(shot.colorPalette).isNotEmpty) '色彩：${clean(shot.colorPalette)}',
-      if (clean(shot.visualFocus).isNotEmpty) '视觉焦点：${clean(shot.visualFocus)}',
-      if (clean(shot.transitionHint).isNotEmpty)
-        '剪辑衔接：${clean(shot.transitionHint)}',
-      if (clean(shot.cameraNotes).isNotEmpty) '摄影备注：${clean(shot.cameraNotes)}',
+      if (cleanShotText(shot.composition).isNotEmpty)
+        '构图：${cleanShotText(shot.composition)}',
+      if (cleanShotText(shot.cameraAngle).isNotEmpty)
+        '机位：${cleanShotText(shot.cameraAngle)}',
+      if (cleanShotText(shot.lightingMood).isNotEmpty)
+        '光影/氛围：${cleanShotText(shot.lightingMood)}',
+      if (colorStyle.isNotEmpty) '色彩：$colorStyle',
+      if (cleanShotText(shot.visualFocus).isNotEmpty)
+        '视觉焦点：${cleanShotText(shot.visualFocus)}',
+      if (cleanShotText(shot.transitionHint).isNotEmpty)
+        '剪辑衔接：${cleanShotText(shot.transitionHint)}',
+      if (cleanShotText(shot.cameraNotes).isNotEmpty)
+        '摄影备注：${cleanShotText(shot.cameraNotes)}',
     ].join('；');
     final body = <String>[
       if (shotOpening.isNotEmpty) shotOpening,
       if (shot.durationSeconds > 0) '时长：${_durationText(shot.durationSeconds)}',
-      clean(shot.content),
-      if (clean(shot.scene).isNotEmpty) '场景位于${clean(shot.scene)}',
+      cleanShotText(shot.content),
+      if (cleanShotText(shot.scene).isNotEmpty)
+        '场景位于${cleanShotText(shot.scene)}',
       if (visualAnalysis.isNotEmpty) '综合视觉分析：$visualAnalysis',
       if (clean(shot.dialogue).isNotEmpty)
         '人物说道{${_stripBrackets(clean(shot.dialogue))}}',
-      if (clean(shot.sound).isNotEmpty)
-        '<${_stripBrackets(clean(shot.sound))}>',
+      if (cleanShotText(shot.sound).isNotEmpty)
+        '<${_stripBrackets(cleanShotText(shot.sound))}>',
     ].where((value) => value.isNotEmpty).toList();
     final style = clean(globalStyle).isEmpty
         ? defaultGlobalStyle
@@ -243,6 +257,34 @@ class SeedancePromptGenerationService {
   static String _stripBrackets(String value) =>
       value.replaceAll(RegExp(r'[{}<>【】]'), '').trim();
 
+  static String stripSpecificWardrobeAndObjectDetails(String value) {
+    var result = value.trim();
+    if (result.isEmpty) return '';
+    result = result
+        .replaceAll(RegExp(r'(?:原视频|原片|原帧|源视频|参考图中?|画面中)'), '')
+        .replaceAll(RegExp(r'[A-Z][A-Z0-9-]{2,}'), '');
+    final segments = result.split(RegExp(r'([，,；;。.\n]+)'));
+    result = [
+      for (final segment in segments)
+        if (!_containsAny(segment, _brandAndTextLeakTerms)) segment,
+    ].join('，');
+    final terms = [..._wardrobeAndPropLeakTerms]
+      ..sort((first, second) => second.length.compareTo(first.length));
+    for (final term in terms) {
+      result = result.replaceAll(
+        RegExp('(?:$_specificVisualDescriptor)*${RegExp.escape(term)}'),
+        '',
+      );
+    }
+    return result
+        .replaceAll(RegExp(r'[，,、；;。.\s]+$'), '')
+        .replaceAll(RegExp(r'^[，,、；;。.\s]+'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[，,、；;。.]{2,}'), '，')
+        .replaceAll(RegExp(r'\s*[，,、；;]\s*'), '，')
+        .trim();
+  }
+
   static String _durationText(double seconds) {
     if (seconds == seconds.roundToDouble()) {
       return '${seconds.toInt()}秒';
@@ -364,6 +406,78 @@ class SeedancePromptGenerationService {
     if (normalized.contains('远景')) return 6;
     return null;
   }
+
+  static bool _containsAny(String value, Iterable<String> terms) =>
+      terms.any(value.contains);
+
+  static const _specificVisualDescriptor =
+      r'(?:纯|深|浅|暗|亮|淡|米|灰|蓝|绿|白|黑|棕|褐|金|银|红|橙|黄|粉|紫|彩色|色|软质|硬质|皮质|皮革|条纹|格纹|印花|宽松|紧身|阔腿|短款|长款|无袖|针织|透明|磨砂|金属|木质|塑料|玻璃|亚麻|棉麻|丝质|毛呢|亮面|哑光)';
+
+  static const _wardrobeAndPropLeakTerms = [
+    '阔腿裤',
+    '牛仔裤',
+    '短裤',
+    '长裤',
+    '半裙',
+    '短裙',
+    '长裙',
+    '裙装',
+    '裙子',
+    '衬衫',
+    'T恤',
+    't恤',
+    '卫衣',
+    '毛衣',
+    '针织衫',
+    '背心',
+    '上衣',
+    '外套',
+    '夹克',
+    '西装',
+    '大衣',
+    '风衣',
+    '马甲',
+    '裤',
+    '鞋',
+    '靴',
+    '手提包',
+    '包装瓶',
+    '玻璃杯',
+    '软包',
+    '皮包',
+    '背包',
+    '包',
+    '帽子',
+    '帽',
+    '眼镜',
+    '墨镜',
+    '项链',
+    '耳环',
+    '耳饰',
+    '首饰',
+    '手链',
+    '手表',
+    '戒指',
+    '腰带',
+    '围巾',
+    '领带',
+    '发饰',
+    '条纹',
+    '格纹',
+    '印花',
+  ];
+
+  static const _brandAndTextLeakTerms = [
+    '品牌字',
+    '品牌文字',
+    '包装文字',
+    '字幕',
+    '水印',
+    'Logo',
+    'LOGO',
+    'logo',
+    '商标',
+  ];
 
   static List<String> _movementTerms(String value) {
     final normalized = value.trim();

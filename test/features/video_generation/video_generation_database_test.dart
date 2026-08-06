@@ -124,6 +124,7 @@ void main() {
           shotId: 'shot-1',
           sourcePrompt: '原提示词',
           klingPrompt: '主体缓慢转身，镜头轻推',
+          h3Prompt: '【参考素材说明】@图片1 是画面参考图',
           updatedAt: now,
         ),
       )
@@ -150,6 +151,10 @@ void main() {
     expect(
       repository.listDrafts('script-1').single.selectedPrompt,
       contains('轻推'),
+    );
+    expect(
+      repository.listDrafts('script-1').single.h3Prompt,
+      contains('参考素材说明'),
     );
     expect(
       repository.listRecoverableTasks().single.generationId,

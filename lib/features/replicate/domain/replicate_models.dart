@@ -8,7 +8,7 @@ enum ReplicateStep {
   generateVideos,
 }
 
-enum ShotPromptFormat { sd2, kling }
+enum ShotPromptFormat { sd2, kling, h3 }
 
 enum ReplicateAssetType {
   character,

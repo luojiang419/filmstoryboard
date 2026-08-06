@@ -119,6 +119,7 @@ void main() {
       ProviderScope(
         overrides: [
           settingsControllerProvider.overrideWithValue(settingsController),
+          appDatabaseProvider.overrideWithValue(database),
           shootingScriptControllerProvider.overrideWithValue(
             shootingController,
           ),

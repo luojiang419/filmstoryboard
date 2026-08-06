@@ -11,9 +11,11 @@ import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/settings/domain/video_generation_api_config.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
 import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
@@ -87,6 +89,52 @@ void main() {
     expect(controller.value.shots.single.content, '人物拿起产品');
   });
 
+  test('合成提示词规则跟随当前视频模型切换格式和并发额度', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_compose_model_rule_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    expect(controller.composePromptModelLabel, '可灵');
+    expect(
+      controller.composePromptConcurrency,
+      ReplicateController.klingComposePromptConcurrency,
+    );
+
+    await settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultMiniMaxVideoGenerationConfigId,
+    );
+
+    expect(controller.composePromptModelLabel, 'MiniMax H3');
+    expect(
+      controller.composePromptConcurrency,
+      ReplicateController.defaultComposePromptConcurrency,
+    );
+  });
+
   test('三步复刻任务可恢复，素材编号删除后不复用并能导出提示词', () async {
     final root = await Directory.systemTemp.createTemp('replicate_flow_');
     final directories = await AppDirectories.create(executableDirectory: root);
@@ -100,6 +148,7 @@ void main() {
       repository: ShootingScriptRepository(database),
       directories: directories,
     );
+    final replicateRepository = ReplicateRepository(database);
     late ReplicateController controller;
     addTearDown(() async {
       controller.dispose();
@@ -119,15 +168,18 @@ void main() {
       shot.copyWith(
         framePath: frame.path,
         content: '模特缓慢拿起玻璃杯并转向窗边',
+        visual: '原视频帧里模特站在窗边展示玻璃杯',
+        scene: '原视频窗边客厅',
         shotSize: '中景',
         cameraMovement: '缓慢推镜、横移',
+        visualFocus: '原视频蓝色包装瓶',
         dialogue: '今天也要清爽一点',
         sound: '冰块碰撞声',
       ),
     );
 
     controller = ReplicateController(
-      repository: ReplicateRepository(database),
+      repository: replicateRepository,
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
@@ -161,7 +213,7 @@ void main() {
     controller.dispose();
 
     controller = ReplicateController(
-      repository: ReplicateRepository(database),
+      repository: replicateRepository,
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
@@ -178,7 +230,28 @@ void main() {
       description: '透明玻璃瓶，蓝色标签',
     );
     expect(second?.referenceNumber, 2);
+    final secondAsset = second!;
     expect(controller.moveToStep(ReplicateStep.composePrompts), isTrue);
+    replicateRepository.upsertPrompt(
+      ShotPrompt(
+        id: '${controller.value.run!.id}-prompt-${shot.id}',
+        runId: controller.value.run!.id,
+        shotNumber: shot.shotNumber,
+        scriptShotId: shot.id,
+        assetIds: [secondAsset.id],
+        prompt: '旧版提示词：模特缓慢拿起玻璃杯并转向窗边，原视频蓝色包装瓶。',
+        model: ReplicateController.promptModel,
+        rawResponse: jsonEncode({
+          'shotFingerprint': 'legacy-fingerprint',
+          'sd2Prompt': '旧 SD2：原视频帧里模特站在窗边展示玻璃杯',
+          'klingPrompt': '旧可灵：原视频窗边客厅，原视频蓝色包装瓶',
+          'selectedPromptFormat': ShotPromptFormat.kling.name,
+        }),
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.utc(2026, 1, 1),
+      ),
+    );
 
     await controller.composeAllPrompts();
     expect(controller.value.prompts, hasLength(1));
@@ -191,6 +264,14 @@ void main() {
     expect(
       controller.promptTextFor(generated, ShotPromptFormat.kling),
       contains('以图片1作为首帧和主体外观参考'),
+    );
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.h3),
+      contains('【参考素材说明】'),
+    );
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.h3),
+      contains('非叙事性音乐：'),
     );
     expect(
       controller.promptTextFor(generated, ShotPromptFormat.sd2),
@@ -206,7 +287,26 @@ void main() {
     );
     expect(
       controller.promptTextFor(generated, ShotPromptFormat.sd2),
-      isNot(contains(second!.id)),
+      isNot(contains(secondAsset.id)),
+    );
+    for (final format in ShotPromptFormat.values) {
+      final text = controller.promptTextFor(generated, format);
+      expect(text, isNot(contains('模特缓慢拿起玻璃杯并转向窗边')));
+      expect(text, isNot(contains('原视频帧里模特站在窗边展示玻璃杯')));
+      expect(text, isNot(contains('原视频窗边客厅')));
+      expect(text, isNot(contains('原视频蓝色包装瓶')));
+    }
+    final storedPrompt = replicateRepository
+        .listPrompts(controller.value.run!.id)
+        .single;
+    expect(storedPrompt.prompt, generated.prompt);
+    expect(storedPrompt.prompt, isNot(contains('旧版提示词')));
+    expect(storedPrompt.prompt, isNot(contains('原视频蓝色包装瓶')));
+    final storedRaw = jsonDecode(storedPrompt.rawResponse) as Map;
+    expect(storedRaw['promptRulesVersion'], 3);
+    expect(
+      shootingController.value.shots.single.prompt,
+      isNot(contains('旧版提示词')),
     );
     controller.selectPromptFormat(generated.id, ShotPromptFormat.kling);
     expect(controller.value.prompts.single.prompt, contains('以图片1作为首帧和主体外观参考'));
@@ -216,6 +316,8 @@ void main() {
     );
     controller.selectPromptFormat(generated.id, ShotPromptFormat.sd2);
     expect(controller.value.prompts.single.prompt, contains('图片2'));
+    controller.selectPromptFormat(generated.id, ShotPromptFormat.h3);
+    expect(controller.value.prompts.single.prompt, contains('【画面过程描述】'));
 
     final exported = await controller.exportPrompts();
     expect(exported, isNotNull);
@@ -229,8 +331,9 @@ void main() {
           as List<int>,
     );
     expect(exportedSheet, contains('最终提示词'));
-    expect(exportedSheet, contains('主体与素材定义'));
-    expect(exportedSheet, contains('图片2中的透明玻璃瓶'));
+    expect(exportedSheet, contains('【参考素材说明】'));
+    expect(exportedSheet, contains('图片2：产品参考'));
+    expect(exportedSheet, isNot(contains('主体与素材定义')));
     expect(
       exportedArchive.files.where((file) => file.name.startsWith('xl/media/')),
       hasLength(1),
@@ -268,6 +371,293 @@ void main() {
       isEmpty,
       reason: '镜头信息变化后进入步骤 3 必须为空，等待用户主动重新合成',
     );
+  });
+
+  test('合成提示词会剥离原视频帧服装和配饰描述', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_prompt_clean_source_visual_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load().copyWith(
+        videoGenerationApiConfigs: const [
+          VideoGenerationApiConfig(
+            id: 'test-h3',
+            name: '测试 H3',
+            kind: VideoGenerationApiConfigKind.httpApi,
+            baseUrl: 'http://127.0.0.1:7860',
+            apiKey: '',
+            model: 'minimax-h3-local',
+          ),
+        ],
+        activeVideoGenerationApiConfigId: 'test-h3',
+      ),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    final replicateRepository = ReplicateRepository(database);
+    final visionService = _RecordingVisionStoryboardService()
+      ..resolvedPrompt = '''
+<think>这里不应该进入最终提示词：黑色皮质手提包、白色阔腿裤、条纹衬衫。</think>
+【参考素材说明】
+@图片1 是复刻分镜图，锁定新品背包、人物姿态、场景空间、构图和光影。
+
+【核心创意】
+5秒视频，女模特自然展示新品背包，广告质感，画面干净。
+
+【画面过程描述】
+0-5秒：中景，镜头轻微推近，人物保持自然站姿，清晰展示新品背包。
+
+【整体要求补充】
+主体外观、产品结构、动作方向和光源方向保持稳定；不要字幕、不要水印、不要乱码文字、不要无关Logo。
+
+【声音设计】
+自然环境底噪和轻微脚步声。
+
+非叙事性音乐：N/A
+''';
+    final controller = ReplicateController(
+      repository: replicateRepository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    shootingController.createEmpty(name: '产品复刻片');
+    final shot = shootingController.addShot()!;
+    shootingController.updateShot(
+      shot.copyWith(
+        shotSize: '中景',
+        cameraMovement: '升降',
+        composition: '主体位于画面中部偏右，品牌字 YERAD 居中叠加',
+        cameraAngle: '眼平中景，水平视线',
+        lightingMood: '柔和自然侧光，石墙明暗适中',
+        colorPalette: '暖灰褐石墙为底，搭配深棕皮、彩色条纹与黑白软包',
+        visualFocus: '白色阔腿裤、条纹衬衫、黑色皮质手提包',
+        cameraNotes: '右手自然垂挂手提包对应的动作细节',
+        transitionHint: '适合开场建立品牌形象',
+        sound: '黑色软质手提包、金属门锁产生的轻微接触声',
+      ),
+    );
+
+    final productSource = File('${root.path}/product.png');
+    final productImage = img.Image(width: 8, height: 8);
+    img.fill(productImage, color: img.ColorRgb8(20, 20, 20));
+    await productSource.writeAsBytes(img.encodePng(productImage), flush: true);
+    final product = await controller.importAsset(
+      sourcePath: productSource.path,
+      type: ReplicateAssetType.product,
+      name: '新品背包',
+      description: '纯黑通勤双肩包',
+    );
+    expect(product, isNotNull);
+    final replicatedSource = File('${root.path}/replicated.png');
+    final replicatedImage = img.Image(width: 8, height: 8);
+    img.fill(replicatedImage, color: img.ColorRgb8(40, 80, 120));
+    await replicatedSource.writeAsBytes(
+      img.encodePng(replicatedImage),
+      flush: true,
+    );
+    replicateRepository.upsertReplicatedShotImage(
+      ReplicatedShotImage(
+        id: '${controller.value.run!.id}-replicated-${shot.id}',
+        runId: controller.value.run!.id,
+        scriptShotId: shot.id,
+        shotNumber: shot.shotNumber,
+        originalFramePath: '',
+        generatedFramePath: replicatedSource.path,
+        assetIds: [product!.id],
+        prompt: '复刻分镜图生成提示词',
+        model: 'test',
+        rawResponse: '{}',
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: DateTime.now().toUtc(),
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    controller.refresh();
+
+    await controller.composeAllPrompts();
+
+    final generated = controller.value.prompts.single;
+    expect(controller.promptFormatFor(generated), ShotPromptFormat.h3);
+    expect(visionService.completionPrompts, hasLength(1));
+    expect(
+      visionService.completionPrompts.single,
+      contains('目标视频模型：MiniMax H3'),
+    );
+    expect(visionService.completionPrompts.single, contains('图片1 是本镜头的复刻分镜图'));
+    expect(visionService.completionPrompts.single, contains('绑定资产图'));
+    expect(visionService.completionImagePaths.single, [
+      replicatedSource.path,
+      product.path,
+    ]);
+    for (final format in ShotPromptFormat.values) {
+      final text = controller.promptTextFor(generated, format);
+      expect(text, isNot(contains('白色阔腿裤')));
+      expect(text, isNot(contains('条纹衬衫')));
+      expect(text, isNot(contains('黑色皮质手提包')));
+      expect(text, isNot(contains('黑色软质手提包')));
+      expect(text, isNot(contains('彩色条纹')));
+      expect(text, isNot(contains('YERAD')));
+    }
+    expect(
+      controller.promptTextFor(generated, ShotPromptFormat.h3),
+      contains('新品背包'),
+    );
+    final h3Prompt = controller.promptTextFor(generated, ShotPromptFormat.h3);
+    expect(h3Prompt, isNot(contains('<think>')));
+    expect(_occurrences(h3Prompt, '【参考素材说明】'), 1);
+    expect(_occurrences(h3Prompt, '【核心创意】'), 1);
+    expect(_occurrences(h3Prompt, '【画面过程描述】'), 1);
+    expect(_occurrences(h3Prompt, '【整体要求补充】'), 1);
+    expect(_occurrences(h3Prompt, '【声音设计】'), 1);
+    expect(_occurrences(h3Prompt, '非叙事性音乐：'), 1);
+    expect(h3Prompt, isNot(contains('主体与素材定义：')));
+    expect(h3Prompt, isNot(contains('整体约束：')));
+  });
+
+  test('合成提示词会按限制并发调用视觉模型并保持镜头顺序', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_prompt_concurrency_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load().copyWith(
+        videoGenerationApiConfigs: const [
+          VideoGenerationApiConfig(
+            id: 'test-h3',
+            name: '测试 H3',
+            kind: VideoGenerationApiConfigKind.httpApi,
+            baseUrl: 'http://127.0.0.1:7860',
+            apiKey: '',
+            model: 'minimax-h3-local',
+          ),
+        ],
+        activeVideoGenerationApiConfigId: 'test-h3',
+      ),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    final replicateRepository = ReplicateRepository(database);
+    final releaseVision = Completer<void>();
+    final secondVisionStarted = Completer<void>();
+    final visionService = _RecordingVisionStoryboardService()
+      ..completionGate = releaseVision.future
+      ..secondCompletionStarted = secondVisionStarted
+      ..resolvedPrompt = '''
+【参考素材说明】
+@图片1 是画面参考图。
+
+【核心创意】
+并发合成提示词。
+
+【画面过程描述】
+0-3秒：保持画面稳定。
+
+【整体要求补充】
+不要字幕、不要水印。
+
+【声音设计】
+自然环境声。
+
+非叙事性音乐：N/A
+''';
+    final controller = ReplicateController(
+      repository: replicateRepository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    shootingController.createEmpty(name: '并发合成脚本');
+    final shots = <ScriptShot>[];
+    for (var index = 0; index < 3; index++) {
+      final shot = shootingController.addShot()!;
+      shootingController.updateShot(
+        shot.copyWith(
+          durationSeconds: 3,
+          content: '镜头 ${index + 1}',
+          cameraMovement: '固定',
+        ),
+      );
+      shots.add(shootingController.value.shots.last);
+    }
+    for (final shot in shots) {
+      final imageFile = File('${root.path}/replicated-${shot.shotNumber}.png')
+        ..writeAsBytesSync([137, 80, 78, 71, shot.shotNumber]);
+      replicateRepository.upsertReplicatedShotImage(
+        ReplicatedShotImage(
+          id: '${controller.value.run!.id}-replicated-${shot.id}',
+          runId: controller.value.run!.id,
+          scriptShotId: shot.id,
+          shotNumber: shot.shotNumber,
+          originalFramePath: '',
+          generatedFramePath: imageFile.path,
+          assetIds: const [],
+          prompt: '复刻分镜图生成提示词',
+          model: 'test',
+          rawResponse: '{}',
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          createdAt: DateTime.now().toUtc(),
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+    }
+    controller.refresh();
+
+    final composeFuture = controller.composeAllPrompts(maxConcurrent: 2);
+    await secondVisionStarted.future;
+
+    expect(visionService.completionPrompts, hasLength(2));
+    expect(visionService.maxActiveCompletions, 2);
+    expect(controller.value.isBusy, isTrue);
+
+    releaseVision.complete();
+    await composeFuture;
+
+    expect(visionService.completionPrompts, hasLength(3));
+    expect(controller.value.prompts.map((prompt) => prompt.shotNumber), [
+      1,
+      2,
+      3,
+    ]);
+    expect(controller.value.run!.completedCount, 3);
+    expect(controller.value.message, contains('MiniMax H3'));
+    expect(controller.value.message, contains('并发生成 3 个'));
+    final raw = jsonDecode(controller.value.prompts.first.rawResponse) as Map;
+    expect(raw['videoModelPromptRule'], {
+      'format': ShotPromptFormat.h3.name,
+      'label': 'MiniMax H3',
+    });
   });
 
   test('错峰批量复刻按镜号提交原帧和新资产并持久化结果', () async {
@@ -451,8 +841,11 @@ void main() {
     expect(imageService.requests[0].prompt, contains('图片1'));
     expect(imageService.requests[0].prompt, contains('替换'));
     expect(visionService.analyzeCount, 2);
-    expect(imageService.requests[0].prompt, contains('【视觉模型对原帧的关键维度解析】'));
-    expect(imageService.requests[0].prompt, contains('视觉焦点与道具：蓝色包装瓶'));
+    expect(imageService.requests[0].prompt, contains('【视觉模型对原帧的结构维度解析】'));
+    expect(imageService.requests[0].prompt, isNot(contains('女模特在窗边展示产品')));
+    expect(imageService.requests[0].prompt, isNot(contains('蓝色包装瓶')));
+    expect(imageService.requests[0].prompt, isNot(contains('叙事画面')));
+    expect(imageService.requests[0].prompt, isNot(contains('画面细节')));
     expect(imageService.requests[0].prompt, contains('【Gemini 3 分镜图像指令】'));
     expect(imageService.requests[0].prompt, contains('图片1是本镜头唯一的构图母版'));
     expect(
@@ -889,6 +1282,9 @@ void main() {
   });
 }
 
+int _occurrences(String text, String pattern) =>
+    RegExp(RegExp.escape(pattern)).allMatches(text).length;
+
 class _RecordingImageGenerationService extends ImageGenerationService {
   final requests = <ImageGenerationRequest>[];
   Completer<void>? requestStarted;
@@ -922,7 +1318,12 @@ class _RecordingImageGenerationService extends ImageGenerationService {
 class _RecordingVisionStoryboardService extends VisionStoryboardService {
   var analyzeCount = 0;
   var resolvedPrompt = '';
+  var activeCompletions = 0;
+  var maxActiveCompletions = 0;
+  Completer<void>? secondCompletionStarted;
+  Future<void>? completionGate;
   final completionPrompts = <String>[];
+  final completionImagePaths = <List<String>>[];
 
   @override
   Future<String> complete({
@@ -932,8 +1333,25 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
     int maxTokens = 1200,
     bool allowThinking = false,
   }) async {
-    completionPrompts.add(prompt);
-    return resolvedPrompt;
+    activeCompletions++;
+    if (activeCompletions > maxActiveCompletions) {
+      maxActiveCompletions = activeCompletions;
+    }
+    try {
+      completionPrompts.add(prompt);
+      completionImagePaths.add([for (final file in imageFiles) file.path]);
+      final secondStarted = secondCompletionStarted;
+      if (completionPrompts.length >= 2 &&
+          secondStarted != null &&
+          !secondStarted.isCompleted) {
+        secondStarted.complete();
+      }
+      final gate = completionGate;
+      if (gate != null) await gate;
+      return resolvedPrompt;
+    } finally {
+      activeCompletions--;
+    }
   }
 
   @override

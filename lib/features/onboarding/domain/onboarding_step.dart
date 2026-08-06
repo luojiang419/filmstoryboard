@@ -65,7 +65,7 @@ const onboardingSteps = <OnboardingStep>[
     section: OnboardingSection.shootingScript,
     eyebrow: '第 4 步 · 拍摄脚本',
     title: '编辑脚本并完成复刻',
-    body: '使用官方十列表格整理镜头；点击“开始复刻”后，可在同一页面确认镜头、准备资产、合成即梦 / 可灵提示词，并导出脚本与提示词。',
+    body: '使用官方十列表格整理镜头；点击“开始复刻”后，可在同一页面确认镜头、准备资产、合成可灵 / H3 / 即梦提示词，并导出脚本与提示词。',
     tabIndex: 3,
   ),
   OnboardingStep(

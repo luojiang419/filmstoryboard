@@ -39,6 +39,7 @@ class MiniMaxVideoApiService {
   Future<MiniMaxVideoApiSubmissionResult> submitImageToVideo({
     required VideoGenerationApiConfig config,
     required String imagePath,
+    List<String> referenceImagePaths = const [],
     String tailImagePath = '',
     required Map<String, String> parameters,
     required String prompt,
@@ -64,6 +65,15 @@ class MiniMaxVideoApiService {
       request.files.add(
         await http.MultipartFile.fromPath('reference_images', imagePath),
       );
+      for (final referenceImagePath in referenceImagePaths) {
+        if (referenceImagePath.trim().isEmpty) continue;
+        request.files.add(
+          await http.MultipartFile.fromPath(
+            'reference_images',
+            referenceImagePath.trim(),
+          ),
+        );
+      }
     } else {
       request.files.add(
         await http.MultipartFile.fromPath('first_frame', imagePath),
@@ -104,6 +114,13 @@ class MiniMaxVideoApiService {
         headers: _authorizationHeaders(config.apiKey),
       );
       if (response.statusCode == 404) {
+        final recovered = await _queryCompletedWork(
+          client: client,
+          baseUri: baseUri,
+          apiKey: config.apiKey,
+          generationId: generationId,
+        );
+        if (recovered != null) return recovered;
         throw MiniMaxVideoApiTaskNotFoundException(
           generationId,
           'MiniMax 视频任务不存在：$generationId',
@@ -126,20 +143,111 @@ class MiniMaxVideoApiService {
         'queued' => VideoGenerationTaskStatus.queued,
         _ => VideoGenerationTaskStatus.fromStorage(statusText),
       };
+      final normalizedStatus =
+          status == VideoGenerationTaskStatus.queued &&
+              _int(json['jobs_ahead']) == 0
+          ? VideoGenerationTaskStatus.running
+          : status;
       final output = _firstText(json, const [
         'output',
         'content_url',
         'url',
         'result_url',
       ]);
+      if (normalizedStatus != VideoGenerationTaskStatus.completed ||
+          output.isEmpty) {
+        final recovered = await _queryCompletedWork(
+          client: client,
+          baseUri: baseUri,
+          apiKey: config.apiKey,
+          generationId: generationId,
+        );
+        if (recovered != null) return recovered;
+      }
       final message = _text(json['error'] ?? json['message']);
       return MiniMaxVideoApiTaskResult(
-        status: status,
+        status: normalizedStatus,
         url: output.isEmpty ? '' : _absoluteUrl(baseUri, output),
-        errorMessage: status == VideoGenerationTaskStatus.failed ? message : '',
+        errorMessage: normalizedStatus == VideoGenerationTaskStatus.failed
+            ? message
+            : '',
       );
     } finally {
       if (_client == null) client.close();
+    }
+  }
+
+  Future<bool> cancelTask({
+    required VideoGenerationApiConfig config,
+    required String generationId,
+  }) async {
+    final baseUri = _baseUri(config.baseUrl);
+    final uri = baseUri.replace(
+      path: _joinPath(baseUri.path, '/api/jobs/$generationId'),
+    );
+    final client = _client ?? http.Client();
+    try {
+      final response = await client.delete(
+        uri,
+        headers: _authorizationHeaders(config.apiKey),
+      );
+      if (response.statusCode == 404) return false;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw KlingCliException(
+          'MiniMax 视频取消失败：HTTP ${response.statusCode} ${response.body}',
+        );
+      }
+      return true;
+    } finally {
+      if (_client == null) client.close();
+    }
+  }
+
+  Future<MiniMaxVideoApiTaskResult?> _queryCompletedWork({
+    required http.Client client,
+    required Uri baseUri,
+    required String apiKey,
+    required String generationId,
+  }) async {
+    final uri = baseUri.replace(path: _joinPath(baseUri.path, '/api/works'));
+    try {
+      final response = await client.get(
+        uri,
+        headers: _authorizationHeaders(apiKey),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) return null;
+      final json = _decodeObject(response.body);
+      final items = _workItems(json);
+      if (items is! List) return null;
+      for (final item in items) {
+        if (item is! Map) continue;
+        final work = item.map((key, value) => MapEntry('$key', value));
+        final id = _firstText(work, const [
+          'id',
+          'generation_id',
+          'generationId',
+          'job_id',
+          'jobId',
+          'task_id',
+          'taskId',
+        ]);
+        if (id != generationId) continue;
+        final output = _firstText(work, const [
+          'output',
+          'content_url',
+          'url',
+          'result_url',
+        ]);
+        if (output.isEmpty) return null;
+        return MiniMaxVideoApiTaskResult(
+          status: VideoGenerationTaskStatus.completed,
+          url: _absoluteUrl(baseUri, output),
+          errorMessage: '',
+        );
+      }
+      return null;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -201,4 +309,23 @@ class MiniMaxVideoApiService {
   }
 
   static String _text(Object? value) => value == null ? '' : '$value'.trim();
+
+  static Object? _workItems(Map<String, Object?> json) {
+    for (final key in const ['items', 'works', 'data', 'results']) {
+      final value = json[key];
+      if (value is List) return value;
+      if (value is Map) {
+        final nested = value.map((key, value) => MapEntry('$key', value));
+        final items = _workItems(nested);
+        if (items != null) return items;
+      }
+    }
+    return null;
+  }
+
+  static int? _int(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(_text(value));
+  }
 }

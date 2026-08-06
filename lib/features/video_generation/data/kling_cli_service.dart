@@ -70,6 +70,7 @@ class KlingCliService {
   Future<KlingSubmissionResult> submitImageToVideo({
     required String model,
     required String imagePath,
+    List<String> referenceImagePaths = const [],
     String tailImagePath = '',
     required Map<String, String> parameters,
     required String prompt,
@@ -87,6 +88,11 @@ class KlingCliService {
       model,
       '--image',
       imagePath,
+      for (final referenceImagePath in referenceImagePaths)
+        if (referenceImagePath.trim().isNotEmpty) ...[
+          '--image',
+          referenceImagePath.trim(),
+        ],
       if (tailImagePath.trim().isNotEmpty) ...[
         '--tailImage',
         tailImagePath.trim(),

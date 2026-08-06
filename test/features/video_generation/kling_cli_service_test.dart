@@ -175,6 +175,10 @@ void main() {
     final submission = await service.submitImageToVideo(
       model: identity.imageToVideoModels.single.model,
       imagePath: r'C:\frames\replicated 01.png',
+      referenceImagePaths: const [
+        r'C:\assets\hero.png',
+        r'C:\assets\product.png',
+      ],
       tailImagePath: r'C:\frames\replicated 03.png',
       parameters: const {'duration': '5', 'resolution': '1080p'},
       prompt: '人物缓慢转身，镜头轻推',
@@ -203,6 +207,14 @@ void main() {
     );
     expect(
       submitArguments,
+      containsAllInOrder(['--image', r'C:\assets\hero.png']),
+    );
+    expect(
+      submitArguments,
+      containsAllInOrder(['--image', r'C:\assets\product.png']),
+    );
+    expect(
+      submitArguments,
       containsAllInOrder(['--tailImage', r'C:\frames\replicated 03.png']),
     );
     expect(submitArguments.last, '人物缓慢转身，镜头轻推');
@@ -215,6 +227,10 @@ void main() {
     });
     final image = File('${root.path}/reference.png')
       ..writeAsBytesSync([1, 2, 3]);
+    final character = File('${root.path}/character.png')
+      ..writeAsBytesSync([4, 5, 6]);
+    final product = File('${root.path}/product.png')
+      ..writeAsBytesSync([7, 8, 9]);
     final requests = <http.BaseRequest>[];
     final client = MockClient.streaming((request, bodyStream) async {
       requests.add(request);
@@ -226,7 +242,11 @@ void main() {
         expect(multipart.fields['prompt'], '镜头缓慢运动');
         expect(multipart.fields['resolution'], '0.2MP 16:9 - 608x352');
         expect(multipart.fields['duration'], '2');
-        expect(multipart.files.map((file) => file.field), ['reference_images']);
+        expect(multipart.files.map((file) => file.field), [
+          'reference_images',
+          'reference_images',
+          'reference_images',
+        ]);
         return http.StreamedResponse(
           Stream.value(utf8.encode('{"id":"job-ref"}')),
           200,
@@ -258,6 +278,7 @@ void main() {
     final submission = await service.submitImageToVideo(
       config: config,
       imagePath: image.path,
+      referenceImagePaths: [character.path, product.path],
       parameters: const {'resolution': '0.2MP 16:9 - 608x352', 'duration': '2'},
       prompt: '镜头缓慢运动',
     );
@@ -347,7 +368,16 @@ void main() {
   });
 
   test('MiniMax 运行中 message 不作为错误状态提示', () async {
+    final requests = <String>[];
     final client = MockClient((request) async {
+      requests.add(request.url.path);
+      if (request.url.path == '/api/works') {
+        return http.Response.bytes(
+          utf8.encode('{"items":[]}'),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
       expect(request.url.path, '/api/jobs/job-running');
       return http.Response.bytes(
         utf8.encode(
@@ -373,6 +403,125 @@ void main() {
 
     expect(result.status, VideoGenerationTaskStatus.running);
     expect(result.errorMessage, isEmpty);
+    expect(requests, ['/api/jobs/job-running', '/api/works']);
+  });
+
+  test('MiniMax 排队但前方无任务时按当前生成任务显示', () async {
+    final requests = <String>[];
+    final client = MockClient((request) async {
+      requests.add(request.url.path);
+      if (request.url.path == '/api/works') {
+        return http.Response.bytes(
+          utf8.encode('{"items":[]}'),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      expect(request.url.path, '/api/jobs/job-next');
+      return http.Response.bytes(
+        utf8.encode('{"status":"queued","jobs_ahead":0,"message":"等待开始"}'),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+    final service = MiniMaxVideoApiService(client: client);
+    const config = VideoGenerationApiConfig(
+      id: 'minimax',
+      name: 'MiniMax H3 本地',
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: '',
+      model: 'minimax-h3-local',
+    );
+
+    final result = await service.queryTask(
+      config: config,
+      generationId: 'job-next',
+    );
+
+    expect(result.status, VideoGenerationTaskStatus.running);
+    expect(requests, ['/api/jobs/job-next', '/api/works']);
+  });
+
+  test('MiniMax 任务接口未完成但作品库已有成片时优先同步作品结果', () async {
+    final requests = <String>[];
+    final client = MockClient((request) async {
+      requests.add(request.url.path);
+      if (request.url.path == '/api/jobs/job-finished-in-works') {
+        return http.Response.bytes(
+          utf8.encode('{"status":"running","message":"仍在查询后端任务"}'),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      if (request.url.path == '/api/works') {
+        return http.Response.bytes(
+          utf8.encode(
+            '{"data":{"items":[{"generation_id":"job-finished-in-works","content_url":"/outputs/from-works.mp4"}]}}',
+          ),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response('', 500);
+    });
+    final service = MiniMaxVideoApiService(client: client);
+    const config = VideoGenerationApiConfig(
+      id: 'minimax',
+      name: 'MiniMax H3 本地',
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: '',
+      model: 'minimax-h3-local',
+    );
+
+    final result = await service.queryTask(
+      config: config,
+      generationId: 'job-finished-in-works',
+    );
+
+    expect(result.status, VideoGenerationTaskStatus.completed);
+    expect(result.url, 'http://127.0.0.1:7860/outputs/from-works.mp4');
+    expect(requests, ['/api/jobs/job-finished-in-works', '/api/works']);
+  });
+
+  test('MiniMax 任务内存丢失但作品已落盘时从作品库恢复完成结果', () async {
+    final requests = <String>[];
+    final client = MockClient((request) async {
+      requests.add(request.url.path);
+      if (request.url.path == '/api/jobs/job-completed') {
+        return http.Response.bytes(
+          utf8.encode('{"detail":"任务不存在"}'),
+          404,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      if (request.url.path == '/api/works') {
+        return http.Response.bytes(
+          utf8.encode(
+            '{"items":[{"id":"job-completed","output":"/outputs/done.mp4"}]}',
+          ),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response('', 500);
+    });
+    final service = MiniMaxVideoApiService(client: client);
+    const config = VideoGenerationApiConfig(
+      id: 'minimax',
+      name: 'MiniMax H3 本地',
+      baseUrl: 'http://127.0.0.1:7860',
+      apiKey: '',
+      model: 'minimax-h3-local',
+    );
+
+    final result = await service.queryTask(
+      config: config,
+      generationId: 'job-completed',
+    );
+
+    expect(result.status, VideoGenerationTaskStatus.completed);
+    expect(result.url, 'http://127.0.0.1:7860/outputs/done.mp4');
+    expect(requests, ['/api/jobs/job-completed', '/api/works']);
   });
 
   group('任务编排', () {
@@ -408,6 +557,11 @@ void main() {
     tearDown(() async {
       database.dispose();
       if (root.existsSync()) await root.delete(recursive: true);
+    });
+
+    test('MiniMax 本地视频 API 默认等待上限对齐后端长任务', () {
+      expect(defaultVideoGenerationPollTimeout, const Duration(minutes: 15));
+      expect(localVideoApiPollTimeout, const Duration(hours: 2));
     });
 
     test('15 分钟超时只提交一次，重启恢复只查询不重投', () async {
@@ -477,11 +631,18 @@ void main() {
     });
 
     test('MiniMax 恢复查询遇到任务不存在会立即结束等待并标记可重试', () async {
-      var queryCount = 0;
+      final requests = <String>[];
       final client = MockClient((request) async {
-        queryCount++;
+        requests.add(request.url.path);
+        if (request.url.path == '/api/works') {
+          return http.Response('{"items":[]}', 200);
+        }
         expect(request.url.path, '/api/jobs/missing-job');
-        return http.Response('{"detail":"任务不存在"}', 404);
+        return http.Response.bytes(
+          utf8.encode('{"detail":"任务不存在"}'),
+          404,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
       });
       const config = VideoGenerationApiConfig(
         id: 'minimax',
@@ -510,7 +671,7 @@ void main() {
         },
       ).resumePending(outputForTask: (_) => File('${root.path}/result-1.mp4'));
 
-      expect(queryCount, 1);
+      expect(requests, ['/api/jobs/missing-job', '/api/works']);
       expect(recovered.single.status, VideoGenerationTaskStatus.failed);
       expect(
         VideoGenerationTaskService.shouldRetryMissingVideoApiTask(

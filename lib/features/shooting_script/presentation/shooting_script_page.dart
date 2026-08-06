@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/widgets/preview_file_image.dart';
@@ -1282,6 +1284,7 @@ class _AssetManagerPage extends StatefulWidget {
 class _AssetManagerPageState extends State<_AssetManagerPage> {
   ReplicateAssetType _type = ReplicateAssetType.character;
   var _isOpeningFilePicker = false;
+  var _isDraggingOver = false;
 
   Future<void> _pickFiles() async {
     if (_isOpeningFilePicker) {
@@ -1301,102 +1304,175 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
     }
   }
 
+  Future<void> _importDroppedFiles(DropDoneDetails details) async {
+    setState(() => _isDraggingOver = false);
+    await widget.libraryController.importItems([
+      for (final file in details.files)
+        (
+          sourcePath: file.path,
+          type: _type,
+          name: '',
+          description: '',
+          aliases: const <String>[],
+        ),
+    ]);
+  }
+
+  Future<void> _replaceDroppedFile(
+    ShootingAssetLibraryItem item,
+    DropDoneDetails details,
+  ) async {
+    if (details.files.isEmpty) {
+      return;
+    }
+    await widget.libraryController.replaceItemFile(
+      id: item.id,
+      sourcePath: details.files.first.path,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ShootingAssetLibraryState>(
       valueListenable: widget.libraryController,
-      builder: (context, state, _) => Scaffold(
-        appBar: AppBar(
-          title: const Text('资产管理'),
-          actions: [
-            IconButton(
-              tooltip: '打开资产目录',
-              onPressed: widget.libraryController.openLibraryDirectory,
-              icon: const Icon(Icons.folder_open_rounded),
-            ),
-            IconButton(
-              tooltip: '关闭',
-              onPressed: () => Navigator.of(context).pop(),
-              icon: const Icon(Icons.close_rounded),
-            ),
-          ],
-        ),
-        body: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  SizedBox(
-                    width: 220,
-                    child: DropdownButtonFormField<ReplicateAssetType>(
-                      initialValue: _type,
-                      decoration: const InputDecoration(labelText: '添加类型'),
-                      items: [
-                        for (final item in ReplicateAssetType.values)
-                          DropdownMenuItem(
-                            value: item,
-                            child: Text(item.label),
-                          ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() => _type = value);
-                        }
-                      },
-                    ),
+      builder: (context, state, _) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              Navigator.of(context).maybePop(),
+        },
+        child: Focus(
+          autofocus: true,
+          child: DropTarget(
+            key: const ValueKey('asset-manager-drop-target'),
+            onDragEntered: (_) => setState(() => _isDraggingOver = true),
+            onDragExited: (_) => setState(() => _isDraggingOver = false),
+            onDragDone: _importDroppedFiles,
+            child: Scaffold(
+              appBar: AppBar(
+                title: const Text('资产管理'),
+                actions: [
+                  IconButton(
+                    tooltip: '打开资产目录',
+                    onPressed: widget.libraryController.openLibraryDirectory,
+                    icon: const Icon(Icons.folder_open_rounded),
                   ),
-                  const SizedBox(width: 10),
-                  FilledButton.icon(
-                    onPressed: _isOpeningFilePicker ? null : _pickFiles,
-                    icon: const Icon(Icons.add_photo_alternate_outlined),
-                    label: const Text('添加文件'),
-                  ),
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    onPressed: () => widget.onManualAdd(
-                      context,
-                      widget.libraryController,
-                      _type,
-                    ),
-                    icon: const Icon(Icons.edit_note_rounded),
-                    label: const Text('手动添加'),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              if (state.isBusy || _isOpeningFilePicker)
-                const LinearProgressIndicator(minHeight: 3),
-              Expanded(
-                child: state.items.isEmpty
-                    ? const Center(child: Text('暂无资产'))
-                    : GridView.builder(
-                        gridDelegate:
-                            const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 260,
-                              mainAxisExtent: 250,
-                              crossAxisSpacing: 12,
-                              mainAxisSpacing: 12,
+              body: Stack(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            SizedBox(
+                              width: 220,
+                              child:
+                                  DropdownButtonFormField<ReplicateAssetType>(
+                                    initialValue: _type,
+                                    decoration: const InputDecoration(
+                                      labelText: '添加类型',
+                                    ),
+                                    items: [
+                                      for (final item
+                                          in ReplicateAssetType.values)
+                                        DropdownMenuItem(
+                                          value: item,
+                                          child: Text(item.label),
+                                        ),
+                                    ],
+                                    onChanged: (value) {
+                                      if (value != null) {
+                                        setState(() => _type = value);
+                                      }
+                                    },
+                                  ),
                             ),
-                        itemCount: state.items.length,
-                        itemBuilder: (context, index) {
-                          final item = state.items[index];
-                          return _ManagedLibraryAssetCard(
-                            item: item,
-                            onUse: () => widget.replicateController
-                                .importLibraryAsset(item),
-                            onEdit: () => widget.onEdit(
+                            const SizedBox(width: 10),
+                            FilledButton.icon(
+                              onPressed: _isOpeningFilePicker
+                                  ? null
+                                  : _pickFiles,
+                              icon: const Icon(
+                                Icons.add_photo_alternate_outlined,
+                              ),
+                              label: const Text('添加文件'),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: () => widget.onManualAdd(
+                                context,
+                                widget.libraryController,
+                                _type,
+                              ),
+                              icon: const Icon(Icons.edit_note_rounded),
+                              label: const Text('手动添加'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        if (state.isBusy || _isOpeningFilePicker)
+                          const LinearProgressIndicator(minHeight: 3),
+                        Expanded(
+                          child: state.items.isEmpty
+                              ? const Center(child: Text('暂无资产'))
+                              : GridView.builder(
+                                  gridDelegate:
+                                      const SliverGridDelegateWithMaxCrossAxisExtent(
+                                        maxCrossAxisExtent: 260,
+                                        mainAxisExtent: 250,
+                                        crossAxisSpacing: 12,
+                                        mainAxisSpacing: 12,
+                                      ),
+                                  itemCount: state.items.length,
+                                  itemBuilder: (context, index) {
+                                    final item = state.items[index];
+                                    return _ManagedLibraryAssetCard(
+                                      item: item,
+                                      onUse: () => widget.replicateController
+                                          .importLibraryAsset(item),
+                                      onEdit: () => widget.onEdit(
+                                        context,
+                                        widget.libraryController,
+                                        item,
+                                      ),
+                                      onDelete: () => widget.libraryController
+                                          .deleteItem(item.id),
+                                      onReplace: (details) =>
+                                          _replaceDroppedFile(item, details),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_isDraggingOver)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Theme.of(
                               context,
-                              widget.libraryController,
-                              item,
+                            ).colorScheme.primary.withValues(alpha: 0.08),
+                            border: Border.all(
+                              color: Theme.of(context).colorScheme.primary,
+                              width: 2,
                             ),
-                            onDelete: () =>
-                                widget.libraryController.deleteItem(item.id),
-                          );
-                        },
+                          ),
+                          child: const Center(child: Text('松开添加到资产库')),
+                        ),
                       ),
+                    ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -1410,65 +1486,117 @@ class _ManagedLibraryAssetCard extends StatelessWidget {
     required this.onUse,
     required this.onEdit,
     required this.onDelete,
+    required this.onReplace,
   });
 
   final ShootingAssetLibraryItem item;
   final VoidCallback onUse;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final ValueChanged<DropDoneDetails> onReplace;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(child: _LibraryAssetPreview(item)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        item.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+    return _LibraryAssetReplaceDropTarget(
+      onReplace: onReplace,
+      child: Card(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: _LibraryAssetPreview(item)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          item.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
                       ),
-                    ),
-                    PopupMenuButton<String>(
-                      tooltip: '资产操作',
-                      onSelected: (action) => switch (action) {
-                        'use' => onUse(),
-                        'edit' => onEdit(),
-                        'delete' => onDelete(),
-                        _ => null,
-                      },
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'use', child: Text('用于当前脚本')),
-                        PopupMenuItem(value: 'edit', child: Text('编辑')),
-                        PopupMenuItem(value: 'delete', child: Text('删除')),
-                      ],
-                    ),
-                  ],
-                ),
-                Text(item.type.label),
-                Text(
-                  item.description.isEmpty
-                      ? p.basename(item.path)
-                      : item.description,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-              ],
+                      PopupMenuButton<String>(
+                        tooltip: '资产操作',
+                        onSelected: (action) => switch (action) {
+                          'use' => onUse(),
+                          'edit' => onEdit(),
+                          'delete' => onDelete(),
+                          _ => null,
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'use', child: Text('用于当前脚本')),
+                          PopupMenuItem(value: 'edit', child: Text('编辑')),
+                          PopupMenuItem(value: 'delete', child: Text('删除')),
+                        ],
+                      ),
+                    ],
+                  ),
+                  Text(item.type.label),
+                  Text(
+                    item.description.isEmpty
+                        ? p.basename(item.path)
+                        : item.description,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
+              ),
             ),
-          ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LibraryAssetReplaceDropTarget extends StatefulWidget {
+  const _LibraryAssetReplaceDropTarget({
+    required this.child,
+    required this.onReplace,
+  });
+
+  final Widget child;
+  final ValueChanged<DropDoneDetails> onReplace;
+
+  @override
+  State<_LibraryAssetReplaceDropTarget> createState() =>
+      _LibraryAssetReplaceDropTargetState();
+}
+
+class _LibraryAssetReplaceDropTargetState
+    extends State<_LibraryAssetReplaceDropTarget> {
+  var _hovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DropTarget(
+      onDragEntered: (_) => setState(() => _hovering = true),
+      onDragExited: (_) => setState(() => _hovering = false),
+      onDragDone: (details) {
+        setState(() => _hovering = false);
+        widget.onReplace(details);
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          widget.child,
+          if (_hovering)
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: 0.12),
+                border: Border.all(color: scheme.primary, width: 2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Center(child: Text('松开替换资产图')),
+            ),
         ],
       ),
     );

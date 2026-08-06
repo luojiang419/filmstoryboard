@@ -79,10 +79,15 @@ class ScriptMultimodalAnalysisService {
       analysis.cameraMovement.trim().isEmpty ? 0.62 : 0.74,
     );
     add('scene', analysis.scene, 0.82);
+    add(
+      'productStyling',
+      wardrobeSlotsFromText(_analysisWardrobeText(analysis)),
+      0.76,
+    );
     add('composition', analysis.composition, 0.80);
     add('cameraAngle', analysis.cameraAngle, 0.78);
     add('lightingMood', analysis.lightingMood, 0.80);
-    add('colorPalette', analysis.colorPalette, 0.78);
+    add('colorPalette', colorStyleFromPaletteText(analysis.colorPalette), 0.78);
     add('visualFocus', analysis.visualFocus, 0.80);
     add('transitionHint', analysis.transitionHint, 0.70);
     add('movementTrend', analysis.movementTrend, 0.86);
@@ -178,4 +183,333 @@ class ScriptMultimodalAnalysisService {
 
   static bool _containsAny(String value, List<String> terms) =>
       terms.any(value.contains);
+
+  static String colorStyleFromPaletteText(String value) {
+    final normalized = value.replaceAll(RegExp(r'\s+'), '').trim();
+    if (normalized.isEmpty) return '';
+    final sourceSegments = normalized
+        .replaceAll(RegExp(r'(?:搭配|配以|配合|伴随|加入|加上|点缀|衬托|以及)'), '，')
+        .split(RegExp(r'[，,；;。.\n]+'));
+    final cleanedSegments = <String>[];
+    for (final segment in sourceSegments) {
+      final cleaned = _colorStyleSegment(segment);
+      if (cleaned.isEmpty || cleanedSegments.contains(cleaned)) {
+        continue;
+      }
+      cleanedSegments.add(cleaned);
+    }
+    return cleanedSegments.take(3).join('，');
+  }
+
+  static String _colorStyleSegment(String value) {
+    final segment = value.trim();
+    if (segment.isEmpty) return '';
+    final hasWardrobeLeak = _containsAny(segment, _wardrobeColorLeakTerms);
+    final hasObjectLeak = _containsAny(segment, _objectColorLeakTerms);
+    final hasStyleSignal = _containsAny(segment, _colorStyleSignalTerms);
+    final stylePhrase = _extractStylePhrase(segment);
+    if (stylePhrase.isNotEmpty) {
+      return stylePhrase;
+    }
+    if (hasWardrobeLeak) {
+      return '';
+    }
+    if (hasObjectLeak) {
+      final colorToken = _extractBroadColorToken(segment);
+      return colorToken.isEmpty ? '' : _ensureColorStyleSuffix(colorToken);
+    }
+    if (!hasStyleSignal && !_containsAny(segment, _broadColorTerms)) {
+      return '';
+    }
+    return _stripColorLeakTerms(segment);
+  }
+
+  static String _extractStylePhrase(String value) {
+    final matches = [
+      ...RegExp(
+        r'(?:低饱和|高饱和)?(?:冷|暖)?(?:大地|中性|高级灰|黑白|[冷暖深浅暗亮淡米灰蓝绿白黑棕褐金银红橙黄粉紫]{2,})(?:色调|调性|色系)',
+      ).allMatches(value),
+      ...RegExp(
+        r'(?:黑白|高|低|明暗|冷暖|深色|浅色|沉稳深色|柔和)?(?:高反差|低反差|对比|反差)',
+      ).allMatches(value),
+      ...RegExp(
+        r'(?:复古|胶片|商业|电影|柔和|浓郁|清爽|通透|沉稳|明快|冷调|暖调|高级灰)(?:风格|质感|氛围|调性|感)?',
+      ).allMatches(value),
+    ];
+    var best = '';
+    for (final match in matches) {
+      final candidate = _stripColorLeakTerms(match.group(0) ?? '');
+      if (candidate.length > best.length) {
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  static String _extractBroadColorToken(String value) {
+    final matches = RegExp(
+      r'(?:冷|暖|深|浅|暗|亮|淡|米|灰|蓝|绿|白|黑|棕|褐|金|银|红|橙|黄|粉|紫){2,}(?:色|调|系)?',
+    ).allMatches(value);
+    var best = '';
+    for (final match in matches) {
+      final candidate = match.group(0) ?? '';
+      if (candidate.length > best.length) {
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  static String _ensureColorStyleSuffix(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty ||
+        trimmed.endsWith('调') ||
+        trimmed.endsWith('色调') ||
+        trimmed.endsWith('调性') ||
+        trimmed.endsWith('色系') ||
+        trimmed.endsWith('风格')) {
+      return trimmed;
+    }
+    return '$trimmed调';
+  }
+
+  static String _stripColorLeakTerms(String value) {
+    var result = value.trim();
+    final terms = [..._wardrobeColorLeakTerms, ..._objectColorLeakTerms]
+      ..sort((first, second) => second.length.compareTo(first.length));
+    for (final term in terms) {
+      result = result.replaceAll(term, '');
+    }
+    return result
+        .replaceAll(RegExp(r'(?:为底|作为底色|融合为底|提供|形成|呈现|营造|构成|带来)'), '')
+        .replaceAll(RegExp(r'[的之]+$'), '')
+        .replaceAll(RegExp(r'\s+'), '')
+        .trim();
+  }
+
+  static const _wardrobeColorLeakTerms = [
+    '服装',
+    '穿搭',
+    '造型',
+    '上装',
+    '下装',
+    '外套',
+    '夹克',
+    '西装',
+    '衬衫',
+    'T恤',
+    't恤',
+    '卫衣',
+    '毛衣',
+    '针织',
+    '背心',
+    '上衣',
+    '大衣',
+    '风衣',
+    '马甲',
+    '裤',
+    '长裤',
+    '短裤',
+    '牛仔裤',
+    '半裙',
+    '短裙',
+    '长裙',
+    '裙装',
+    '裙子',
+    '衣袖',
+    '袖口',
+    '袖',
+    '鞋',
+    '靴',
+    '包',
+    '帽',
+    '眼镜',
+    '墨镜',
+    '项链',
+    '耳环',
+    '耳饰',
+    '银饰',
+    '手链',
+    '手表',
+    '戒指',
+    '腰带',
+    '围巾',
+    '领带',
+    '发饰',
+    '配饰',
+    '首饰',
+    '皮革',
+    '皮质',
+    '皮夹克',
+    '条纹',
+    '肤色',
+    '皮肤',
+    '头发',
+    '发色',
+    '唇色',
+    '指甲',
+  ];
+
+  static const _objectColorLeakTerms = [
+    '石墙',
+    '砖墙',
+    '墙面',
+    '墙',
+    '地面',
+    '大理石',
+    '铁艺',
+    '木架',
+    '桌面',
+    '桌',
+    '椅',
+    '门',
+    '窗',
+    '背景',
+    '天花',
+    '灯具',
+    '灯',
+    '车辆',
+    '车',
+    '建筑',
+    '植物',
+    '花瓶',
+    '道具',
+    '产品',
+    'Logo',
+    'logo',
+  ];
+
+  static const _colorStyleSignalTerms = [
+    '整体',
+    '色彩',
+    '色调',
+    '调性',
+    '色系',
+    '风格',
+    '质感',
+    '氛围',
+    '冷调',
+    '暖调',
+    '冷暖',
+    '高调',
+    '低调',
+    '高反差',
+    '低反差',
+    '对比',
+    '饱和',
+    '低饱和',
+    '高饱和',
+    '复古',
+    '商业',
+    '胶片',
+    '电影',
+    '高级灰',
+    '大地',
+    '中性',
+    '柔和',
+    '浓郁',
+    '清爽',
+    '通透',
+    '沉稳',
+    '明快',
+  ];
+
+  static const _broadColorTerms = [
+    '冷',
+    '暖',
+    '黑',
+    '白',
+    '灰',
+    '蓝',
+    '绿',
+    '红',
+    '橙',
+    '黄',
+    '金',
+    '银',
+    '棕',
+    '褐',
+    '米',
+    '粉',
+    '紫',
+  ];
+
+  static String wardrobeSlotsFromText(String value) {
+    final text = value.trim();
+    if (text.isEmpty) return '';
+    final slots = <String>[];
+    void addSlot(String slot, List<String> terms) {
+      if (terms.any(text.contains)) {
+        slots.add(slot);
+      }
+    }
+
+    addSlot('上装', const [
+      '上装',
+      '外套',
+      '夹克',
+      '西装',
+      '衬衫',
+      'T恤',
+      't恤',
+      '卫衣',
+      '毛衣',
+      '针织',
+      '背心',
+      '上衣',
+      '大衣',
+      '风衣',
+      '马甲',
+    ]);
+    addSlot('下装', const [
+      '下装',
+      '裤',
+      '短裤',
+      '长裤',
+      '牛仔裤',
+      '半裙',
+      '短裙',
+      '长裙',
+      '裙装',
+      '裙子',
+    ]);
+    addSlot('鞋子', const [
+      '鞋',
+      '靴',
+      '运动鞋',
+      '高跟鞋',
+      '皮鞋',
+      '凉鞋',
+      '拖鞋',
+      '帆布鞋',
+      '乐福鞋',
+    ]);
+    addSlot('配饰', const [
+      '配饰',
+      '帽',
+      '包',
+      '眼镜',
+      '墨镜',
+      '项链',
+      '耳环',
+      '耳饰',
+      '手链',
+      '手表',
+      '戒指',
+      '腰带',
+      '围巾',
+      '领带',
+      '发饰',
+    ]);
+    return slots.isEmpty ? '' : '${slots.join('/')}/';
+  }
+
+  static String _analysisWardrobeText(VisionImageAnalysis analysis) => [
+    analysis.caption,
+    analysis.detail,
+    analysis.people,
+    analysis.props,
+    analysis.bodyAction,
+    analysis.visualFocus,
+  ].join(' ');
 }

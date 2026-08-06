@@ -151,6 +151,8 @@ class ShootingScriptAnalysisController
   Future<void> analyzeAll({
     bool overwriteExisting = false,
     bool onlyFailed = false,
+    Map<String, String> imagePathOverrides = const {},
+    bool requireImageOverrides = false,
   }) async {
     final script = _shootingScriptController.value.selectedScript;
     final shots = _shootingScriptController.value.shots;
@@ -194,6 +196,8 @@ class ShootingScriptAnalysisController
           script: script,
           shot: shot,
           overwriteExisting: overwriteExisting,
+          imagePathOverrides: imagePathOverrides,
+          requireImageOverrides: requireImageOverrides,
         );
         processed++;
         if (!_disposed) {
@@ -224,6 +228,8 @@ class ShootingScriptAnalysisController
   Future<void> analyzeShot(
     String shotId, {
     bool overwriteExisting = false,
+    Map<String, String> imagePathOverrides = const {},
+    bool requireImageOverrides = false,
   }) async {
     final script = _shootingScriptController.value.selectedScript;
     final shot = _shootingScriptController.value.shots
@@ -239,6 +245,8 @@ class ShootingScriptAnalysisController
       script: script,
       shot: shot,
       overwriteExisting: overwriteExisting,
+      imagePathOverrides: imagePathOverrides,
+      requireImageOverrides: requireImageOverrides,
     );
     if (!_disposed) {
       value = value.copyWith(
@@ -257,15 +265,23 @@ class ShootingScriptAnalysisController
     required ShootingScript script,
     required ScriptShot shot,
     required bool overwriteExisting,
+    required Map<String, String> imagePathOverrides,
+    required bool requireImageOverrides,
   }) async {
     final now = DateTime.now().toUtc();
     final existing = _repository.getAnalysis(shot.id);
-    final imagePath = shot.framePath.trim();
-    if (imagePath.isEmpty || !File(imagePath).existsSync()) {
+    final imageFile = _analysisImageFileForShot(
+      shot,
+      imagePathOverrides: imagePathOverrides,
+      requireImageOverrides: requireImageOverrides,
+    );
+    if (imageFile == null) {
       _saveFailure(
         shot: shot,
         existing: existing,
-        message: '缺少镜头画面，无法执行多模态解析',
+        message: requireImageOverrides
+            ? '缺少复刻分镜图，无法执行分镜解析'
+            : '缺少镜头画面，无法执行多模态解析',
         now: now,
       );
       return;
@@ -275,16 +291,17 @@ class ShootingScriptAnalysisController
       final shotIndex = orderedShots.indexWhere((item) => item.id == shot.id);
       File? adjacentFile(int index) {
         if (index < 0 || index >= orderedShots.length) return null;
-        final path = orderedShots[index].framePath.trim();
-        if (path.isEmpty) return null;
-        final file = File(path);
-        return file.existsSync() ? file : null;
+        return _analysisImageFileForShot(
+          orderedShots[index],
+          imagePathOverrides: imagePathOverrides,
+          requireImageOverrides: requireImageOverrides,
+        );
       }
 
       final patch = await _analysisService.analyzeShot(
         settings: _settingsController.value,
         shot: shot,
-        imageFile: File(imagePath),
+        imageFile: imageFile,
         previousImageFile: adjacentFile(shotIndex - 1),
         nextImageFile: adjacentFile(shotIndex + 1),
       );
@@ -339,6 +356,22 @@ class ShootingScriptAnalysisController
     } catch (error) {
       _saveFailure(shot: shot, existing: existing, message: '$error', now: now);
     }
+  }
+
+  static File? _analysisImageFileForShot(
+    ScriptShot shot, {
+    required Map<String, String> imagePathOverrides,
+    required bool requireImageOverrides,
+  }) {
+    final overridePath = imagePathOverrides[shot.id]?.trim() ?? '';
+    final path = overridePath.isNotEmpty
+        ? overridePath
+        : requireImageOverrides
+        ? ''
+        : shot.framePath.trim();
+    if (path.isEmpty) return null;
+    final file = File(path);
+    return file.existsSync() ? file : null;
   }
 
   void _saveFailure({
@@ -470,11 +503,36 @@ class ShootingScriptAnalysisController
     String current,
     String incoming,
   ) {
+    if (field == 'colorPalette') {
+      return _shouldApplyColorPaletteWithoutOverwrite(current, incoming);
+    }
     if (field == 'continuesFromPrevious' || field == 'continuesToNext') {
       return current.trim().toLowerCase() != 'true' &&
           incoming.trim().toLowerCase() == 'true';
     }
     return current.trim().isEmpty;
+  }
+
+  static bool _shouldApplyColorPaletteWithoutOverwrite(
+    String current,
+    String incoming,
+  ) {
+    final currentText = current.trim();
+    final incomingStyle =
+        ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+          incoming,
+        ).trim();
+    if (currentText.isEmpty) {
+      return incomingStyle.isNotEmpty;
+    }
+    if (incomingStyle.isEmpty) {
+      return false;
+    }
+    final currentStyle =
+        ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+          currentText,
+        ).trim();
+    return currentStyle.isNotEmpty && currentStyle != currentText;
   }
 
   static String _fieldValue(ScriptShot shot, String field) => switch (field) {

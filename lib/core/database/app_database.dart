@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 15;
+  static const currentSchemaVersion = 16;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -837,6 +837,7 @@ class AppDatabase {
             shot_id TEXT NOT NULL UNIQUE REFERENCES script_shots(id) ON DELETE CASCADE,
             source_prompt TEXT NOT NULL DEFAULT '',
             kling_prompt TEXT NOT NULL DEFAULT '',
+            h3_prompt TEXT NOT NULL DEFAULT '',
             edited_prompt TEXT NOT NULL DEFAULT '',
             prompt_mode TEXT NOT NULL DEFAULT 'klingOptimized',
             updated_at TEXT NOT NULL
@@ -892,6 +893,10 @@ class AppDatabase {
         "WHERE start_end_pairs_json = '';",
       );
       _database.execute('PRAGMA user_version = 15;');
+    }
+    if (version < 16) {
+      _ensureTextColumn('video_generation_drafts', 'h3_prompt');
+      _database.execute('PRAGMA user_version = 16;');
     }
   }
 

@@ -1,4 +1,4 @@
-enum VideoPromptMode { klingOptimized, original, edited }
+enum VideoPromptMode { klingOptimized, h3Optimized, original, edited }
 
 enum VideoGenerationTaskStatus {
   draft,
@@ -84,6 +84,7 @@ class VideoGenerationDraft {
     required this.shotId,
     this.sourcePrompt = '',
     this.klingPrompt = '',
+    this.h3Prompt = '',
     this.editedPrompt = '',
     this.promptMode = VideoPromptMode.klingOptimized,
     required this.updatedAt,
@@ -94,6 +95,7 @@ class VideoGenerationDraft {
   final String shotId;
   final String sourcePrompt;
   final String klingPrompt;
+  final String h3Prompt;
   final String editedPrompt;
   final VideoPromptMode promptMode;
   final DateTime updatedAt;
@@ -102,6 +104,7 @@ class VideoGenerationDraft {
     VideoPromptMode.original => sourcePrompt,
     VideoPromptMode.edited => editedPrompt,
     VideoPromptMode.klingOptimized => klingPrompt,
+    VideoPromptMode.h3Optimized => h3Prompt,
   };
 }
 

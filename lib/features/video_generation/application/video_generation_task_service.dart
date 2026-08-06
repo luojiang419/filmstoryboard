@@ -15,12 +15,14 @@ class VideoGenerationSubmission {
   const VideoGenerationSubmission({
     required this.task,
     required this.sourceImagePath,
+    this.referenceImagePaths = const [],
     this.tailImagePath = '',
     required this.outputFile,
   });
 
   final VideoGenerationTask task;
   final String sourceImagePath;
+  final List<String> referenceImagePaths;
   final String tailImagePath;
   final File outputFile;
 }
@@ -33,7 +35,7 @@ class VideoGenerationTaskService {
     VideoGenerationDelay? delay,
     void Function(VideoGenerationTask task)? onTaskChanged,
     this.pollInterval = const Duration(seconds: 3),
-    this.pollTimeout = const Duration(minutes: 15),
+    Duration? pollTimeout,
     VideoGenerationApiConfig? videoApiConfig,
     MiniMaxVideoApiService? videoApiService,
   }) : _repository = repository,
@@ -42,7 +44,12 @@ class VideoGenerationTaskService {
        _delay = delay ?? Future<void>.delayed,
        _onTaskChanged = onTaskChanged,
        _videoApiConfig = videoApiConfig,
-       _videoApiService = videoApiService ?? MiniMaxVideoApiService();
+       _videoApiService = videoApiService ?? MiniMaxVideoApiService(),
+       pollTimeout =
+           pollTimeout ??
+           (videoApiConfig?.isHttpApi == true
+               ? localVideoApiPollTimeout
+               : defaultVideoGenerationPollTimeout);
 
   final VideoGenerationRepository _repository;
   final KlingCliService _cliService;
@@ -112,6 +119,7 @@ class VideoGenerationTaskService {
       final submissionResult = await _cliService.submitImageToVideo(
         model: current.model,
         imagePath: submission.sourceImagePath,
+        referenceImagePaths: submission.referenceImagePaths,
         tailImagePath: submission.tailImagePath,
         parameters: {
           ...current.parameters,
@@ -147,19 +155,33 @@ class VideoGenerationTaskService {
     VideoGenerationApiConfig config, {
     bool Function()? isCanceled,
   }) async {
-    final task = submission.task;
-    var current = task.copyWith(
+    final current = await _submitVideoApiOnly(
+      submission,
+      config,
+      isCanceled: isCanceled,
+    );
+    if (current.status.isTerminal) return current;
+    return _pollExistingVideoApi(
+      current,
+      config,
+      outputFile: submission.outputFile,
+      isCanceled: isCanceled,
+    );
+  }
+
+  Future<VideoGenerationTask> _submitVideoApiOnly(
+    VideoGenerationSubmission submission,
+    VideoGenerationApiConfig config, {
+    bool Function()? isCanceled,
+  }) async {
+    var current = submission.task.copyWith(
       status: VideoGenerationTaskStatus.submitting,
       localPath: submission.outputFile.path,
       updatedAt: DateTime.now().toUtc(),
     );
     _upsertTask(current);
     if (isCanceled?.call() == true) {
-      current = current.copyWith(
-        status: VideoGenerationTaskStatus.canceled,
-        updatedAt: DateTime.now().toUtc(),
-        completedAt: DateTime.now().toUtc(),
-      );
+      current = _canceledTask(current);
       _upsertTask(current);
       return current;
     }
@@ -167,6 +189,7 @@ class VideoGenerationTaskService {
       final submissionResult = await _videoApiService.submitImageToVideo(
         config: config,
         imagePath: submission.sourceImagePath,
+        referenceImagePaths: submission.referenceImagePaths,
         tailImagePath: submission.tailImagePath,
         parameters: {
           ...current.parameters,
@@ -180,12 +203,7 @@ class VideoGenerationTaskService {
         updatedAt: DateTime.now().toUtc(),
       );
       _upsertTask(current);
-      return _pollExistingVideoApi(
-        current,
-        config,
-        outputFile: submission.outputFile,
-        isCanceled: isCanceled,
-      );
+      return current;
     } catch (error) {
       current = current.copyWith(
         status: VideoGenerationTaskStatus.failed,
@@ -208,11 +226,8 @@ class VideoGenerationTaskService {
     final deadline = DateTime.now().toUtc().add(pollTimeout);
     while (DateTime.now().toUtc().isBefore(deadline)) {
       if (isCanceled?.call() == true) {
-        current = current.copyWith(
-          status: VideoGenerationTaskStatus.canceled,
-          updatedAt: DateTime.now().toUtc(),
-          completedAt: DateTime.now().toUtc(),
-        );
+        await _cancelRemoteVideoApiTask(config, current.generationId);
+        current = _canceledTask(current);
         _upsertTask(current);
         return current;
       }
@@ -370,12 +385,64 @@ class VideoGenerationTaskService {
   Future<List<VideoGenerationTask>> submitBatch(
     List<VideoGenerationSubmission> submissions, {
     bool Function()? isCanceled,
+    bool Function(String taskId)? isTaskCanceled,
     int? concurrency,
-  }) => _runWithConcurrency(
-    submissions,
-    concurrency ?? defaultVideoGenerationBatchConcurrency,
-    (submission) => submitAndTrack(submission, isCanceled: isCanceled),
-  );
+  }) {
+    final videoApiConfig = _videoApiConfig;
+    if (videoApiConfig != null &&
+        videoApiConfig.isHttpApi &&
+        videoApiConfig.baseUrl.trim().isNotEmpty) {
+      return _submitVideoApiBatchAndTrack(
+        submissions,
+        videoApiConfig,
+        isCanceled: isCanceled,
+        isTaskCanceled: isTaskCanceled,
+      );
+    }
+    return _runWithConcurrency(
+      submissions,
+      concurrency ?? defaultVideoGenerationBatchConcurrency,
+      (submission) => submitAndTrack(
+        submission,
+        isCanceled: () =>
+            isCanceled?.call() == true ||
+            isTaskCanceled?.call(submission.task.id) == true,
+      ),
+    );
+  }
+
+  Future<List<VideoGenerationTask>> _submitVideoApiBatchAndTrack(
+    List<VideoGenerationSubmission> submissions,
+    VideoGenerationApiConfig config, {
+    bool Function()? isCanceled,
+    bool Function(String taskId)? isTaskCanceled,
+  }) async {
+    final submitted = <({VideoGenerationTask task, File outputFile})>[];
+    for (final submission in submissions) {
+      final current = await _submitVideoApiOnly(
+        submission,
+        config,
+        isCanceled: () =>
+            isCanceled?.call() == true ||
+            isTaskCanceled?.call(submission.task.id) == true,
+      );
+      submitted.add((task: current, outputFile: submission.outputFile));
+    }
+    if (submitted.isEmpty) return const [];
+    return _runWithConcurrency(submitted, submitted.length, (entry) {
+      final task = entry.task;
+      if (task.status.isTerminal || task.generationId.trim().isEmpty) {
+        return Future.value(task);
+      }
+      return _pollExistingVideoApi(
+        task,
+        config,
+        outputFile: entry.outputFile,
+        isCanceled: () =>
+            isCanceled?.call() == true || isTaskCanceled?.call(task.id) == true,
+      );
+    });
+  }
 
   Future<List<VideoGenerationTask>> resumePending({
     required File Function(VideoGenerationTask task) outputForTask,
@@ -400,6 +467,28 @@ class VideoGenerationTaskService {
   void _upsertTask(VideoGenerationTask task) {
     _repository.upsertTask(task);
     _onTaskChanged?.call(task);
+  }
+
+  VideoGenerationTask _canceledTask(VideoGenerationTask task) => task.copyWith(
+    status: VideoGenerationTaskStatus.canceled,
+    errorMessage: '',
+    updatedAt: DateTime.now().toUtc(),
+    completedAt: DateTime.now().toUtc(),
+  );
+
+  Future<void> _cancelRemoteVideoApiTask(
+    VideoGenerationApiConfig config,
+    String generationId,
+  ) async {
+    if (generationId.trim().isEmpty) return;
+    try {
+      await _videoApiService.cancelTask(
+        config: config,
+        generationId: generationId,
+      );
+    } catch (_) {
+      // 本地取消要立即响应；远端若已完成或不可达，后续查询/恢复再处理。
+    }
   }
 
   Future<VideoGenerationTask> _applyQueryResult(
@@ -485,3 +574,5 @@ class VideoGenerationTaskService {
 const localVideoApiBatchConcurrency = 1;
 const klingCliBatchConcurrency = 2;
 const defaultVideoGenerationBatchConcurrency = klingCliBatchConcurrency;
+const defaultVideoGenerationPollTimeout = Duration(minutes: 15);
+const localVideoApiPollTimeout = Duration(hours: 2);

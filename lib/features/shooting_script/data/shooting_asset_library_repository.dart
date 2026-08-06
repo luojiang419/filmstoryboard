@@ -119,6 +119,32 @@ class ShootingAssetLibraryRepository {
     ]);
   }
 
+  Future<ShootingAssetLibraryItem?> replaceItemFile({
+    required String id,
+    required String sourcePath,
+    required ReplicateAssetType type,
+  }) async {
+    final existing = listItems().where((item) => item.id == id).firstOrNull;
+    if (existing == null) {
+      return null;
+    }
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      return null;
+    }
+    final directory = await _libraryDirectory();
+    final target = await _uniqueFile(directory, p.basename(source.path));
+    await source.copy(target.path);
+    final updated = existing.copyWith(
+      type: type,
+      path: target.path,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _upsertItems([updated]);
+    await _deleteManagedFile(existing.path);
+    return updated;
+  }
+
   Future<void> deleteItem(String id) async {
     final removed = listItems().where((item) => item.id == id).toList();
     _database.executeStatement(

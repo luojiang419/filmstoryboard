@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -11,6 +12,7 @@ import '../../../core/services/workspace_directories.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
 import '../../shooting_script/application/script_asset_binding_controller.dart';
+import '../../shooting_script/data/script_multimodal_analysis_service.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/data/shooting_script_workflow_repository.dart';
@@ -21,6 +23,7 @@ import '../../storyboard/domain/image_generation_provider_resolver.dart';
 import '../../story_design/domain/gemini_storyboard_prompt.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../../video_generation/domain/video_action_sequence.dart';
+import '../../video_generation/domain/h3_video_prompt_adapter.dart';
 import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
@@ -134,6 +137,18 @@ class ReplicateImageExportResult {
   final int missingCount;
 }
 
+class _ComposePromptModelRule {
+  const _ComposePromptModelRule({
+    required this.format,
+    required this.label,
+    required this.maxConcurrent,
+  });
+
+  final ShotPromptFormat format;
+  final String label;
+  final int maxConcurrent;
+}
+
 class ReplicateController extends ValueNotifier<ReplicateState> {
   ReplicateController({
     required ReplicateRepository repository,
@@ -167,6 +182,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }
 
   static const promptModel = 'Seedance 2';
+  static const _promptRulesVersion = 3;
+  static const _visionPromptImageMaxBytes = 3 * 1024 * 1024;
+  static const _visionPromptImageMaxDimension = 1280;
+  static const defaultComposePromptConcurrency = 4;
+  static const klingComposePromptConcurrency = 2;
   static const defaultBatchReplicateConcurrency = 1000;
   static const defaultBatchReplicateStagger = Duration(milliseconds: 20);
 
@@ -250,6 +270,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       message: '已保存一键复刻默认生成参数',
     );
   }
+
+  String get composePromptModelLabel => _composePromptModelRule.label;
+
+  int get composePromptConcurrency => _composePromptModelRule.maxConcurrent;
 
   void refresh() => _restoreFromShootingScript();
 
@@ -536,7 +560,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       isBusy: true,
     );
     try {
-      final result = await _generateReferenceImage(prompt, run.id);
+      final result = await _generateReferenceImage(prompt, run);
       if (_disposed) {
         return null;
       }
@@ -596,7 +620,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     try {
       final result = await _generateReferenceImage(
         original.description.trim(),
-        run.id,
+        run,
       );
       if (_disposed) return null;
       asset = asset.copyWith(
@@ -1249,12 +1273,13 @@ $automaticPrompt
     }
   }
 
-  Future<void> composeAllPrompts() async {
+  Future<void> composeAllPrompts({int? maxConcurrent}) async {
     final run = value.run;
     final shots = startEndFrameModeEnabled
         ? startEndRows
         : value.confirmedShots;
     final assets = _readyAssets(value.assets);
+    final modelRule = _composePromptModelRule;
     if (run == null || shots.isEmpty) {
       value = value.copyWith(errorMessage: '需要至少一个可用镜头', message: '');
       return;
@@ -1273,37 +1298,61 @@ $automaticPrompt
       run: running,
       isBusy: true,
       prompts: const [],
-      message: '正在按已解析脚本字段合成 0/${shots.length} 个提示词…',
+      message: '正在按${modelRule.label}规则并发合成 0/${shots.length} 个提示词…',
       errorMessage: '',
     );
-    final prompts = <ShotPrompt>[];
+    final prompts = List<ShotPrompt?>.filled(shots.length, null);
     var completed = 0;
+    var succeeded = 0;
+    var nextIndex = 0;
     final sequences = startEndFrameModeEnabled
         ? startEndSequencesFor(value.confirmedShots)
         : const <VideoActionSequence>[];
-    for (var index = 0; index < shots.length; index++) {
-      final shot = shots[index];
-      final prompt = _composePrompt(
-        run: running,
-        shot: shot,
-        assets: assets,
-        actionSequence: _actionSequenceForPrompt(shot, sequences),
-        previousShot: index > 0 ? shots[index - 1] : null,
-        nextShot: index + 1 < shots.length ? shots[index + 1] : null,
-      );
-      prompts.add(prompt);
-      if (prompt.status == ProcessingStatus.completed) {
-        completed++;
-      }
-      if (!_disposed) {
-        value = value.copyWith(
-          prompts: [...prompts],
-          message: '正在按已解析脚本字段合成 ${prompts.length}/${shots.length} 个提示词…',
+    final requestedConcurrency = maxConcurrent ?? modelRule.maxConcurrent;
+    final concurrency = requestedConcurrency.clamp(1, shots.length).toInt();
+
+    Future<void> worker() async {
+      while (true) {
+        final index = nextIndex;
+        if (index >= shots.length) return;
+        nextIndex++;
+        final shot = shots[index];
+        final actionSequence = _actionSequenceForPrompt(shot, sequences);
+        var prompt = _composePrompt(
+          run: running,
+          shot: shot,
+          assets: assets,
+          actionSequence: actionSequence,
+          previousShot: index > 0 ? shots[index - 1] : null,
+          nextShot: index + 1 < shots.length ? shots[index + 1] : null,
+          selectedFormat: modelRule.format,
         );
+        prompt = await _refineSelectedPromptWithVision(
+          prompt: prompt,
+          shot: shot,
+          assets: assets,
+          actionSequence: actionSequence,
+        );
+        prompts[index] = prompt;
+        completed++;
+        if (prompt.status == ProcessingStatus.completed) {
+          succeeded++;
+        }
+        if (!_disposed) {
+          value = value.copyWith(
+            prompts: [for (final item in prompts) ?item],
+            message:
+                '正在按${modelRule.label}规则并发合成提示词 '
+                '$completed/${shots.length}，成功 $succeeded 个…',
+          );
+        }
       }
     }
-    _repository.replacePrompts(run.id, prompts);
-    final failed = prompts.length - completed;
+
+    await Future.wait(List.generate(concurrency, (_) => worker()));
+    final finishedPrompts = [for (final prompt in prompts) ?prompt];
+    _repository.replacePrompts(run.id, finishedPrompts);
+    final failed = finishedPrompts.length - succeeded;
     final finished = running.copyWith(
       status: failed == 0
           ? ProcessingStatus.completed
@@ -1311,19 +1360,21 @@ $automaticPrompt
       composePromptsStatus: failed == 0
           ? ProcessingStatus.completed
           : ProcessingStatus.partial,
-      completedCount: completed,
-      totalCount: prompts.length,
+      completedCount: succeeded,
+      totalCount: finishedPrompts.length,
       errorMessage: failed == 0 ? '' : '$failed 个镜头提示词生成失败',
       updatedAt: DateTime.now().toUtc(),
     );
     _repository.upsertRun(finished);
-    _syncScriptPromptFields(prompts);
+    _syncScriptPromptFields(finishedPrompts);
     if (!_disposed) {
       value = value.copyWith(
         run: finished,
-        prompts: prompts,
+        prompts: finishedPrompts,
         isBusy: false,
-        message: failed == 0 ? '已生成 ${prompts.length} 个即梦 / 可灵双版本提示词' : '',
+        message: failed == 0
+            ? '已按${modelRule.label}规则并发生成 ${finishedPrompts.length} 个提示词'
+            : '',
         errorMessage: finished.errorMessage,
       );
     }
@@ -1356,6 +1407,7 @@ $automaticPrompt
       nextShot: shotIndex >= 0 && shotIndex + 1 < orderedShots.length
           ? orderedShots[shotIndex + 1]
           : null,
+      selectedFormat: _composePromptModelRule.format,
     );
     _repository.upsertPrompt(updated);
     final prompts = [...value.prompts]..[index] = updated;
@@ -1429,7 +1481,7 @@ $automaticPrompt
     _updatePromptProgress(
       run,
       prompts,
-      message: format == ShotPromptFormat.sd2 ? '已选择即梦规则版' : '已选择可灵',
+      message: _promptFormatSelectedMessage(format),
     );
     _syncScriptPromptFields(prompts);
   }
@@ -1790,48 +1842,81 @@ $automaticPrompt
     List<ScriptShot> actionSequence = const [],
     ScriptShot? previousShot,
     ScriptShot? nextShot,
+    required ShotPromptFormat selectedFormat,
   }) {
     try {
+      final promptShot = _shotWithoutSourceVisualContent(shot);
+      final promptActionSequence = actionSequence
+          .map(_shotWithoutSourceVisualContent)
+          .toList(growable: false);
+      final promptPreviousShot = previousShot == null
+          ? null
+          : _shotWithoutSourceVisualContent(previousShot);
+      final promptNextShot = nextShot == null
+          ? null
+          : _shotWithoutSourceVisualContent(nextShot);
       final linkedAssets = _confirmedScriptAssets(shot.id);
       final result = linkedAssets.isNotEmpty
           ? _promptService.generateFromScriptAssets(
-              shot: shot,
+              shot: promptShot,
               assets: linkedAssets,
               globalStyle: run.globalStyle,
               constraints: run.constraints,
-              previousShot: previousShot,
-              nextShot: nextShot,
+              previousShot: promptPreviousShot,
+              nextShot: promptNextShot,
             )
           : _promptService.generate(
-              shot: shot,
+              shot: promptShot,
               assets: assets,
               globalStyle: run.globalStyle,
               constraints: run.constraints,
-              previousShot: previousShot,
-              nextShot: nextShot,
+              previousShot: promptPreviousShot,
+              nextShot: promptNextShot,
             );
       final klingPrompt = const KlingVideoPromptAdapter().adapt(
-        shot,
+        promptShot,
         sourcePrompt: '',
-        actionSequence: actionSequence,
-        availableImageReferences: actionSequence.length > 1 ? 2 : 1,
+        actionSequence: promptActionSequence,
+        availableImageReferences: promptActionSequence.length > 1 ? 2 : 1,
         globalStyle: run.globalStyle,
         constraints: run.constraints,
       );
+      final h3Prompt = const H3VideoPromptAdapter().adapt(
+        promptShot,
+        sourcePrompt: '',
+        actionSequence: promptActionSequence,
+        availableImageReferences: promptActionSequence.length > 1 ? 2 : 1,
+        globalStyle: run.globalStyle,
+        constraints: run.constraints,
+        referenceDefinitions: linkedAssets.isNotEmpty
+            ? _h3ReferenceDefinitionsFromScriptAssets(linkedAssets)
+            : _h3ReferenceDefinitionsFromReplicateAssets(assets),
+      );
+      final selectedPrompt = switch (selectedFormat) {
+        ShotPromptFormat.h3 => h3Prompt,
+        ShotPromptFormat.kling => klingPrompt,
+        ShotPromptFormat.sd2 => result.prompt,
+      };
       return ShotPrompt(
         id: _promptId(run.id, shot.id),
         runId: run.id,
         shotNumber: shot.shotNumber,
         scriptShotId: shot.id,
         assetIds: result.assetIds,
-        prompt: klingPrompt,
+        prompt: selectedPrompt,
         model: promptModel,
         rawResponse: jsonEncode({
           'warnings': result.warnings,
+          'promptRulesVersion': _promptRulesVersion,
           'shotFingerprint': _shotFingerprint(shot),
           'sd2Prompt': result.prompt,
           'klingPrompt': klingPrompt,
-          'selectedPromptFormat': ShotPromptFormat.kling.name,
+          'h3Prompt': h3Prompt,
+          'selectedPromptFormat': selectedFormat.name,
+          'videoModelPromptRule': {
+            'format': selectedFormat.name,
+            'label': _promptFormatLabel(selectedFormat),
+          },
         }),
         status: ProcessingStatus.completed,
         errorMessage: '',
@@ -1852,6 +1937,330 @@ $automaticPrompt
         updatedAt: DateTime.now().toUtc(),
       );
     }
+  }
+
+  Future<ShotPrompt> _refineSelectedPromptWithVision({
+    required ShotPrompt prompt,
+    required ScriptShot shot,
+    required List<ReplicateAsset> assets,
+    required List<ScriptShot> actionSequence,
+  }) async {
+    if (prompt.status != ProcessingStatus.completed) return prompt;
+    final storyboardImageFiles = _replicatedPromptImageFiles(
+      shot: shot,
+      actionSequence: actionSequence,
+    );
+    final assetReferences = _visionPromptAssetReferences(
+      shot.id,
+      fallbackAssets: assets,
+      selectedAssetIds: prompt.assetIds.toSet(),
+    );
+    final imageFiles = [
+      ...storyboardImageFiles,
+      for (final reference in assetReferences) File(reference.path),
+    ];
+    if (imageFiles.isEmpty) return prompt;
+    final format = promptFormatFor(prompt);
+    final raw = _promptRaw(prompt);
+    final draft = '${raw[_promptKey(format)] ?? prompt.prompt}'.trim();
+    if (draft.isEmpty) return prompt;
+    final preparedDirectory = _visionPromptImageDirectory(prompt.id);
+    try {
+      final preparedImageFiles = await _prepareVisionPromptImages(
+        imageFiles,
+        preparedDirectory,
+      );
+      final refined = await _visionService.complete(
+        settings: _settingsController.value,
+        imageFiles: preparedImageFiles,
+        maxTokens: 2200,
+        allowThinking: false,
+        prompt: _visionPromptSynthesisPrompt(
+          format: format,
+          shot: shot,
+          draft: draft,
+          storyboardImageCount: storyboardImageFiles.length,
+          assetReferences: assetReferences,
+        ),
+      );
+      final normalized = _normalizeVisionPromptResult(refined);
+      if (normalized.isEmpty) return prompt;
+      raw[_promptKey(format)] = normalized;
+      raw['selectedPromptFormat'] = format.name;
+      raw['visionPromptSynthesis'] = {
+        'format': format.name,
+        'imageCount': imageFiles.length,
+        'storyboardImageCount': storyboardImageFiles.length,
+        'assetImageCount': assetReferences.length,
+        'preparedImageCount': preparedImageFiles.length,
+        'source': 'replicatedStoryboardAndAssets',
+      };
+      return prompt.copyWith(
+        prompt: normalized,
+        rawResponse: jsonEncode(raw),
+        updatedAt: DateTime.now().toUtc(),
+      );
+    } catch (error) {
+      raw['visionPromptSynthesisError'] = '$error';
+      return prompt.copyWith(rawResponse: jsonEncode(raw));
+    } finally {
+      await _deleteVisionPromptImageDirectory(preparedDirectory);
+    }
+  }
+
+  Future<List<File>> _prepareVisionPromptImages(
+    List<File> imageFiles,
+    Directory directory,
+  ) async {
+    final prepared = <File>[];
+    for (var index = 0; index < imageFiles.length; index++) {
+      prepared.add(
+        await _prepareVisionPromptImage(
+          imageFiles[index],
+          directory: directory,
+          index: index,
+        ),
+      );
+    }
+    return prepared;
+  }
+
+  Directory _visionPromptImageDirectory(String promptId) => Directory(
+    p.join(
+      _directories.temp.path,
+      'vision_prompt_synthesis',
+      _safeFileName(promptId),
+    ),
+  );
+
+  Future<void> _deleteVisionPromptImageDirectory(Directory directory) async {
+    if (!directory.existsSync()) return;
+    final tempRoot = p.canonicalize(_directories.temp.absolute.path);
+    final target = p.canonicalize(directory.absolute.path);
+    if (!p.isWithin(tempRoot, target)) return;
+    await directory.delete(recursive: true);
+  }
+
+  Future<File> _prepareVisionPromptImage(
+    File file, {
+    required Directory directory,
+    required int index,
+  }) async {
+    if (!file.existsSync()) return file;
+    final length = await file.length();
+    if (length <= _visionPromptImageMaxBytes) return file;
+    final bytes = await file.readAsBytes();
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return file;
+    var image = decoded;
+    final maxSide = image.width > image.height ? image.width : image.height;
+    if (maxSide > _visionPromptImageMaxDimension) {
+      final scale = _visionPromptImageMaxDimension / maxSide;
+      image = img.copyResize(
+        image,
+        width: (image.width * scale).round().clamp(1, image.width),
+        height: (image.height * scale).round().clamp(1, image.height),
+        interpolation: img.Interpolation.average,
+      );
+    }
+    var quality = 84;
+    var encoded = img.encodeJpg(image, quality: quality);
+    while (encoded.length > _visionPromptImageMaxBytes && quality > 58) {
+      quality -= 8;
+      encoded = img.encodeJpg(image, quality: quality);
+    }
+    await directory.create(recursive: true);
+    final output = File(p.join(directory.path, 'image-${index + 1}.jpg'));
+    await output.writeAsBytes(encoded, flush: true);
+    return output;
+  }
+
+  List<_VisionAssetReference> _visionPromptAssetReferences(
+    String shotId, {
+    required List<ReplicateAsset> fallbackAssets,
+    required Set<String> selectedAssetIds,
+  }) {
+    final linked = _confirmedScriptAssets(shotId);
+    final linkedReferences = [
+      for (final asset in linked)
+        if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
+            asset.path.trim().isNotEmpty &&
+            File(asset.path).existsSync())
+          _VisionAssetReference(
+            type: asset.type,
+            name: asset.name,
+            description: asset.description,
+            path: asset.path,
+          ),
+    ];
+    if (linkedReferences.isNotEmpty) return linkedReferences;
+    return [
+      for (final asset in _readyAssets(fallbackAssets))
+        if ((selectedAssetIds.isEmpty || selectedAssetIds.contains(asset.id)) &&
+            _mediaKindForType(asset.type) == ReplicateMediaKind.image &&
+            asset.path.trim().isNotEmpty &&
+            File(asset.path).existsSync())
+          _VisionAssetReference(
+            type: asset.type,
+            name: asset.name,
+            description: asset.description,
+            path: asset.path,
+          ),
+    ];
+  }
+
+  List<File> _replicatedPromptImageFiles({
+    required ScriptShot shot,
+    required List<ScriptShot> actionSequence,
+  }) {
+    final orderedShots = actionSequence.isEmpty ? [shot] : actionSequence;
+    final files = <File>[];
+    final seen = <String>{};
+    for (final item in orderedShots) {
+      final image = _replicatedImageForShot(item.id);
+      if (image == null || image.status != ProcessingStatus.completed) {
+        continue;
+      }
+      final path = image.generatedFramePath.trim();
+      if (path.isEmpty || !seen.add(path)) continue;
+      final file = File(path);
+      if (file.existsSync()) files.add(file);
+    }
+    return files;
+  }
+
+  static String _visionPromptSynthesisPrompt({
+    required ShotPromptFormat format,
+    required ScriptShot shot,
+    required String draft,
+    required int storyboardImageCount,
+    required List<_VisionAssetReference> assetReferences,
+  }) {
+    final storyboardRole = storyboardImageCount > 1
+        ? '图片1-图片$storyboardImageCount 是复刻分镜图的首帧到尾帧'
+        : '图片1 是本镜头的复刻分镜图';
+    final assetStartIndex = storyboardImageCount + 1;
+    final assetDefinitions = [
+      for (var index = 0; index < assetReferences.length; index++)
+        '图片${assetStartIndex + index} 是${_h3AssetRole(assetReferences[index].type)}：'
+            '${_joinNonEmpty([assetReferences[index].name, assetReferences[index].description])}。',
+    ];
+    final assetRole = assetDefinitions.isEmpty
+        ? '未提供额外绑定资产图；只允许使用复刻分镜图中真实可见且与草稿结构一致的主体/产品。'
+        : '''
+ 绑定资产图：
+ ${assetDefinitions.join('\n')}
+
+ 资产优先级硬规则：
+ - 复刻分镜图只负责锁定镜头语言、姿态、动作阶段、空间关系、构图、光影和色彩氛围。
+ - 人物身份、脸、发型、体型、服装轮廓、产品外观、材质、比例和使用关系，以绑定资产图为最高事实来源。
+ - 若复刻分镜图里存在未绑定的包、首饰、帽子、眼镜、旧衣服、品牌字、Logo 或其他旧道具，且它们没有出现在绑定资产图定义中，必须删除，不得写入最终提示词。
+ ''';
+    return '''
+你是视频生成提示词总编。请只基于当前附图和下方目标模型规则，把本地草稿归纳成一条可直接提交的视频生成提示词。
+
+最高优先级视觉依据：
+$storyboardRole。
+$assetRole
+
+目标视频模型：${_promptFormatLabel(format)}
+目标格式模板：
+${_promptFormatTemplate(format, shot)}
+
+本地草稿（只作为素材编号、时长、声音和基础结构参考；其中可能混有原视频帧残留，必须清理）：
+$draft
+
+整理要求：
+1. 严格按目标格式模板输出，不要混入其他模型的章节结构。
+2. 删除草稿里未在绑定资产图出现的具体服装、手提包、首饰、眼镜、帽子、品牌字、Logo、字幕、包装文字和原视频道具描述；不要把复刻分镜图中未绑定的旧穿搭/旧道具写入提示词。
+3. 若草稿存在重复章节、重复段落或多个完整提示词嵌套，只保留一套目标格式。
+4. 保留复刻分镜图中的动作、构图、光影、色彩和空间关系；人物/产品/服装/道具外观以绑定资产图为准。
+5. 保留必要的时长、镜号、音效和无字幕/无Logo/无水印约束。
+6. 只输出最终提示词正文，不要解释、标题、Markdown、JSON 或分析过程。
+''';
+  }
+
+  static String _promptFormatLabel(ShotPromptFormat format) => switch (format) {
+    ShotPromptFormat.h3 => 'MiniMax H3',
+    ShotPromptFormat.kling => '可灵',
+    ShotPromptFormat.sd2 => '即梦',
+  };
+
+  static String _promptFormatTemplate(
+    ShotPromptFormat format,
+    ScriptShot shot,
+  ) {
+    final shotNumber = shot.shotNumber <= 0 ? 'N' : '${shot.shotNumber}';
+    return switch (format) {
+      ShotPromptFormat.h3 =>
+        '''
+【参考素材说明】
+@图片1 是画面参考图，用于锁定复刻分镜图中的主体外观、产品、场景空间、构图、光影和整体视觉质感。
+
+【核心创意】
+一句话概括视频目标，只写当前复刻分镜图真实可见内容和整体风格。
+
+【画面过程描述】
+0-X秒：按时间描述主体动作、镜头运动、构图变化和产品展示。
+
+【整体要求补充】
+稳定主体外观、产品结构、动作方向、光源方向；不要字幕、不要水印、不要乱码文字、不要无关Logo。
+
+【声音设计】
+与画面动作同步的自然声或指定音效。
+
+非叙事性音乐：N/A 或指定音乐。
+''',
+      ShotPromptFormat.kling =>
+        '''
+以图片1作为首帧和主体外观参考；主体与动作：只描述复刻分镜图中的主体、产品和动作；背景与运动：描述场景空间和运动趋势；镜头语言：景别、机位、运镜和构图；光影氛围：光线、色彩和质感；声音：必要音效；整体风格：广告质感；约束：不要字幕、不要Logo、不要水印、不要重复人物。
+''',
+      ShotPromptFormat.sd2 =>
+        '''
+主体与素材定义：用图片编号定义当前附图和绑定资产。
+
+镜头$shotNumber：景别、运镜、时长、主体动作、产品展示、场景、构图、光影、色彩、声音。
+
+全局风格：广告质感、细节丰富、色彩自然、光影层次清晰。
+
+整体约束：保持主体外观、产品结构与场景连续稳定；保持无字幕，避免生成任何文字或字幕，不要生成 Logo，不要生成水印。
+''',
+    };
+  }
+
+  static String _normalizeVisionPromptResult(String value) {
+    return value
+        .trim()
+        .replaceAll(
+          RegExp(r'<think>[\s\S]*?</think>', caseSensitive: false),
+          '',
+        )
+        .replaceFirst(RegExp(r'^```(?:text|markdown)?\s*', multiLine: true), '')
+        .replaceFirst(RegExp(r'\s*```$', multiLine: true), '')
+        .trim();
+  }
+
+  ScriptShot _shotWithoutSourceVisualContent(ScriptShot shot) {
+    String clean(String value) =>
+        SeedancePromptGenerationService.stripSpecificWardrobeAndObjectDetails(
+          value,
+        );
+    return shot.copyWith(
+      visual: '',
+      content: clean(shot.content),
+      scene: clean(shot.scene),
+      cameraNotes: clean(shot.cameraNotes),
+      composition: clean(shot.composition),
+      cameraAngle: clean(shot.cameraAngle),
+      lightingMood: clean(shot.lightingMood),
+      colorPalette: ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+        shot.colorPalette,
+      ),
+      visualFocus: clean(shot.visualFocus),
+      productCode: '',
+      productStyling: '',
+      sound: clean(shot.sound),
+    );
   }
 
   void _updatePromptProgress(
@@ -2173,53 +2582,35 @@ $automaticPrompt
     }
     return [
       '任务类型：基于参考重新创作一张清晰、可拍摄的全新分镜图，不是图片修复或高清重绘。',
-      '图片1是原视频镜头 ${shot.shotNumber} 的语义蓝图，只用于分析画面元素、镜头语言、动作和空间关系；禁止把图片1当作底图、像素来源或纹理来源。',
+      '图片1是原视频镜头 ${shot.shotNumber} 的结构蓝图，只用于分析镜头语言、画幅、机位、构图、透视、光影、色彩氛围和空间方向；禁止从图片1复用人物身份、服装款式、产品款式、道具外观、品牌包装或具体画面描述。',
       ...definitions,
       ...assetRequirements,
       '绑定资产硬约束：图片2起的每一张图片都是当前镜头明确绑定的指定素材，必须按其人物、产品、场景或道具角色使用；禁止遗漏任一绑定素材，也禁止以图片1中的同类人物、产品、场景或道具替代。',
       '从零开始生成新的高质量画面：重新渲染全部人物、服装、产品、背景、光影和细节。输出必须清晰锐利、细节完整、主体边缘干净、没有压缩噪点、运动模糊或低清纹理。',
-      '严格复现图片1的画幅、景别、机位、构图、透视、主体数量、动作、表情、视线、遮挡、光源方向、色温、景深和叙事时刻。若同时提供人物、产品和场景参考，必须让该人物在该场景中穿着或使用该产品，并做出图片1相同动作。',
+      '严格复现图片1的画幅、景别、机位、构图、透视、主体数量、空间方向、视线方向、遮挡关系、光源方向、色温、景深和镜头承接。若同时提供人物、产品和场景参考，必须让该人物在该场景中穿着或使用该产品；人物服装、产品外观和道具样式始终以图片2起绑定资产为准。',
       '屏幕方向硬约束：以查看图片1时的画面左/右为唯一坐标系，不是人物自身左右，也不随图片2起素材的朝向变化。必须保持主体在画面内的左右位置、脸部/身体/视线朝向、身体倾斜、肢体动作、道具朝向及相对位置；严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图。若任何素材描述与此冲突，始终以图片1为准。',
       '色彩硬约束：以图片1的色彩风格、色温、明暗关系、对比度、光影层次和电影调色为唯一基准；新人物、产品、场景和道具必须融入该原帧色彩风格，任何通用风格描述都不得覆盖这一要求。',
       '绝对不要：超分辨率、锐化、去噪、修复、放大、以图生图描摹、保留原帧像素、复制原帧的模糊或瑕疵。',
       _textAndLogoExclusionConstraint,
-      if (shot.content.trim().isNotEmpty) '镜头内容：${shot.content.trim()}。',
-      if (shot.shotSize.trim().isNotEmpty) '景别：${shot.shotSize.trim()}。',
-      if (shot.composition.trim().isNotEmpty) '构图：${shot.composition.trim()}。',
-      if (shot.cameraAngle.trim().isNotEmpty) '机位：${shot.cameraAngle.trim()}。',
-      if (shot.lightingMood.trim().isNotEmpty)
-        '光影与氛围：${shot.lightingMood.trim()}。',
-      if (shot.colorPalette.trim().isNotEmpty)
-        '色彩：${shot.colorPalette.trim()}。',
-      if (shot.visualFocus.trim().isNotEmpty)
-        '视觉焦点：${shot.visualFocus.trim()}。',
-      if (shot.transitionHint.trim().isNotEmpty)
-        '剪辑衔接：${shot.transitionHint.trim()}。',
-      if (shot.cameraNotes.trim().isNotEmpty)
-        '摄影备注：${shot.cameraNotes.trim()}。',
-      if (analysis != null) ..._visualAnalysisInstructions(analysis),
+      ..._shotStructureInstructions(shot),
+      if (analysis != null) ..._visualStructureInstructions(analysis),
       '最终交付：一张自然真实、专业清晰、与原视频帧叙事和镜头语言一致，但从头新生成的复刻分镜图。',
     ].join('\n');
   }
 
-  List<String> _visualAnalysisInstructions(VisionImageAnalysis analysis) => [
-    '【视觉模型对原帧的关键维度解析】以下内容是对图片1可见事实的补充，必须用于锁定新分镜的镜头语言和画面关系，不要擅自改变。',
-    _visionInstruction('叙事画面', analysis.caption),
-    _visionInstruction('画面细节', analysis.detail),
-    _visionInstruction(
-      '场景与空间',
-      _joinVisionValues([analysis.scene, analysis.spatialRelation]),
-    ),
-    _visionInstruction(
-      '人物、神态与动作',
-      _joinVisionValues([
-        analysis.people,
-        analysis.expression,
-        analysis.bodyAction,
-        analysis.actionStage,
-        analysis.movementTrend,
-      ]),
-    ),
+  List<String> _shotStructureInstructions(ScriptShot shot) => [
+    _visionInstruction('景别', shot.shotSize),
+    _visionInstruction('构图', shot.composition),
+    _visionInstruction('机位', shot.cameraAngle),
+    _visionInstruction('运镜', shot.cameraMovement),
+    _visionInstruction('光影与氛围', shot.lightingMood),
+    _visionInstruction('色彩风格', shot.colorPalette),
+    _visionInstruction('剪辑衔接', shot.transitionHint),
+    _visionInstruction('摄影备注', shot.cameraNotes),
+  ].where((instruction) => instruction.isNotEmpty).toList(growable: false);
+
+  List<String> _visualStructureInstructions(VisionImageAnalysis analysis) => [
+    '【视觉模型对原帧的结构维度解析】以下内容只用于锁定镜头语言、空间关系和运动趋势；不得把其中的原人物服装、产品款式、道具外观或品牌包装带入成图。',
     _visionInstruction(
       '镜头与构图',
       _joinVisionValues([
@@ -2238,8 +2629,8 @@ $automaticPrompt
       ]),
     ),
     _visionInstruction(
-      '视觉焦点与道具',
-      _joinVisionValues([analysis.visualFocus, analysis.props]),
+      '动作阶段与运动趋势',
+      _joinVisionValues([analysis.actionStage, analysis.movementTrend]),
     ),
     _visionInstruction(
       '光影与色彩',
@@ -2331,24 +2722,28 @@ $automaticPrompt
 
   Future<ImageGenerationResult> _generateReferenceImage(
     String prompt,
-    String runId,
+    ReplicateRun run,
   ) async {
     final settings = _settingsController.value;
-    final model = settings.imageGenerationModel;
+    final model = _resolvedGenerationModel(run);
     final descriptor = ImageGenerationCatalog.descriptorFor(model);
     if (descriptor == null) {
       throw FormatException('不支持的图片生成模型：$model');
     }
-    final aspectRatio = descriptor.aspectRatios.contains('1:1')
-        ? '1:1'
-        : descriptor.aspectRatios.first;
-    final resolutions = ImageGenerationCatalog.resolutionsFor(
-      model,
-      aspectRatio,
+    final aspectRatio = _catalogOption(
+      run.generationAspectRatio,
+      descriptor.aspectRatios,
+      preferred: descriptor.aspectRatios.contains('1:1') ? '1:1' : '16:9',
     );
-    final imageSize = resolutions.firstWhere(
-      (item) => item != 'auto',
-      orElse: () => resolutions.first,
+    final imageSize = _catalogOption(
+      run.generationImageSize,
+      ImageGenerationCatalog.resolutionsFor(model, aspectRatio),
+      preferred: '2K',
+    );
+    final quality = _catalogOption(
+      run.generationQuality,
+      descriptor.qualities,
+      preferred: 'high',
     );
     return _imageGenerationService.generateTextToImage(
       ImageGenerationRequest(
@@ -2360,9 +2755,9 @@ $automaticPrompt
         prompt: prompt,
         aspectRatio: aspectRatio,
         imageSize: imageSize,
-        quality: descriptor.qualities.first,
+        quality: quality,
         referenceImagePaths: const [],
-        outputDirectory: await _assetDirectory(runId),
+        outputDirectory: await _assetDirectory(run.id),
       ),
     );
   }
@@ -2482,7 +2877,9 @@ $automaticPrompt
       }
       try {
         final raw = jsonDecode(prompt.rawResponse);
-        if (raw is! Map || raw['shotFingerprint'] != _shotFingerprint(shot)) {
+        if (raw is! Map ||
+            raw['promptRulesVersion'] != _promptRulesVersion ||
+            raw['shotFingerprint'] != _shotFingerprint(shot)) {
           return true;
         }
       } catch (_) {
@@ -2585,7 +2982,24 @@ $automaticPrompt
   static String _promptKey(ShotPromptFormat format) => switch (format) {
     ShotPromptFormat.sd2 => 'sd2Prompt',
     ShotPromptFormat.kling => 'klingPrompt',
+    ShotPromptFormat.h3 => 'h3Prompt',
   };
+
+  _ComposePromptModelRule get _composePromptModelRule {
+    final config = _settingsController.value.activeVideoGenerationApiConfig;
+    if (config?.isHttpApi == true) {
+      return const _ComposePromptModelRule(
+        format: ShotPromptFormat.h3,
+        label: 'MiniMax H3',
+        maxConcurrent: defaultComposePromptConcurrency,
+      );
+    }
+    return const _ComposePromptModelRule(
+      format: ShotPromptFormat.kling,
+      label: '可灵',
+      maxConcurrent: klingComposePromptConcurrency,
+    );
+  }
 
   static Map<String, Object?> _promptRaw(ShotPrompt prompt) {
     try {
@@ -2594,14 +3008,67 @@ $automaticPrompt
         return decoded.map((key, value) => MapEntry('$key', value));
       }
     } catch (_) {
-      // 旧版单提示词记录在首次编辑或切换时自动升级为双版本结构。
+      // 旧版单提示词记录在首次编辑或切换时自动升级为多版本结构。
     }
     return <String, Object?>{
       'sd2Prompt': prompt.prompt,
       'klingPrompt': prompt.prompt,
+      'h3Prompt': prompt.prompt,
       'selectedPromptFormat': ShotPromptFormat.kling.name,
     };
   }
+
+  static String _promptFormatSelectedMessage(ShotPromptFormat format) =>
+      switch (format) {
+        ShotPromptFormat.sd2 => '已选择即梦',
+        ShotPromptFormat.kling => '已选择可灵',
+        ShotPromptFormat.h3 => '已选择 H3',
+      };
+
+  static List<String> _h3ReferenceDefinitionsFromReplicateAssets(
+    List<ReplicateAsset> assets,
+  ) {
+    var imageNumber = 2;
+    final result = <String>[];
+    for (final asset in assets) {
+      if (asset.path.trim().isEmpty) continue;
+      result.add(
+        '图片${imageNumber++}：'
+        '${_h3AssetRole(asset.type)}，${_joinNonEmpty([asset.name, asset.description])}。',
+      );
+    }
+    return result;
+  }
+
+  static List<String> _h3ReferenceDefinitionsFromScriptAssets(
+    List<ScriptAsset> assets,
+  ) {
+    var imageNumber = 2;
+    final result = <String>[];
+    for (final asset in assets) {
+      if (asset.path.trim().isEmpty) continue;
+      result.add(
+        '图片${imageNumber++}：'
+        '${_h3AssetRole(asset.type)}，${_joinNonEmpty([asset.name, asset.description])}。',
+      );
+    }
+    return result;
+  }
+
+  static String _h3AssetRole(ReplicateAssetType type) => switch (type) {
+    ReplicateAssetType.character => '人物参考，锁定脸、发型、服装轮廓和气质',
+    ReplicateAssetType.product => '产品参考，锁定外观结构、材质、比例和使用关系',
+    ReplicateAssetType.scene => '场景参考，锁定空间、透视、环境层次和光影氛围',
+    ReplicateAssetType.prop => '道具参考，锁定外观、尺寸、朝向和交互关系',
+    ReplicateAssetType.video => '动作、运镜和剪辑节奏参考',
+    ReplicateAssetType.audio => '声音节奏、情绪和氛围参考',
+    ReplicateAssetType.reference || ReplicateAssetType.other => '综合视觉参考',
+  };
+
+  static String _joinNonEmpty(Iterable<String> values) => values
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .join('，');
 
   static String _replicatedImageId(String runId, String shotId) =>
       '$runId-replicated-$shotId';
@@ -2681,6 +3148,20 @@ class _ReplacementReference {
   });
 
   final String id;
+  final ReplicateAssetType type;
+  final String name;
+  final String description;
+  final String path;
+}
+
+class _VisionAssetReference {
+  const _VisionAssetReference({
+    required this.type,
+    required this.name,
+    required this.description,
+    required this.path,
+  });
+
   final ReplicateAssetType type;
   final String name;
   final String description;

@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_models.dart';
+import 'package:filmstoryboard/features/video_generation/domain/h3_video_prompt_adapter.dart';
 import 'package:filmstoryboard/features/video_generation/domain/kling_duration_matcher.dart';
 import 'package:filmstoryboard/features/video_generation/domain/kling_video_prompt_adapter.dart';
 import 'package:filmstoryboard/features/video_generation/domain/source_video_preview_range.dart';
@@ -193,6 +194,67 @@ void main() {
     expect(prompt, isNot(contains('以输入图片作为首帧')));
   });
 
+  test('H3 提示词不会把已结构化提示词再次塞入核心创意', () {
+    const structuredSource = '''
+【参考素材说明】
+@图片1 是画面参考图。
+
+【核心创意】
+5秒视频，主体与素材定义：将图片1中的产品定义为产品。
+
+镜头5：全景，推；时长：5秒。
+
+全局风格：顶级广告质感。
+
+整体约束：不要字幕、不要水印。
+
+【画面过程描述】
+0-5秒：全景，推。
+
+【声音设计】
+N/A
+
+非叙事性音乐：N/A
+''';
+
+    final prompt = const H3VideoPromptAdapter().adapt(
+      _shot(),
+      sourcePrompt: structuredSource,
+      availableImageReferences: 1,
+      globalStyle: '顶级广告质感',
+    );
+
+    expect(_occurrences(prompt, '【参考素材说明】'), 1);
+    expect(_occurrences(prompt, '【核心创意】'), 1);
+    expect(_occurrences(prompt, '【画面过程描述】'), 1);
+    expect(_occurrences(prompt, '【整体要求补充】'), 1);
+    expect(_occurrences(prompt, '【声音设计】'), 1);
+    expect(_occurrences(prompt, '非叙事性音乐：'), 1);
+    expect(prompt, isNot(contains('主体与素材定义：')));
+    expect(prompt, isNot(contains('镜头5：全景')));
+    expect(prompt, isNot(contains('整体约束：不要字幕')));
+  });
+
+  test('H3 多帧镜头组按实际参考帧顺序编号', () {
+    final prompt = const H3VideoPromptAdapter().adapt(
+      _shot().copyWith(shotNumber: 1, content: '人物走入画面'),
+      actionSequence: [
+        _shot().copyWith(shotNumber: 1, content: '人物走入画面'),
+        _shot().copyWith(
+          shotNumber: 2,
+          content: '人物抬手展示产品',
+          actionStage: '中间动作',
+        ),
+        _shot().copyWith(shotNumber: 3, content: '人物完成展示动作'),
+      ],
+      availableImageReferences: 3,
+    );
+
+    expect(prompt, contains('@图片1 是首帧参考图'));
+    expect(prompt, contains('@图片2 是镜头2中间动作参考帧'));
+    expect(prompt, contains('@图片3 是尾帧参考图'));
+  });
+
   test('时长按动态允许值取最近值，相同差值选择较短值', () {
     const matcher = KlingDurationMatcher();
     expect(matcher.closest(desiredSeconds: 7.5, allowed: [5, 10]), 5);
@@ -219,6 +281,9 @@ void main() {
     );
   });
 }
+
+int _occurrences(String text, String pattern) =>
+    RegExp(RegExp.escape(pattern)).allMatches(text).length;
 
 ScriptShot _shot() => ScriptShot(
   id: 'shot-1',
