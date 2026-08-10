@@ -135,8 +135,8 @@ class VideoGenerationRepository {
         duration_seconds, prompt_mode, prompt_text, credits_before,
         credits_after, status, result_url, result_without_watermark_url,
         local_path, used_watermarked_fallback, error_message, created_at,
-        updated_at, completed_at, tail_image_path
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        updated_at, completed_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         generation_id = excluded.generation_id,
         credits_before = excluded.credits_before,
@@ -145,7 +145,6 @@ class VideoGenerationRepository {
         result_url = excluded.result_url,
         result_without_watermark_url = excluded.result_without_watermark_url,
         local_path = excluded.local_path,
-        tail_image_path = excluded.tail_image_path,
         used_watermarked_fallback = excluded.used_watermarked_fallback,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at,
@@ -172,7 +171,6 @@ class VideoGenerationRepository {
         task.createdAt.toIso8601String(),
         task.updatedAt.toIso8601String(),
         task.completedAt?.toIso8601String(),
-        task.tailImagePath,
       ],
     );
   }
@@ -226,7 +224,6 @@ class VideoGenerationRepository {
     resultWithoutWatermarkUrl:
         row['result_without_watermark_url'] as String? ?? '',
     localPath: row['local_path'] as String? ?? '',
-    tailImagePath: row['tail_image_path'] as String? ?? '',
     usedWatermarkedFallback:
         (row['used_watermarked_fallback'] as int? ?? 0) != 0,
     errorMessage: row['error_message'] as String? ?? '',

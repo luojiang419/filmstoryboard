@@ -71,12 +71,6 @@ class SettingsController extends ValueNotifier<AppSettings> {
     value = next;
   }
 
-  Future<void> setVideoStartEndFrameModeEnabled(bool enabled) async {
-    final next = value.copyWith(videoStartEndFrameModeEnabled: enabled);
-    _repository.save(next);
-    value = next;
-  }
-
   Future<void> setReplicatePromptDefaults({
     required String globalStyle,
     required String constraints,

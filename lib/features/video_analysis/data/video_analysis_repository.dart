@@ -3,7 +3,6 @@ import 'dart:convert';
 import '../../../core/database/app_database.dart';
 import '../../replicate/domain/replicate_models.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
-import '../../video_generation/domain/video_action_sequence.dart';
 import '../domain/video_analysis_models.dart';
 
 class VideoAnalysisRepository {
@@ -399,13 +398,13 @@ class VideoAnalysisRepository {
       '''
       INSERT INTO script_shots(
         id, script_id, source_video_frame_id, shot_number, duration_seconds, frame_path, visual,
-        content, shot_size, camera_movement, camera_notes, composition,
+        content, free_creation_description, shot_size, camera_movement, camera_notes, composition,
         camera_angle, lighting_mood, color_palette, visual_focus,
         transition_hint, movement_trend, action_stage, continues_from_previous,
         continues_to_next, scene, product_code, product_styling, dialogue,
         sound, prompt, replication_instructions, status, updated_at
       ) VALUES(
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id) DO UPDATE SET
@@ -414,6 +413,7 @@ class VideoAnalysisRepository {
         frame_path = excluded.frame_path,
         visual = excluded.visual,
         content = excluded.content,
+        free_creation_description = excluded.free_creation_description,
         shot_size = excluded.shot_size,
         camera_movement = excluded.camera_movement,
         camera_notes = excluded.camera_notes,
@@ -446,6 +446,7 @@ class VideoAnalysisRepository {
         shot.framePath,
         shot.visual,
         shot.content,
+        shot.freeCreationDescription,
         shot.shotSize,
         shot.cameraMovement,
         shot.cameraNotes,
@@ -485,28 +486,29 @@ class VideoAnalysisRepository {
       '''
       INSERT INTO replicate_runs(
         id, video_id, script_id, global_style, constraints_text,
-        replication_instructions,
+        replication_instructions, free_creation_enabled, free_creation_story_override,
         generation_model, generation_aspect_ratio, generation_image_size,
         generation_quality,
-        confirmed_shot_ids_json, start_end_pairs_json,
+        confirmed_shot_ids_json,
         image_reference_count, video_reference_count,
         audio_reference_count, current_step, status, confirm_shots_status,
         prepare_assets_status, compose_prompts_status, completed_count,
         generate_videos_status,
         total_count, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         script_id = excluded.script_id,
         global_style = excluded.global_style,
         constraints_text = excluded.constraints_text,
         replication_instructions = excluded.replication_instructions,
+        free_creation_enabled = excluded.free_creation_enabled,
+        free_creation_story_override = excluded.free_creation_story_override,
         generation_model = excluded.generation_model,
         generation_aspect_ratio = excluded.generation_aspect_ratio,
         generation_image_size = excluded.generation_image_size,
         generation_quality = excluded.generation_quality,
         confirmed_shot_ids_json = excluded.confirmed_shot_ids_json,
-        start_end_pairs_json = excluded.start_end_pairs_json,
         image_reference_count = excluded.image_reference_count,
         video_reference_count = excluded.video_reference_count,
         audio_reference_count = excluded.audio_reference_count,
@@ -528,12 +530,13 @@ class VideoAnalysisRepository {
         run.globalStyle,
         run.constraints,
         run.replicationInstructions,
+        run.freeCreationEnabled ? 1 : 0,
+        run.freeCreationStoryOverride,
         run.generationModel,
         run.generationAspectRatio,
         run.generationImageSize,
         run.generationQuality,
         jsonEncode(run.confirmedShotIds),
-        _encodeStartEndPairs(run.startEndPairs),
         run.imageReferenceCount,
         run.videoReferenceCount,
         run.audioReferenceCount,
@@ -609,8 +612,8 @@ class VideoAnalysisRepository {
       '''
       INSERT INTO shot_prompts(
         id, run_id, shot_number, script_shot_id, asset_ids_json, prompt,
-        model, raw_response, status, error_message, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        model, raw_response, is_user_edited, status, error_message, updated_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         shot_number = excluded.shot_number,
         script_shot_id = excluded.script_shot_id,
@@ -618,6 +621,7 @@ class VideoAnalysisRepository {
         prompt = excluded.prompt,
         model = excluded.model,
         raw_response = excluded.raw_response,
+        is_user_edited = excluded.is_user_edited,
         status = excluded.status,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at;
@@ -631,6 +635,7 @@ class VideoAnalysisRepository {
         prompt.prompt,
         prompt.model,
         prompt.rawResponse,
+        prompt.isUserEdited ? 1 : 0,
         prompt.status.name,
         prompt.errorMessage,
         _date(prompt.updatedAt),
@@ -794,6 +799,7 @@ class VideoAnalysisRepository {
       framePath: row['frame_path'] as String,
       visual: row['visual'] as String,
       content: row['content'] as String,
+      freeCreationDescription: text('free_creation_description'),
       shotSize: row['shot_size'] as String,
       cameraMovement: row['camera_movement'] as String,
       cameraNotes: legacy.cameraNotes,
@@ -832,6 +838,9 @@ class VideoAnalysisRepository {
       globalStyle: row['global_style'] as String? ?? '',
       constraints: row['constraints_text'] as String? ?? '',
       replicationInstructions: row['replication_instructions'] as String? ?? '',
+      freeCreationEnabled: (row['free_creation_enabled'] as int? ?? 0) != 0,
+      freeCreationStoryOverride:
+          row['free_creation_story_override'] as String? ?? '',
       generationModel: row['generation_model'] as String? ?? '',
       generationAspectRatio:
           row['generation_aspect_ratio'] as String? ?? '16:9',
@@ -840,7 +849,6 @@ class VideoAnalysisRepository {
       confirmedShotIds: confirmedJson is List
           ? confirmedJson.map((value) => '$value').toList()
           : const [],
-      startEndPairs: _decodeStartEndPairs(row['start_end_pairs_json']),
       imageReferenceCount: row['image_reference_count'] as int? ?? 0,
       videoReferenceCount: row['video_reference_count'] as int? ?? 0,
       audioReferenceCount: row['audio_reference_count'] as int? ?? 0,
@@ -867,33 +875,6 @@ class VideoAnalysisRepository {
       createdAt: _parseDate(row['created_at']),
       updatedAt: _parseDate(row['updated_at']),
     );
-  }
-
-  String _encodeStartEndPairs(List<StartEndFramePair> pairs) => jsonEncode([
-    for (final pair in pairs)
-      {'startShotId': pair.startShotId, 'tailShotId': pair.tailShotId},
-  ]);
-
-  List<StartEndFramePair> _decodeStartEndPairs(Object? value) {
-    try {
-      final decoded = jsonDecode(value as String? ?? '[]');
-      if (decoded is! List) return const [];
-      return [
-            for (final item in decoded)
-              if (item is Map)
-                StartEndFramePair(
-                  startShotId: '${item['startShotId'] ?? ''}',
-                  tailShotId: '${item['tailShotId'] ?? ''}',
-                ),
-          ]
-          .where((pair) {
-            return pair.startShotId.trim().isNotEmpty &&
-                pair.tailShotId.trim().isNotEmpty;
-          })
-          .toList(growable: false);
-    } catch (_) {
-      return const [];
-    }
   }
 
   ReplicateAsset _replicateAsset(Map<String, Object?> row) => ReplicateAsset(
@@ -926,6 +907,7 @@ class VideoAnalysisRepository {
       prompt: row['prompt'] as String,
       model: row['model'] as String,
       rawResponse: row['raw_response'] as String,
+      isUserEdited: (row['is_user_edited'] as int? ?? 0) != 0,
       status: ProcessingStatus.fromStorage(row['status']),
       errorMessage: row['error_message'] as String,
       updatedAt: _parseDate(row['updated_at']),

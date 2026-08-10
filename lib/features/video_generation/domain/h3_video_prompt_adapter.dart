@@ -10,7 +10,6 @@ class H3VideoPromptAdapter {
     int availableImageReferences = 0,
     int availableVideoReferences = 0,
     int availableAudioReferences = 0,
-    bool? useStartEndFrameReferences,
     String globalStyle = '',
     String narrativeStyle = '',
     String constraints = '',
@@ -23,19 +22,12 @@ class H3VideoPromptAdapter {
     final sequence = actionSequence.isEmpty
         ? <ScriptShot>[shot]
         : actionSequence;
-    final hasTailFrame =
-        useStartEndFrameReferences ??
-        (sequence.length > 1 && availableImageReferences == 2);
-    final sequenceDuration = _sequenceDuration(
-      sequence,
-      sumStageDurations: hasTailFrame,
-    );
+    final sequenceDuration = _sequenceDuration(sequence);
     final references = _referenceText(
       sequence: sequence,
       availableImageReferences: availableImageReferences,
       availableVideoReferences: availableVideoReferences,
       availableAudioReferences: availableAudioReferences,
-      hasTailFrame: hasTailFrame,
       referenceDefinitions: referenceDefinitions,
     );
     final creative = _creativeText(
@@ -46,17 +38,13 @@ class H3VideoPromptAdapter {
       sourcePrompt: sourcePrompt,
     );
     final process = sequence.length > 1
-        ? _sequenceProcess(sequence, hasTailFrame: hasTailFrame)
+        ? _sequenceProcess(sequence)
         : _singleShotProcess(shot);
     final styleLock = _compactText(
       _withoutExactTimingDirectives(narrativeStyle),
       maxChars: 600,
     );
-    final requirements = _requirements(
-      shot: shot,
-      hasTailFrame: hasTailFrame,
-      constraints: constraints,
-    );
+    final requirements = _requirements(shot: shot, constraints: constraints);
     final sections = <String>[
       if (references.isNotEmpty) ...['【参考素材说明】', references, ''],
       '【核心创意】',
@@ -77,14 +65,10 @@ class H3VideoPromptAdapter {
     required int availableImageReferences,
     required int availableVideoReferences,
     required int availableAudioReferences,
-    required bool hasTailFrame,
     required List<String> referenceDefinitions,
   }) {
     final lines = <String>[];
-    if (hasTailFrame && availableImageReferences >= 2) {
-      lines.add('@图片1是首帧，@图片2是尾帧；保持主体、场景、构图与光影连续，只补全两帧之间的自然变化。');
-    } else if (sequence.length > 1 &&
-        availableImageReferences >= sequence.length) {
+    if (sequence.length > 1 && availableImageReferences >= sequence.length) {
       lines.add(
         '@图片1至@图片$availableImageReferences是同一连续镜头的顺序动作参考，'
         '保持主体、场景、构图与光影连续，不要求逐帧精确到达。',
@@ -141,20 +125,11 @@ class H3VideoPromptAdapter {
     return '画面：$parts。';
   }
 
-  static String _sequenceProcess(
-    List<ScriptShot> sequence, {
-    required bool hasTailFrame,
-  }) {
+  static String _sequenceProcess(List<ScriptShot> sequence) {
     final lines = <String>[];
     for (var index = 0; index < sequence.length; index++) {
       final shot = sequence[index];
-      final referenceCue = hasTailFrame
-          ? index == 0
-                ? '从@图片1状态开始'
-                : index == sequence.length - 1
-                ? '自然到达@图片2状态'
-                : ''
-          : '衔接@图片${index + 1}';
+      final referenceCue = '衔接@图片${index + 1}';
       final parts = _joinUnique([
         referenceCue,
         _compactText(shot.actionStage, maxChars: 24),
@@ -185,10 +160,8 @@ class H3VideoPromptAdapter {
 
   static String _requirements({
     required ScriptShot shot,
-    required bool hasTailFrame,
     required String constraints,
   }) => _joinUnique([
-    if (hasTailFrame) '单镜头连续完成，不切镜',
     _compactText(shot.replicationInstructions, maxChars: 80),
     _compactText(constraints, maxChars: 100),
     '保持主体身份、空间关系与动作方向稳定',
@@ -349,20 +322,9 @@ class H3VideoPromptAdapter {
     return integrated >= 0 && soundscape > integrated && music > soundscape;
   }
 
-  static double _sequenceDuration(
-    List<ScriptShot> sequence, {
-    required bool sumStageDurations,
-  }) {
-    if (!sumStageDurations) {
-      final duration = sequence.last.durationSeconds;
-      return duration <= 0 ? 4 : duration;
-    }
-    final total = sequence.fold<double>(
-      0,
-      (sum, shot) =>
-          sum + (shot.durationSeconds <= 0 ? 1 : shot.durationSeconds),
-    );
-    return total <= 0 ? 4 : total;
+  static double _sequenceDuration(List<ScriptShot> sequence) {
+    final duration = sequence.last.durationSeconds;
+    return duration <= 0 ? 4 : duration;
   }
 
   static String _durationText(num seconds) {

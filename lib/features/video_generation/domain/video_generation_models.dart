@@ -125,7 +125,6 @@ class VideoGenerationTask {
     this.resultUrl = '',
     this.resultWithoutWatermarkUrl = '',
     this.localPath = '',
-    this.tailImagePath = '',
     this.usedWatermarkedFallback = false,
     this.errorMessage = '',
     required this.createdAt,
@@ -148,7 +147,6 @@ class VideoGenerationTask {
   final String resultUrl;
   final String resultWithoutWatermarkUrl;
   final String localPath;
-  final String tailImagePath;
   final bool usedWatermarkedFallback;
   final String errorMessage;
   final DateTime createdAt;
@@ -164,7 +162,6 @@ class VideoGenerationTask {
     String? resultUrl,
     String? resultWithoutWatermarkUrl,
     String? localPath,
-    String? tailImagePath,
     bool? usedWatermarkedFallback,
     String? errorMessage,
     DateTime? updatedAt,
@@ -186,7 +183,6 @@ class VideoGenerationTask {
     resultWithoutWatermarkUrl:
         resultWithoutWatermarkUrl ?? this.resultWithoutWatermarkUrl,
     localPath: localPath ?? this.localPath,
-    tailImagePath: tailImagePath ?? this.tailImagePath,
     usedWatermarkedFallback:
         usedWatermarkedFallback ?? this.usedWatermarkedFallback,
     errorMessage: errorMessage ?? this.errorMessage,

@@ -613,21 +613,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       }
     }
 
-    if (startEndFrameModeEnabled && sequence.hasDistinctTail) {
-      final precedingDuration = sequence.shots
-          .take(sequence.shots.length - 1)
-          .fold<double>(0, (total, item) => total + item.durationSeconds);
-      final tailDuration = normalizedSeconds - precedingDuration;
-      if (tailDuration > 0) {
-        _updateShotDuration(sequence.tail.id, tailDuration);
-        return;
-      }
-      final distributed = normalizedSeconds / sequence.shots.length;
-      for (final item in sequence.shots) {
-        _updateShotDuration(item.id, distributed);
-      }
-      return;
-    }
+    _replicateController.synchronizeFreeCreationPromptDuration(
+      owner.id,
+      normalizedSeconds,
+    );
     _updateShotDuration(sequence.tail.id, normalizedSeconds);
   }
 
@@ -725,9 +714,6 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   List<VideoGenerationTask> tasksForShot(String shotId) => value.tasks
       .where((task) => task.shotId == shotId)
       .toList(growable: false);
-
-  bool get startEndFrameModeEnabled =>
-      _settingsController.value.videoStartEndFrameModeEnabled;
 
   bool get usesConfiguredVideoGenerationApi =>
       _settingsController.value.activeVideoGenerationApiConfig?.isHttpApi ==
@@ -838,13 +824,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
 
   VideoActionSequence actionSequenceFor(ScriptShot shot) {
-    final sequences = const VideoActionSequenceResolver()
-        .resolveConfiguredGroups(
-          value.shots,
-          pairs: startEndFrameModeEnabled
-              ? _replicateController.value.run?.startEndPairs ?? const []
-              : const [],
-        );
+    final sequences = const VideoActionSequenceResolver().resolve(value.shots);
     return sequences.firstWhere(
       (sequence) => sequence.contains(shot.id),
       orElse: () => VideoActionSequence([shot]),
@@ -856,24 +836,17 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   double desiredDurationFor(ScriptShot shot) {
     final sequence = actionSequenceFor(shot);
-    if (!startEndFrameModeEnabled || !sequence.hasDistinctTail) {
-      return sequence.tail.durationSeconds;
-    }
-    return sequence.shots.fold(
-      0,
-      (total, item) => total + item.durationSeconds,
-    );
+    return sequence.tail.durationSeconds;
   }
 
   bool canGenerateShot(ScriptShot shot) {
     final sequence = actionSequenceFor(shot);
     if (sequence.head.id != shot.id) return false;
     if (generationReferenceImageFileFor(sequence.head) == null) return false;
-    if (!startEndFrameModeEnabled && sequence.hasDistinctTail) {
+    if (sequence.hasDistinctTail) {
       return sequence.shots.every((item) => sourceImageFileFor(item) != null);
     }
-    return !sequence.hasDistinctTail ||
-        sourceImageFileFor(sequence.tail) != null;
+    return true;
   }
 
   List<ScriptShot> generationTargets() {
@@ -883,12 +856,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     }
 
     return (const VideoActionSequenceResolver()
-        .resolveConfiguredGroups(
-          value.shots,
-          pairs: startEndFrameModeEnabled
-              ? _replicateController.value.run?.startEndPairs ?? const []
-              : const [],
-        )
+        .resolve(value.shots)
         .map((sequence) => sequence.head)
         .where(canGenerateShot)
         .toList(growable: false)
@@ -1199,25 +1167,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       value = value.copyWith(errorMessage: '请先登录可灵并选择可用模型');
       return const [];
     }
-    final hasStartEndSequence =
-        startEndFrameModeEnabled &&
-        shots.any((shot) => actionSequenceFor(shot).hasDistinctTail);
-    if (!usesVideoApi &&
-        hasStartEndSequence &&
-        model != null &&
-        !model.supportsStartEndFrames) {
-      value = value.copyWith(
-        errorMessage: '当前模型不支持首尾帧输入，请切换到可灵 3.0 Omni 或支持尾帧图的模型后再提交。',
-      );
-      return const [];
-    }
     final directories = await _generationDirectories();
     final submissions = <VideoGenerationSubmission>[];
     final now = DateTime.now().toUtc();
     for (final shot in shots) {
       final sequence = actionSequenceFor(shot);
-      final usesStartEndFrames =
-          startEndFrameModeEnabled && sequence.hasDistinctTail;
       final imageFile = generationReferenceImageFileFor(shot);
       final draft = value.drafts[shot.id];
       if (imageFile == null ||
@@ -1225,50 +1179,22 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           draft.selectedPrompt.trim().isEmpty) {
         continue;
       }
-      var tailImagePath = '';
-      if (usesStartEndFrames) {
-        final tailFile = sourceImageFileFor(sequence.tail);
-        if (tailFile == null) continue;
-        tailImagePath = tailFile.path;
-      }
       final confirmedAssets = _confirmedScriptAssetsForSequence(sequence.shots);
-      final usesVideoApiReferencesMode =
-          usesVideoApi &&
-          sequence.hasDistinctTail &&
-          (!usesStartEndFrames ||
-              confirmedAssets.isNotEmpty ||
-              sequence.shots.length > 2);
-      final includeSequenceTailAsReference =
-          sequence.hasDistinctTail &&
-          (!usesStartEndFrames || usesVideoApiReferencesMode);
-      final submissionTailImagePath = usesVideoApiReferencesMode
-          ? ''
-          : tailImagePath;
-      final usesVideoApiStartEndFrames =
-          usesVideoApi && usesStartEndFrames && !usesVideoApiReferencesMode;
       final errorBeforeImageReferences = value.errorMessage;
       final imageReferences = usesVideoApi
           ? _videoApiImageReferencesForShot(
               sequence: sequence,
               sourceImagePath: imageFile.path,
-              tailImagePath: tailImagePath,
-              includeTailImage: includeSequenceTailAsReference,
               assets: confirmedAssets,
             )
           : _klingImageReferencesForShot(
               sequence: sequence,
               model: model!,
-              includeTailImage: includeSequenceTailAsReference,
-              hasTailImage: tailImagePath.isNotEmpty,
               sourceImagePath: imageFile.path,
-              tailImagePath: tailImagePath,
               assets: confirmedAssets,
             );
       if ((confirmedAssets.isNotEmpty ||
-              _sequenceReferenceShots(
-                sequence,
-                includeTailImage: includeSequenceTailAsReference,
-              ).isNotEmpty) &&
+              _sequenceReferenceShots(sequence).isNotEmpty) &&
           imageReferences.isEmpty &&
           value.errorMessage.isNotEmpty &&
           value.errorMessage != errorBeforeImageReferences) {
@@ -1278,17 +1204,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           ? _videoApiPromptForSubmission(
               draft.selectedPrompt,
               imageReferences: imageReferences,
-              firstImageDescription: usesVideoApiStartEndFrames
-                  ? '@图片1是首帧'
-                  : '@图片1是起始画面参考',
+              firstImageDescription: '@图片1是起始画面参考',
             )
           : _klingPromptForSubmission(
               draft.selectedPrompt,
               imageReferences: imageReferences,
-              hasTailImage: submissionTailImagePath.isNotEmpty,
-              firstImageDescription: usesStartEndFrames
-                  ? '图片1为首帧'
-                  : '图片1为起始画面参考',
+              firstImageDescription: '图片1为起始画面参考',
             );
       final duration = usesVideoApi
           ? desiredDurationFor(shot).round().clamp(1, 15).toInt()
@@ -1315,15 +1236,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
                 ? _miniMaxApiParametersForSubmission(
                     profile?.parameters ?? const <String, String>{},
                   )
-                : _parametersForSubmission(
-                    profile!.parameters,
-                    model: model!,
-                    hasTailImage: submissionTailImagePath.isNotEmpty,
-                  ),
+                : _parametersForSubmission(profile!.parameters, model: model!),
             durationSeconds: duration,
             promptMode: draft.promptMode,
             prompt: prompt,
-            tailImagePath: submissionTailImagePath,
             status: VideoGenerationTaskStatus.draft,
             createdAt: now,
             updatedAt: now,
@@ -1332,7 +1248,6 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           referenceImagePaths: [
             for (final reference in imageReferences) reference.path,
           ],
-          tailImagePath: submissionTailImagePath,
           outputFile: output,
         ),
       );
@@ -1722,35 +1637,21 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       for (final draft in _repository.listDrafts(script.id))
         draft.shotId: draft,
     };
-    final sequences = const VideoActionSequenceResolver()
-        .resolveConfiguredGroups(
-          shooting.shots,
-          pairs: startEndFrameModeEnabled
-              ? _replicateController.value.run?.startEndPairs ?? const []
-              : const [],
-        );
+    final sequences = const VideoActionSequenceResolver().resolve(
+      shooting.shots,
+    );
     final drafts = <String, VideoGenerationDraft>{};
     for (final shot in shooting.shots) {
       final sourcePrompt = shot.prompt;
       final existing = storedDrafts[shot.id];
       final actionSequence = _actionSequenceForPrompt(shot, sequences);
-      final h3ReferenceShots = actionSequence.isEmpty
-          ? <ScriptShot>[shot]
-          : actionSequence;
-      final usesExactH3StartEndFrames =
-          startEndFrameModeEnabled &&
-          h3ReferenceShots.length == 2 &&
-          _confirmedScriptAssetsForSequence(h3ReferenceShots).isEmpty;
       final klingPrompt = const KlingVideoPromptAdapter().adapt(
         shot,
         sourcePrompt: sourcePrompt,
         actionSequence: actionSequence,
         availableImageReferences: actionSequence.isEmpty
             ? 1
-            : startEndFrameModeEnabled
-            ? 2
             : actionSequence.length,
-        useStartEndFrameReferences: startEndFrameModeEnabled,
       );
       final h3Prompt = const H3VideoPromptAdapter().adapt(
         shot,
@@ -1759,7 +1660,6 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         availableImageReferences: actionSequence.isEmpty
             ? 1
             : actionSequence.length,
-        useStartEndFrameReferences: usesExactH3StartEndFrames,
       );
       if (existing == null ||
           existing.sourcePrompt != sourcePrompt ||
@@ -1820,16 +1720,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   List<_GenerationImageReference> _klingImageReferencesForShot({
     required VideoActionSequence sequence,
     required KlingModelSpec model,
-    required bool includeTailImage,
-    required bool hasTailImage,
     required String sourceImagePath,
-    required String tailImagePath,
     required List<ScriptAsset> assets,
   }) {
-    final referenceShots = _sequenceReferenceShots(
-      sequence,
-      includeTailImage: includeTailImage,
-    );
+    final referenceShots = _sequenceReferenceShots(sequence);
     if (assets.isEmpty && referenceShots.isEmpty) return const [];
     if (!model.supportsNumberedImageReferences) {
       value = value.copyWith(
@@ -1838,7 +1732,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       return const [];
     }
     final maxImages = model.maxNumberedImageReferences;
-    final capacity = maxImages - 1 - (hasTailImage ? 1 : 0);
+    final capacity = maxImages - 1;
     if (capacity <= 0) {
       value = value.copyWith(errorMessage: '当前可灵模型没有可用的资产参考图位置。');
       return const [];
@@ -1847,15 +1741,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     if (requestedCount > capacity) {
       value = value.copyWith(
         errorMessage:
-            '当前可灵模型最多支持 $maxImages 张参考图，首帧${hasTailImage ? '和尾帧' : ''}后只能追加 $capacity 张组内参考图和资产图；请减少镜头资产或拆分生成。',
+            '当前可灵模型最多支持 $maxImages 张参考图，起始图后只能追加 $capacity 张组内参考图和资产图；请减少镜头资产或拆分生成。',
       );
       return const [];
     }
 
-    final usedPaths = {
-      p.normalize(sourceImagePath),
-      if (tailImagePath.trim().isNotEmpty) p.normalize(tailImagePath),
-    };
+    final usedPaths = {p.normalize(sourceImagePath)};
     var imageNumber = 2;
     final references = <_GenerationImageReference>[];
     for (final referenceShot in referenceShots) {
@@ -1893,14 +1784,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   List<_GenerationImageReference> _videoApiImageReferencesForShot({
     required VideoActionSequence sequence,
     required String sourceImagePath,
-    required String tailImagePath,
-    required bool includeTailImage,
     required List<ScriptAsset> assets,
   }) {
-    final referenceShots = _sequenceReferenceShots(
-      sequence,
-      includeTailImage: includeTailImage,
-    );
+    final referenceShots = _sequenceReferenceShots(sequence);
     if (assets.isEmpty && referenceShots.isEmpty) return const [];
     const maxImages = 9;
     const capacity = maxImages - 1;
@@ -1948,16 +1834,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return references;
   }
 
-  List<ScriptShot> _sequenceReferenceShots(
-    VideoActionSequence sequence, {
-    bool includeTailImage = false,
-  }) {
-    if (sequence.shots.length <= 2 && !includeTailImage) return const [];
-    final shots = includeTailImage
-        ? sequence.shots.skip(1)
-        : sequence.shots.skip(1).take(sequence.shots.length - 2);
-    return shots.toList(growable: false);
-  }
+  List<ScriptShot> _sequenceReferenceShots(VideoActionSequence sequence) =>
+      sequence.shots.skip(1).toList(growable: false);
 
   List<ScriptAsset> _confirmedScriptAssetsForSequence(
     Iterable<ScriptShot> shots,
@@ -1978,7 +1856,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       for (final link in workflowRepository.listLinksForShot(shot.id)) {
         if (!link.confirmed || !usedAssetIds.add(link.scriptAssetId)) continue;
         final asset = assetsById[link.scriptAssetId];
-        if (asset == null || asset.status != ProcessingStatus.completed) {
+        if (asset == null ||
+            asset.status != ProcessingStatus.completed ||
+            asset.type == ReplicateAssetType.video ||
+            asset.type == ReplicateAssetType.audio) {
           usedAssetIds.remove(link.scriptAssetId);
           continue;
         }
@@ -1991,27 +1872,19 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   String _klingPromptForSubmission(
     String prompt, {
     required List<_GenerationImageReference> imageReferences,
-    required bool hasTailImage,
     required String firstImageDescription,
   }) {
     if (imageReferences.isEmpty) return prompt;
-    final tailImageNumber = hasTailImage ? imageReferences.length + 2 : 0;
-    final normalizedPrompt = hasTailImage
-        ? prompt.replaceAll(RegExp(r'@?图片\s*2(?!\d)'), '图片$tailImageNumber')
-        : prompt;
     final descriptions = <String>[
-      if (!_mentionsImageReference(normalizedPrompt, 1)) firstImageDescription,
+      if (!_mentionsImageReference(prompt, 1)) firstImageDescription,
       for (final reference in imageReferences)
-        if (!_mentionsImageReference(normalizedPrompt, reference.imageNumber))
+        if (!_mentionsImageReference(prompt, reference.imageNumber))
           reference.promptDescription,
-      if (hasTailImage &&
-          !_mentionsImageReference(normalizedPrompt, tailImageNumber))
-        '图片$tailImageNumber为尾帧',
     ];
-    if (descriptions.isEmpty) return normalizedPrompt;
+    if (descriptions.isEmpty) return prompt;
     return [
       '参考图：${descriptions.join('；')}。',
-      normalizedPrompt,
+      prompt,
     ].where((part) => part.trim().isNotEmpty).join('\n');
   }
 
@@ -2124,7 +1997,6 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   Map<String, String> _parametersForSubmission(
     Map<String, String> parameters, {
     required KlingModelSpec model,
-    required bool hasTailImage,
   }) {
     final declaredParameters = {
       for (final argument in model.arguments)
@@ -2136,25 +2008,6 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         if (declaredParameters.contains(_parameterLookupKey(entry.key)))
           entry.key: entry.value,
     };
-    if (!hasTailImage) return adjusted;
-    final resolution = model.argument('resolution');
-    if (resolution != null &&
-        resolution.allowedValues.any(
-          (value) => value.replaceAll(' ', '').toLowerCase() == '1080p',
-        )) {
-      adjusted['resolution'] = _allowedDefault(
-        resolution,
-        '1080p',
-        adjusted['resolution'] ?? resolution.defaultValue,
-      );
-    }
-    final enableAudio = model.argument('enable_audio');
-    final audioUnsupportedWithTail = (enableAudio?.description ?? '')
-        .toLowerCase()
-        .contains('tail image');
-    if (audioUnsupportedWithTail) {
-      adjusted['enable_audio'] = 'false';
-    }
     return adjusted;
   }
 

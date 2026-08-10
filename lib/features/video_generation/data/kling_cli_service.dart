@@ -79,7 +79,6 @@ class KlingCliService {
     required String model,
     required String imagePath,
     List<String> referenceImagePaths = const [],
-    String tailImagePath = '',
     required Map<String, String> parameters,
     required String prompt,
   }) async {
@@ -101,10 +100,6 @@ class KlingCliService {
           '--image',
           referenceImagePath.trim(),
         ],
-      if (tailImagePath.trim().isNotEmpty) ...[
-        '--tailImage',
-        tailImagePath.trim(),
-      ],
     ];
     for (final entry in parameters.entries) {
       if (entry.key == 'prompt' || entry.value.trim().isEmpty) continue;

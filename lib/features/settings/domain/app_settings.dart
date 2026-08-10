@@ -104,7 +104,6 @@ class AppSettings {
     this.videoPreviewPaddingSeconds = 1.5,
     this.videoAnalysisThinkingEnabled = false,
     this.fullAutomationEnabled = false,
-    this.videoStartEndFrameModeEnabled = false,
     this.replicateDefaultGlobalStyle = defaultReplicateGlobalStyle,
     this.replicateDefaultConstraints = defaultReplicateConstraints,
     this.h3PromptStyleId = defaultH3PromptStyleId,
@@ -167,7 +166,6 @@ class AppSettings {
   final double videoPreviewPaddingSeconds;
   final bool videoAnalysisThinkingEnabled;
   final bool fullAutomationEnabled;
-  final bool videoStartEndFrameModeEnabled;
   final String replicateDefaultGlobalStyle;
   final String replicateDefaultConstraints;
   final String h3PromptStyleId;
@@ -241,7 +239,6 @@ class AppSettings {
     double? videoPreviewPaddingSeconds,
     bool? videoAnalysisThinkingEnabled,
     bool? fullAutomationEnabled,
-    bool? videoStartEndFrameModeEnabled,
     String? replicateDefaultGlobalStyle,
     String? replicateDefaultConstraints,
     String? h3PromptStyleId,
@@ -291,8 +288,6 @@ class AppSettings {
           videoAnalysisThinkingEnabled ?? this.videoAnalysisThinkingEnabled,
       fullAutomationEnabled:
           fullAutomationEnabled ?? this.fullAutomationEnabled,
-      videoStartEndFrameModeEnabled:
-          videoStartEndFrameModeEnabled ?? this.videoStartEndFrameModeEnabled,
       replicateDefaultGlobalStyle:
           replicateDefaultGlobalStyle ?? this.replicateDefaultGlobalStyle,
       replicateDefaultConstraints:

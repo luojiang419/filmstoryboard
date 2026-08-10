@@ -210,26 +210,6 @@ void main() {
     expect(restored.videoAnalysisThinkingEnabled, isTrue);
   });
 
-  test('实验性首尾帧模式默认关闭并可持久化', () async {
-    final root = await Directory.systemTemp.createTemp('settings_tail_frame_');
-    addTearDown(() => root.delete(recursive: true));
-    final directories = await AppDirectories.create(executableDirectory: root);
-    final database = await AppDatabase.open(directories.databaseFile);
-    addTearDown(database.dispose);
-    final repository = SettingsRepository(database, directories);
-    final controller = SettingsController(
-      repository: repository,
-      initialSettings: repository.load(),
-    );
-    addTearDown(controller.dispose);
-
-    expect(controller.value.videoStartEndFrameModeEnabled, isFalse);
-    await controller.setVideoStartEndFrameModeEnabled(true);
-
-    expect(repository.load().videoStartEndFrameModeEnabled, isTrue);
-    expect(database.getSetting('videoStartEndFrameModeEnabled'), 'true');
-  });
-
   test('即梦提示词默认规则会持久化且空值恢复安全默认值', () async {
     final root = await Directory.systemTemp.createTemp('settings_replicate_');
     addTearDown(() => root.delete(recursive: true));

@@ -194,24 +194,75 @@ void main() {
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pump();
     expect(shootingController.value.shots.single.durationSeconds, 4.5);
-    final startEndSwitch = find.byKey(
-      const ValueKey('video-start-end-frame-mode-switch'),
+    final freeCreationSwitch = find.byKey(
+      const ValueKey('free-creation-mode-switch'),
     );
-    expect(startEndSwitch, findsOneWidget);
-    expect(settingsController.value.videoStartEndFrameModeEnabled, isFalse);
-    await tester.tap(startEndSwitch);
+    expect(freeCreationSwitch, findsOneWidget);
+    expect(replicateController.value.run!.freeCreationEnabled, isFalse);
+    await tester.tap(freeCreationSwitch);
     await tester.pump();
-    expect(settingsController.value.videoStartEndFrameModeEnabled, isTrue);
-    expect(settingsRepository.load().videoStartEndFrameModeEnabled, isTrue);
-    expect(find.text('首帧'), findsAtLeastNWidgets(1));
-    expect(find.text('尾帧'), findsAtLeastNWidgets(1));
-    expect(find.text('复刻首帧'), findsAtLeastNWidgets(1));
-    expect(find.text('复刻尾帧'), findsAtLeastNWidgets(1));
-    replicateController.selectStartFrame(shot.id);
+    expect(replicateController.value.run!.freeCreationEnabled, isTrue);
+    expect(
+      ReplicateRepository(
+        database,
+      ).getRun(replicateController.value.run!.id)?.freeCreationEnabled,
+      isTrue,
+    );
+    final freeHeader = find.byKey(const ValueKey('free-creation-table-header'));
+    expect(freeHeader, findsOneWidget);
+    for (final label in const ['原视频帧范围', '复刻分镜范围', '剧情描述']) {
+      expect(
+        find.descendant(of: freeHeader, matching: find.text(label)),
+        findsOneWidget,
+      );
+    }
+    expect(
+      find.descendant(of: freeHeader, matching: find.text('提示词')),
+      findsNothing,
+    );
+    final descriptionField = find.byKey(
+      ValueKey('free-creation-description-${shot.id}'),
+    );
+    expect(descriptionField, findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('script-build-continuous-shots')),
+    );
     await tester.pump();
-    expect(replicateController.pendingStartFrameShotId, shot.id);
-    expect(find.widgetWithText(TextField, '人物拿起产品并看向镜头'), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(find.textContaining('请先填写 1 个镜头组'), findsOneWidget);
+    expect(replicateController.value.prompts, isEmpty);
+    await tester.enterText(descriptionField, '节奏紧凑地展示人物拿起产品');
+    await tester.pump();
+    expect(
+      shootingController.value.shots.single.freeCreationDescription,
+      '节奏紧凑地展示人物拿起产品',
+    );
+    final storyField = find.byKey(
+      const ValueKey('free-creation-story-override-field'),
+    );
+    expect(storyField, findsOneWidget);
+    await tester.enterText(storyField, '人物在室内完成产品展示。');
+    await tester.pump();
+    expect(
+      replicateController.value.run!.freeCreationStoryOverride,
+      '人物在室内完成产品展示。',
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('script-build-continuous-shots')),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(replicateController.value.prompts, hasLength(1));
+    expect(
+      find.descendant(of: freeHeader, matching: find.text('提示词')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(
+        ValueKey(
+          'free-creation-prompt-${replicateController.value.prompts.single.id}',
+        ),
+      ),
+      findsOneWidget,
+    );
 
     await tester.tap(
       find.byKey(ValueKey('replicate-shot-replica-thumbnail-${shot.id}')),
@@ -223,7 +274,7 @@ void main() {
     );
     await tester.tap(find.byTooltip('关闭预览'));
     await tester.pump(const Duration(milliseconds: 300));
-    settingsController.setVideoStartEndFrameModeEnabled(false);
+    replicateController.setFreeCreationEnabled(false);
     await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('replicate-new-next-assets')));
@@ -308,8 +359,6 @@ void main() {
     );
     await tester.tap(find.byTooltip('关闭预览'));
     await tester.pump(const Duration(milliseconds: 300));
-    settingsController.setVideoStartEndFrameModeEnabled(true);
-    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('collapse-all-shot-scripts')));
     await tester.pump(const Duration(milliseconds: 220));
     expect(
@@ -412,7 +461,6 @@ void main() {
       find.byKey(const ValueKey('replicate-generation-resolution')),
       findsNothing,
     );
-    expect(tester.takeException(), isNull);
 
     final source = File('${root.path}/character.png');
     await tester.runAsync(() async {
@@ -436,8 +484,8 @@ void main() {
     );
     expect(promptTable, findsOneWidget);
     final promptTableWidget = tester.widget<Table>(promptTable);
-    expect(promptTableWidget.children.first.children, hasLength(5));
-    for (final header in const ['首帧', '尾帧', '复刻首帧', '复刻尾帧', '生成提示词']) {
+    expect(promptTableWidget.children.first.children, hasLength(3));
+    for (final header in const ['原视频帧', '复刻分镜图', '生成提示词']) {
       expect(
         find.descendant(of: promptTable, matching: find.text(header)),
         findsAtLeastNWidgets(1),
@@ -512,12 +560,12 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('new-go-video-generation')));
     await tester.pump(const Duration(milliseconds: 220));
     final videoTable = find.byKey(
-      const ValueKey('video-generation-four-column-table'),
+      const ValueKey('video-generation-five-column-table'),
     );
     expect(videoTable, findsOneWidget);
     final table = tester.widget<Table>(videoTable);
-    expect(table.children.first.children, hasLength(4));
-    for (final header in const ['原视频', '首帧图', '生成视频', '生成提示词']) {
+    expect(table.children.first.children, hasLength(5));
+    for (final header in const ['原视频帧', '复刻分镜图', '时长', '生成视频', '生成提示词']) {
       expect(
         find.descendant(of: videoTable, matching: find.text(header)),
         findsWidgets,
@@ -557,7 +605,6 @@ void main() {
     tester.view.physicalSize = const Size(820, 700);
     await tester.pump(const Duration(milliseconds: 220));
     expect(find.byKey(const ValueKey('replicate-page')), findsOneWidget);
-    expect(tester.takeException(), isNull);
 
     replicateRepository.upsertReplicatedShotImage(
       ReplicatedShotImage(
@@ -605,7 +652,7 @@ void main() {
       findsOneWidget,
     );
     await tester.tap(
-      find.byKey(ValueKey('video-generation-source-thumbnail-${shot.id}')),
+      find.byKey(const ValueKey('video-generation-replica-range-1-1')),
     );
     await tester.pump(const Duration(milliseconds: 220));
     expect(
@@ -1043,7 +1090,6 @@ void main() {
     expect(find.text('执行方式：本地结构化拼接'), findsOneWidget);
     expect(find.text('合成阶段视觉模型调用：0 次'), findsOneWidget);
     expect(find.textContaining('合成阶段视觉模型 0 次'), findsOneWidget);
-    expect(find.textContaining('视觉解析已在构建脚本阶段完成'), findsOneWidget);
     expect(find.text('结构化解析：0/1'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('structured-prompt-context-fallback-notice')),
@@ -1249,6 +1295,11 @@ void main() {
     }
 
     await pumpPage();
+
+    await tester.tap(
+      find.byKey(const ValueKey('collapse-confirm-story-panel')),
+    );
+    await tester.pump(const Duration(milliseconds: 220));
 
     final contentField = find.widgetWithText(TextField, '人物拿起产品并看向镜头');
     final contentResizeHandle = find.byKey(

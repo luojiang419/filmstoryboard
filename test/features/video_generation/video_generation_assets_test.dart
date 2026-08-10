@@ -232,7 +232,7 @@ void main() {
     expect(prompt, official);
   });
 
-  test('可灵首尾帧动作组用自然阶段保留中间过程且不写内部镜号和秒表', () {
+  test('可灵多参考图动作组用自然阶段保留中间过程且不写内部镜号和秒表', () {
     final prompt = const KlingVideoPromptAdapter().adapt(
       _shot().copyWith(
         shotNumber: 4,
@@ -263,8 +263,8 @@ void main() {
       availableImageReferences: 2,
     );
 
-    expect(prompt, contains('图片1为首帧，图片2为尾帧'));
-    expect(prompt, contains('单镜头连续完成'));
+    expect(prompt, contains('图片1至图片2为同一连续动作的顺序参考'));
+    expect(prompt, contains('保持主体、场景、构图与光影连续'));
     expect(prompt, contains('开头：'));
     expect(prompt, contains('随后：'));
     expect(prompt, contains('最后：'));
@@ -425,14 +425,13 @@ non_diegetic_music: Minimal ambient music.''';
         _shot().copyWith(shotNumber: 2, durationSeconds: 4),
       ],
       availableImageReferences: 2,
-      useStartEndFrameReferences: false,
     );
 
     expect(prompt, contains('4秒视频'));
     expect(prompt, isNot(contains('1秒视频')));
   });
 
-  test('H3 明确首尾帧模式只绑定两张精确帧并禁止切镜', () {
+  test('H3 双帧镜头组使用 Ref2VA 顺序参考语义', () {
     final prompt = const H3VideoPromptAdapter().adapt(
       _shot().copyWith(shotNumber: 1, content: '人物开始拿起产品'),
       actionSequence: [
@@ -440,15 +439,13 @@ non_diegetic_music: Minimal ambient music.''';
         _shot().copyWith(shotNumber: 3, content: '人物完成展示动作'),
       ],
       availableImageReferences: 2,
-      useStartEndFrameReferences: true,
     );
 
-    expect(prompt, contains('@图片1是首帧，@图片2是尾帧'));
-    expect(prompt, contains('从@图片1状态开始'));
-    expect(prompt, contains('自然到达@图片2状态'));
-    expect(prompt, contains('单镜头连续完成，不切镜'));
-    expect(prompt, contains('开头：从@图片1状态开始'));
-    expect(prompt, contains('最后：自然到达@图片2状态'));
+    expect(prompt, contains('@图片1至@图片2是同一连续镜头的顺序动作参考'));
+    expect(prompt, contains('开头：衔接@图片1'));
+    expect(prompt, contains('最后：衔接@图片2'));
+    expect(prompt, isNot(contains('首帧')));
+    expect(prompt, isNot(contains('尾帧')));
     expect(prompt, isNot(contains('0秒-')));
   });
 
@@ -461,7 +458,6 @@ non_diegetic_music: Minimal ambient music.''';
         _shot().copyWith(shotNumber: 6, content: '人物完成展示动作'),
       ],
       availableImageReferences: 3,
-      useStartEndFrameReferences: false,
     );
 
     expect(prompt, contains('@图片1至@图片3'));
@@ -520,7 +516,6 @@ non_diegetic_music: Minimal ambient music.''';
         ),
       ],
       availableImageReferences: 3,
-      useStartEndFrameReferences: false,
       constraints: '不新增人物或文字',
     );
 
@@ -550,7 +545,6 @@ non_diegetic_music: Minimal ambient music.''';
         _shot().copyWith(shotNumber: 6, content: '人物完成展示动作'),
       ],
       availableImageReferences: 3,
-      useStartEndFrameReferences: false,
     );
 
     expect(prompt, contains('图片1至图片3为同一连续动作的顺序参考'));
@@ -583,7 +577,6 @@ non_diegetic_music: Minimal ambient music.''';
         _shot().copyWith(shotNumber: 9, content: '模特移动到画面中部偏左并稳定收束'),
       ],
       availableImageReferences: 3,
-      useStartEndFrameReferences: false,
     );
 
     expect(prompt, contains('图片1至图片3'));

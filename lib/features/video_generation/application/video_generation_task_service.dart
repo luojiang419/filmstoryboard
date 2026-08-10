@@ -16,14 +16,12 @@ class VideoGenerationSubmission {
     required this.task,
     required this.sourceImagePath,
     this.referenceImagePaths = const [],
-    this.tailImagePath = '',
     required this.outputFile,
   });
 
   final VideoGenerationTask task;
   final String sourceImagePath;
   final List<String> referenceImagePaths;
-  final String tailImagePath;
   final File outputFile;
 }
 
@@ -79,10 +77,6 @@ class VideoGenerationTaskService {
     if (!File(submission.sourceImagePath).existsSync()) {
       throw const KlingCliException('缺少生成首帧图，当前镜头不可生成视频。');
     }
-    if (submission.tailImagePath.isNotEmpty &&
-        !File(submission.tailImagePath).existsSync()) {
-      throw const KlingCliException('首尾帧模式缺少尾帧图，已阻止提交。');
-    }
     final videoApiConfig = _videoApiConfig;
     if (videoApiConfig != null &&
         videoApiConfig.isHttpApi &&
@@ -120,7 +114,6 @@ class VideoGenerationTaskService {
         model: current.model,
         imagePath: submission.sourceImagePath,
         referenceImagePaths: submission.referenceImagePaths,
-        tailImagePath: submission.tailImagePath,
         parameters: {
           ...current.parameters,
           'duration': '${current.durationSeconds}',
@@ -190,7 +183,6 @@ class VideoGenerationTaskService {
         config: config,
         imagePath: submission.sourceImagePath,
         referenceImagePaths: submission.referenceImagePaths,
-        tailImagePath: submission.tailImagePath,
         parameters: {
           ...current.parameters,
           'duration': '${current.durationSeconds}',

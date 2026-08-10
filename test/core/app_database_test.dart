@@ -829,4 +829,69 @@ void main() {
     expect(results.length, 1);
     expect(results.single.id, 'result-existing');
   });
+
+  test('版本18首尾帧配对迁移为普通镜头范围并补齐自由创作字段', () async {
+    final root = await Directory.systemTemp.createTemp('free_creation_v18_');
+    addTearDown(() => root.delete(recursive: true));
+    final databaseFile = File(p.join(root.path, 'legacy.sqlite'));
+    final legacy = sqlite3.open(databaseFile.path);
+    legacy
+      ..execute('''
+        CREATE TABLE script_shots (
+          id TEXT PRIMARY KEY,
+          script_id TEXT NOT NULL,
+          shot_number INTEGER NOT NULL,
+          continues_from_previous INTEGER NOT NULL DEFAULT 0,
+          continues_to_next INTEGER NOT NULL DEFAULT 0
+        );
+      ''')
+      ..execute('''
+        CREATE TABLE replicate_runs (
+          id TEXT PRIMARY KEY,
+          script_id TEXT NOT NULL DEFAULT '',
+          start_end_pairs_json TEXT NOT NULL DEFAULT '[]'
+        );
+      ''');
+    for (var index = 1; index <= 4; index++) {
+      legacy.execute(
+        'INSERT INTO script_shots(id, script_id, shot_number) VALUES(?, ?, ?);',
+        ['shot-$index', 'script-1', index],
+      );
+    }
+    legacy
+      ..execute(
+        'INSERT INTO replicate_runs(id, script_id, start_end_pairs_json) '
+        'VALUES(?, ?, ?);',
+        [
+          'run-1',
+          'script-1',
+          '[{"startShotId":"shot-1","tailShotId":"shot-3"}]',
+        ],
+      )
+      ..execute('PRAGMA user_version = 18;')
+      ..close();
+
+    final database = await AppDatabase.open(databaseFile);
+    addTearDown(database.dispose);
+
+    final shots = database.selectRows(
+      'SELECT * FROM script_shots ORDER BY shot_number;',
+    );
+    expect(shots[0]['continues_to_next'], 1);
+    expect(shots[1]['continues_from_previous'], 1);
+    expect(shots[1]['continues_to_next'], 1);
+    expect(shots[2]['continues_from_previous'], 1);
+    expect(shots[2]['continues_to_next'], 0);
+    expect(shots[3]['continues_from_previous'], 0);
+    expect(shots.first['free_creation_description'], '');
+
+    final run = database.selectRows('SELECT * FROM replicate_runs;').single;
+    expect(run['start_end_pairs_json'], '[]');
+    expect(run['free_creation_enabled'], 0);
+    expect(run['free_creation_story_override'], '');
+    expect(
+      database.selectRows('PRAGMA user_version;').single['user_version'],
+      19,
+    );
+  });
 }

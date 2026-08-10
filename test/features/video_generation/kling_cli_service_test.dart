@@ -216,7 +216,6 @@ void main() {
         r'C:\assets\hero.png',
         r'C:\assets\product.png',
       ],
-      tailImagePath: r'C:\frames\replicated 03.png',
       parameters: const {'duration': '5', 'resolution': '1080p'},
       prompt: '人物缓慢转身，镜头轻推',
     );
@@ -231,7 +230,6 @@ void main() {
       identity.imageToVideoModels.single.inputs.single.name,
       'first_image',
     );
-    expect(identity.imageToVideoModels.single.supportsStartEndFrames, isFalse);
     expect(submission.generationId, 'generation-1');
     expect(result.status, VideoGenerationTaskStatus.partialCompleted);
     expect(result.urlWithoutWatermark, contains('clean.mp4'));
@@ -249,10 +247,6 @@ void main() {
     expect(
       submitArguments,
       containsAllInOrder(['--image', r'C:\assets\product.png']),
-    );
-    expect(
-      submitArguments,
-      containsAllInOrder(['--tailImage', r'C:\frames\replicated 03.png']),
     );
     expect(submitArguments.last, '人物缓慢转身，镜头轻推');
   });
@@ -381,7 +375,7 @@ void main() {
     ]);
   });
 
-  test('MiniMax 本地视频 API 首尾帧按 keyframes multipart 提交', () async {
+  test('MiniMax 本地视频 API 按 references multipart 提交', () async {
     final root = await Directory.systemTemp.createTemp('minimax-api-');
     addTearDown(() async {
       if (root.existsSync()) await root.delete(recursive: true);
@@ -395,13 +389,13 @@ void main() {
         expect(request, isA<http.MultipartRequest>());
         final multipart = request as http.MultipartRequest;
         expect(multipart.headers['Authorization'], 'Bearer local-key');
-        expect(multipart.fields['mode'], 'keyframes');
+        expect(multipart.fields['mode'], 'references');
         expect(multipart.fields['prompt'], '镜头缓慢运动');
         expect(multipart.fields['resolution'], '0.2MP 16:9 - 608x352');
         expect(multipart.fields['duration'], '2');
         expect(
           multipart.files.map((file) => file.field),
-          containsAllInOrder(['first_frame', 'last_frame']),
+          everyElement('reference_images'),
         );
         return http.StreamedResponse(
           Stream.value(utf8.encode('{"id":"job-1"}')),
@@ -434,7 +428,7 @@ void main() {
     final submission = await service.submitImageToVideo(
       config: config,
       imagePath: image.path,
-      tailImagePath: tail.path,
+      referenceImagePaths: [tail.path],
       parameters: const {'resolution': '0.2MP 16:9 - 608x352', 'duration': '2'},
       prompt: '镜头缓慢运动',
     );

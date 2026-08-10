@@ -56,6 +56,52 @@ class ReplicateRepository {
     }
   }
 
+  String latestStoryboardStory({String? preferredBoardId}) {
+    final normalizedBoardId = preferredBoardId?.trim() ?? '';
+    Map<String, Object?>? row;
+    if (normalizedBoardId.isNotEmpty) {
+      final rows = _database.selectRows(
+        'SELECT outline, content, scenes FROM storyboard_summaries '
+        'WHERE board_id = ? LIMIT 1;',
+        [normalizedBoardId],
+      );
+      if (rows.isNotEmpty) row = rows.first;
+    }
+    if (row == null) {
+      final rows = _database.selectRows(
+        'SELECT outline, content, scenes FROM storyboard_summaries '
+        'ORDER BY updated_at DESC LIMIT 1;',
+      );
+      if (rows.isNotEmpty) row = rows.first;
+    }
+    if (row == null) return '';
+    final parts = <String>[];
+    for (final column in const ['outline', 'content', 'scenes']) {
+      final text = '${row[column] ?? ''}'.trim();
+      if (text.isNotEmpty && !parts.contains(text)) parts.add(text);
+    }
+    return parts.join('\n\n');
+  }
+
+  Map<String, String> storyboardCaptionsForAssetIds(Iterable<String> assetIds) {
+    final ids = assetIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (ids.isEmpty) return const {};
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = _database.selectRows(
+      'SELECT cut_result_id, caption FROM storyboard_items '
+      'WHERE cut_result_id IN ($placeholders);',
+      ids,
+    );
+    return {
+      for (final row in rows)
+        '${row['cut_result_id'] ?? ''}': '${row['caption'] ?? ''}'.trim(),
+    };
+  }
+
   List<ReplicatedShotImage> listReplicatedShotImages(String runId) => _database
       .selectRows(
         'SELECT * FROM replicated_shot_images WHERE run_id = ? ORDER BY shot_number;',

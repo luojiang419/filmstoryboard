@@ -12,29 +12,20 @@ class KlingVideoPromptAdapter {
     List<ScriptShot> actionSequence = const [],
     int availableImageReferences = 0,
     int availableVideoReferences = 0,
-    bool? useStartEndFrameReferences,
     String globalStyle = '',
     String constraints = '',
   }) {
     final sequence = actionSequence.isEmpty
         ? <ScriptShot>[shot]
         : actionSequence;
-    final hasTailReference =
-        useStartEndFrameReferences ??
-        (sequence.length > 1 && availableImageReferences == 2);
     final providedPrompt = _normalizeKlingImageLead(sourcePrompt?.trim() ?? '');
-    if (_canPassThrough(
-      providedPrompt,
-      sequenceLength: sequence.length,
-      hasTailReference: hasTailReference,
-    )) {
+    if (_canPassThrough(providedPrompt, sequenceLength: sequence.length)) {
       return providedPrompt;
     }
 
     final reference = _referenceInstruction(
       sequenceLength: sequence.length,
       availableImageReferences: availableImageReferences,
-      hasTailReference: hasTailReference,
     );
     final action = sequence.length > 1
         ? _sequenceAction(sequence)
@@ -101,12 +92,8 @@ class KlingVideoPromptAdapter {
   static String _referenceInstruction({
     required int sequenceLength,
     required int availableImageReferences,
-    required bool hasTailReference,
   }) {
     if (availableImageReferences <= 0) return '';
-    if (hasTailReference && availableImageReferences >= 2) {
-      return '图片1为首帧，图片2为尾帧；单镜头连续完成，只补全两帧之间的自然动作。';
-    }
     final sequenceReferences = math.min(
       sequenceLength,
       availableImageReferences,
@@ -278,13 +265,8 @@ class KlingVideoPromptAdapter {
       .replaceFirst('以输入图片作为首帧和主体外观参考', '以图片1作为首帧和主体外观参考')
       .replaceFirst('以@图片1作为首帧和主体外观参考', '以图片1作为首帧和主体外观参考');
 
-  static bool _canPassThrough(
-    String prompt, {
-    required int sequenceLength,
-    required bool hasTailReference,
-  }) {
+  static bool _canPassThrough(String prompt, {required int sequenceLength}) {
     if (!_isKlingPrompt(prompt)) return false;
-    if (hasTailReference) return _mentionsTailReference(prompt);
     if (sequenceLength > 1) {
       return RegExp(r'图片\s*1\s*(?:至|到|[-~～])\s*图片?\s*\d+').hasMatch(prompt);
     }
@@ -293,9 +275,6 @@ class KlingVideoPromptAdapter {
 
   static bool _isKlingPrompt(String prompt) =>
       RegExp(r'^(?:以)?图片\s*1\s*(?:作为|为)').hasMatch(prompt);
-
-  static bool _mentionsTailReference(String prompt) =>
-      RegExp(r'图片\s*2(?!\d)').hasMatch(prompt) || prompt.contains('尾帧');
 
   static bool _isStructuredPrompt(String value) {
     const markers = [

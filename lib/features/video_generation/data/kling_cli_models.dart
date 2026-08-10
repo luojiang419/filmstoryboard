@@ -57,9 +57,6 @@ class KlingModelSpec {
     return false;
   }
 
-  bool get supportsStartEndFrames =>
-      supportsInput('tail_image') || supportsInput('image_2');
-
   bool get supportsNumberedImageReferences => supportsInput('image_1');
 
   int get maxNumberedImageReferences {

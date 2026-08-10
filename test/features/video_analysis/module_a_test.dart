@@ -163,6 +163,7 @@ void main() {
         framePath: 'frames/video-1/frame-0.jpg',
         visual: '人物走入画面',
         content: '建立空间',
+        freeCreationDescription: '人物缓慢走入室内，节奏克制',
         shotSize: '中景',
         cameraMovement: '固定',
         cameraNotes: '',
@@ -190,6 +191,9 @@ void main() {
       ReplicateRun(
         id: 'run-1',
         videoId: 'video-1',
+        scriptId: 'script-1',
+        freeCreationEnabled: true,
+        freeCreationStoryOverride: '人物进入空间并发现目标。',
         currentStep: ReplicateStep.prepareAssets,
         status: ProcessingStatus.running,
         confirmShotsStatus: ProcessingStatus.completed,
@@ -226,6 +230,7 @@ void main() {
         prompt: '图片1中的角色走入室内',
         model: 'local-rule-composer',
         rawResponse: '',
+        isUserEdited: true,
         status: ProcessingStatus.completed,
         errorMessage: '',
         updatedAt: now,
@@ -256,14 +261,17 @@ void main() {
     expect(scriptShot.transitionHint, '接近景');
     expect(scriptShot.movementTrend, '向前走入');
     expect(scriptShot.actionStage, '进行');
+    expect(scriptShot.freeCreationDescription, '人物缓慢走入室内，节奏克制');
     expect(scriptShot.continuesFromPrevious, isTrue);
     expect(scriptShot.continuesToNext, isTrue);
-    expect(
-      repository.getReplicateRun('run-1')!.currentStep,
-      ReplicateStep.prepareAssets,
-    );
+    final replicateRun = repository.getReplicateRun('run-1')!;
+    expect(replicateRun.currentStep, ReplicateStep.prepareAssets);
+    expect(replicateRun.freeCreationEnabled, isTrue);
+    expect(replicateRun.freeCreationStoryOverride, '人物进入空间并发现目标。');
     expect(repository.listReplicateAssets('run-1').single.referenceNumber, 1);
-    expect(repository.listShotPrompts('run-1').single.assetIds, ['asset-1']);
+    final prompt = repository.listShotPrompts('run-1').single;
+    expect(prompt.assetIds, ['asset-1']);
+    expect(prompt.isUserEdited, isTrue);
   });
 
   test('取消视频解析不会把当前请求记为失败帧', () async {

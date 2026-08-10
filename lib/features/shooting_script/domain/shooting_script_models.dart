@@ -53,6 +53,7 @@ class ScriptShot {
     required this.framePath,
     required this.visual,
     required this.content,
+    this.freeCreationDescription = '',
     required this.shotSize,
     required this.cameraMovement,
     required this.cameraNotes,
@@ -87,6 +88,7 @@ class ScriptShot {
   final String framePath;
   final String visual;
   final String content;
+  final String freeCreationDescription;
   final String shotSize;
   final String cameraMovement;
   final String cameraNotes;
@@ -120,6 +122,7 @@ class ScriptShot {
     String? framePath,
     String? visual,
     String? content,
+    String? freeCreationDescription,
     String? shotSize,
     String? cameraMovement,
     String? cameraNotes,
@@ -158,6 +161,8 @@ class ScriptShot {
     framePath: framePath ?? this.framePath,
     visual: visual ?? this.visual,
     content: content ?? this.content,
+    freeCreationDescription:
+        freeCreationDescription ?? this.freeCreationDescription,
     shotSize: shotSize ?? this.shotSize,
     cameraMovement: cameraMovement ?? this.cameraMovement,
     cameraNotes: cameraNotes ?? this.cameraNotes,

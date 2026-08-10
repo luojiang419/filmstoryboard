@@ -22,7 +22,7 @@ void main() {
     expect(sequences.last.hasDistinctTail, isFalse);
   });
 
-  test('仅同场景或单向连续不会误合并，不同场景强制断组', () {
+  test('仅同场景或单向连续不会误合并，显式双向标记允许跨场景成组', () {
     final sequences = resolver.resolve([
       _shot(1, continuesToNext: true),
       _shot(2, scene: '室内', continuesFromPrevious: false),
@@ -30,7 +30,8 @@ void main() {
       _shot(4, scene: '室外', continuesFromPrevious: true),
     ]);
 
-    expect(sequences, hasLength(4));
+    expect(sequences, hasLength(3));
+    expect(sequences.last.shots.map((shot) => shot.shotNumber), [3, 4]);
   });
 
   test('动作文字相似但没有手动双向标记时保持独立', () {

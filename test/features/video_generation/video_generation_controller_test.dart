@@ -543,7 +543,6 @@ void main() {
         p.normalize(assetFile.path),
       ],
     );
-    expect(fixture.fakeCli.submittedTailImagePaths.single, isEmpty);
     expect(
       fixture.fakeCli.submittedPrompts.single,
       contains('图片1至图片3为同一连续动作的顺序参考'),
@@ -932,151 +931,6 @@ void main() {
       VideoGenerationTaskStatus.canceled,
     );
     await generation;
-  });
-
-  test('首尾帧模式视频生成只提交手动配对首帧并合计中间时长', () async {
-    final root = await Directory.systemTemp.createTemp(
-      'video-generation-start-end-',
-    );
-    final directories = await AppDirectories.create(executableDirectory: root);
-    final database = await AppDatabase.open(directories.databaseFile);
-    final settingsRepository = SettingsRepository(database, directories);
-    final settingsController = SettingsController(
-      repository: settingsRepository,
-      initialSettings: settingsRepository.load(),
-    );
-    await settingsController.setVideoStartEndFrameModeEnabled(true);
-    final shootingController = ShootingScriptController(
-      repository: ShootingScriptRepository(database),
-      directories: directories,
-    )..createEmpty(name: '手动首尾帧脚本');
-    final frame1 = await File('${root.path}/frame-1.png').writeAsBytes([1]);
-    final frame2 = await File('${root.path}/frame-2.png').writeAsBytes([2]);
-    final frame3 = await File('${root.path}/frame-3.png').writeAsBytes([3]);
-    final first = shootingController.addShot()!;
-    shootingController.updateShot(
-      first.copyWith(
-        framePath: frame1.path,
-        durationSeconds: 1,
-        prompt: '镜头1提示词',
-      ),
-    );
-    final middle = shootingController.addShot()!;
-    shootingController.updateShot(
-      middle.copyWith(
-        framePath: frame2.path,
-        durationSeconds: 2,
-        prompt: '镜头2提示词',
-      ),
-    );
-    final tail = shootingController.addShot()!;
-    shootingController.updateShot(
-      tail.copyWith(
-        framePath: frame3.path,
-        durationSeconds: 3,
-        prompt: '镜头3提示词',
-      ),
-    );
-    final replicateRepository = ReplicateRepository(database);
-    final replicateController = ReplicateController(
-      repository: replicateRepository,
-      shootingScriptController: shootingController,
-      directories: directories,
-      settingsController: settingsController,
-    );
-    replicateController.selectStartFrame(first.id);
-    replicateController.setTailFrame(tail.id);
-    final firstReplica = await File(
-      '${root.path}/replicated-first.png',
-    ).writeAsBytes([11]);
-    final tailReplica = await File(
-      '${root.path}/replicated-tail.png',
-    ).writeAsBytes([12]);
-    replicateRepository.upsertReplicatedShotImage(
-      ReplicatedShotImage(
-        id: 'replicated-${first.id}',
-        runId: replicateController.value.run!.id,
-        scriptShotId: first.id,
-        shotNumber: first.shotNumber,
-        originalFramePath: frame1.path,
-        generatedFramePath: firstReplica.path,
-        assetIds: const [],
-        prompt: '',
-        model: 'test',
-        rawResponse: '',
-        status: ProcessingStatus.completed,
-        errorMessage: '',
-        createdAt: DateTime.now().toUtc(),
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    replicateController.refresh();
-    final controller = VideoGenerationController(
-      repository: VideoGenerationRepository(database),
-      videoRepository: VideoAnalysisRepository(database),
-      shootingScriptController: shootingController,
-      replicateController: replicateController,
-      directories: directories,
-      settingsController: settingsController,
-    );
-    addTearDown(() async {
-      controller.dispose();
-      replicateController.dispose();
-      shootingController.dispose();
-      settingsController.dispose();
-      database.dispose();
-      if (root.existsSync()) await root.delete(recursive: true);
-    });
-
-    expect(controller.generationTargets().map((shot) => shot.id), [first.id]);
-    expect(controller.canGenerateShot(middle), isFalse);
-    expect(controller.desiredDurationFor(first), 6);
-    expect(
-      controller.value.drafts[first.id]?.h3Prompt,
-      contains('@图片1至@图片3是同一连续镜头的顺序动作参考'),
-      reason: '含中间帧的手动首尾组实际会按多参考图提交，预览提示词不能误写成双关键帧',
-    );
-    expect(
-      controller.value.drafts[first.id]?.h3Prompt,
-      isNot(contains('@图片1是首帧')),
-    );
-    final currentTail = controller.actionSequenceFor(first).tail;
-    expect(currentTail.id, tail.id);
-    expect(
-      p.normalize(controller.sourceImageFileFor(first)?.path ?? ''),
-      p.normalize(firstReplica.path),
-    );
-    expect(
-      p.normalize(controller.sourceImageFileFor(currentTail)?.path ?? ''),
-      p.normalize(frame3.path),
-      reason: '尾帧未复刻时应回退原尾帧提交视频生成',
-    );
-
-    replicateRepository.upsertReplicatedShotImage(
-      ReplicatedShotImage(
-        id: 'replicated-${tail.id}',
-        runId: replicateController.value.run!.id,
-        scriptShotId: tail.id,
-        shotNumber: tail.shotNumber,
-        originalFramePath: frame3.path,
-        generatedFramePath: tailReplica.path,
-        assetIds: const [],
-        prompt: '',
-        model: 'test',
-        rawResponse: '',
-        status: ProcessingStatus.completed,
-        errorMessage: '',
-        createdAt: DateTime.now().toUtc(),
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    replicateController.refresh();
-    await Future<void>.delayed(Duration.zero);
-    expect(
-      p.normalize(controller.sourceImageFileFor(currentTail)?.path ?? ''),
-      p.normalize(tailReplica.path),
-      reason: '尾帧完成复刻后应优先提交新的复刻尾帧',
-    );
   });
 
   test('可灵授权等待以 whoAmI 成功作为真实登录完成信号', () async {
@@ -1643,12 +1497,16 @@ non_diegetic_music: Minimal ambient music.''',
     ).writeAsBytes([2]);
     final first = fixture.shootingController.addShot()!;
     final second = fixture.shootingController.addShot()!;
+    final freeCreationPrompt = _officialFreeCreationPrompt(
+      pictureCount: 2,
+      durationSeconds: 4,
+    );
     fixture.shootingController.updateShot(
       first.copyWith(
         framePath: firstFrame.path,
         durationSeconds: 1,
         content: '人物拿起产品',
-        prompt: '人物连续完成展示动作',
+        prompt: freeCreationPrompt,
       ),
     );
     fixture.shootingController.updateShot(
@@ -1665,6 +1523,32 @@ non_diegetic_music: Minimal ambient music.''',
       ),
       isTrue,
     );
+    await Future<void>.delayed(Duration.zero);
+
+    fixture.replicateController.setFreeCreationEnabled(true);
+    final replicateRepository = ReplicateRepository(fixture.database);
+    final now = DateTime.now().toUtc();
+    replicateRepository.upsertPrompt(
+      ShotPrompt(
+        id: 'free-creation-duration-prompt',
+        runId: fixture.replicateController.value.run!.id,
+        shotNumber: first.shotNumber,
+        scriptShotId: first.id,
+        assetIds: const [],
+        prompt: freeCreationPrompt,
+        model: 'MiniMax H3 Ref2VA',
+        rawResponse: jsonEncode({
+          'h3Prompt': freeCreationPrompt,
+          'selectedPromptFormat': 'h3',
+          'promptSource': 'freeCreationHolisticVision',
+          'aiDurationSeconds': 4,
+        }),
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: now,
+      ),
+    );
+    fixture.replicateController.refresh();
     await Future<void>.delayed(Duration.zero);
 
     expect(
@@ -1686,9 +1570,26 @@ non_diegetic_music: Minimal ambient music.''',
     fixture.controller.updateDesiredDurationFor(first, 7);
     await Future<void>.delayed(Duration.zero);
     expect(fixture.controller.desiredDurationFor(first), 7);
+    final synchronizedPrompt = _officialFreeCreationPrompt(
+      pictureCount: 2,
+      durationSeconds: 7,
+    );
+    expect(
+      fixture.replicateController.value.prompts.single.prompt,
+      synchronizedPrompt,
+      reason: '确认镜头提示词必须与用户选择的时长同源更新',
+    );
+    expect(
+      fixture.shootingController.value.shots.first.prompt,
+      synchronizedPrompt,
+    );
+    expect(
+      fixture.controller.value.drafts[first.id]?.sourcePrompt,
+      synchronizedPrompt,
+    );
     expect(
       fixture.controller.value.drafts[first.id]?.h3Prompt,
-      contains('7秒视频'),
+      synchronizedPrompt,
     );
 
     await fixture.controller.generateShot(first);
@@ -1705,11 +1606,18 @@ non_diegetic_music: Minimal ambient music.''',
       RegExp(r'name="reference_images"').allMatches(submittedBody),
       hasLength(2),
     );
-    expect(submittedBody, contains('@图片1至@图片2是同一连续镜头的顺序动作参考'));
+    final firstImageIndex = submittedBody.indexOf('manual-two-frame-1.png');
+    final secondImageIndex = submittedBody.indexOf('manual-two-frame-2.png');
+    expect(firstImageIndex, greaterThanOrEqualTo(0));
+    expect(secondImageIndex, greaterThan(firstImageIndex));
+    expect(submittedBody, contains('<Picture 1>'));
+    expect(submittedBody, contains('<Picture 2>'));
     expect(submittedBody, isNot(contains('【参考素材补充】')));
     expect(submittedBody, isNot(contains('参考补充：')));
     expect(submittedBody, isNot(contains('首帧参考图')));
     expect(submittedBody, isNot(contains('尾帧参考图')));
+    expect(fixture.controller.value.tasks.single.durationSeconds, 7);
+    expect(fixture.controller.value.tasks.single.prompt, synchronizedPrompt);
   });
 
   test('本地视频 API 按确认页手动镜头组提交全部复刻帧和资产图', () async {
@@ -1781,6 +1689,9 @@ non_diegetic_music: Minimal ambient music.''',
     final tailAssetFile = await File(
       p.join(fixture.root.path, 'h3-group-tail-scene.png'),
     ).writeAsBytes([22]);
+    final ignoredAudioFile = await File(
+      p.join(fixture.root.path, 'h3-group-ignored-audio.mp3'),
+    ).writeAsBytes([31, 32]);
 
     final first = fixture.shootingController.addShot()!;
     final middle = fixture.shootingController.addShot()!;
@@ -1846,6 +1757,18 @@ non_diegetic_music: Minimal ambient music.''',
     );
     for (final asset in [
       ScriptAsset(
+        id: 'h3-group-audio',
+        scriptId: updatedFirst.scriptId,
+        type: ReplicateAssetType.audio,
+        name: '环境声音参考',
+        description: '不应进入 reference_images',
+        path: ignoredAudioFile.path,
+        referenceNumber: 0,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
         id: 'h3-group-product',
         scriptId: updatedFirst.scriptId,
         type: ReplicateAssetType.product,
@@ -1873,6 +1796,18 @@ non_diegetic_music: Minimal ambient music.''',
       workflowRepository.upsertScriptAsset(asset);
     }
     for (final link in [
+      ScriptShotAssetLink(
+        shotId: updatedMiddle.id,
+        scriptAssetId: 'h3-group-audio',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '音频只用于声音参考，不得作为图片附件提交',
+        confirmed: true,
+        locked: true,
+        sortOrder: -1,
+        createdAt: now,
+        updatedAt: now,
+      ),
       ScriptShotAssetLink(
         shotId: updatedMiddle.id,
         scriptAssetId: 'h3-group-product',
@@ -1947,6 +1882,20 @@ non_diegetic_music: Minimal ambient music.''',
     expect(submittedBody, isNot(contains('尾帧参考图')));
     expect(submittedBody, contains('h3-group-middle-product.png'));
     expect(submittedBody, contains('h3-group-tail-scene.png'));
+    expect(submittedBody, isNot(contains('h3-group-ignored-audio.mp3')));
+    final orderedReferenceNames = [
+      'h3-group-first-replica.png',
+      'h3-group-middle-replica.png',
+      'h3-group-tail-replica.png',
+      'h3-group-middle-product.png',
+      'h3-group-tail-scene.png',
+    ];
+    var previousReferenceIndex = -1;
+    for (final name in orderedReferenceNames) {
+      final index = submittedBody.indexOf(name);
+      expect(index, greaterThan(previousReferenceIndex), reason: name);
+      previousReferenceIndex = index;
+    }
     expect(
       fixture.controller.value.tasks.single.status,
       VideoGenerationTaskStatus.completed,
@@ -2333,6 +2282,32 @@ non_diegetic_music: Minimal ambient music.''',
   });
 }
 
+String _officialFreeCreationPrompt({
+  required int pictureCount,
+  required int durationSeconds,
+}) {
+  final definitions = [
+    for (var index = 1; index <= pictureCount; index++)
+      '- <Picture $index>: 第 $index 张顺序分镜参考。',
+  ].join('\n');
+  final retention = [
+    for (var index = 1; index <= pictureCount; index++)
+      '- <Picture $index>: fully_preserved - 保持主体与构图连续。',
+  ].join('\n');
+  return '''subject_definitions:
+$definitions
+summary:
+[参考生成] $durationSeconds秒视频，人物连续完成产品展示。
+retention_analysis:
+$retention
+detailed_description:
+[Shot 1] 从 <Picture 1> 的起始动作自然过渡到 <Picture $pictureCount> 的结束动作。
+overall_soundscape:
+自然环境声与动作声同步。
+non_diegetic_music:
+N/A''';
+}
+
 Future<_ControllerFixture> _createControllerFixture({
   required _FakeKlingCliService cliService,
   Duration loginAuthorizationTimeout = const Duration(seconds: 1),
@@ -2446,7 +2421,6 @@ class _FakeKlingCliService extends KlingCliService {
   int whoAmICount = 0;
   final List<String> submittedImagePaths = [];
   final List<List<String>> submittedReferenceImagePaths = [];
-  final List<String> submittedTailImagePaths = [];
   final List<Map<String, String>> submittedParameters = [];
   final List<String> submittedPrompts = [];
   final List<Completer<int>> _exitCompleters = [];
@@ -2501,13 +2475,11 @@ class _FakeKlingCliService extends KlingCliService {
     required String model,
     required String imagePath,
     List<String> referenceImagePaths = const [],
-    String tailImagePath = '',
     required Map<String, String> parameters,
     required String prompt,
   }) async {
     submittedImagePaths.add(imagePath);
     submittedReferenceImagePaths.add(referenceImagePaths);
-    submittedTailImagePaths.add(tailImagePath);
     submittedParameters.add(parameters);
     submittedPrompts.add(prompt);
     _queryCompleter ??= Completer<KlingTaskResult>();

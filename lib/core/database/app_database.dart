@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 18;
+  static const currentSchemaVersion = 19;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -542,6 +542,7 @@ class AppDatabase {
           frame_path TEXT NOT NULL DEFAULT '',
           visual TEXT NOT NULL DEFAULT '',
           content TEXT NOT NULL DEFAULT '',
+          free_creation_description TEXT NOT NULL DEFAULT '',
           shot_size TEXT NOT NULL DEFAULT '',
           camera_movement TEXT NOT NULL DEFAULT '',
           camera_notes TEXT NOT NULL DEFAULT '',
@@ -576,6 +577,8 @@ class AppDatabase {
            global_style TEXT NOT NULL DEFAULT '',
            constraints_text TEXT NOT NULL DEFAULT '',
           replication_instructions TEXT NOT NULL DEFAULT '',
+          free_creation_enabled INTEGER NOT NULL DEFAULT 0,
+          free_creation_story_override TEXT NOT NULL DEFAULT '',
           confirmed_shot_ids_json TEXT NOT NULL DEFAULT '[]',
           start_end_pairs_json TEXT NOT NULL DEFAULT '[]',
           image_reference_count INTEGER NOT NULL DEFAULT 0,
@@ -618,6 +621,7 @@ class AppDatabase {
           prompt TEXT NOT NULL DEFAULT '',
           model TEXT NOT NULL DEFAULT '',
           raw_response TEXT NOT NULL DEFAULT '',
+          is_user_edited INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'pending',
           error_message TEXT NOT NULL DEFAULT '',
           updated_at TEXT NOT NULL,
@@ -945,6 +949,97 @@ class AppDatabase {
         _ensureTextColumn('script_shots', 'generation_feedback');
       }
       _database.execute('PRAGMA user_version = 18;');
+    }
+    if (version < 19) {
+      if (_tableExists('script_shots')) {
+        _ensureTextColumn('script_shots', 'free_creation_description');
+      }
+      if (_tableExists('replicate_runs')) {
+        _ensureIntegerColumn('replicate_runs', 'free_creation_enabled');
+        _ensureTextColumn('replicate_runs', 'free_creation_story_override');
+      }
+      if (_tableExists('shot_prompts')) {
+        _ensureIntegerColumn('shot_prompts', 'is_user_edited');
+      }
+      if (_tableExists('script_shots') &&
+          _tableExists('replicate_runs') &&
+          _columnExists('replicate_runs', 'script_id') &&
+          _columnExists('replicate_runs', 'start_end_pairs_json') &&
+          _columnExists('script_shots', 'script_id') &&
+          _columnExists('script_shots', 'shot_number') &&
+          _columnExists('script_shots', 'continues_from_previous') &&
+          _columnExists('script_shots', 'continues_to_next')) {
+        _migrateStartEndPairsToShotGroups();
+      }
+      _database.execute('PRAGMA user_version = 19;');
+    }
+  }
+
+  bool _tableExists(String tableName) => _database.select(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1;",
+    [tableName],
+  ).isNotEmpty;
+
+  bool _columnExists(String tableName, String columnName) => _database
+      .select('PRAGMA table_info($tableName);')
+      .any((row) => row['name'] == columnName);
+
+  void _migrateStartEndPairsToShotGroups() {
+    final runs = _database.select('''
+      SELECT script_id, start_end_pairs_json
+      FROM replicate_runs
+      WHERE trim(script_id) <> '' AND trim(start_end_pairs_json) <> '[]';
+    ''');
+    _database.execute('BEGIN IMMEDIATE;');
+    try {
+      for (final run in runs) {
+        final scriptId = run['script_id'] as String? ?? '';
+        final rows = _database.select(
+          'SELECT id FROM script_shots WHERE script_id = ? ORDER BY shot_number;',
+          [scriptId],
+        );
+        final shotIds = [for (final row in rows) row['id'] as String];
+        final indexById = <String, int>{
+          for (var index = 0; index < shotIds.length; index++)
+            shotIds[index]: index,
+        };
+        try {
+          final decoded = jsonDecode(
+            run['start_end_pairs_json'] as String? ?? '[]',
+          );
+          if (decoded is List) {
+            for (final item in decoded) {
+              if (item is! Map) continue;
+              final startIndex = indexById['${item['startShotId'] ?? ''}'];
+              final tailIndex = indexById['${item['tailShotId'] ?? ''}'];
+              if (startIndex == null ||
+                  tailIndex == null ||
+                  tailIndex <= startIndex) {
+                continue;
+              }
+              for (var index = startIndex; index < tailIndex; index++) {
+                _database.execute(
+                  'UPDATE script_shots SET continues_to_next = 1 WHERE id = ?;',
+                  [shotIds[index]],
+                );
+                _database.execute(
+                  'UPDATE script_shots SET continues_from_previous = 1 WHERE id = ?;',
+                  [shotIds[index + 1]],
+                );
+              }
+            }
+          }
+        } on FormatException {
+          // Invalid legacy data cannot describe a valid range; clear it below.
+        }
+      }
+      _database.execute(
+        "UPDATE replicate_runs SET start_end_pairs_json = '[]';",
+      );
+      _database.execute('COMMIT;');
+    } catch (_) {
+      _database.execute('ROLLBACK;');
+      rethrow;
     }
   }
 

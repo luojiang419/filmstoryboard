@@ -385,8 +385,6 @@ class _VideoGenerationWorkspaceState
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('镜头数：${shots.length}'),
-              if (controller.startEndFrameModeEnabled)
-                const Text('首尾帧模式：已开启，手动配对按一条请求计费'),
               Text('模型：${model.model}'),
               Text('当前灵感值：${state.account?.availableCredits ?? '未知'}'),
               const SizedBox(height: 8),
@@ -433,7 +431,7 @@ class _VideoGenerationWorkspaceState
             'API：${config?.name ?? '视频生成 API'}\n'
             '模型：${controller.activeVideoGenerationApiModel}\n'
             '时长：${controller.desiredDurationFor(shot).toStringAsFixed(1)}s\n'
-            '${sequence.hasDistinctTail ? '尾帧：镜头 ${sequence.tail.shotNumber}\n' : ''}\n'
+            '${sequence.hasDistinctTail ? '参考范围：镜头 ${sequence.head.shotNumber}–${sequence.tail.shotNumber}\n' : ''}\n'
             '${controller.videoApiParameterSummary}\n\n'
             '任务会提交到当前默认视频生成 API。',
           ),
@@ -470,7 +468,7 @@ class _VideoGenerationWorkspaceState
         ),
         content: Text(
           '模型：${model.model}\n时长：${controller.desiredDurationFor(shot).toStringAsFixed(1)}s → ${duration}s\n'
-          '${sequence.hasDistinctTail ? '尾帧：镜头 ${sequence.tail.shotNumber}\n' : ''}'
+          '${sequence.hasDistinctTail ? '参考范围：镜头 ${sequence.head.shotNumber}–${sequence.tail.shotNumber}\n' : ''}'
           '当前灵感值：${state.account?.availableCredits ?? '未知'}\n\n'
           '该操作会消耗灵感值，失败或超时不会自动重新提交。',
         ),
@@ -597,8 +595,6 @@ class _Toolbar extends StatelessWidget {
                   ? 'CLI ${state.environment!.klingVersion}'
                   : '环境未就绪',
             ),
-            if (controller.startEndFrameModeEnabled)
-              const _StatusChip(icon: Icons.science_outlined, label: '首尾帧模式'),
             if (!controller.usesConfiguredVideoGenerationApi)
               _StatusChip(
                 icon: state.identity == null
@@ -2296,8 +2292,7 @@ class _HistoryVideoVersionCardState extends State<_HistoryVideoVersionCard> {
                   const SizedBox(height: 5),
                   Text(
                     '${widget.task.createdAt.toLocal()} · '
-                    '${widget.task.status.name}'
-                    '${widget.task.tailImagePath.isEmpty ? '' : ' · 首尾帧'}',
+                    '${widget.task.status.name}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall?.copyWith(

@@ -1,5 +1,4 @@
 import '../../video_analysis/domain/video_analysis_models.dart';
-import '../../video_generation/domain/video_action_sequence.dart';
 
 enum ReplicateStep {
   confirmShots,
@@ -29,12 +28,13 @@ class ReplicateRun {
     this.globalStyle = '',
     this.constraints = '',
     this.replicationInstructions = '',
+    this.freeCreationEnabled = false,
+    this.freeCreationStoryOverride = '',
     this.generationModel = '',
     this.generationAspectRatio = '16:9',
     this.generationImageSize = '',
     this.generationQuality = '',
     this.confirmedShotIds = const [],
-    this.startEndPairs = const [],
     this.imageReferenceCount = 0,
     this.videoReferenceCount = 0,
     this.audioReferenceCount = 0,
@@ -59,6 +59,8 @@ class ReplicateRun {
 
   /// 用户对当前复刻任务的补充要求；生成前会覆盖自动解析中冲突的内容。
   final String replicationInstructions;
+  final bool freeCreationEnabled;
+  final String freeCreationStoryOverride;
 
   /// 复刻任务专属的默认出图参数，不影响应用的全局图片生成设置。
   final String generationModel;
@@ -66,7 +68,6 @@ class ReplicateRun {
   final String generationImageSize;
   final String generationQuality;
   final List<String> confirmedShotIds;
-  final List<StartEndFramePair> startEndPairs;
   final int imageReferenceCount;
   final int videoReferenceCount;
   final int audioReferenceCount;
@@ -88,12 +89,13 @@ class ReplicateRun {
     String? globalStyle,
     String? constraints,
     String? replicationInstructions,
+    bool? freeCreationEnabled,
+    String? freeCreationStoryOverride,
     String? generationModel,
     String? generationAspectRatio,
     String? generationImageSize,
     String? generationQuality,
     List<String>? confirmedShotIds,
-    List<StartEndFramePair>? startEndPairs,
     int? imageReferenceCount,
     int? videoReferenceCount,
     int? audioReferenceCount,
@@ -115,12 +117,14 @@ class ReplicateRun {
     constraints: constraints ?? this.constraints,
     replicationInstructions:
         replicationInstructions ?? this.replicationInstructions,
+    freeCreationEnabled: freeCreationEnabled ?? this.freeCreationEnabled,
+    freeCreationStoryOverride:
+        freeCreationStoryOverride ?? this.freeCreationStoryOverride,
     generationModel: generationModel ?? this.generationModel,
     generationAspectRatio: generationAspectRatio ?? this.generationAspectRatio,
     generationImageSize: generationImageSize ?? this.generationImageSize,
     generationQuality: generationQuality ?? this.generationQuality,
     confirmedShotIds: confirmedShotIds ?? this.confirmedShotIds,
-    startEndPairs: startEndPairs ?? this.startEndPairs,
     imageReferenceCount: imageReferenceCount ?? this.imageReferenceCount,
     videoReferenceCount: videoReferenceCount ?? this.videoReferenceCount,
     audioReferenceCount: audioReferenceCount ?? this.audioReferenceCount,
@@ -195,6 +199,7 @@ class ShotPrompt {
     required this.prompt,
     required this.model,
     required this.rawResponse,
+    this.isUserEdited = false,
     required this.status,
     required this.errorMessage,
     required this.updatedAt,
@@ -208,6 +213,7 @@ class ShotPrompt {
   final String prompt;
   final String model;
   final String rawResponse;
+  final bool isUserEdited;
   final ProcessingStatus status;
   final String errorMessage;
   final DateTime updatedAt;
@@ -219,6 +225,7 @@ class ShotPrompt {
     String? prompt,
     String? model,
     String? rawResponse,
+    bool? isUserEdited,
     ProcessingStatus? status,
     String? errorMessage,
     DateTime? updatedAt,
@@ -231,6 +238,7 @@ class ShotPrompt {
     prompt: prompt ?? this.prompt,
     model: model ?? this.model,
     rawResponse: rawResponse ?? this.rawResponse,
+    isUserEdited: isUserEdited ?? this.isUserEdited,
     status: status ?? this.status,
     errorMessage: errorMessage ?? this.errorMessage,
     updatedAt: updatedAt ?? this.updatedAt,

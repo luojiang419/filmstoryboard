@@ -97,14 +97,14 @@ class ShootingScriptRepository {
       INSERT INTO script_shots(
         id, script_id, source_storyboard_asset_id, source_video_frame_id, shot_number,
         duration_seconds, frame_path, visual,
-        content, shot_size, camera_movement, camera_notes, composition,
+        content, free_creation_description, shot_size, camera_movement, camera_notes, composition,
         camera_angle, lighting_mood, color_palette, visual_focus,
         transition_hint, movement_trend, action_stage, continues_from_previous,
         continues_to_next, scene, product_code, product_styling, dialogue,
         sound, prompt, replication_instructions, generation_feedback, status, updated_at
       ) VALUES(
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id) DO UPDATE SET
         script_id = excluded.script_id,
@@ -115,6 +115,7 @@ class ShootingScriptRepository {
         frame_path = excluded.frame_path,
         visual = excluded.visual,
         content = excluded.content,
+        free_creation_description = excluded.free_creation_description,
         shot_size = excluded.shot_size,
         camera_movement = excluded.camera_movement,
         camera_notes = excluded.camera_notes,
@@ -149,6 +150,7 @@ class ShootingScriptRepository {
         shot.framePath,
         shot.visual,
         shot.content,
+        shot.freeCreationDescription,
         shot.shotSize,
         shot.cameraMovement,
         shot.cameraNotes,
@@ -210,6 +212,7 @@ class ShootingScriptRepository {
       framePath: row['frame_path'] as String,
       visual: row['visual'] as String,
       content: row['content'] as String,
+      freeCreationDescription: text('free_creation_description'),
       shotSize: row['shot_size'] as String,
       cameraMovement: row['camera_movement'] as String,
       cameraNotes: legacy.cameraNotes,

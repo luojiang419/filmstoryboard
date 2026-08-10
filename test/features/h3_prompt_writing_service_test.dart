@@ -7,7 +7,6 @@ void main() {
 
   test('Ref2VA 指令内置官方六段结构和稳定图片编号', () {
     final instruction = service.buildRewriteInstruction(
-      mode: H3PromptInputMode.fullReference,
       draft: '镜头1：人物展示产品。',
       durationSeconds: 6,
       storyboardImageCount: 1,
@@ -38,24 +37,8 @@ void main() {
     );
   });
 
-  test('FL2VA 指令使用首尾帧对齐和两位小数时长', () {
-    final instruction = service.buildRewriteInstruction(
-      mode: H3PromptInputMode.firstAndLastFrame,
-      draft: '人物从站立过渡到坐下。',
-      durationSeconds: 8,
-      storyboardImageCount: 2,
-    );
-
-    expect(instruction, contains('FL2VA 首尾帧模式'));
-    expect(instruction, contains('目标视频的 8.00 秒'));
-    expect(instruction, contains('integrated_multimodal_description:'));
-    expect(instruction, contains('overall_soundscape:'));
-    expect(instruction, contains('non_diegetic_music:'));
-  });
-
   test('通用 H3 默认不注入风格约束以兼容现有调用', () {
     final instruction = service.buildRewriteInstruction(
-      mode: H3PromptInputMode.fullReference,
       draft: '镜头1：人物展示产品。',
       durationSeconds: 6,
       storyboardImageCount: 1,
@@ -68,7 +51,6 @@ void main() {
   test('8 个风格均将精炼约束注入视觉改写指令', () {
     for (final style in H3PromptStyle.values.skip(1)) {
       final instruction = service.buildRewriteInstruction(
-        mode: H3PromptInputMode.fullReference,
         draft: '镜头1：人物展示产品。',
         durationSeconds: 6,
         storyboardImageCount: 1,
@@ -112,10 +94,7 @@ N/A
 
     final normalized = service.normalize(raw);
     expect(normalized, startsWith('subject_definitions:'));
-    expect(
-      service.isValid(normalized, H3PromptInputMode.fullReference),
-      isTrue,
-    );
+    expect(service.isValid(normalized), isTrue);
   });
 
   test('字段缺失或乱序时拒绝视觉模型结果', () {
@@ -130,7 +109,7 @@ summary:
 [reference generation] Product video.
 ''';
 
-    expect(service.isValid(invalid, H3PromptInputMode.fullReference), isFalse);
+    expect(service.isValid(invalid), isFalse);
   });
 
   test('字段结构正确但正文为英文时拒绝并触发中文回退', () {
@@ -154,6 +133,71 @@ non_diegetic_music:
 N/A
 ''';
 
-    expect(service.isValid(english, H3PromptInputMode.fullReference), isFalse);
+    expect(service.isValid(english), isFalse);
+  });
+
+  test('自由创作校验附件编号与 summary 中的唯一 AI 时长', () {
+    const prompt = '''subject_definitions:
+<Picture 1> 是起始分镜图，用于定义人物位置和构图。
+<Picture 2> 是结束分镜图，用于定义产品特写。
+
+summary:
+[参考生成] 7秒视频，完成从人物动作到产品特写的连续展示。
+
+retention_analysis:
+<Picture 1> ([Shot 1] 起始构图): fully_preserved - 保留人物位置和室内光线。
+<Picture 2> ([Shot 1] 结束构图): fully_preserved - 保留产品外形和材质。
+
+detailed_description:
+[参考生成] 画面采用清晰克制的商业影像质感。
+[Shot 1] 人物从 <Picture 1> 中的位置平稳拿起产品，摄影机缓慢推近，最后以 <Picture 2> 定义的材质和构图完成特写。
+
+overall_soundscape:
+安静的室内底噪持续存在，保留手部与产品接触的自然摩擦声。
+
+non_diegetic_music:
+N/A''';
+
+    expect(
+      service.validationErrors(
+        prompt,
+        referenceImageCount: 2,
+        requireAiDuration: true,
+      ),
+      isEmpty,
+    );
+    expect(service.extractDurationSeconds(prompt), 7);
+  });
+
+  test('自由创作拒绝重复时长、超范围时长和错误附件编号', () {
+    const invalid = '''subject_definitions:
+<Picture 1> 是起始分镜图。
+<Picture 3> 是不存在的附件。
+
+summary:
+[参考生成] 16秒视频，生成连续的产品展示。
+
+retention_analysis:
+<Picture 1> ([Shot 1] 构图): fully_preserved - 保留主体和光线。
+
+detailed_description:
+[参考生成] 画面保持清晰稳定的商业影像风格。
+[Shot 1] 人物用自然速度拿起产品，摄影机缓慢推近，整个动作持续 16秒视频。
+
+overall_soundscape:
+安静的室内底噪和产品接触声与动作同步。
+
+non_diegetic_music:
+N/A''';
+
+    final errors = service.validationErrors(
+      invalid,
+      referenceImageCount: 2,
+      requireAiDuration: true,
+    );
+    expect(errors, contains('全文必须且只能出现一个“X秒视频”'));
+    expect(errors, contains('缺少附件引用 <Picture 2>'));
+    expect(errors.any((error) => error.contains('Picture 编号')), isTrue);
+    expect(service.extractDurationSeconds(invalid), isNull);
   });
 }

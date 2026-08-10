@@ -145,7 +145,6 @@ void main() {
           durationSeconds: 5,
           promptMode: VideoPromptMode.klingOptimized,
           prompt: '提交时固定文本',
-          tailImagePath: 'frames/tail.png',
           creditsBefore: 46220,
           status: VideoGenerationTaskStatus.timedOut,
           createdAt: now,
@@ -168,7 +167,6 @@ void main() {
     );
     expect(repository.listRecoverableTasks(includeTimedOut: false), isEmpty);
     expect(repository.getTask('task-1')?.prompt, '提交时固定文本');
-    expect(repository.getTask('task-1')?.tailImagePath, 'frames/tail.png');
   });
 
   test('生成目录使用安全稳定脚本名且不创建原视频片段目录', () async {

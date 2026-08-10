@@ -40,7 +40,6 @@ class MiniMaxVideoApiService {
     required VideoGenerationApiConfig config,
     required String imagePath,
     List<String> referenceImagePaths = const [],
-    String tailImagePath = '',
     required Map<String, String> parameters,
     required String prompt,
   }) async {
@@ -50,10 +49,8 @@ class MiniMaxVideoApiService {
       baseUri.replace(path: _joinPath(baseUri.path, '/api/generate-upload')),
     );
     _applyAuthorization(request.headers, config.apiKey);
-    final hasTailImage = tailImagePath.trim().isNotEmpty;
-    final mode = _modeForSubmission(hasTailImage: hasTailImage);
     request.fields.addAll({
-      'mode': mode,
+      'mode': 'references',
       'prompt': prompt,
       'resolution': parameters['resolution'] ?? '0.2MP 16:9 - 608x352',
       'duration': parameters['duration'] ?? '2',
@@ -61,28 +58,17 @@ class MiniMaxVideoApiService {
       if ((parameters['seed'] ?? '').trim().isNotEmpty)
         'seed': parameters['seed']!.trim(),
     });
-    if (mode == 'references') {
+    request.files.add(
+      await http.MultipartFile.fromPath('reference_images', imagePath),
+    );
+    for (final referenceImagePath in referenceImagePaths) {
+      if (referenceImagePath.trim().isEmpty) continue;
       request.files.add(
-        await http.MultipartFile.fromPath('reference_images', imagePath),
+        await http.MultipartFile.fromPath(
+          'reference_images',
+          referenceImagePath.trim(),
+        ),
       );
-      for (final referenceImagePath in referenceImagePaths) {
-        if (referenceImagePath.trim().isEmpty) continue;
-        request.files.add(
-          await http.MultipartFile.fromPath(
-            'reference_images',
-            referenceImagePath.trim(),
-          ),
-        );
-      }
-    } else {
-      request.files.add(
-        await http.MultipartFile.fromPath('first_frame', imagePath),
-      );
-      if (hasTailImage) {
-        request.files.add(
-          await http.MultipartFile.fromPath('last_frame', tailImagePath.trim()),
-        );
-      }
     }
     final response = await _send(request);
     final body = await response.stream.bytesToString();
@@ -285,11 +271,6 @@ class MiniMaxVideoApiService {
   static Map<String, String> _authorizationHeaders(String apiKey) {
     if (apiKey.trim().isEmpty) return const {};
     return {'Authorization': 'Bearer ${apiKey.trim()}'};
-  }
-
-  static String _modeForSubmission({required bool hasTailImage}) {
-    if (hasTailImage) return 'keyframes';
-    return 'references';
   }
 
   static Map<String, Object?> _decodeObject(String body) {
