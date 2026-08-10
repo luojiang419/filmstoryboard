@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
 import 'package:filmstoryboard/app/app_theme.dart';
 import 'package:filmstoryboard/app/window_title_bar.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
@@ -25,11 +26,14 @@ import 'package:filmstoryboard/features/grid_cut/presentation/grid_cut_page.dart
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/presentation/settings_page.dart';
+import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
+import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
 import 'package:filmstoryboard/features/storyboard/domain/storyboard_canvas_style.dart';
 import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:filmstoryboard/features/storyboard/presentation/storyboard_page.dart';
+import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
 
 void main() {
   testWidgets('标题栏窗口按钮固定在右侧', (tester) async {
@@ -2814,6 +2818,11 @@ void main() {
       initialSettings: repository.load(),
     );
     final storyboardController = StoryboardController(database: database);
+    final shootingScriptController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      videoRepository: VideoAnalysisRepository(database),
+      directories: directories,
+    );
     final boardId = storyboardController.value.selectedBoard!.id;
     database.setSetting(
       'exporterPageUiState',
@@ -2826,6 +2835,7 @@ void main() {
     );
     addTearDown(() async {
       storyboardController.dispose();
+      shootingScriptController.dispose();
       settingsController.dispose();
       database.dispose();
       await root.delete(recursive: true);
@@ -2835,8 +2845,12 @@ void main() {
       ProviderScope(
         overrides: [
           appDatabaseProvider.overrideWithValue(database),
+          projectDirectoriesProvider.overrideWithValue(directories),
           settingsControllerProvider.overrideWithValue(settingsController),
           storyboardControllerProvider.overrideWithValue(storyboardController),
+          shootingScriptControllerProvider.overrideWithValue(
+            shootingScriptController,
+          ),
         ],
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
@@ -2863,7 +2877,33 @@ void main() {
     expect(find.text('导出到...'), findsOneWidget);
     expect(find.text('导出画板图片'), findsOneWidget);
     expect(find.text('导出拍摄脚本'), findsOneWidget);
+    expect(find.text('导出时间线'), findsOneWidget);
+    expect(find.text('导出多维度报告'), findsOneWidget);
+    expect(find.text('导出视频多维度报告'), findsNothing);
     expect(find.text('打开默认导出位置'), findsOneWidget);
+
+    final exportBoardImagesButton = find.widgetWithText(
+      OutlinedButton,
+      '导出画板图片',
+    );
+    await tester.ensureVisible(exportBoardImagesButton);
+    await tester.pump();
+    final exportBoardImages = tester.widget<OutlinedButton>(
+      exportBoardImagesButton,
+    );
+    expect(exportBoardImages.onPressed, isNotNull);
+    final boardImagesDirectory = Directory(
+      p.join(settingsController.value.exportDirectory, '画板图片'),
+    );
+    await tester.runAsync(() async {
+      exportBoardImages.onPressed!();
+      for (var attempt = 0; attempt < 50; attempt++) {
+        if (boardImagesDirectory.existsSync()) return;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    });
+    await tester.pump();
+    expect(boardImagesDirectory.existsSync(), isTrue);
 
     final boardCard = find.byKey(ValueKey('export-board-$boardId'));
     await tester.tap(boardCard);
@@ -2873,6 +2913,62 @@ void main() {
     await tester.tap(boardCard);
     await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
     expect(find.text('已选择 1 个故事板'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('导出页时间线按钮无可导出视频时禁用', (tester) async {
+    late final Directory root;
+    late final AppDirectories directories;
+    late final AppDatabase database;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('exporter_timeline_widget_');
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+    });
+
+    final repository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    final storyboardController = StoryboardController(database: database);
+    final shootingScriptController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      videoRepository: VideoAnalysisRepository(database),
+      directories: directories,
+    );
+    addTearDown(() async {
+      storyboardController.dispose();
+      shootingScriptController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(database),
+          projectDirectoriesProvider.overrideWithValue(directories),
+          settingsControllerProvider.overrideWithValue(settingsController),
+          storyboardControllerProvider.overrideWithValue(storyboardController),
+          shootingScriptControllerProvider.overrideWithValue(
+            shootingScriptController,
+          ),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.dark(),
+          home: const Scaffold(body: ExporterPage()),
+        ),
+      ),
+    );
+
+    final button = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, '导出时间线'),
+    );
+    expect(button.onPressed, isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

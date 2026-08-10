@@ -9,15 +9,22 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../core/database/app_database.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/workspace_directories.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../settings/domain/app_settings.dart';
+import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_canvas_style.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../../video_analysis/data/analysis_report_export_service.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
+import '../../video_generation/data/video_generation_repository.dart';
+import '../../video_generation/data/video_timeline_xml_export_service.dart';
+import '../../video_generation/domain/video_generation_models.dart';
+import '../data/default_export_directories.dart';
 import '../data/shooting_script_export_service.dart';
 import '../data/storyboard_export_service.dart';
 
@@ -52,16 +59,23 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
   @override
   Widget build(BuildContext context) {
     final storyboardController = ref.watch(storyboardControllerProvider);
-    final settingsController = ref.watch(settingsControllerProvider);
-    final videoRepository = VideoAnalysisRepository(
-      ref.watch(appDatabaseProvider),
+    final shootingScriptController = ref.watch(
+      shootingScriptControllerProvider,
     );
+    final settingsController = ref.watch(settingsControllerProvider);
+    final database = ref.watch(appDatabaseProvider);
+    final projectDirectories = ref.watch(projectDirectoriesProvider);
+    final videoRepository = VideoAnalysisRepository(database);
     final reportVideo = _latestReportVideo(videoRepository);
 
     return ListenableBuilder(
-      listenable: storyboardController,
+      listenable: Listenable.merge([
+        storyboardController,
+        shootingScriptController,
+      ]),
       builder: (context, _) {
         final boards = storyboardController.value.boards;
+        final shooting = shootingScriptController.value;
         _syncSelectionWithBoards(boards);
         final selectedBoards = _selectedBoards(boards);
         final previewBoard = _previewBoardId == null
@@ -71,6 +85,11 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
                 orElse: () => null,
               );
         final canExport = boards.isNotEmpty && selectedBoards.isNotEmpty;
+        final canExportTimeline = _canExportTimelineXml(
+          shooting: shooting,
+          database: database,
+          projectDirectories: projectDirectories,
+        );
 
         return LayoutBuilder(
           builder: (context, constraints) {
@@ -110,7 +129,14 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
                             settingsController.value,
                           )
                         : null,
-                    videoReportName: reportVideo?.fileName,
+                    onExportTimeline: canExportTimeline
+                        ? () => _exportTimelineXml(
+                            shooting: shooting,
+                            database: database,
+                            projectDirectories: projectDirectories,
+                            settings: settingsController.value,
+                          )
+                        : null,
                     onExportVideoAnalysisReport: reportVideo == null
                         ? null
                         : () => _exportVideoAnalysisReport(
@@ -354,8 +380,11 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     AppSettings settings,
   ) async {
     final selectedBoards = _selectedBoards(boards);
-    final path = p.join(
+    final directory = DefaultExportDirectories(
       settings.exportDirectory,
+    ).storyboards;
+    final path = p.join(
+      directory.path,
       _defaultFileName(selectedBoards.first, _format),
     );
     try {
@@ -363,20 +392,17 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     } on StoryboardExportCancelled {
       return;
     }
-    setState(() => _message = '已导出到默认目录：${settings.exportDirectory}');
+    setState(() => _message = '故事板已导出：${directory.path}');
   }
 
   Future<void> _exportBoardImagesSelected(
     List<StoryboardBoard> boards,
     AppSettings settings,
   ) async {
-    final path = await getDirectoryPath(
-      initialDirectory: settings.exportDirectory,
-    );
-    if (path == null) {
-      return;
-    }
-    await _exportBoardImages(_selectedBoards(boards), path);
+    final directory = DefaultExportDirectories(
+      settings.exportDirectory,
+    ).boardImages;
+    await _exportBoardImages(_selectedBoards(boards), directory.path);
   }
 
   Future<void> _exportShootingScript(
@@ -384,19 +410,13 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     AppSettings settings,
   ) async {
     final selectedBoards = _selectedBoards(boards);
-    final location = await getSaveLocation(
-      initialDirectory: settings.exportDirectory,
-      suggestedName: shootingScriptExportFileName(
-        boardName: selectedBoards.first.name,
-      ),
-      acceptedTypeGroups: const [
-        XTypeGroup(label: 'Excel', extensions: ['xlsx']),
-      ],
-      confirmButtonText: '导出',
+    final directory = DefaultExportDirectories(
+      settings.exportDirectory,
+    ).shootingScripts;
+    final outputPath = p.join(
+      directory.path,
+      shootingScriptExportFileName(boardName: selectedBoards.first.name),
     );
-    if (location == null) {
-      return;
-    }
 
     setState(() => _isExporting = true);
     try {
@@ -407,7 +427,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
           for (final board in selectedBoards)
             board.id: database.getLatestVisionAnalysisBatchForBoard(board.id),
         },
-        outputPath: location.path,
+        outputPath: outputPath,
       );
       if (mounted) {
         setState(() => _message = '拍摄脚本已导出：${p.basename(result.path)}');
@@ -463,7 +483,9 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     try {
       final result = await const AnalysisReportExportService().export(
         format: format,
-        outputDirectory: Directory(settings.exportDirectory),
+        outputDirectory: DefaultExportDirectories(
+          settings.exportDirectory,
+        ).analysisReports,
         video: video,
         frames: repository.listVideoFrames(video.id),
         frameAnalyses: repository.listVideoFrameAnalyses(video.id),
@@ -486,6 +508,88 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
         setState(() => _isExporting = false);
       }
     }
+  }
+
+  bool _canExportTimelineXml({
+    required ShootingScriptState shooting,
+    required AppDatabase database,
+    required WorkspaceDirectories projectDirectories,
+  }) {
+    final script = shooting.selectedScript;
+    if (script == null) {
+      return false;
+    }
+    final repository = VideoGenerationRepository(database);
+    return const VideoTimelineXmlExportService()
+        .timelineClips(
+          script: script,
+          shots: shooting.shots,
+          tasks: repository.listTasks(scriptId: script.id),
+          fileForTask: (task) =>
+              _generatedVideoFileForTask(task, projectDirectories),
+        )
+        .isNotEmpty;
+  }
+
+  Future<void> _exportTimelineXml({
+    required ShootingScriptState shooting,
+    required AppDatabase database,
+    required WorkspaceDirectories projectDirectories,
+    required AppSettings settings,
+  }) async {
+    final script = shooting.selectedScript;
+    if (script == null) {
+      setState(() => _message = '尚未选择拍摄脚本');
+      return;
+    }
+    setState(() {
+      _isExporting = true;
+      _message = '正在导出剪辑时间线...';
+    });
+    try {
+      final repository = VideoGenerationRepository(database);
+      final file = await const VideoTimelineXmlExportService().export(
+        script: script,
+        shots: shooting.shots,
+        tasks: repository.listTasks(scriptId: script.id),
+        fileForTask: (task) =>
+            _generatedVideoFileForTask(task, projectDirectories),
+        outputDirectory: DefaultExportDirectories(
+          settings.exportDirectory,
+        ).timelines,
+      );
+      if (mounted) {
+        setState(() => _message = '时间线 XML 已导出：${file.path}');
+      }
+    } on VideoTimelineXmlExportException catch (error) {
+      if (mounted) {
+        setState(() => _message = error.message);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = '导出时间线失败：$error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isExporting = false);
+      }
+    }
+  }
+
+  File _generatedVideoFileForTask(
+    VideoGenerationTask task,
+    WorkspaceDirectories projectDirectories,
+  ) {
+    final path = task.localPath.trim();
+    if (path.isEmpty) {
+      return File('');
+    }
+    final normalized = path.replaceAll('/', Platform.pathSeparator);
+    return File(
+      p.isAbsolute(normalized)
+          ? normalized
+          : p.join(projectDirectories.workspaceRoot.path, normalized),
+    );
   }
 
   Future<AnalysisReportFormat?> _chooseAnalysisReportFormat() {
@@ -778,7 +882,7 @@ class _ExportSidebar extends StatelessWidget {
     required this.onExportDefault,
     required this.onExportBoardImages,
     required this.onExportShootingScript,
-    required this.videoReportName,
+    required this.onExportTimeline,
     required this.onExportVideoAnalysisReport,
     required this.onOpenDefaultExportDirectory,
   });
@@ -797,7 +901,7 @@ class _ExportSidebar extends StatelessWidget {
   final VoidCallback? onExportDefault;
   final VoidCallback? onExportBoardImages;
   final VoidCallback? onExportShootingScript;
-  final String? videoReportName;
+  final VoidCallback? onExportTimeline;
   final VoidCallback? onExportVideoAnalysisReport;
   final VoidCallback onOpenDefaultExportDirectory;
 
@@ -947,13 +1051,15 @@ class _ExportSidebar extends StatelessWidget {
             ),
             const SizedBox(height: 9),
             OutlinedButton.icon(
+              onPressed: isExporting ? null : onExportTimeline,
+              icon: const Icon(Icons.account_tree_outlined),
+              label: const Text('导出时间线'),
+            ),
+            const SizedBox(height: 9),
+            OutlinedButton.icon(
               onPressed: isExporting ? null : onExportVideoAnalysisReport,
               icon: const Icon(Icons.analytics_outlined),
-              label: Text(
-                videoReportName == null
-                    ? '导出视频多维度报告'
-                    : '导出 ${_shortVideoName(videoReportName!)} 多维度报告',
-              ),
+              label: const Text('导出多维度报告'),
             ),
             const SizedBox(height: 9),
             OutlinedButton.icon(

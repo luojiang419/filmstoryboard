@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:filmstoryboard/features/replicate/data/h3_skill_library.dart';
+import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
@@ -50,6 +52,7 @@ void main() {
                     'expression': '神情专注，视线望向窗外',
                     'body_action': '站在窗边微微前倾',
                     'movement_trend': '身体朝右侧窗户靠近',
+                    'sound_design': '衣料随身体前倾产生一次自然摩擦声，与动作同步',
                     'camera_movement': '推',
                     'shot_size': '中景',
                     'composition': '人物位于画面左侧，窗户在右侧',
@@ -94,6 +97,7 @@ void main() {
     expect(result.expression, '神情专注，视线望向窗外');
     expect(result.bodyAction, '站在窗边微微前倾');
     expect(result.movementTrend, '身体朝右侧窗户靠近');
+    expect(result.soundDesign, contains('与动作同步'));
     expect(result.cameraMovement, '推');
     expect(result.shotSize, '中景');
     expect(result.composition, '人物位于画面左侧，窗户在右侧');
@@ -147,6 +151,9 @@ void main() {
     expect(prompt, contains('神态'));
     expect(prompt, contains('姿态动作'));
     expect(prompt, contains('运动趋势'));
+    expect(prompt, contains('sound_design'));
+    expect(prompt, contains('真实时间速度'));
+    expect(prompt, contains('禁止慢放、时间拉伸'));
     expect(prompt, contains('向左'));
     expect(prompt, contains('向右'));
     expect(prompt, contains('起身'));
@@ -174,6 +181,136 @@ void main() {
       (imagePart['image_url'] as Map<String, dynamic>)['url'],
       startsWith('data:image/png;base64,'),
     );
+  });
+
+  test('手动镜头组的四帧图片在同一个视觉 API 请求中按顺序提交', () async {
+    final requests = <Map<String, dynamic>>[];
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requests.add(jsonDecode(request.body) as Map<String, dynamic>);
+        return _chatResponse(
+          jsonEncode({
+            'frames': [
+              for (var index = 1; index <= 4; index++)
+                {'caption': '第 $index 帧', 'detail': '手动镜头组的第 $index 个动作阶段。'},
+            ],
+            'motion': {
+              'is_same_shot': true,
+              'observed_camera_movement': '升降',
+              'designed_camera_movement': '从首帧连续升降至结束帧',
+            },
+          }),
+        );
+      }),
+    );
+    addTearDown(service.close);
+    final root = await Directory.systemTemp.createTemp('vision_manual_group_');
+    addTearDown(() => root.delete(recursive: true));
+    final images = <File>[];
+    for (var index = 1; index <= 4; index++) {
+      images.add(
+        await File(
+          '${root.path}${Platform.pathSeparator}frame-$index.png',
+        ).writeAsBytes([index]),
+      );
+    }
+
+    final result = await service.analyzeShotGroupImages(
+      settings: _settings(),
+      imageFiles: images,
+      shotNumber: 3,
+    );
+
+    expect(requests, hasLength(1));
+    expect(result.frames.map((frame) => frame.caption), [
+      '第 1 帧',
+      '第 2 帧',
+      '第 3 帧',
+      '第 4 帧',
+    ]);
+    final content = requests.single['messages'][0]['content'] as List<dynamic>;
+    final prompt = (content.first as Map<String, dynamic>)['text'] as String;
+    expect(prompt, contains('按时间顺序提供 4 张图片'));
+    final imageParts = content
+        .whereType<Map<String, dynamic>>()
+        .where((part) => part['type'] == 'image_url')
+        .toList(growable: false);
+    expect(imageParts, hasLength(4));
+    expect(
+      imageParts.map(
+        (part) => (part['image_url'] as Map<String, dynamic>)['url'],
+      ),
+      everyElement(startsWith('data:image/png;base64,')),
+    );
+  });
+
+  test('视觉请求把完整官方 Skill 正文和逐字段契约一起发送到模型', () async {
+    late Map<String, dynamic> requestBody;
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return _chatResponse(
+          jsonEncode({
+            'caption': '产品进入品牌主视觉',
+            'detail': '产品真实机制触发可见结果。',
+            'narrative_function': '广告产品记忆点',
+          }),
+        );
+      }),
+    );
+    addTearDown(service.close);
+    final root = await Directory.systemTemp.createTemp(
+      'vision_style_contract_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final image = await File(
+      '${root.path}${Platform.pathSeparator}frame.png',
+    ).writeAsBytes([1, 2, 3]);
+
+    final style = H3PromptStyle.resolve('brand-promo');
+    final completeSkill = H3SkillDocument(
+      style: style,
+      sourceRevision: H3PromptStyle.officialSourceRevision,
+      files: const {
+        'skills/brand-promo-video-generator/SKILL.cn.md': '''
+## 步骤 1：上传素材并确认简报
+先核验 LOGO、产品、功能与受众。
+## 步骤 10：交付
+输出成片、来源摘要和改进建议。
+## 失败恢复
+资产不可用时停止并索要原件。
+''',
+      },
+    );
+    await service.analyzeImage(
+      settings: _settings(),
+      imageFile: image,
+      sequenceNo: 1,
+      rowIndex: 0,
+      columnIndex: 0,
+      creativeBrief:
+          '''
+内容类型：品牌宣传短片。
+${completeSkill.toVisionModelContext()}
+叙事结构：用户意图→真实机制→产品证据→行动号召。
+画面材质：锁定品牌色、LOGO 和产品结构。
+''',
+    );
+
+    final content = requestBody['messages'][0]['content'] as List<dynamic>;
+    final prompt = (content.first as Map<String, dynamic>)['text'] as String;
+    expect(prompt, contains('已选镜头叙事风格执行契约（强制）'));
+    expect(prompt, contains('【MiniMax-H3 完整官方 Skill（强制执行）】'));
+    expect(prompt, contains('本次完整加载文件数：1'));
+    expect(prompt, contains('## 步骤 1：上传素材并确认简报'));
+    expect(prompt, contains('## 步骤 10：交付'));
+    expect(prompt, contains('## 失败恢复'));
+    expect(prompt, contains('【完整官方 Skill 结束】'));
+    expect(prompt, contains('用户意图→真实机制→产品证据→行动号召'));
+    expect(prompt, contains('不能只在 detail 中写一句风格名'));
+    expect(prompt, contains('各字段必须互相一致地体现同一种镜头语法'));
+    expect(prompt, contains('图片可见事实和用户已给事实优先'));
+    expect(prompt, contains('当前镜头对应的阶段'));
   });
 
   test('视频帧解析按上一帧当前帧下一帧顺序联合判断动作连续性', () async {

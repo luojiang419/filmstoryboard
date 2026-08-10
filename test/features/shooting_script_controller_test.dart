@@ -6,6 +6,7 @@ import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/script_shot_group.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
 import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
@@ -101,8 +102,9 @@ void main() {
       isNot(contains('长裤')),
     );
     expect(fixture.controller.value.shots.first.durationSeconds, 1.2);
-    expect(fixture.controller.value.shots.first.continuesToNext, isTrue);
-    expect(fixture.controller.value.shots[1].continuesFromPrevious, isTrue);
+    expect(fixture.controller.value.shots.first.continuesToNext, isFalse);
+    expect(fixture.controller.value.shots[1].continuesFromPrevious, isFalse);
+    expect(ScriptShotGroup.group(fixture.controller.value.shots), hasLength(2));
 
     final first = fixture.controller.value.shots.first;
     fixture.controller.updateShot(
@@ -438,6 +440,38 @@ void main() {
     final duplicateScript = fixture.controller.createForStoryboard(duplicate);
     expect(duplicate.id, isNot(board.id));
     expect(duplicateScript.sourceStoryboardId, duplicate.id);
+  });
+
+  test('只有手动设置首帧到结束帧才会形成镜头组', () async {
+    final fixture = await _createFixture();
+    fixture.controller.createEmpty(name: '手动镜头组');
+    final first = fixture.controller.addShot()!;
+    final second = fixture.controller.addShot()!;
+    final third = fixture.controller.addShot()!;
+    fixture.controller.updateShot(first.copyWith(scene: '室内', content: '动作开始'));
+    fixture.controller.updateShot(
+      second.copyWith(scene: '街道', content: '动作进行'),
+    );
+    fixture.controller.updateShot(third.copyWith(scene: '棚拍', content: '动作结束'));
+
+    final applied = fixture.controller.setContinuousShotRange(
+      startShotId: first.id,
+      endShotId: third.id,
+    );
+
+    expect(applied, isTrue);
+    final shots = fixture.controller.value.shots;
+    expect(shots[0].continuesToNext, isTrue);
+    expect(shots[1].continuesFromPrevious, isTrue);
+    expect(shots[1].continuesToNext, isTrue);
+    expect(shots[2].continuesFromPrevious, isTrue);
+    expect(ScriptShotGroup.group(shots).single.shots, hasLength(3));
+
+    expect(fixture.controller.clearContinuousShotGroup(second.id), isTrue);
+    final cleared = fixture.controller.value.shots;
+    expect(cleared.any((shot) => shot.continuesFromPrevious), isFalse);
+    expect(cleared.any((shot) => shot.continuesToNext), isFalse);
+    expect(ScriptShotGroup.group(cleared), hasLength(3));
   });
 
   test('脚本导出填充字段、保留图片槽位为空，并按原始字节复制镜头图片', () async {

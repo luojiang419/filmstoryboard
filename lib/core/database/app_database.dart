@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 16;
+  static const currentSchemaVersion = 18;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -562,6 +562,7 @@ class AppDatabase {
           sound TEXT NOT NULL DEFAULT '',
           prompt TEXT NOT NULL DEFAULT '',
           replication_instructions TEXT NOT NULL DEFAULT '',
+          generation_feedback TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'pending',
           updated_at TEXT NOT NULL,
           UNIQUE(script_id, shot_number)
@@ -725,6 +726,10 @@ class AppDatabase {
           status TEXT NOT NULL DEFAULT 'pending',
           field_sources_json TEXT NOT NULL DEFAULT '{}',
           field_confidence_json TEXT NOT NULL DEFAULT '{}',
+          prompt_context_json TEXT NOT NULL DEFAULT '{}',
+          prompt_context_schema_version INTEGER NOT NULL DEFAULT 0,
+          source_image_fingerprint TEXT NOT NULL DEFAULT '',
+          analysis_rule_version INTEGER NOT NULL DEFAULT 0,
           raw_response TEXT NOT NULL DEFAULT '',
           error_message TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
@@ -897,6 +902,49 @@ class AppDatabase {
     if (version < 16) {
       _ensureTextColumn('video_generation_drafts', 'h3_prompt');
       _database.execute('PRAGMA user_version = 16;');
+    }
+    if (version < 17) {
+      _database.execute('''
+        CREATE TABLE IF NOT EXISTS script_shot_analysis (
+          id TEXT PRIMARY KEY,
+          shot_id TEXT NOT NULL UNIQUE REFERENCES script_shots(id) ON DELETE CASCADE,
+          model TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          field_sources_json TEXT NOT NULL DEFAULT '{}',
+          field_confidence_json TEXT NOT NULL DEFAULT '{}',
+          prompt_context_json TEXT NOT NULL DEFAULT '{}',
+          prompt_context_schema_version INTEGER NOT NULL DEFAULT 0,
+          source_image_fingerprint TEXT NOT NULL DEFAULT '',
+          analysis_rule_version INTEGER NOT NULL DEFAULT 0,
+          raw_response TEXT NOT NULL DEFAULT '',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      ''');
+      _ensureTextColumn('script_shot_analysis', 'prompt_context_json');
+      _ensureIntegerColumn(
+        'script_shot_analysis',
+        'prompt_context_schema_version',
+      );
+      _ensureTextColumn('script_shot_analysis', 'source_image_fingerprint');
+      _ensureIntegerColumn('script_shot_analysis', 'analysis_rule_version');
+      _database.execute(
+        "UPDATE script_shot_analysis SET prompt_context_json = '{}' "
+        "WHERE prompt_context_json = '';",
+      );
+      _database.execute('PRAGMA user_version = 17;');
+    }
+    if (version < 18) {
+      if (_database
+          .select(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'script_shots' LIMIT 1;",
+          )
+          .isNotEmpty) {
+        _ensureTextColumn('script_shots', 'generation_feedback');
+      }
+      _database.execute('PRAGMA user_version = 18;');
     }
   }
 

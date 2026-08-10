@@ -9,21 +9,29 @@ import 'kling_cli_resolver.dart';
 class KlingCliService {
   const KlingCliService({
     this.executable = 'kling',
+    this.argumentPrefix = const [],
+    this.runInShell,
     this.processRunner = defaultKlingProcessRunner,
     this.processStarter = defaultKlingProcessStarter,
   });
 
   final String executable;
+  final List<String> argumentPrefix;
+  final bool? runInShell;
   final KlingProcessRunner processRunner;
   final KlingProcessStarter processStarter;
+
+  bool get _runInShell =>
+      runInShell ?? (Platform.isWindows && argumentPrefix.isEmpty);
 
   Future<void> login() async {
     await _run(const ['login']);
   }
 
-  Future<KlingLoginProcess> startLogin() => processStarter(executable, const [
+  Future<KlingLoginProcess> startLogin() => processStarter(executable, [
+    ...argumentPrefix,
     'login',
-  ], runInShell: Platform.isWindows);
+  ], runInShell: _runInShell);
 
   Future<KlingIdentity> whoAmI() async {
     final json = await _run(const ['who_am_i', '--quiet']);
@@ -169,11 +177,10 @@ class KlingCliService {
   }
 
   Future<Map<String, Object?>> _run(List<String> arguments) async {
-    final result = await processRunner(
-      executable,
-      arguments,
-      runInShell: Platform.isWindows,
-    );
+    final result = await processRunner(executable, [
+      ...argumentPrefix,
+      ...arguments,
+    ], runInShell: _runInShell);
     final stdout = '${result.stdout}'.trim();
     final stderr = '${result.stderr}'.trim();
     if (result.exitCode != 0) {
@@ -311,18 +318,13 @@ Future<KlingLoginProcess> defaultKlingProcessStarter(
     arguments,
     runInShell: runInShell,
   );
-  final stderrBuffer = StringBuffer();
-  unawaited(
-    process.stderr
-        .transform(utf8.decoder)
-        .forEach(stderrBuffer.write)
-        .catchError((_) {}),
-  );
+  final stderrBytes = <int>[];
+  unawaited(process.stderr.forEach(stderrBytes.addAll).catchError((_) {}));
   unawaited(process.stdout.drain<void>());
   return KlingLoginProcess(
     exitCode: process.exitCode,
     kill: process.kill,
-    stderr: () => stderrBuffer.toString().trim(),
+    stderr: () => decodeKlingProcessOutput(stderrBytes).trim(),
   );
 }
 

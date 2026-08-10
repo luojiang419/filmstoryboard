@@ -148,15 +148,21 @@ class ShootingScriptWorkflowRepository {
       '''
       INSERT INTO script_shot_analysis(
         id, shot_id, model, status, field_sources_json,
-        field_confidence_json, raw_response, error_message, created_at,
+        field_confidence_json, prompt_context_json,
+        prompt_context_schema_version, source_image_fingerprint,
+        analysis_rule_version, raw_response, error_message, created_at,
         updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(shot_id) DO UPDATE SET
         id = excluded.id,
         model = excluded.model,
         status = excluded.status,
         field_sources_json = excluded.field_sources_json,
         field_confidence_json = excluded.field_confidence_json,
+        prompt_context_json = excluded.prompt_context_json,
+        prompt_context_schema_version = excluded.prompt_context_schema_version,
+        source_image_fingerprint = excluded.source_image_fingerprint,
+        analysis_rule_version = excluded.analysis_rule_version,
         raw_response = excluded.raw_response,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at;
@@ -168,6 +174,10 @@ class ShootingScriptWorkflowRepository {
         analysis.status.storageValue,
         jsonEncode(analysis.fieldSources),
         jsonEncode(analysis.fieldConfidence),
+        jsonEncode(analysis.promptContext.toJson()),
+        analysis.promptContextSchemaVersion,
+        analysis.sourceImageFingerprint,
+        analysis.analysisRuleVersion,
         analysis.rawResponse,
         analysis.errorMessage,
         analysis.createdAt.toIso8601String(),
@@ -215,6 +225,11 @@ class ShootingScriptWorkflowRepository {
       status: ProcessingStatus.fromStorage(row['status']),
       fieldSources: _stringMap(row['field_sources_json'] as String),
       fieldConfidence: _doubleMap(row['field_confidence_json'] as String),
+      promptContext: _promptContext(row['prompt_context_json'] as String),
+      promptContextSchemaVersion:
+          row['prompt_context_schema_version'] as int? ?? 0,
+      sourceImageFingerprint: row['source_image_fingerprint'] as String? ?? '',
+      analysisRuleVersion: row['analysis_rule_version'] as int? ?? 0,
       rawResponse: row['raw_response'] as String,
       errorMessage: row['error_message'] as String,
       createdAt: DateTime.parse(row['created_at'] as String),
@@ -248,6 +263,17 @@ class ShootingScriptWorkflowRepository {
       });
     } catch (_) {
       return const {};
+    }
+  }
+
+  static ScriptShotPromptContext _promptContext(String value) {
+    try {
+      final decoded = jsonDecode(value);
+      return decoded is Map
+          ? ScriptShotPromptContext.fromJson(decoded)
+          : const ScriptShotPromptContext();
+    } catch (_) {
+      return const ScriptShotPromptContext();
     }
   }
 }

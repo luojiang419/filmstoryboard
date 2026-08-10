@@ -393,22 +393,22 @@ void main() {
           .toList(),
       [p.normalize(heroAsset.path)],
     );
-    expect(fixture.fakeCli.submittedPrompts.single, contains('图片2是角色资产参考'));
-    expect(fixture.fakeCli.submittedPrompts.single, contains('名称：女主角'));
-    expect(fixture.fakeCli.submittedPrompts.single, contains('红色外套'));
-    expect(fixture.fakeCli.submittedPrompts.single, contains('严格保持这些资产'));
+    expect(fixture.fakeCli.submittedPrompts.single, contains('图片2为角色参考（女主角）'));
+    expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('红色外套')));
+    expect(
+      fixture.fakeCli.submittedPrompts.single,
+      isNot(contains('严格保持这些资产')),
+    );
 
     fixture.fakeCli.completeQueryAsFailed();
     await generation;
   });
 
-  test('可灵 CLI 提交镜头组时追加中间复刻帧和资产图', () async {
+  test('可灵 CLI 按确认页手动镜头组追加原视频中间帧和资产图', () async {
     final fixture = await _createControllerFixture(
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
     );
     addTearDown(fixture.dispose);
-    await fixture.settingsController.setVideoStartEndFrameModeEnabled(true);
-
     final firstFrame = await File(
       p.join(fixture.root.path, 'kling-group-first-frame.png'),
     ).writeAsBytes([1]);
@@ -418,15 +418,6 @@ void main() {
     final tailFrame = await File(
       p.join(fixture.root.path, 'kling-group-tail-frame.png'),
     ).writeAsBytes([3]);
-    final firstReplica = await File(
-      p.join(fixture.root.path, 'kling-group-first-replica.png'),
-    ).writeAsBytes([11]);
-    final middleReplica = await File(
-      p.join(fixture.root.path, 'kling-group-middle-replica.png'),
-    ).writeAsBytes([12]);
-    final tailReplica = await File(
-      p.join(fixture.root.path, 'kling-group-tail-replica.png'),
-    ).writeAsBytes([13]);
     final assetFile = await File(
       p.join(fixture.root.path, 'kling-group-asset.png'),
     ).writeAsBytes([21]);
@@ -456,34 +447,15 @@ void main() {
     fixture.shootingController.updateShot(updatedTail);
     await Future<void>.delayed(Duration.zero);
 
-    fixture.replicateController.selectStartFrame(first.id);
-    fixture.replicateController.setTailFrame(tail.id);
-    final replicateRepository = ReplicateRepository(fixture.database);
+    expect(
+      fixture.shootingController.setContinuousShotRange(
+        startShotId: first.id,
+        endShotId: tail.id,
+      ),
+      isTrue,
+    );
+    await Future<void>.delayed(Duration.zero);
     final now = DateTime.now().toUtc();
-    for (final entry in [
-      (shot: updatedFirst, frame: firstFrame, replica: firstReplica),
-      (shot: updatedMiddle, frame: middleFrame, replica: middleReplica),
-      (shot: updatedTail, frame: tailFrame, replica: tailReplica),
-    ]) {
-      replicateRepository.upsertReplicatedShotImage(
-        ReplicatedShotImage(
-          id: 'replicated-${entry.shot.id}',
-          runId: fixture.replicateController.value.run!.id,
-          scriptShotId: entry.shot.id,
-          shotNumber: entry.shot.shotNumber,
-          originalFramePath: entry.frame.path,
-          generatedFramePath: entry.replica.path,
-          assetIds: const [],
-          prompt: '',
-          model: 'test',
-          rawResponse: '',
-          status: ProcessingStatus.completed,
-          errorMessage: '',
-          createdAt: now,
-          updatedAt: now,
-        ),
-      );
-    }
     final workflowRepository = ShootingScriptWorkflowRepository(
       fixture.database,
     );
@@ -503,7 +475,7 @@ void main() {
     );
     workflowRepository.upsertLink(
       ScriptShotAssetLink(
-        shotId: updatedFirst.id,
+        shotId: updatedMiddle.id,
         scriptAssetId: 'kling-group-character',
         matchSource: ScriptAssetMatchSource.manual,
         confidence: 1,
@@ -559,21 +531,30 @@ void main() {
 
     expect(
       p.normalize(fixture.fakeCli.submittedImagePaths.single),
-      p.normalize(firstReplica.path),
+      p.normalize(firstFrame.path),
     );
     expect(
       fixture.fakeCli.submittedReferenceImagePaths.single
           .map(p.normalize)
           .toList(),
-      [p.normalize(middleReplica.path), p.normalize(assetFile.path)],
+      [
+        p.normalize(middleFrame.path),
+        p.normalize(tailFrame.path),
+        p.normalize(assetFile.path),
+      ],
     );
+    expect(fixture.fakeCli.submittedTailImagePaths.single, isEmpty);
     expect(
-      p.normalize(fixture.fakeCli.submittedTailImagePaths.single),
-      p.normalize(tailReplica.path),
+      fixture.fakeCli.submittedPrompts.single,
+      contains('图片1至图片3为同一连续动作的顺序参考'),
     );
-    expect(fixture.fakeCli.submittedPrompts.single, contains('图片2是镜头2组内动作参考帧'));
-    expect(fixture.fakeCli.submittedPrompts.single, contains('图片3是角色资产参考'));
-    expect(fixture.fakeCli.submittedPrompts.single, contains('图片4是尾帧和动作结果参考'));
+    expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('镜头2组内')));
+    expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('镜头3组内')));
+    expect(fixture.fakeCli.submittedPrompts.single, contains('图片4为角色参考（女主角）'));
+    expect(
+      fixture.fakeCli.submittedPrompts.single,
+      isNot(contains('尾帧和动作结果参考')),
+    );
 
     fixture.fakeCli.completeQueryAsFailed();
     await generation;
@@ -878,6 +859,81 @@ void main() {
     await secondGeneration;
   });
 
+  test('取消任务后延迟返回的生成中状态不能覆盖本地取消状态', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      identity: const KlingIdentity(
+        userId: 'user-1',
+        imageToVideoModels: [
+          KlingModelSpec(
+            model: 'kling-video-v3_0_omni',
+            alias: '可灵 o3',
+            description: '',
+            arguments: [
+              KlingArgumentSpec(
+                name: 'duration',
+                required: false,
+                defaultValue: '5',
+                allowedValues: ['2', '3', '5'],
+                description: '',
+              ),
+            ],
+          ),
+        ],
+      ),
+      account: const KlingAccount(
+        userId: 'user-1',
+        membershipType: 'pro',
+        membershipDescription: '专业版',
+        availableCredits: 88,
+      ),
+    );
+    fixture.controller.selectModel('kling-video-v3_0_omni');
+    final frame = await File(
+      p.join(fixture.root.path, 'cancel-race-frame.png'),
+    ).writeAsBytes([1, 2, 3]);
+    final added = fixture.shootingController.addShot()!;
+    final shot = added.copyWith(
+      framePath: frame.path,
+      durationSeconds: 2,
+      prompt: '取消后不得恢复为生成中。',
+    );
+    fixture.shootingController.updateShot(shot);
+    await Future<void>.delayed(Duration.zero);
+
+    final generation = fixture.controller.generateShot(shot);
+    await _waitUntil(
+      () => fixture.controller.value.tasks.any(
+        (task) =>
+            task.shotId == shot.id &&
+            task.status == VideoGenerationTaskStatus.queued,
+      ),
+    );
+    final activeTask = fixture.controller.value.tasks.firstWhere(
+      (task) => task.shotId == shot.id,
+    );
+    await fixture.controller.cancelTask(activeTask);
+    fixture.fakeCli.completeQueryAsRunning();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      fixture.controller.value.tasks
+          .firstWhere((task) => task.id == activeTask.id)
+          .status,
+      VideoGenerationTaskStatus.canceled,
+    );
+    expect(
+      VideoGenerationRepository(
+        fixture.database,
+      ).getTask(activeTask.id)?.status,
+      VideoGenerationTaskStatus.canceled,
+    );
+    await generation;
+  });
+
   test('首尾帧模式视频生成只提交手动配对首帧并合计中间时长', () async {
     final root = await Directory.systemTemp.createTemp(
       'video-generation-start-end-',
@@ -975,6 +1031,15 @@ void main() {
     expect(controller.generationTargets().map((shot) => shot.id), [first.id]);
     expect(controller.canGenerateShot(middle), isFalse);
     expect(controller.desiredDurationFor(first), 6);
+    expect(
+      controller.value.drafts[first.id]?.h3Prompt,
+      contains('@图片1至@图片3是同一连续镜头的顺序动作参考'),
+      reason: '含中间帧的手动首尾组实际会按多参考图提交，预览提示词不能误写成双关键帧',
+    );
+    expect(
+      controller.value.drafts[first.id]?.h3Prompt,
+      isNot(contains('@图片1是首帧')),
+    );
     final currentTail = controller.actionSequenceFor(first).tail;
     expect(currentTail.id, tail.id);
     expect(
@@ -1446,7 +1511,14 @@ void main() {
     final updatedShot = shot.copyWith(
       framePath: frame.path,
       durationSeconds: 2,
-      prompt: 'H3 镜头提示词',
+      prompt: '''subject_definitions:
+- <Picture 1>: The opening frame and composition reference.
+- <Picture 2>: The transparent drinking glass product reference.
+summary: A concise product presentation.
+retention_analysis: Retain the glass identity and opening composition.
+detailed_description: [Shot 1] The glass remains consistent while the camera moves slowly.
+overall_soundscape: Quiet studio ambience.
+non_diegetic_music: Minimal ambient music.''',
     );
     fixture.shootingController.updateShot(updatedShot);
     final workflowRepository = ShootingScriptWorkflowRepository(
@@ -1501,16 +1573,146 @@ void main() {
       RegExp(r'name="reference_images"').allMatches(submittedBody),
       hasLength(2),
     );
-    expect(submittedBody, contains('@图片2 是产品资产参考'));
-    expect(submittedBody, contains('透明水杯'));
-    expect(submittedBody, contains('透明玻璃材质'));
+    expect(submittedBody, contains('<Picture 2>: The transparent'));
+    expect(submittedBody, isNot(contains('【参考素材补充】')));
+    expect(
+      RegExp(r'subject_definitions:').allMatches(submittedBody),
+      hasLength(1),
+    );
     expect(
       fixture.controller.value.tasks.single.status,
       VideoGenerationTaskStatus.completed,
     );
+    expect(
+      p.basename(fixture.controller.value.tasks.single.localPath),
+      '镜头1-v1.mp4',
+      reason: '软件实际保存的成片必须使用合并组顺序号且不补零',
+    );
   });
 
-  test('本地视频 API 提交镜头组时使用多参考图携带复刻帧和资产图', () async {
+  test('本地视频 API 的双帧普通镜头组不使用 last_frame 首尾帧模式', () async {
+    var submittedBody = '';
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      if (request.method == 'POST' &&
+          request.uri.path == '/api/generate-upload') {
+        final bodyBytes = await request.fold<List<int>>(
+          <int>[],
+          (buffer, data) => buffer..addAll(data),
+        );
+        submittedBody = utf8.decode(bodyBytes, allowMalformed: true);
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'id': 'manual-two-frame-job'}));
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET' &&
+          request.uri.path == '/api/jobs/manual-two-frame-job') {
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(
+            jsonEncode({
+              'status': 'completed',
+              'content_url': '/outputs/manual-two-frame.mp4',
+            }),
+          );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET' &&
+          request.uri.path == '/outputs/manual-two-frame.mp4') {
+        request.response.add([3, 1, 4]);
+        await request.response.close();
+        return;
+      }
+      request.response.statusCode = 500;
+      await request.response.close();
+    });
+    addTearDown(() => server.close(force: true));
+
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final firstFrame = await File(
+      p.join(fixture.root.path, 'manual-two-frame-1.png'),
+    ).writeAsBytes([1]);
+    final secondFrame = await File(
+      p.join(fixture.root.path, 'manual-two-frame-2.png'),
+    ).writeAsBytes([2]);
+    final first = fixture.shootingController.addShot()!;
+    final second = fixture.shootingController.addShot()!;
+    fixture.shootingController.updateShot(
+      first.copyWith(
+        framePath: firstFrame.path,
+        durationSeconds: 1,
+        content: '人物拿起产品',
+        prompt: '人物连续完成展示动作',
+      ),
+    );
+    fixture.shootingController.updateShot(
+      second.copyWith(
+        framePath: secondFrame.path,
+        durationSeconds: 4,
+        content: '人物完成展示',
+      ),
+    );
+    expect(
+      fixture.shootingController.setContinuousShotRange(
+        startShotId: first.id,
+        endShotId: second.id,
+      ),
+      isTrue,
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      fixture.controller.desiredDurationFor(first),
+      4,
+      reason: '普通多帧组应使用拍摄脚本显示的组尾时长，不能取组首的 1 秒',
+    );
+    await fixture.settingsController.saveVideoGenerationApiConfig(
+      VideoGenerationApiConfig(
+        id: 'test-manual-two-frame-api',
+        name: '双帧普通镜头组',
+        kind: VideoGenerationApiConfigKind.httpApi,
+        baseUrl: 'http://${server.address.host}:${server.port}',
+        apiKey: '',
+        model: AppSettings.defaultVideoGenerationModel,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    fixture.controller.updateDesiredDurationFor(first, 7);
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.controller.desiredDurationFor(first), 7);
+    expect(
+      fixture.controller.value.drafts[first.id]?.h3Prompt,
+      contains('7秒视频'),
+    );
+
+    await fixture.controller.generateShot(first);
+
+    expect(submittedBody, contains('name="mode"'));
+    expect(submittedBody, contains('references'));
+    expect(
+      submittedBody,
+      matches(RegExp(r'name="duration"\r?\n\r?\n7(?:\r?\n|--)')),
+    );
+    expect(submittedBody, contains('7秒视频'));
+    expect(submittedBody, isNot(contains('name="last_frame"')));
+    expect(
+      RegExp(r'name="reference_images"').allMatches(submittedBody),
+      hasLength(2),
+    );
+    expect(submittedBody, contains('@图片1至@图片2是同一连续镜头的顺序动作参考'));
+    expect(submittedBody, isNot(contains('【参考素材补充】')));
+    expect(submittedBody, isNot(contains('参考补充：')));
+    expect(submittedBody, isNot(contains('首帧参考图')));
+    expect(submittedBody, isNot(contains('尾帧参考图')));
+  });
+
+  test('本地视频 API 按确认页手动镜头组提交全部复刻帧和资产图', () async {
     var submittedBody = '';
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
@@ -1555,8 +1757,6 @@ void main() {
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
     );
     addTearDown(fixture.dispose);
-    await fixture.settingsController.setVideoStartEndFrameModeEnabled(true);
-
     final firstFrame = await File(
       p.join(fixture.root.path, 'h3-group-first-frame.png'),
     ).writeAsBytes([1]);
@@ -1575,9 +1775,12 @@ void main() {
     final tailReplica = await File(
       p.join(fixture.root.path, 'h3-group-tail-replica.png'),
     ).writeAsBytes([13]);
-    final assetFile = await File(
-      p.join(fixture.root.path, 'h3-group-asset.png'),
+    final middleAssetFile = await File(
+      p.join(fixture.root.path, 'h3-group-middle-product.png'),
     ).writeAsBytes([21]);
+    final tailAssetFile = await File(
+      p.join(fixture.root.path, 'h3-group-tail-scene.png'),
+    ).writeAsBytes([22]);
 
     final first = fixture.shootingController.addShot()!;
     final middle = fixture.shootingController.addShot()!;
@@ -1604,8 +1807,14 @@ void main() {
     fixture.shootingController.updateShot(updatedTail);
     await Future<void>.delayed(Duration.zero);
 
-    fixture.replicateController.selectStartFrame(first.id);
-    fixture.replicateController.setTailFrame(tail.id);
+    expect(
+      fixture.shootingController.setContinuousShotRange(
+        startShotId: first.id,
+        endShotId: tail.id,
+      ),
+      isTrue,
+    );
+    await Future<void>.delayed(Duration.zero);
     final replicateRepository = ReplicateRepository(fixture.database);
     final now = DateTime.now().toUtc();
     for (final entry in [
@@ -1635,34 +1844,74 @@ void main() {
     final workflowRepository = ShootingScriptWorkflowRepository(
       fixture.database,
     );
-    workflowRepository.upsertScriptAsset(
+    for (final asset in [
       ScriptAsset(
         id: 'h3-group-product',
         scriptId: updatedFirst.scriptId,
         type: ReplicateAssetType.product,
         name: '透明水杯',
         description: '透明玻璃材质，银色杯盖',
-        path: assetFile.path,
+        path: middleAssetFile.path,
         referenceNumber: 1,
         status: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
       ),
-    );
-    workflowRepository.upsertLink(
+      ScriptAsset(
+        id: 'h3-group-scene',
+        scriptId: updatedFirst.scriptId,
+        type: ReplicateAssetType.scene,
+        name: '展示台场景',
+        description: '白色弧形背景与银色台面',
+        path: tailAssetFile.path,
+        referenceNumber: 2,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    ]) {
+      workflowRepository.upsertScriptAsset(asset);
+    }
+    for (final link in [
       ScriptShotAssetLink(
-        shotId: updatedFirst.id,
+        shotId: updatedMiddle.id,
         scriptAssetId: 'h3-group-product',
         matchSource: ScriptAssetMatchSource.manual,
         confidence: 1,
-        matchReason: '手动确认',
+        matchReason: '中间镜头手动确认',
         confirmed: true,
         locked: true,
         sortOrder: 0,
         createdAt: now,
         updatedAt: now,
       ),
-    );
+      ScriptShotAssetLink(
+        shotId: updatedTail.id,
+        scriptAssetId: 'h3-group-product',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '尾镜头复用同一资产，验证去重',
+        confirmed: true,
+        locked: true,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: updatedTail.id,
+        scriptAssetId: 'h3-group-scene',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '尾镜头手动确认',
+        confirmed: true,
+        locked: true,
+        sortOrder: 1,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    ]) {
+      workflowRepository.upsertLink(link);
+    }
     fixture.replicateController.refresh();
     await Future<void>.delayed(Duration.zero);
 
@@ -1684,14 +1933,28 @@ void main() {
     expect(submittedBody, isNot(contains('name="last_frame"')));
     expect(
       RegExp(r'name="reference_images"').allMatches(submittedBody),
-      hasLength(4),
+      hasLength(5),
     );
-    expect(submittedBody, contains('@图片2 是镜头2组内动作参考帧'));
-    expect(submittedBody, contains('@图片3 是镜头3组内动作参考帧'));
-    expect(submittedBody, contains('@图片4 是产品资产参考'));
+    expect(submittedBody, contains('@图片1至@图片3是同一连续镜头的顺序动作参考'));
+    expect(submittedBody, contains('参考补充：'));
+    expect(submittedBody, contains('@图片4是产品资产参考'));
+    expect(submittedBody, contains('@图片5是场景资产参考'));
+    expect(submittedBody, isNot(contains('@图片2是镜头2的顺序动作参考')));
+    expect(submittedBody, isNot(contains('@图片3是镜头3的顺序动作参考')));
+    expect(submittedBody, isNot(matches(RegExp(r'@图片\d+是镜头\d+'))));
+    expect(submittedBody, isNot(contains('【参考素材补充】')));
+    expect(submittedBody, isNot(contains('首帧参考图')));
+    expect(submittedBody, isNot(contains('尾帧参考图')));
+    expect(submittedBody, contains('h3-group-middle-product.png'));
+    expect(submittedBody, contains('h3-group-tail-scene.png'));
     expect(
       fixture.controller.value.tasks.single.status,
       VideoGenerationTaskStatus.completed,
+    );
+    expect(
+      p.basename(fixture.controller.value.tasks.single.localPath),
+      '镜头1-v1.mp4',
+      reason: '合并组成片应按组顺序号实际落盘',
     );
   });
 
@@ -1813,24 +2076,40 @@ void main() {
     );
     expect(fixture.controller.selectedVideoApiSteps, 12);
 
-    fixture.controller.updateVideoApiAspectRatio('9:16');
-    expect(fixture.controller.selectedVideoApiAspectRatio, '9:16');
+    expect(fixture.controller.videoApiAspectRatios, [
+      '21:9',
+      '16:9',
+      '4:3',
+      '1:1',
+      '3:4',
+      '9:16',
+    ]);
+    for (final aspectRatio in fixture.controller.videoApiAspectRatios) {
+      expect(
+        fixture.controller.videoApiResolutionsForAspect(aspectRatio),
+        isNotEmpty,
+        reason: '$aspectRatio 必须有可提交的本地 H3 分辨率预设',
+      );
+    }
+
+    fixture.controller.updateVideoApiAspectRatio('21:9');
+    expect(fixture.controller.selectedVideoApiAspectRatio, '21:9');
     expect(
-      fixture.controller.videoApiResolutionsForAspect('9:16'),
-      contains('0.4MP 9:16 - 480x864'),
+      fixture.controller.videoApiResolutionsForAspect('21:9'),
+      contains('0.5MP 21:9 - 1120x480'),
     );
 
-    fixture.controller.updateVideoApiResolution('0.4MP 9:16 - 480x864');
+    fixture.controller.updateVideoApiResolution('0.3MP 21:9 - 896x384');
     fixture.controller.updateVideoApiSteps(18);
 
     expect(fixture.controller.selectedVideoApiSubmissionParameters, {
-      'resolution': '0.4MP 9:16 - 480x864',
+      'resolution': '0.3MP 21:9 - 896x384',
       'steps': '18',
     });
-    expect(fixture.controller.videoApiParameterSummary, contains('生成比例：9:16'));
+    expect(fixture.controller.videoApiParameterSummary, contains('生成比例：21:9'));
     expect(
       fixture.controller.videoApiParameterSummary,
-      contains('分辨率：0.4MP 9:16 - 480x864'),
+      contains('分辨率：0.3MP 21:9 - 896x384'),
     );
     expect(fixture.controller.videoApiParameterSummary, contains('步数：18'));
   });
@@ -1867,6 +2146,40 @@ void main() {
     expect(saved?.path, '$targetWithoutExtension.mp4');
     expect(await saved!.readAsBytes(), [1, 2, 3, 4]);
     expect(fixture.controller.value.message, contains('视频已保存到'));
+  });
+
+  test('作品管理删除会同步清理本地视频和任务记录', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final source = await File(
+      p.join(fixture.root.path, 'work-management-delete.mp4'),
+    ).writeAsBytes([1, 2, 3, 4]);
+    final shot = fixture.shootingController.addShot()!;
+    final now = DateTime.now().toUtc();
+    final task = VideoGenerationTask(
+      id: 'task-work-management-delete',
+      scriptId: shot.scriptId,
+      shotId: shot.id,
+      generationId: 'generation-work-management-delete',
+      model: 'kling-video-v3_0_omni',
+      durationSeconds: 5,
+      promptMode: VideoPromptMode.klingOptimized,
+      prompt: '删除作品测试',
+      status: VideoGenerationTaskStatus.completed,
+      localPath: source.path,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+    );
+    final repository = VideoGenerationRepository(fixture.database);
+    repository.upsertTask(task);
+
+    await fixture.controller.deleteTask(task);
+
+    expect(source.existsSync(), isFalse);
+    expect(repository.listTasks().where((item) => item.id == task.id), isEmpty);
   });
 
   test('当前工程相对路径完成视频可解析到生成视频列可显示文件', () async {
@@ -1908,12 +2221,127 @@ void main() {
       p.normalize(video.path),
     );
   });
+
+  test('启动时移除本地成片已删除的完成任务，保留失败任务记录', () async {
+    late VideoGenerationTask missingCompleted;
+    late VideoGenerationTask failed;
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+      beforeController: (repository, shootingController) {
+        final completedShot = shootingController.addShot()!;
+        final failedShot = shootingController.addShot()!;
+        final now = DateTime.now().toUtc();
+        missingCompleted = VideoGenerationTask(
+          id: 'missing-completed-video',
+          scriptId: completedShot.scriptId,
+          shotId: completedShot.id,
+          generationId: 'missing-completed-generation',
+          model: AppSettings.defaultVideoGenerationModel,
+          durationSeconds: 5,
+          promptMode: VideoPromptMode.h3Optimized,
+          prompt: '手动删除本地成片后的清理测试',
+          status: VideoGenerationTaskStatus.completed,
+          localPath: 'videos/generated/missing-completed.mp4',
+          createdAt: now,
+          updatedAt: now,
+          completedAt: now,
+        );
+        failed = VideoGenerationTask(
+          id: 'failed-video-task',
+          scriptId: failedShot.scriptId,
+          shotId: failedShot.id,
+          generationId: 'failed-generation',
+          model: AppSettings.defaultVideoGenerationModel,
+          durationSeconds: 5,
+          promptMode: VideoPromptMode.h3Optimized,
+          prompt: '失败任务不应被文件扫描删除',
+          status: VideoGenerationTaskStatus.failed,
+          localPath: 'videos/generated/failed.mp4',
+          errorMessage: '生成失败',
+          createdAt: now,
+          updatedAt: now,
+          completedAt: now,
+        );
+        repository
+          ..upsertTask(missingCompleted)
+          ..upsertTask(failed);
+      },
+    );
+    addTearDown(fixture.dispose);
+    final repository = VideoGenerationRepository(fixture.database);
+
+    expect(repository.getTask(missingCompleted.id), isNull);
+    expect(
+      repository.getTask(failed.id)?.status,
+      VideoGenerationTaskStatus.failed,
+    );
+    expect(
+      fixture.controller.value.tasks.map((task) => task.id),
+      isNot(contains(missingCompleted.id)),
+    );
+    expect(fixture.controller.value.message, contains('已移除 1 条'));
+  });
+
+  test('生成页手动修改镜头组时长会写入组尾并同步提示词秒数', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final first = fixture.shootingController.addShot()!;
+    final tail = fixture.shootingController.addShot()!;
+    fixture.shootingController.updateShot(
+      first.copyWith(
+        durationSeconds: 1,
+        content: '人物拿起产品',
+        prompt: '镜头组自然完成产品展示',
+      ),
+    );
+    fixture.shootingController.updateShot(
+      tail.copyWith(durationSeconds: 4, content: '人物完成展示'),
+    );
+    expect(
+      fixture.shootingController.setContinuousShotRange(
+        startShotId: first.id,
+        endShotId: tail.id,
+      ),
+      isTrue,
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(fixture.controller.desiredDurationFor(first), 4);
+    expect(
+      fixture.controller.value.drafts[first.id]?.h3Prompt,
+      contains('4秒视频'),
+    );
+    fixture.controller.updateEditedPrompt(first.id, '4秒视频，保留用户手动补充。');
+
+    fixture.controller.updateDesiredDurationFor(first, 7);
+    await Future<void>.delayed(Duration.zero);
+
+    final shots = fixture.shootingController.value.shots;
+    expect(shots.first.durationSeconds, 1);
+    expect(shots.last.durationSeconds, 7);
+    expect(fixture.controller.desiredDurationFor(first), 7);
+    expect(
+      fixture.controller.value.drafts[first.id]?.h3Prompt,
+      contains('7秒视频'),
+    );
+    expect(
+      fixture.controller.value.drafts[first.id]?.selectedPrompt,
+      startsWith('7秒视频'),
+    );
+  });
 }
 
 Future<_ControllerFixture> _createControllerFixture({
   required _FakeKlingCliService cliService,
   Duration loginAuthorizationTimeout = const Duration(seconds: 1),
   Duration loginAuthorizationPollInterval = const Duration(milliseconds: 1),
+  void Function(
+    VideoGenerationRepository repository,
+    ShootingScriptController shootingController,
+  )?
+  beforeController,
 }) async {
   final root = await Directory.systemTemp.createTemp('video-generation-login-');
   final directories = await AppDirectories.create(executableDirectory: root);
@@ -1933,8 +2361,10 @@ Future<_ControllerFixture> _createControllerFixture({
     directories: directories,
     settingsController: settingsController,
   );
+  final videoGenerationRepository = VideoGenerationRepository(database);
+  beforeController?.call(videoGenerationRepository, shootingController);
   final controller = VideoGenerationController(
-    repository: VideoGenerationRepository(database),
+    repository: videoGenerationRepository,
     videoRepository: VideoAnalysisRepository(database),
     workflowRepository: ShootingScriptWorkflowRepository(database),
     shootingScriptController: shootingController,
@@ -2104,6 +2534,22 @@ class _FakeKlingCliService extends KlingCliService {
           urlWithoutWatermark: '',
           errorMessage: '测试结束',
           rawJson: {'ok': false},
+        ),
+      );
+    }
+  }
+
+  void completeQueryAsRunning() {
+    final completer = _queryCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(
+        const KlingTaskResult(
+          generationId: 'fake-generation-1',
+          status: VideoGenerationTaskStatus.running,
+          url: '',
+          urlWithoutWatermark: '',
+          errorMessage: '',
+          rawJson: {'ok': true},
         ),
       );
     }

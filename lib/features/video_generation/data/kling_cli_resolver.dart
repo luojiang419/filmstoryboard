@@ -14,13 +14,35 @@ Future<ProcessResult> defaultKlingProcessRunner(
   String executable,
   List<String> arguments, {
   required bool runInShell,
-}) => Process.run(
-  executable,
-  arguments,
-  runInShell: runInShell,
-  stdoutEncoding: utf8,
-  stderrEncoding: utf8,
-);
+}) async {
+  final result = await Process.run(
+    executable,
+    arguments,
+    runInShell: runInShell,
+    stdoutEncoding: null,
+    stderrEncoding: null,
+  );
+  return ProcessResult(
+    result.pid,
+    result.exitCode,
+    decodeKlingProcessOutput(result.stdout),
+    decodeKlingProcessOutput(result.stderr),
+  );
+}
+
+String decodeKlingProcessOutput(Object? output) {
+  if (output is String) return output;
+  if (output is! List<int>) return '$output';
+  try {
+    return utf8.decode(output);
+  } on FormatException {
+    try {
+      return systemEncoding.decode(output);
+    } catch (_) {
+      return latin1.decode(output, allowInvalid: true);
+    }
+  }
+}
 
 class KlingCliEnvironment {
   const KlingCliEnvironment({
@@ -30,6 +52,7 @@ class KlingCliEnvironment {
     required this.klingPath,
     required this.klingVersion,
     required this.errorMessage,
+    this.klingEntryPointPath = '',
   });
 
   final String nodePath;
@@ -38,8 +61,22 @@ class KlingCliEnvironment {
   final String klingPath;
   final String klingVersion;
   final String errorMessage;
+  final String klingEntryPointPath;
 
   bool get isReady => errorMessage.isEmpty;
+
+  String get commandExecutable =>
+      Platform.isWindows && klingEntryPointPath.isNotEmpty
+      ? nodePath
+      : klingPath;
+
+  List<String> get commandArgumentsPrefix =>
+      Platform.isWindows && klingEntryPointPath.isNotEmpty
+      ? [klingEntryPointPath]
+      : const [];
+
+  bool get commandRunInShell =>
+      Platform.isWindows && klingEntryPointPath.isEmpty;
 }
 
 class KlingCliResolver {
@@ -70,9 +107,21 @@ class KlingCliResolver {
         npmPath: npmPath,
       );
     }
-    final versionResult = await processRunner(klingPath, const [
+    final klingEntryPointPath = await _findKlingEntryPoint(klingPath);
+    final commandExecutable =
+        Platform.isWindows && klingEntryPointPath.isNotEmpty
+        ? nodePath
+        : klingPath;
+    final commandArguments = <String>[
+      if (Platform.isWindows && klingEntryPointPath.isNotEmpty)
+        klingEntryPointPath,
       '--version',
-    ], runInShell: Platform.isWindows);
+    ];
+    final versionResult = await processRunner(
+      commandExecutable,
+      commandArguments,
+      runInShell: Platform.isWindows && klingEntryPointPath.isEmpty,
+    );
     if (versionResult.exitCode != 0) {
       return _error(
         '可灵 CLI 无法执行：${versionResult.stderr}',
@@ -89,6 +138,7 @@ class KlingCliResolver {
       klingPath: klingPath,
       klingVersion: '${versionResult.stdout}'.trim(),
       errorMessage: '',
+      klingEntryPointPath: klingEntryPointPath,
     );
   }
 
@@ -150,6 +200,56 @@ class KlingCliResolver {
       }
     }
     return candidates;
+  }
+
+  Future<String> _findKlingEntryPoint(String klingPath) async {
+    if (!Platform.isWindows || !klingPath.toLowerCase().endsWith('.cmd')) {
+      return '';
+    }
+    final wrapper = File(klingPath);
+    final wrapperDirectory = wrapper.parent.path;
+    final candidates = <String>[
+      p.join(
+        wrapperDirectory,
+        'node_modules',
+        '@klingai',
+        'cli-cn',
+        'dist',
+        'cli.js',
+      ),
+      p.join(
+        wrapperDirectory,
+        'node_modules',
+        '@klingai',
+        'cli',
+        'dist',
+        'cli.js',
+      ),
+    ];
+    if (wrapper.existsSync()) {
+      try {
+        final content = await wrapper.readAsString();
+        final match = RegExp(
+          r'%d[pP]0%[\\/]([^"\r\n]+?\.js)',
+        ).firstMatch(content);
+        final relativePath = match?.group(1)?.trim() ?? '';
+        if (relativePath.isNotEmpty) {
+          candidates.insert(
+            0,
+            p.join(
+              wrapperDirectory,
+              relativePath.replaceAll(RegExp(r'[\\/]+'), p.separator),
+            ),
+          );
+        }
+      } on FileSystemException {
+        // npm 标准目录候选仍可继续定位，不因包装脚本临时不可读而中断。
+      }
+    }
+    for (final candidate in candidates) {
+      if (File(candidate).existsSync()) return p.normalize(candidate);
+    }
+    return '';
   }
 
   KlingCliEnvironment _error(

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+192
+version: 1.0.0+238
 environment:
   sdk: ^3.10.7
 
@@ -82,6 +82,17 @@ flutter:
   assets:
     - docs/视觉模型api.md
     - docs/拍摄脚本模版.xlsx
+    - assets/minimax_h3_skills/SOURCE.md
+    - assets/minimax_h3_skills/skills/3d-animation-short-generator/
+    - assets/minimax_h3_skills/skills/3d-animation-short-generator/references/
+    - assets/minimax_h3_skills/skills/brand-promo-video-generator/
+    - assets/minimax_h3_skills/skills/co-op-game-intro-generator/
+    - assets/minimax_h3_skills/skills/co-op-game-intro-generator/references/
+    - assets/minimax_h3_skills/skills/handdrawn-live-video-generator/
+    - assets/minimax_h3_skills/skills/minimalist-product-ad-generator/
+    - assets/minimax_h3_skills/skills/music-video-subtitle-generator/
+    - assets/minimax_h3_skills/skills/paper-collage-explainer-generator/
+    - assets/minimax_h3_skills/skills/papercraft-stop-motion-explainer/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

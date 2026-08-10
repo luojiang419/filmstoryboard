@@ -6,6 +6,7 @@ import 'package:filmstoryboard/core/providers/app_providers.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
+import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/application/script_analysis_controller.dart';
@@ -15,6 +16,7 @@ import 'package:filmstoryboard/features/shooting_script/application/shooting_scr
 import 'package:filmstoryboard/features/shooting_script/data/shooting_asset_library_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:filmstoryboard/features/shooting_script/presentation/shooting_script_page.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_controller.dart';
@@ -47,6 +49,9 @@ void main() {
     late ShootingScriptAnalysisController scriptAnalysisController;
     late StoryboardController storyboardController;
     late VideoAnalysisController videoController;
+    late String navigationTargetId;
+    late int navigationTargetNumber;
+    late String matchingShotId;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp('shooting_script_page_');
       directories = await AppDirectories.create(executableDirectory: root);
@@ -61,7 +66,22 @@ void main() {
         directories: directories,
       );
       shootingController.createEmpty(name: '导出弹窗脚本');
-      shootingController.addShot();
+      final matchingShot = shootingController.addShot()!;
+      matchingShotId = matchingShot.id;
+      shootingController.updateShot(
+        matchingShot.copyWith(content: '女模特拿起产品并看向镜头'),
+      );
+      for (var index = 0; index < 7; index++) {
+        final shot = shootingController.addShot()!;
+        final updated = shot.copyWith(
+          content: '外置面板导航镜头 ${shot.shotNumber}',
+          scene: '外置面板测试场景',
+          cameraMovement: '固定',
+        );
+        shootingController.updateShot(updated);
+        navigationTargetId = updated.id;
+        navigationTargetNumber = updated.shotNumber;
+      }
       final workflowRepository = ShootingScriptWorkflowRepository(database);
       replicateController = ReplicateController(
         repository: ReplicateRepository(database),
@@ -76,6 +96,15 @@ void main() {
           directories: directories,
         ),
         directories: directories,
+      );
+      final assetSource = await File(
+        'assets/branding/app_icon_512.png',
+      ).copy('${root.path}/female-model.png');
+      await assetLibraryController.importItem(
+        sourcePath: assetSource.path,
+        type: ReplicateAssetType.character,
+        name: '女模特',
+        description: '黄色上衣模特',
       );
       assetBindingController = ShootingScriptAssetBindingController(
         shootingScriptController: shootingController,
@@ -145,6 +174,71 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);
+    expect(find.byKey(const ValueKey('confirm-story-panel')), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('new-shot-row-$navigationTargetId')),
+      findsNothing,
+    );
+    final targetDescription = find.byKey(
+      ValueKey(
+        'confirm-story-description-$navigationTargetNumber-$navigationTargetNumber',
+      ),
+    );
+    await tester.scrollUntilVisible(
+      targetDescription,
+      120,
+      scrollable: find.descendant(
+        of: find.byKey(const ValueKey('confirm-story-list')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    final storyDescriptionLink = tester.widget<InkWell>(targetDescription);
+    expect(storyDescriptionLink.onTap, isNotNull);
+    storyDescriptionLink.onTap!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(
+      find.byKey(ValueKey('new-shot-row-$navigationTargetId')),
+      findsOneWidget,
+    );
+    replicateController.moveToStep(ReplicateStep.prepareAssets);
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(
+      find.byKey(const ValueKey('prepare-assets-right-asset-library-panel')),
+      findsOneWidget,
+    );
+    expect(find.text('资产库'), findsOneWidget);
+    expect(find.text('上传资产'), findsNothing);
+    expect(find.text('按描述生成'), findsNothing);
+    expect(find.text('女模特'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('script-auto-match-assets')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(assetBindingController.value.links, hasLength(1));
+    expect(assetBindingController.value.links.single.shotId, matchingShotId);
+    expect(assetBindingController.value.links.single.confirmed, isTrue);
+    expect(
+      assetBindingController.value.links.single.matchSource,
+      ScriptAssetMatchSource.rule,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('manage-prepare-assets-library')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('资产管理'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('asset-manager-upload-assets')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('asset-manager-generate-from-description')),
+      findsOneWidget,
+    );
+    expect(find.text('上传资产'), findsOneWidget);
+    expect(find.text('按描述生成'), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    replicateController.moveToStep(ReplicateStep.confirmShots);
+    await tester.pump(const Duration(milliseconds: 260));
     expect(find.text('导出分镜图片'), findsOneWidget);
     expect(find.text('导出原图'), findsNothing);
 

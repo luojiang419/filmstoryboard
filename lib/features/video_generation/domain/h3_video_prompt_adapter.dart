@@ -10,59 +10,66 @@ class H3VideoPromptAdapter {
     int availableImageReferences = 0,
     int availableVideoReferences = 0,
     int availableAudioReferences = 0,
+    bool? useStartEndFrameReferences,
     String globalStyle = '',
+    String narrativeStyle = '',
     String constraints = '',
     List<String> referenceDefinitions = const [],
   }) {
+    final normalizedSourcePrompt = sourcePrompt.trim();
+    if (_isOfficialH3Prompt(normalizedSourcePrompt)) {
+      return normalizedSourcePrompt;
+    }
     final sequence = actionSequence.isEmpty
         ? <ScriptShot>[shot]
         : actionSequence;
+    final hasTailFrame =
+        useStartEndFrameReferences ??
+        (sequence.length > 1 && availableImageReferences == 2);
+    final sequenceDuration = _sequenceDuration(
+      sequence,
+      sumStageDurations: hasTailFrame,
+    );
     final references = _referenceText(
       sequence: sequence,
       availableImageReferences: availableImageReferences,
       availableVideoReferences: availableVideoReferences,
       availableAudioReferences: availableAudioReferences,
-      hasTailFrame: sequence.length > 1 && availableImageReferences >= 2,
+      hasTailFrame: hasTailFrame,
       referenceDefinitions: referenceDefinitions,
     );
-    final creative = _joinUnique([
-      '${_durationText(_sequenceDuration(sequence))}视频',
-      globalStyle,
-      shot.lightingMood,
-      shot.colorPalette,
-      shot.visualFocus,
-      _sourceCreativeText(sourcePrompt),
-    ]);
-    final visualProcess = sequence.length > 1
-        ? _sequenceProcess(sequence)
+    final creative = _creativeText(
+      shot: shot,
+      sequence: sequence,
+      duration: sequenceDuration,
+      globalStyle: globalStyle,
+      sourcePrompt: sourcePrompt,
+    );
+    final process = sequence.length > 1
+        ? _sequenceProcess(sequence, hasTailFrame: hasTailFrame)
         : _singleShotProcess(shot);
-    final requirements = _joinUnique([
-      '画面具体可见，少用抽象比喻',
-      '主体外观、空间关系、动作方向、光源方向和镜头距离保持稳定',
-      if (sequence.length > 1 && availableImageReferences >= 2)
-        '只补足@图片1到@图片2之间的动作、光影和声音变化，不主动新增切镜',
-      shot.replicationInstructions,
-      constraints,
-      '不要字幕、不要水印、不要乱码文字、不要无关Logo',
-    ]);
-    return [
-      '【参考素材说明】',
-      references,
-      '',
+    final styleLock = _compactText(
+      _withoutExactTimingDirectives(narrativeStyle),
+      maxChars: 600,
+    );
+    final requirements = _requirements(
+      shot: shot,
+      hasTailFrame: hasTailFrame,
+      constraints: constraints,
+    );
+    final sections = <String>[
+      if (references.isNotEmpty) ...['【参考素材说明】', references, ''],
       '【核心创意】',
-      creative.isEmpty ? _fallbackCreative(shot) : creative,
+      creative,
       '',
+      if (styleLock.isNotEmpty) ...['【镜头叙事风格】', styleLock, ''],
       '【画面过程描述】',
-      visualProcess,
-      '',
-      '【整体要求补充】',
-      requirements,
-      '',
-      '【声音设计】',
-      _soundDesign(sequence),
-      '',
+      process,
+      if (requirements.isNotEmpty) '全程要求：$requirements。',
+      '声音：${_soundDesign(sequence)}。',
       '非叙事性音乐：${_musicText(sequence)}',
-    ].join('\n');
+    ];
+    return sections.join('\n').trim();
   }
 
   static String _referenceText({
@@ -74,88 +81,192 @@ class H3VideoPromptAdapter {
     required List<String> referenceDefinitions,
   }) {
     final lines = <String>[];
-    if (sequence.length > 2 && availableImageReferences >= sequence.length) {
-      lines.add('@图片1 是首帧参考图，锁定视频开头画面、主体外观、构图和光影。');
-      for (var index = 1; index < sequence.length - 1; index++) {
-        lines.add(
-          '@图片${index + 1} 是镜头${sequence[index].shotNumber}中间动作参考帧，锁定组内动作阶段、主体位置、构图和光影变化。',
-        );
-      }
-      lines.add('@图片${sequence.length} 是尾帧参考图，锁定视频结尾画面、动作结果、构图和光影。');
-    } else if (hasTailFrame) {
-      lines.add('@图片1 是首帧参考图，锁定视频开头画面、主体外观、构图和光影。');
-      lines.add('@图片2 是尾帧参考图，锁定视频结尾画面、动作结果、构图和光影。');
+    if (hasTailFrame && availableImageReferences >= 2) {
+      lines.add('@图片1是首帧，@图片2是尾帧；保持主体、场景、构图与光影连续，只补全两帧之间的自然变化。');
+    } else if (sequence.length > 1 &&
+        availableImageReferences >= sequence.length) {
+      lines.add(
+        '@图片1至@图片$availableImageReferences是同一连续镜头的顺序动作参考，'
+        '保持主体、场景、构图与光影连续，不要求逐帧精确到达。',
+      );
     } else if (availableImageReferences > 0) {
-      lines.add('@图片1 是画面参考图，用于锁定主体外观、场景空间、构图、光影和整体视觉质感。');
+      lines.add('@图片1是画面参考，用于保持主体、场景、构图与整体视觉质感。');
     }
     for (var index = 1; index <= availableVideoReferences; index++) {
-      lines.add('@视频$index 是动作、运镜和剪辑节奏参考。');
+      lines.add('@视频$index提供动作、运镜与剪辑节奏参考。');
     }
     for (var index = 1; index <= availableAudioReferences; index++) {
-      lines.add('@音频$index 是声音节奏、情绪和氛围参考。');
+      lines.add('@音频$index提供声音节奏与听觉质感参考。');
     }
-    lines.addAll(referenceDefinitions);
-    if (lines.isEmpty) return '无参考素材（纯文字生成视频）。';
-    return lines.join('\n');
+    for (final definition in referenceDefinitions) {
+      final normalized = _compactText(definition, maxChars: 100);
+      if (normalized.isNotEmpty) lines.add(normalized);
+    }
+    return _joinUnique(lines, separator: '\n');
+  }
+
+  static String _creativeText({
+    required ScriptShot shot,
+    required List<ScriptShot> sequence,
+    required double duration,
+    required String globalStyle,
+    required String sourcePrompt,
+  }) {
+    final first = sequence.first;
+    final action = _stageAction(first, maxChars: 72);
+    final parts = <String>[
+      '${_durationText(duration)}视频',
+      _compactText(globalStyle, maxChars: 70),
+      action,
+      _compactText(shot.scene, maxChars: 48),
+      _compactText(shot.cameraAngle, maxChars: 42),
+      _compactText(shot.cameraMovement, maxChars: 100),
+      _compactText(shot.lightingMood, maxChars: 65),
+      _compactText(shot.colorPalette, maxChars: 42),
+      _compactText(shot.visualFocus, maxChars: 50),
+      _compactText(_sourceCreativeText(sourcePrompt), maxChars: 80),
+    ];
+    final result = _joinUnique(parts);
+    return result.isEmpty ? _fallbackCreative(shot) : '$result。';
   }
 
   static String _singleShotProcess(ScriptShot shot) {
-    final seconds = shot.durationSeconds <= 0 ? 4 : shot.durationSeconds;
+    final action = _stageAction(shot, maxChars: 120);
     final parts = _joinUnique([
-      shot.shotSize,
-      shot.content,
-      if (shot.scene.trim().isNotEmpty) '场景：${shot.scene.trim()}',
-      if (shot.composition.trim().isNotEmpty) '构图：${shot.composition.trim()}',
-      if (shot.cameraAngle.trim().isNotEmpty) '机位：${shot.cameraAngle.trim()}',
-      if (shot.cameraMovement.trim().isNotEmpty)
-        '运镜：${shot.cameraMovement.trim()}',
-      if (shot.cameraNotes.trim().isNotEmpty) '摄影备注：${shot.cameraNotes.trim()}',
-      if (shot.dialogue.trim().isNotEmpty) '台词：${_dialogueText(shot.dialogue)}',
-      if (shot.sound.trim().isNotEmpty) '音效：${shot.sound.trim()}',
+      _compactText(shot.shotSize, maxChars: 20),
+      action,
+      if (shot.dialogue.trim().isNotEmpty)
+        '台词：${_compactText(_dialogueText(shot.dialogue), maxChars: 100)}',
     ]);
-    return '0-${_durationText(seconds)}：$parts';
+    return '画面：$parts。';
   }
 
-  static String _sequenceProcess(List<ScriptShot> sequence) {
+  static String _sequenceProcess(
+    List<ScriptShot> sequence, {
+    required bool hasTailFrame,
+  }) {
     final lines = <String>[];
-    var elapsed = 0.0;
-    for (final shot in sequence) {
-      final duration = shot.durationSeconds <= 0 ? 1.0 : shot.durationSeconds;
-      final next = elapsed + duration;
+    for (var index = 0; index < sequence.length; index++) {
+      final shot = sequence[index];
+      final referenceCue = hasTailFrame
+          ? index == 0
+                ? '从@图片1状态开始'
+                : index == sequence.length - 1
+                ? '自然到达@图片2状态'
+                : ''
+          : '衔接@图片${index + 1}';
       final parts = _joinUnique([
-        shot.shotSize,
-        shot.actionStage,
-        shot.content,
-        shot.visual,
-        shot.movementTrend,
-        if (shot.scene.trim().isNotEmpty) '场景：${shot.scene.trim()}',
-        if (shot.cameraMovement.trim().isNotEmpty)
-          '运镜：${shot.cameraMovement.trim()}',
+        referenceCue,
+        _compactText(shot.actionStage, maxChars: 24),
+        _stageAction(shot, maxChars: 72),
+        _compactText(shot.movementTrend, maxChars: 55),
         if (shot.dialogue.trim().isNotEmpty)
-          '台词：${_dialogueText(shot.dialogue)}',
-        if (shot.sound.trim().isNotEmpty) '音效：${shot.sound.trim()}',
+          '台词：${_compactText(_dialogueText(shot.dialogue), maxChars: 80)}',
       ]);
-      lines.add('${_durationText(elapsed)}-${_durationText(next)}：$parts');
-      elapsed = next;
+      lines.add('${_sequenceStageLabel(index, sequence.length)}：$parts。');
     }
     return lines.join('\n');
   }
 
-  static String _soundDesign(List<ScriptShot> sequence) {
-    final sound = _joinUnique(sequence.map((shot) => shot.sound));
-    if (sound.isEmpty) {
-      return '使用与画面动作同步的自然环境声、轻微物理运动声和空间氛围声。';
+  static String _sequenceStageLabel(int index, int length) {
+    if (index == 0) return '开头';
+    if (index == length - 1) return '最后';
+    return index == 1 ? '随后' : '接着';
+  }
+
+  static String _stageAction(ScriptShot shot, {required int maxChars}) {
+    final candidates = [shot.content, shot.visual];
+    for (final candidate in candidates) {
+      final normalized = _compactText(candidate, maxChars: maxChars);
+      if (normalized.isNotEmpty) return normalized;
     }
-    return sound;
+    return _compactText(shot.movementTrend, maxChars: maxChars);
+  }
+
+  static String _requirements({
+    required ScriptShot shot,
+    required bool hasTailFrame,
+    required String constraints,
+  }) => _joinUnique([
+    if (hasTailFrame) '单镜头连续完成，不切镜',
+    _compactText(shot.replicationInstructions, maxChars: 80),
+    _compactText(constraints, maxChars: 100),
+    '保持主体身份、空间关系与动作方向稳定',
+    '不新增字幕、乱码文字、水印或无关Logo',
+  ]);
+
+  static String _soundDesign(List<ScriptShot> sequence) {
+    final effects = <String>[];
+    for (final shot in sequence) {
+      for (final segment in _soundSegments(shot.sound)) {
+        if (_isMusicSegment(segment) || _isSoundRule(segment)) continue;
+        final normalized = _compactText(
+          segment.replaceFirst(RegExp(r'^(?:音效设计|音效氛围|音效)\s*[：:]\s*'), ''),
+          maxChars: 70,
+        );
+        if (normalized.isEmpty || _containsEquivalent(effects, normalized)) {
+          continue;
+        }
+        effects.add(normalized);
+        if (effects.length >= 2) break;
+      }
+      if (effects.length >= 2) break;
+    }
+    final sound = _joinUnique(effects);
+    return _joinUnique([
+      sound.isEmpty ? '自然环境声与画面中的物理动作声' : sound,
+      '按画面事件自然同步，保持真实速度和自然音高',
+    ]);
   }
 
   static String _musicText(List<ScriptShot> sequence) {
-    final sound = _joinUnique(sequence.map((shot) => shot.sound));
-    if (sound.isEmpty) return 'N/A';
-    return RegExp(r'配乐|音乐|BGM|bgm|鼓点|旋律|节奏|弦乐|钢琴').hasMatch(sound)
-        ? sound
-        : 'N/A';
+    final music = <String>[];
+    for (final shot in sequence) {
+      final raw = shot.sound.trim();
+      final segments = _soundSegments(raw);
+      final explicitMusic = segments.where(_isMusicSegment).toList();
+      if (explicitMusic.isNotEmpty) {
+        for (final segment in explicitMusic) {
+          final normalized = _compactText(
+            segment.replaceFirst(
+              RegExp(
+                r'^(?:非叙事性音乐|音乐氛围|配乐|背景音乐|BGM)\s*[：:]\s*',
+                caseSensitive: false,
+              ),
+              '',
+            ),
+            maxChars: 100,
+          );
+          if (normalized.isNotEmpty && !_isNoMusic(normalized)) {
+            music.add(normalized);
+          }
+        }
+      } else if (RegExp(r'配乐|背景音乐|BGM|bgm|鼓点|旋律|弦乐|钢琴').hasMatch(raw)) {
+        music.add(_compactText(raw, maxChars: 100));
+      }
+    }
+    final result = _joinUnique(music);
+    return result.isEmpty ? 'N/A' : result;
   }
+
+  static List<String> _soundSegments(String value) => value
+      .split(RegExp(r'[；\n]+'))
+      .map((segment) => segment.trim())
+      .where((segment) => segment.isNotEmpty)
+      .toList(growable: false);
+
+  static bool _isMusicSegment(String value) => RegExp(
+    r'^(?:非叙事性音乐|音乐氛围|配乐|背景音乐|BGM)\s*[：:]',
+    caseSensitive: false,
+  ).hasMatch(value.trim());
+
+  static bool _isSoundRule(String value) =>
+      RegExp(r'^(?:同步要求|所有声音|所有音效|禁止|声音同步)').hasMatch(value.trim());
+
+  static bool _isNoMusic(String value) => RegExp(
+    r'^(?:N\s*/?\s*A|无|不添加|不需要|除非脚本明确指定)',
+    caseSensitive: false,
+  ).hasMatch(value.trim());
 
   static String _fallbackCreative(ScriptShot shot) =>
       _joinUnique([shot.content, shot.scene, shot.shotSize]);
@@ -169,6 +280,30 @@ class H3VideoPromptAdapter {
       return '';
     }
     return normalized.replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  static String _withoutExactTimingDirectives(String value) {
+    return value
+        .replaceAllMapped(
+          RegExp(
+            r'(^|[；;。\n])\s*(?:第\s*)?\d+(?:\.\d+)?\s*'
+            r'(?:[-—~～至到]\s*\d+(?:\.\d+)?)?\s*(?:秒|s)'
+            r'(?:内|时)?\s*[：:，,]\s*',
+            caseSensitive: false,
+          ),
+          (match) => match.group(1) ?? '',
+        )
+        .replaceAll(
+          RegExp(
+            r'\d+(?:\.\d+)?\s*[-—~～至到]\s*\d+(?:\.\d+)?\s*(?:秒|s)',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'第\s*\d+(?:\.\d+)?\s*秒(?:内|时)?'), '随后')
+        .replaceAll(RegExp(r'[；;，,]\s*[；;，,]+'), '；')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
   }
 
   static bool _isStructuredPrompt(String value) {
@@ -189,7 +324,39 @@ class H3VideoPromptAdapter {
     return RegExp(r'(^|\n)\s*镜头\d+[：:]').hasMatch(value);
   }
 
-  static double _sequenceDuration(List<ScriptShot> sequence) {
+  static bool _isOfficialH3Prompt(String value) {
+    if (value.isEmpty) return false;
+    if (value.startsWith('subject_definitions:')) {
+      const fields = [
+        'subject_definitions:',
+        'summary:',
+        'retention_analysis:',
+        'detailed_description:',
+        'overall_soundscape:',
+        'non_diegetic_music:',
+      ];
+      var previous = -1;
+      for (final field in fields) {
+        final index = value.indexOf(field);
+        if (index <= previous) return false;
+        previous = index;
+      }
+      return true;
+    }
+    final integrated = value.indexOf('integrated_multimodal_description:');
+    final soundscape = value.indexOf('overall_soundscape:');
+    final music = value.indexOf('non_diegetic_music:');
+    return integrated >= 0 && soundscape > integrated && music > soundscape;
+  }
+
+  static double _sequenceDuration(
+    List<ScriptShot> sequence, {
+    required bool sumStageDurations,
+  }) {
+    if (!sumStageDurations) {
+      final duration = sequence.last.durationSeconds;
+      return duration <= 0 ? 4 : duration;
+    }
     final total = sequence.fold<double>(
       0,
       (sum, shot) =>
@@ -205,14 +372,59 @@ class H3VideoPromptAdapter {
         : '${seconds.toStringAsFixed(1)}秒';
   }
 
-  static String _joinUnique(Iterable<String> values) {
-    final seen = <String>{};
+  static String _compactText(String value, {required int maxChars}) {
+    final normalized = value
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'^[，,；;。\s]+|[，,；;。\s]+$'), '')
+        .trim();
+    if (normalized.isEmpty || normalized.length <= maxChars) {
+      return normalized;
+    }
+    final clauses = normalized
+        .split(RegExp(r'[；;。\n]+'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+    final result = <String>[];
+    var length = 0;
+    for (final clause in clauses) {
+      final nextLength = length + clause.length + (result.isEmpty ? 0 : 1);
+      if (nextLength > maxChars) break;
+      result.add(clause);
+      length = nextLength;
+    }
+    if (result.isNotEmpty) return result.join('，');
+    final commaClause = normalized.split(RegExp(r'[，,]')).first.trim();
+    if (commaClause.isNotEmpty && commaClause.length <= maxChars) {
+      return commaClause;
+    }
+    return normalized.substring(0, maxChars);
+  }
+
+  static bool _containsEquivalent(List<String> values, String candidate) {
+    final normalizedCandidate = _semanticKey(candidate);
+    return values.any((value) {
+      final normalizedValue = _semanticKey(value);
+      return normalizedValue == normalizedCandidate ||
+          normalizedValue.contains(normalizedCandidate) ||
+          normalizedCandidate.contains(normalizedValue);
+    });
+  }
+
+  static String _semanticKey(String value) => value
+      .replaceAll(RegExp(r'[\s，,；;。.!！?？：:]'), '')
+      .replaceAll(RegExp(r'^(?:场景|构图|机位|运镜|视觉焦点|光影|氛围|色彩)'), '')
+      .trim();
+
+  static String _joinUnique(Iterable<String> values, {String separator = '，'}) {
     final result = <String>[];
     for (final value in values) {
       final normalized = value.trim();
-      if (normalized.isEmpty || !seen.add(normalized)) continue;
+      if (normalized.isEmpty || _containsEquivalent(result, normalized)) {
+        continue;
+      }
       result.add(normalized);
     }
-    return result.join('，');
+    return result.join(separator);
   }
 }

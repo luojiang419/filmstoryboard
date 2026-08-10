@@ -13,7 +13,6 @@ import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/script_multimodal_analysis_service.dart';
 import '../data/shooting_script_repository.dart';
-import '../domain/script_shot_continuity_refiner.dart';
 import '../domain/shooting_script_models.dart';
 
 final shootingScriptControllerProvider = Provider<ShootingScriptController>((
@@ -293,8 +292,8 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           transitionHint: dimensions['transitionHint'] ?? '',
           movementTrend: dimensions['movementTrend'] ?? '',
           actionStage: dimensions['actionStage'] ?? '',
-          continuesFromPrevious: dimensions['continuesFromPrevious'] == 'true',
-          continuesToNext: dimensions['continuesToNext'] == 'true',
+          continuesFromPrevious: false,
+          continuesToNext: false,
           scene: dimensions['scene'] ?? '',
           productCode: '',
           productStyling: _firstNotEmpty([
@@ -311,12 +310,11 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
         ),
       );
     }
-    final refinedShots = const ScriptShotContinuityRefiner().refine(shots);
     _repository.upsertScript(script);
-    _repository.replaceShots(script.id, refinedShots);
+    _repository.replaceShots(script.id, shots);
     refresh(selectScriptId: script.id);
     value = value.copyWith(
-      message: '已从视频生成 ${refinedShots.length} 个脚本镜头',
+      message: '已从视频生成 ${shots.length} 个脚本镜头，请手动设置首帧和结束帧范围',
       errorMessage: '',
     );
     return script;
@@ -676,6 +674,66 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     _saveShots(script, shots, selectShotId: nextSelectedId, message: '已删除镜头');
   }
 
+  bool setContinuousShotRange({
+    required String startShotId,
+    required String endShotId,
+  }) {
+    final script = value.selectedScript;
+    final startIndex = value.shots.indexWhere((shot) => shot.id == startShotId);
+    final endIndex = value.shots.indexWhere((shot) => shot.id == endShotId);
+    if (script == null ||
+        startIndex < 0 ||
+        endIndex < 0 ||
+        endIndex <= startIndex) {
+      value = value.copyWith(message: '', errorMessage: '请选择首帧之后的镜头作为结束帧');
+      return false;
+    }
+    final affectedStart = _continuousGroupStartIndex(startIndex);
+    final affectedEnd = _continuousGroupEndIndex(endIndex);
+    final shots = [...value.shots];
+    for (var index = affectedStart; index <= affectedEnd; index++) {
+      shots[index] = shots[index].copyWith(
+        continuesFromPrevious: index > startIndex && index <= endIndex,
+        continuesToNext: index >= startIndex && index < endIndex,
+      );
+    }
+    _saveShots(
+      script,
+      shots,
+      selectShotId: startShotId,
+      message:
+          '已将镜头 ${value.shots[startIndex].shotNumber}-${value.shots[endIndex].shotNumber} 设为一个镜头组',
+    );
+    return true;
+  }
+
+  bool clearContinuousShotGroup(String shotId) {
+    final script = value.selectedScript;
+    final index = value.shots.indexWhere((shot) => shot.id == shotId);
+    if (script == null || index < 0) return false;
+    final start = _continuousGroupStartIndex(index);
+    final end = _continuousGroupEndIndex(index);
+    if (start == end) {
+      value = value.copyWith(message: '', errorMessage: '当前镜头未归入镜头组');
+      return false;
+    }
+    final shots = [...value.shots];
+    for (var itemIndex = start; itemIndex <= end; itemIndex++) {
+      shots[itemIndex] = shots[itemIndex].copyWith(
+        continuesFromPrevious: false,
+        continuesToNext: false,
+      );
+    }
+    _saveShots(
+      script,
+      shots,
+      selectShotId: shotId,
+      message:
+          '已取消镜头 ${value.shots[start].shotNumber}-${value.shots[end].shotNumber} 的镜头组',
+    );
+    return true;
+  }
+
   void reorderShots(int oldIndex, int newIndex) {
     final script = value.selectedScript;
     if (script == null || oldIndex < 0 || oldIndex >= value.shots.length) {
@@ -693,6 +751,26 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     final moving = shots.removeAt(oldIndex);
     shots.insert(target, moving);
     _saveShots(script, shots, selectShotId: moving.id, message: '已调整镜头顺序');
+  }
+
+  int _continuousGroupStartIndex(int index) {
+    var start = index;
+    while (start > 0 &&
+        value.shots[start - 1].continuesToNext &&
+        value.shots[start].continuesFromPrevious) {
+      start--;
+    }
+    return start;
+  }
+
+  int _continuousGroupEndIndex(int index) {
+    var end = index;
+    while (end + 1 < value.shots.length &&
+        value.shots[end].continuesToNext &&
+        value.shots[end + 1].continuesFromPrevious) {
+      end++;
+    }
+    return end;
   }
 
   void updateShot(ScriptShot updated) {

@@ -16,6 +16,7 @@ import '../../settings/domain/app_settings.dart';
 import '../../settings/domain/video_generation_api_config.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../shooting_script/data/shooting_script_workflow_repository.dart';
+import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
@@ -26,6 +27,7 @@ import '../data/kling_cli_service.dart';
 import '../data/minimax_video_api_service.dart';
 import '../data/video_generation_directories.dart';
 import '../data/video_generation_repository.dart';
+import '../data/video_timeline_xml_export_service.dart';
 import '../domain/h3_video_prompt_adapter.dart';
 import '../domain/kling_duration_matcher.dart';
 import '../domain/kling_video_prompt_adapter.dart';
@@ -193,7 +195,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _shootingScriptController.addListener(_handleSourcesChanged);
     _replicateController.addListener(_handleSourcesChanged);
     _settingsController.addListener(_handleSettingsChanged);
+    final removedTaskCount = _removeMissingGeneratedVideoTaskRecords();
     _refreshData();
+    if (removedTaskCount > 0) {
+      value = value.copyWith(message: '已移除 $removedTaskCount 条本地成片已删除的生成记录');
+    }
   }
 
   final VideoGenerationRepository _repository;
@@ -262,7 +268,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         );
         return;
       }
-      _cliService = KlingCliService(executable: environment.klingPath);
+      _cliService = KlingCliService(
+        executable: environment.commandExecutable,
+        argumentPrefix: environment.commandArgumentsPrefix,
+        runInShell: environment.commandRunInShell,
+      );
       value = value.copyWith(environment: environment, errorMessage: '');
       await _refreshKlingAccount(successMessage: '可灵账号已连接');
       if (_disposed) return;
@@ -573,7 +583,90 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     value = value.copyWith(drafts: {...value.drafts, shotId: updated});
   }
 
-  SourceVideoPreviewRange? sourcePreviewFor(ScriptShot shot) {
+  void updateDesiredDurationFor(ScriptShot shot, double seconds) {
+    if (!seconds.isFinite || seconds <= 0) return;
+    final normalizedSeconds = _normalizedManualDuration(seconds);
+    final sequence = actionSequenceFor(shot);
+    final owner = sequence.head;
+    final draft = value.drafts[owner.id];
+    if (draft != null && draft.editedPrompt.trim().isNotEmpty) {
+      final synchronizedPrompt = _synchronizePromptDuration(
+        draft.editedPrompt,
+        normalizedSeconds,
+      );
+      if (synchronizedPrompt != draft.editedPrompt) {
+        final updatedDraft = VideoGenerationDraft(
+          id: draft.id,
+          scriptId: draft.scriptId,
+          shotId: draft.shotId,
+          sourcePrompt: draft.sourcePrompt,
+          klingPrompt: draft.klingPrompt,
+          h3Prompt: draft.h3Prompt,
+          editedPrompt: synchronizedPrompt,
+          promptMode: draft.promptMode,
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _repository.upsertDraft(updatedDraft);
+        value = value.copyWith(
+          drafts: {...value.drafts, owner.id: updatedDraft},
+        );
+      }
+    }
+
+    if (startEndFrameModeEnabled && sequence.hasDistinctTail) {
+      final precedingDuration = sequence.shots
+          .take(sequence.shots.length - 1)
+          .fold<double>(0, (total, item) => total + item.durationSeconds);
+      final tailDuration = normalizedSeconds - precedingDuration;
+      if (tailDuration > 0) {
+        _updateShotDuration(sequence.tail.id, tailDuration);
+        return;
+      }
+      final distributed = normalizedSeconds / sequence.shots.length;
+      for (final item in sequence.shots) {
+        _updateShotDuration(item.id, distributed);
+      }
+      return;
+    }
+    _updateShotDuration(sequence.tail.id, normalizedSeconds);
+  }
+
+  double _normalizedManualDuration(double seconds) {
+    if (usesConfiguredVideoGenerationApi) {
+      return seconds.round().clamp(1, 15).toDouble();
+    }
+    final profile = value.profile;
+    final model = profile == null ? null : _model(profile.model);
+    if (model != null) {
+      return const KlingDurationMatcher()
+          .forModel(desiredSeconds: seconds, model: model)
+          .toDouble();
+    }
+    return seconds.round().clamp(1, 15).toDouble();
+  }
+
+  void _updateShotDuration(String shotId, double seconds) {
+    final shot = _shootingScriptController.value.shots
+        .where((item) => item.id == shotId)
+        .firstOrNull;
+    if (shot == null || shot.durationSeconds == seconds) return;
+    _shootingScriptController.updateShot(
+      shot.copyWith(durationSeconds: seconds),
+    );
+  }
+
+  static String _synchronizePromptDuration(String prompt, double seconds) {
+    final rounded = seconds.roundToDouble();
+    final duration = seconds == rounded
+        ? '${rounded.toInt()}'
+        : seconds.toStringAsFixed(1);
+    return prompt.replaceAll(RegExp(r'\d+(?:\.\d+)?\s*秒视频'), '$duration秒视频');
+  }
+
+  SourceVideoPreviewRange? sourcePreviewFor(
+    ScriptShot shot, {
+    ScriptShot? endShot,
+  }) {
     final script = value.selectedScript;
     if (script?.sourceVideoId == null) return null;
     final video = _videoRepository.getSourceVideo(script!.sourceVideoId!);
@@ -582,6 +675,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       video: video,
       frames: _videoRepository.listVideoFrames(script.sourceVideoId!),
       shot: shot,
+      endShot: endShot,
       workspaceRoot: _directories.workspaceRoot,
       paddingSeconds: _settingsController.value.videoPreviewPaddingSeconds,
     );
@@ -744,25 +838,40 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
 
   VideoActionSequence actionSequenceFor(ScriptShot shot) {
-    if (!startEndFrameModeEnabled) return VideoActionSequence([shot]);
-    return const VideoActionSequenceResolver().manualSequenceFor(
-      value.shots,
-      _replicateController.value.run?.startEndPairs ?? const [],
-      shot.id,
+    final sequences = const VideoActionSequenceResolver()
+        .resolveConfiguredGroups(
+          value.shots,
+          pairs: startEndFrameModeEnabled
+              ? _replicateController.value.run?.startEndPairs ?? const []
+              : const [],
+        );
+    return sequences.firstWhere(
+      (sequence) => sequence.contains(shot.id),
+      orElse: () => VideoActionSequence([shot]),
     );
   }
 
   ScriptShot generationOwnerFor(ScriptShot shot) =>
       actionSequenceFor(shot).head;
 
-  double desiredDurationFor(ScriptShot shot) => actionSequenceFor(
-    shot,
-  ).shots.fold(0, (total, item) => total + item.durationSeconds);
+  double desiredDurationFor(ScriptShot shot) {
+    final sequence = actionSequenceFor(shot);
+    if (!startEndFrameModeEnabled || !sequence.hasDistinctTail) {
+      return sequence.tail.durationSeconds;
+    }
+    return sequence.shots.fold(
+      0,
+      (total, item) => total + item.durationSeconds,
+    );
+  }
 
   bool canGenerateShot(ScriptShot shot) {
     final sequence = actionSequenceFor(shot);
     if (sequence.head.id != shot.id) return false;
     if (generationReferenceImageFileFor(sequence.head) == null) return false;
+    if (!startEndFrameModeEnabled && sequence.hasDistinctTail) {
+      return sequence.shots.every((item) => sourceImageFileFor(item) != null);
+    }
     return !sequence.hasDistinctTail ||
         sourceImageFileFor(sequence.tail) != null;
   }
@@ -773,12 +882,13 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       return byNumber != 0 ? byNumber : first.id.compareTo(second.id);
     }
 
-    if (!startEndFrameModeEnabled) {
-      return value.shots.where(canGenerateShot).toList(growable: false)
-        ..sort(compareShotNumber);
-    }
-    return (_replicateController
-        .startEndSequencesFor(value.shots)
+    return (const VideoActionSequenceResolver()
+        .resolveConfiguredGroups(
+          value.shots,
+          pairs: startEndFrameModeEnabled
+              ? _replicateController.value.run?.startEndPairs ?? const []
+              : const [],
+        )
         .map((sequence) => sequence.head)
         .where(canGenerateShot)
         .toList(growable: false)
@@ -816,8 +926,70 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     await const FileExplorerService().openDirectory(directories.results.path);
   }
 
+  bool get canExportTimelineXml {
+    final script = value.selectedScript;
+    if (script == null) return false;
+    return const VideoTimelineXmlExportService()
+        .timelineClips(
+          script: script,
+          shots: value.shots,
+          tasks: value.tasks,
+          fileForTask: generatedVideoFileFor,
+        )
+        .isNotEmpty;
+  }
+
+  Future<void> exportTimelineXml() async {
+    final script = value.selectedScript;
+    if (script == null) {
+      value = value.copyWith(errorMessage: '尚未选择拍摄脚本', message: '');
+      return;
+    }
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在导出剪辑时间线…',
+      errorMessage: '',
+    );
+    try {
+      final directories = await _generationDirectories();
+      final file = await const VideoTimelineXmlExportService().export(
+        script: script,
+        shots: value.shots,
+        tasks: value.tasks,
+        fileForTask: generatedVideoFileFor,
+        outputDirectory: directories.results,
+      );
+      value = value.copyWith(
+        isBusy: false,
+        message: '时间线 XML 已导出：${file.path}',
+        errorMessage: '',
+      );
+    } on VideoTimelineXmlExportException catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: error.message,
+      );
+    } catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: '导出时间线失败：$error',
+      );
+    }
+  }
+
   Future<void> previewTask(VideoGenerationTask task) async {
     await previewFile(generatedVideoFileFor(task));
+  }
+
+  Future<bool> revealGeneratedVideo(VideoGenerationTask task) async {
+    final file = generatedVideoFileFor(task);
+    final revealed = await const FileExplorerService().revealFile(file.path);
+    if (!revealed) {
+      value = value.copyWith(errorMessage: '本地生成视频不存在，无法打开路径');
+    }
+    return revealed;
   }
 
   Future<void> previewFile(File file) async {
@@ -827,15 +999,34 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   Future<void> deleteTask(VideoGenerationTask task) async {
     final file = generatedVideoFileFor(task);
-    if (file.existsSync()) await file.delete();
-    _repository.deleteTask(task.id);
-    _refreshData();
+    var taskRecordRemoved = false;
+    try {
+      if (file.existsSync()) {
+        try {
+          await file.delete();
+        } on FileSystemException {
+          _repository.deleteTask(task.id);
+          taskRecordRemoved = true;
+          _refreshData();
+          await Future<void>.delayed(const Duration(milliseconds: 80));
+          if (file.existsSync()) await file.delete();
+        }
+      }
+      if (!taskRecordRemoved) _repository.deleteTask(task.id);
+      _refreshData();
+      value = value.copyWith(message: '已删除生成作品', errorMessage: '');
+    } catch (error) {
+      if (taskRecordRemoved) _repository.upsertTask(task);
+      _refreshData();
+      value = value.copyWith(message: '', errorMessage: '删除生成作品失败：$error');
+    }
   }
 
   Future<void> cancelTask(VideoGenerationTask task) async {
-    if (task.status.isTerminal) return;
+    final current = _repository.getTask(task.id) ?? task;
+    if (current.status.isTerminal) return;
     _canceledTaskIds.add(task.id);
-    final canceled = task.copyWith(
+    final canceled = current.copyWith(
       status: VideoGenerationTaskStatus.canceled,
       errorMessage: '',
       updatedAt: DateTime.now().toUtc(),
@@ -924,7 +1115,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           .firstOrNull;
       final output = _outputFile(
         directories,
-        shotNumber: shot?.shotNumber ?? 0,
+        shotNumber: shot == null ? 0 : _outputShotNumberFor(shot),
         version: _versionForTask(task),
       );
       final file = await const KlingResultDownloader().download(url, output);
@@ -966,7 +1157,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           ).pollExisting(
             task,
             outputFile: generatedVideoFileFor(task),
-            isCanceled: () => _disposed,
+            isCanceled: () => _disposed || _canceledTaskIds.contains(task.id),
           );
       if (_disposed) return;
       _refreshData();
@@ -1008,9 +1199,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       value = value.copyWith(errorMessage: '请先登录可灵并选择可用模型');
       return const [];
     }
-    final hasStartEndSequence = shots.any(
-      (shot) => actionSequenceFor(shot).hasDistinctTail,
-    );
+    final hasStartEndSequence =
+        startEndFrameModeEnabled &&
+        shots.any((shot) => actionSequenceFor(shot).hasDistinctTail);
     if (!usesVideoApi &&
         hasStartEndSequence &&
         model != null &&
@@ -1025,6 +1216,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     final now = DateTime.now().toUtc();
     for (final shot in shots) {
       final sequence = actionSequenceFor(shot);
+      final usesStartEndFrames =
+          startEndFrameModeEnabled && sequence.hasDistinctTail;
       final imageFile = generationReferenceImageFileFor(shot);
       final draft = value.drafts[shot.id];
       if (imageFile == null ||
@@ -1033,40 +1226,48 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         continue;
       }
       var tailImagePath = '';
-      if (sequence.hasDistinctTail) {
+      if (usesStartEndFrames) {
         final tailFile = sourceImageFileFor(sequence.tail);
         if (tailFile == null) continue;
         tailImagePath = tailFile.path;
       }
+      final confirmedAssets = _confirmedScriptAssetsForSequence(sequence.shots);
       final usesVideoApiReferencesMode =
           usesVideoApi &&
           sequence.hasDistinctTail &&
-          (_confirmedScriptAssetsForShot(shot).isNotEmpty ||
+          (!usesStartEndFrames ||
+              confirmedAssets.isNotEmpty ||
               sequence.shots.length > 2);
+      final includeSequenceTailAsReference =
+          sequence.hasDistinctTail &&
+          (!usesStartEndFrames || usesVideoApiReferencesMode);
       final submissionTailImagePath = usesVideoApiReferencesMode
           ? ''
           : tailImagePath;
+      final usesVideoApiStartEndFrames =
+          usesVideoApi && usesStartEndFrames && !usesVideoApiReferencesMode;
       final errorBeforeImageReferences = value.errorMessage;
       final imageReferences = usesVideoApi
           ? _videoApiImageReferencesForShot(
-              shot,
               sequence: sequence,
               sourceImagePath: imageFile.path,
               tailImagePath: tailImagePath,
-              includeTailImage: usesVideoApiReferencesMode,
+              includeTailImage: includeSequenceTailAsReference,
+              assets: confirmedAssets,
             )
           : _klingImageReferencesForShot(
-              shot,
               sequence: sequence,
               model: model!,
+              includeTailImage: includeSequenceTailAsReference,
               hasTailImage: tailImagePath.isNotEmpty,
               sourceImagePath: imageFile.path,
               tailImagePath: tailImagePath,
+              assets: confirmedAssets,
             );
-      if ((_confirmedScriptAssetsForShot(shot).isNotEmpty ||
+      if ((confirmedAssets.isNotEmpty ||
               _sequenceReferenceShots(
                 sequence,
-                includeTailImage: usesVideoApiReferencesMode,
+                includeTailImage: includeSequenceTailAsReference,
               ).isNotEmpty) &&
           imageReferences.isEmpty &&
           value.errorMessage.isNotEmpty &&
@@ -1077,11 +1278,17 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           ? _videoApiPromptForSubmission(
               draft.selectedPrompt,
               imageReferences: imageReferences,
+              firstImageDescription: usesVideoApiStartEndFrames
+                  ? '@图片1是首帧'
+                  : '@图片1是起始画面参考',
             )
           : _klingPromptForSubmission(
               draft.selectedPrompt,
               imageReferences: imageReferences,
               hasTailImage: submissionTailImagePath.isNotEmpty,
+              firstImageDescription: usesStartEndFrames
+                  ? '图片1为首帧'
+                  : '图片1为起始画面参考',
             );
       final duration = usesVideoApi
           ? desiredDurationFor(shot).round().clamp(1, 15).toInt()
@@ -1092,7 +1299,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       final taskId = _uuid.v4();
       final output = _outputFile(
         directories,
-        shotNumber: shot.shotNumber,
+        shotNumber: _outputShotNumberFor(shot),
         version: _nextVersionForShot(shot.id),
       );
       submissions.add(
@@ -1280,6 +1487,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
                 : null,
           ).resumePending(
             outputForTask: generatedVideoFileFor,
+            isTaskCanceled: _canceledTaskIds.contains,
             includeTimedOut: false,
             concurrency: usesConfiguredVideoGenerationApi
                 ? localVideoApiBatchConcurrency
@@ -1336,7 +1544,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       final recovered = await service.pollExisting(
         task,
         outputFile: generatedVideoFileFor(task),
-        isCanceled: () => _disposed || !usesConfiguredVideoGenerationApi,
+        isCanceled: () =>
+            _disposed ||
+            !usesConfiguredVideoGenerationApi ||
+            _canceledTaskIds.contains(task.id),
       );
       if (recovered.status == VideoGenerationTaskStatus.completed ||
           recovered.status == VideoGenerationTaskStatus.partialCompleted) {
@@ -1382,6 +1593,16 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   void _handleTaskChanged(VideoGenerationTask updated) {
     if (_disposed) return;
+    if (_canceledTaskIds.contains(updated.id) &&
+        updated.status != VideoGenerationTaskStatus.canceled) {
+      updated = updated.copyWith(
+        status: VideoGenerationTaskStatus.canceled,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+        completedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertTask(updated);
+    }
     final tasks = [
       updated,
       for (final task in value.tasks)
@@ -1391,6 +1612,22 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   void _handleSourcesChanged() => _refreshData();
+
+  int _removeMissingGeneratedVideoTaskRecords() {
+    final missingTasks = _repository
+        .listTasks()
+        .where(
+          (task) =>
+              (task.status == VideoGenerationTaskStatus.completed ||
+                  task.status == VideoGenerationTaskStatus.partialCompleted) &&
+              !generatedVideoFileFor(task).existsSync(),
+        )
+        .toList(growable: false);
+    for (final task in missingTasks) {
+      _repository.deleteTask(task.id);
+    }
+    return missingTasks.length;
+  }
 
   void _handleSettingsChanged() {
     _syncPromptModeWithActiveApi();
@@ -1432,7 +1669,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         account == null) {
       return false;
     }
-    _cliService = KlingCliService(executable: environment.klingPath);
+    _cliService = KlingCliService(
+      executable: environment.commandExecutable,
+      argumentPrefix: environment.commandArgumentsPrefix,
+      runInShell: environment.commandRunInShell,
+    );
     value = value.copyWith(
       environment: environment,
       identity: identity,
@@ -1481,19 +1722,35 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       for (final draft in _repository.listDrafts(script.id))
         draft.shotId: draft,
     };
-    final sequences = startEndFrameModeEnabled
-        ? _replicateController.startEndSequencesFor(shooting.shots)
-        : const <VideoActionSequence>[];
+    final sequences = const VideoActionSequenceResolver()
+        .resolveConfiguredGroups(
+          shooting.shots,
+          pairs: startEndFrameModeEnabled
+              ? _replicateController.value.run?.startEndPairs ?? const []
+              : const [],
+        );
     final drafts = <String, VideoGenerationDraft>{};
     for (final shot in shooting.shots) {
       final sourcePrompt = shot.prompt;
       final existing = storedDrafts[shot.id];
       final actionSequence = _actionSequenceForPrompt(shot, sequences);
+      final h3ReferenceShots = actionSequence.isEmpty
+          ? <ScriptShot>[shot]
+          : actionSequence;
+      final usesExactH3StartEndFrames =
+          startEndFrameModeEnabled &&
+          h3ReferenceShots.length == 2 &&
+          _confirmedScriptAssetsForSequence(h3ReferenceShots).isEmpty;
       final klingPrompt = const KlingVideoPromptAdapter().adapt(
         shot,
         sourcePrompt: sourcePrompt,
         actionSequence: actionSequence,
-        availableImageReferences: actionSequence.length > 1 ? 2 : 1,
+        availableImageReferences: actionSequence.isEmpty
+            ? 1
+            : startEndFrameModeEnabled
+            ? 2
+            : actionSequence.length,
+        useStartEndFrameReferences: startEndFrameModeEnabled,
       );
       final h3Prompt = const H3VideoPromptAdapter().adapt(
         shot,
@@ -1502,6 +1759,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         availableImageReferences: actionSequence.isEmpty
             ? 1
             : actionSequence.length,
+        useStartEndFrameReferences: usesExactH3StartEndFrames,
       );
       if (existing == null ||
           existing.sourcePrompt != sourcePrompt ||
@@ -1559,16 +1817,19 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return const [];
   }
 
-  List<_GenerationImageReference> _klingImageReferencesForShot(
-    ScriptShot shot, {
+  List<_GenerationImageReference> _klingImageReferencesForShot({
     required VideoActionSequence sequence,
     required KlingModelSpec model,
+    required bool includeTailImage,
     required bool hasTailImage,
     required String sourceImagePath,
     required String tailImagePath,
+    required List<ScriptAsset> assets,
   }) {
-    final assets = _confirmedScriptAssetsForShot(shot);
-    final referenceShots = _sequenceReferenceShots(sequence);
+    final referenceShots = _sequenceReferenceShots(
+      sequence,
+      includeTailImage: includeTailImage,
+    );
     if (assets.isEmpty && referenceShots.isEmpty) return const [];
     if (!model.supportsNumberedImageReferences) {
       value = value.copyWith(
@@ -1629,14 +1890,13 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return references;
   }
 
-  List<_GenerationImageReference> _videoApiImageReferencesForShot(
-    ScriptShot shot, {
+  List<_GenerationImageReference> _videoApiImageReferencesForShot({
     required VideoActionSequence sequence,
     required String sourceImagePath,
     required String tailImagePath,
     required bool includeTailImage,
+    required List<ScriptAsset> assets,
   }) {
-    final assets = _confirmedScriptAssetsForShot(shot);
     final referenceShots = _sequenceReferenceShots(
       sequence,
       includeTailImage: includeTailImage,
@@ -1699,21 +1959,31 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return shots.toList(growable: false);
   }
 
-  List<ScriptAsset> _confirmedScriptAssetsForShot(ScriptShot shot) {
+  List<ScriptAsset> _confirmedScriptAssetsForSequence(
+    Iterable<ScriptShot> shots,
+  ) {
     final workflowRepository = _workflowRepository;
     if (workflowRepository == null) return const [];
+    final sequence = shots.toList(growable: false);
+    if (sequence.isEmpty) return const [];
     final assetsById = {
-      for (final asset in workflowRepository.listScriptAssets(shot.scriptId))
+      for (final asset in workflowRepository.listScriptAssets(
+        sequence.first.scriptId,
+      ))
         asset.id: asset,
     };
     final assets = <ScriptAsset>[];
-    for (final link in workflowRepository.listLinksForShot(shot.id)) {
-      if (!link.confirmed) continue;
-      final asset = assetsById[link.scriptAssetId];
-      if (asset == null || asset.status != ProcessingStatus.completed) {
-        continue;
+    final usedAssetIds = <String>{};
+    for (final shot in sequence) {
+      for (final link in workflowRepository.listLinksForShot(shot.id)) {
+        if (!link.confirmed || !usedAssetIds.add(link.scriptAssetId)) continue;
+        final asset = assetsById[link.scriptAssetId];
+        if (asset == null || asset.status != ProcessingStatus.completed) {
+          usedAssetIds.remove(link.scriptAssetId);
+          continue;
+        }
+        assets.add(asset);
       }
-      assets.add(asset);
     }
     return assets;
   }
@@ -1722,36 +1992,77 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     String prompt, {
     required List<_GenerationImageReference> imageReferences,
     required bool hasTailImage,
+    required String firstImageDescription,
   }) {
     if (imageReferences.isEmpty) return prompt;
     final tailImageNumber = hasTailImage ? imageReferences.length + 2 : 0;
     final normalizedPrompt = hasTailImage
         ? prompt.replaceAll(RegExp(r'@?图片\s*2(?!\d)'), '图片$tailImageNumber')
         : prompt;
-    final descriptions = [
-      '图片1是首帧和主体外观参考',
-      for (final reference in imageReferences) reference.promptDescription,
-      if (hasTailImage) '图片$tailImageNumber是尾帧和动作结果参考',
+    final descriptions = <String>[
+      if (!_mentionsImageReference(normalizedPrompt, 1)) firstImageDescription,
+      for (final reference in imageReferences)
+        if (!_mentionsImageReference(normalizedPrompt, reference.imageNumber))
+          reference.promptDescription,
+      if (hasTailImage &&
+          !_mentionsImageReference(normalizedPrompt, tailImageNumber))
+        '图片$tailImageNumber为尾帧',
     ];
+    if (descriptions.isEmpty) return normalizedPrompt;
     return [
-      '【参考图说明】${descriptions.join('；')}。请严格保持这些资产和参考图的身份、外观、材质、颜色、服装/造型和标志性细节一致，不要替换、融合错对象或凭空改款。',
+      '参考图：${descriptions.join('；')}。',
       normalizedPrompt,
-    ].where((part) => part.trim().isNotEmpty).join('；');
+    ].where((part) => part.trim().isNotEmpty).join('\n');
   }
 
   String _videoApiPromptForSubmission(
     String prompt, {
     required List<_GenerationImageReference> imageReferences,
+    required String firstImageDescription,
   }) {
     if (imageReferences.isEmpty) return prompt;
-    final descriptions = [
-      '@图片1 是首帧/画面参考图，用于锁定主体外观、场景空间、构图和光影',
-      for (final reference in imageReferences) reference.h3PromptDescription,
+    if (_usesOfficialH3PromptStructure(prompt)) return prompt;
+    final descriptions = <String>[
+      if (!_mentionsImageReference(prompt, 1)) firstImageDescription,
+      for (final reference in imageReferences)
+        if (!_mentionsImageReference(prompt, reference.imageNumber))
+          reference.h3PromptDescription,
     ];
+    if (descriptions.isEmpty) return prompt;
     return [
-      '【参考素材补充】${descriptions.join('；')}。请按编号使用参考图，不要混淆资产身份、外观、材质、颜色、服装/造型和标志性细节。',
+      '参考补充：${descriptions.join('；')}。',
       prompt,
     ].where((part) => part.trim().isNotEmpty).join('\n');
+  }
+
+  static bool _mentionsImageReference(String prompt, int imageNumber) {
+    if (RegExp(
+      '(?:@?图片|图)\\s*$imageNumber(?!\\d)|<Picture\\s+$imageNumber>',
+      caseSensitive: false,
+    ).hasMatch(prompt)) {
+      return true;
+    }
+    final rangePattern = RegExp(
+      r'(?:@?图片|图|Picture)\s*(\d+)\s*(?:至|到|[-~～]|to)\s*'
+      r'(?:@?图片|图|Picture)?\s*(\d+)',
+      caseSensitive: false,
+    );
+    for (final match in rangePattern.allMatches(prompt)) {
+      final start = int.tryParse(match.group(1) ?? '');
+      final end = int.tryParse(match.group(2) ?? '');
+      if (start == null || end == null) continue;
+      if (imageNumber >= start && imageNumber <= end) return true;
+    }
+    return false;
+  }
+
+  static bool _usesOfficialH3PromptStructure(String prompt) {
+    final normalized = prompt.trimLeft();
+    if (normalized.startsWith('subject_definitions:')) return true;
+    final integrated = normalized.indexOf('integrated_multimodal_description:');
+    final soundscape = normalized.indexOf('overall_soundscape:');
+    final music = normalized.indexOf('non_diegetic_music:');
+    return integrated >= 0 && soundscape > integrated && music > soundscape;
   }
 
   KlingModelSpec _preferredDefaultModel(List<KlingModelSpec> models) {
@@ -1889,15 +2200,21 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     required int shotNumber,
     required int version,
   }) {
-    final number = shotNumber > 0
-        ? shotNumber.toString().padLeft(3, '0')
-        : '000';
+    final number = shotNumber > 0 ? shotNumber : 0;
     return File(
       p.join(
         directories.results.path,
         '镜头$number-v${version.clamp(1, 9999)}.mp4',
       ),
     );
+  }
+
+  int _outputShotNumberFor(ScriptShot shot) {
+    final groups = ScriptShotGroup.group(value.shots);
+    final index = groups.indexWhere(
+      (group) => group.shots.any((item) => item.id == shot.id),
+    );
+    return index < 0 ? shot.shotNumber : index + 1;
   }
 
   int _nextVersionForShot(String shotId) =>
@@ -1971,19 +2288,16 @@ class _GenerationImageReference {
   String get promptDescription {
     final asset = this.asset;
     if (asset == null) return _sequencePromptDescription;
-    final parts = [
-      '图片$imageNumber是${_assetTypeLabel(asset.type)}资产参考',
-      if (asset.name.trim().isNotEmpty) '名称：${asset.name.trim()}',
-      if (asset.description.trim().isNotEmpty) '说明：${asset.description.trim()}',
-    ];
-    return parts.join('，');
+    final name = asset.name.trim();
+    return '图片$imageNumber为${_assetTypeLabel(asset.type)}参考'
+        '${name.isEmpty ? '' : '（$name）'}';
   }
 
   String get h3PromptDescription {
     final asset = this.asset;
     if (asset == null) return _sequenceH3PromptDescription;
     final parts = [
-      '@图片$imageNumber 是${_assetTypeLabel(asset.type)}资产参考',
+      '@图片$imageNumber是${_assetTypeLabel(asset.type)}资产参考',
       if (asset.name.trim().isNotEmpty) '名称：${asset.name.trim()}',
       if (asset.description.trim().isNotEmpty) '说明：${asset.description.trim()}',
     ];
@@ -1991,29 +2305,13 @@ class _GenerationImageReference {
   }
 
   String get _sequencePromptDescription {
-    final shot = this.shot;
-    if (shot == null) return '图片$imageNumber是组内动作参考帧';
-    final parts = [
-      '图片$imageNumber是镜头${shot.shotNumber}组内动作参考帧',
-      if (shot.actionStage.trim().isNotEmpty) '阶段：${shot.actionStage.trim()}',
-      if (shot.content.trim().isNotEmpty) '动作：${shot.content.trim()}',
-      if (shot.movementTrend.trim().isNotEmpty)
-        '趋势：${shot.movementTrend.trim()}',
-    ];
-    return parts.join('，');
+    return '图片$imageNumber为组内顺序动作参考';
   }
 
   String get _sequenceH3PromptDescription {
     final shot = this.shot;
-    if (shot == null) return '@图片$imageNumber 是组内动作参考帧';
-    final parts = [
-      '@图片$imageNumber 是镜头${shot.shotNumber}组内动作参考帧',
-      if (shot.actionStage.trim().isNotEmpty) '阶段：${shot.actionStage.trim()}',
-      if (shot.content.trim().isNotEmpty) '动作：${shot.content.trim()}',
-      if (shot.movementTrend.trim().isNotEmpty)
-        '趋势：${shot.movementTrend.trim()}',
-    ];
-    return parts.join('，');
+    if (shot == null) return '@图片$imageNumber是组内顺序动作参考';
+    return '@图片$imageNumber是组内顺序动作参考';
   }
 
   static String _assetTypeLabel(ReplicateAssetType type) => switch (type) {
@@ -2032,17 +2330,26 @@ const _minimaxApiAspectRatioKey = 'minimax_api_aspect_ratio';
 const _minimaxApiResolutionKey = 'minimax_api_resolution';
 const _minimaxApiStepsKey = 'minimax_api_steps';
 
-const _minimaxApiAspectRatios = ['16:9', '9:16', '1:1'];
+const _minimaxApiAspectRatios = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
 const _minimaxApiResolutionPresets = [
+  _MiniMaxResolutionPreset('0.2MP 21:9 - 672x288', '21:9'),
+  _MiniMaxResolutionPreset('0.3MP 21:9 - 896x384', '21:9'),
+  _MiniMaxResolutionPreset('0.5MP 21:9 - 1120x480', '21:9'),
   _MiniMaxResolutionPreset('0.2MP 16:9 - 608x352', '16:9'),
   _MiniMaxResolutionPreset('0.3MP 16:9 - 736x416', '16:9'),
   _MiniMaxResolutionPreset('0.4MP 16:9 - 864x480', '16:9'),
   _MiniMaxResolutionPreset('0.5MP 16:9 - 960x544', '16:9'),
   _MiniMaxResolutionPreset('0.6MP 16:9 - 1056x608', '16:9'),
+  _MiniMaxResolutionPreset('0.2MP 4:3 - 512x384', '4:3'),
+  _MiniMaxResolutionPreset('0.3MP 4:3 - 640x480', '4:3'),
+  _MiniMaxResolutionPreset('0.4MP 4:3 - 768x576', '4:3'),
+  _MiniMaxResolutionPreset('Square 512x512', '1:1'),
+  _MiniMaxResolutionPreset('0.2MP 3:4 - 384x512', '3:4'),
+  _MiniMaxResolutionPreset('0.3MP 3:4 - 480x640', '3:4'),
+  _MiniMaxResolutionPreset('0.4MP 3:4 - 576x768', '3:4'),
   _MiniMaxResolutionPreset('0.2MP 9:16 - 352x608', '9:16'),
   _MiniMaxResolutionPreset('0.3MP 9:16 - 416x736', '9:16'),
   _MiniMaxResolutionPreset('0.4MP 9:16 - 480x864', '9:16'),
-  _MiniMaxResolutionPreset('Square 512x512', '1:1'),
 ];
 
 String? _allowedMiniMaxAspectRatio(String? value) {

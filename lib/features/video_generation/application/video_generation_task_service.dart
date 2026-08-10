@@ -447,6 +447,7 @@ class VideoGenerationTaskService {
   Future<List<VideoGenerationTask>> resumePending({
     required File Function(VideoGenerationTask task) outputForTask,
     bool Function()? isCanceled,
+    bool Function(String taskId)? isTaskCanceled,
     bool includeTimedOut = true,
     int? concurrency,
   }) {
@@ -459,7 +460,8 @@ class VideoGenerationTaskService {
       (task) => pollExisting(
         task,
         outputFile: outputForTask(task),
-        isCanceled: isCanceled,
+        isCanceled: () =>
+            isCanceled?.call() == true || isTaskCanceled?.call(task.id) == true,
       ),
     );
   }

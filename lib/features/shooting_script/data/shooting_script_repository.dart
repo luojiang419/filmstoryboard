@@ -101,10 +101,10 @@ class ShootingScriptRepository {
         camera_angle, lighting_mood, color_palette, visual_focus,
         transition_hint, movement_trend, action_stage, continues_from_previous,
         continues_to_next, scene, product_code, product_styling, dialogue,
-        sound, prompt, replication_instructions, status, updated_at
+        sound, prompt, replication_instructions, generation_feedback, status, updated_at
       ) VALUES(
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
       ON CONFLICT(id) DO UPDATE SET
         script_id = excluded.script_id,
@@ -135,6 +135,7 @@ class ShootingScriptRepository {
         sound = excluded.sound,
         prompt = excluded.prompt,
         replication_instructions = excluded.replication_instructions,
+        generation_feedback = excluded.generation_feedback,
         status = excluded.status,
         updated_at = excluded.updated_at;
       ''',
@@ -168,6 +169,7 @@ class ShootingScriptRepository {
         shot.sound,
         shot.prompt,
         shot.replicationInstructions,
+        shot.generationFeedback,
         shot.status.name,
         shot.updatedAt.toIso8601String(),
       ],
@@ -228,6 +230,7 @@ class ShootingScriptRepository {
       sound: row['sound'] as String,
       prompt: row['prompt'] as String,
       replicationInstructions: text('replication_instructions'),
+      generationFeedback: text('generation_feedback'),
       status: ProcessingStatus.fromStorage(row['status']),
       updatedAt: DateTime.parse(row['updated_at'] as String),
     );

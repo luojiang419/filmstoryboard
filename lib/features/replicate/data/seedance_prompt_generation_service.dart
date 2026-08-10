@@ -103,6 +103,9 @@ class SeedancePromptGenerationService {
       if (cleanShotText(shot.cameraNotes).isNotEmpty)
         '摄影备注：${cleanShotText(shot.cameraNotes)}',
     ].join('；');
+    final audioAtmosphere = cleanShotText(shot.sound).isNotEmpty
+        ? cleanShotText(shot.sound)
+        : _audioAtmosphereForShot(shot, cleanShotText);
     final body = <String>[
       if (shotOpening.isNotEmpty) shotOpening,
       if (shot.durationSeconds > 0) '时长：${_durationText(shot.durationSeconds)}',
@@ -112,8 +115,7 @@ class SeedancePromptGenerationService {
       if (visualAnalysis.isNotEmpty) '综合视觉分析：$visualAnalysis',
       if (clean(shot.dialogue).isNotEmpty)
         '人物说道{${_stripBrackets(clean(shot.dialogue))}}',
-      if (cleanShotText(shot.sound).isNotEmpty)
-        '<${_stripBrackets(cleanShotText(shot.sound))}>',
+      if (audioAtmosphere.isNotEmpty) '<${_stripBrackets(audioAtmosphere)}>',
     ].where((value) => value.isNotEmpty).toList();
     final style = clean(globalStyle).isEmpty
         ? defaultGlobalStyle
@@ -261,7 +263,7 @@ class SeedancePromptGenerationService {
     var result = value.trim();
     if (result.isEmpty) return '';
     result = result
-        .replaceAll(RegExp(r'(?:原视频|原片|原帧|源视频|参考图中?|画面中)'), '')
+        .replaceAll(RegExp(r'(?:原视频|原片|原帧|源视频|参考图中?|画面中(?!部|央|心))'), '')
         .replaceAll(RegExp(r'[A-Z][A-Z0-9-]{2,}'), '');
     final segments = result.split(RegExp(r'([，,；;。.\n]+)'));
     result = [
@@ -277,6 +279,8 @@ class SeedancePromptGenerationService {
       );
     }
     return result
+        .replaceAll(RegExp(r'身穿(?:和|与|、|及|以及|\s)*的'), '')
+        .replaceAll(RegExp(r'(?:，|,|；|;)\s*位于身体(?:左|右|两)?侧'), '')
         .replaceAll(RegExp(r'[，,、；;。.\s]+$'), '')
         .replaceAll(RegExp(r'^[，,、；;。.\s]+'), '')
         .replaceAll(RegExp(r'\s+'), ' ')
@@ -331,7 +335,7 @@ class SeedancePromptGenerationService {
       return '航拍俯冲或平稳升降，突出空间纵深与运动方向';
     }
     if (containsAny(const ['环绕', '旋转展示', '转台', '绕行', '360度'])) {
-      return '缓慢环绕主体，连续展示外观与空间关系';
+      return '沿主体做有节拍的弧线环绕，以前后景视差连续展示外观与空间关系';
     }
     if (containsAny(const [
       '奔跑',
@@ -363,7 +367,7 @@ class SeedancePromptGenerationService {
       '打开',
       '触碰',
     ])) {
-      return '缓慢推近主体，聚焦关键动作与细节变化';
+      return '沿主体动作方向短促推进，在展示瞬间减速锁定关键细节';
     }
     if (containsAny(const [
       '全景',
@@ -376,23 +380,69 @@ class SeedancePromptGenerationService {
       '环境全貌',
       '空间关系',
     ])) {
-      return '缓慢拉远，逐步揭示环境全貌与空间关系';
+      return '从主体关系拉远或升高，按空间层次揭示环境全貌';
     }
     final previousScale = _shotScale(previousShot?.shotSize ?? '');
     final currentScale = _shotScale(shot.shotSize);
     if (previousScale != null && currentScale != null) {
       if (currentScale < previousScale) {
-        return '缓慢推近，承接上一镜并强化当前视觉焦点';
+        return '有节拍地推进，承接上一镜并强化当前视觉焦点';
       }
       if (currentScale > previousScale) {
-        return '缓慢拉远，承接上一镜并扩展环境信息';
+        return '有节拍地拉开，承接上一镜并扩展环境信息';
       }
     }
     final nextScale = _shotScale(nextShot?.shotSize ?? '');
     if (currentScale != null && nextScale != null && nextScale < currentScale) {
-      return '轻微推近，为下一镜的近景细节建立视觉动势';
+      return '短促推进，为下一镜的近景细节建立视觉动势';
     }
-    return explicitIsFixed ? '固定镜头，保持画面稳定' : '轻微平稳推近，保持自然呼吸感';
+    return explicitIsFixed
+        ? '固定镜头，保持画面稳定'
+        : '依据主体动作与构图重心选择横移、跟拍或短促推进，速度匹配叙事节拍，避免全程匀速慢推';
+  }
+
+  static String _audioAtmosphereForShot(
+    ScriptShot shot,
+    String Function(String value) cleanText,
+  ) {
+    final text = [
+      cleanText(shot.scene),
+      cleanText(shot.content),
+      cleanText(shot.lightingMood),
+      cleanText(shot.colorPalette),
+      cleanText(shot.visualFocus),
+      cleanText(shot.cameraMovement),
+    ].join(' ');
+    final music = _musicAtmosphereFromText(text);
+    final effects = _soundAtmosphereFromText(text, cleanText(shot.scene));
+    return '音乐氛围：$music；音效氛围：$effects';
+  }
+
+  static String _musicAtmosphereFromText(String text) {
+    if (_containsAny(text, const ['快速', '奔跑', '跑', '切换', '冲', '跟拍'])) {
+      return '轻快有推进感的无歌词节奏铺底';
+    }
+    if (_containsAny(text, const ['夜', '暗', '冷', '低调', '悬念', '神秘'])) {
+      return '低频克制的无歌词氛围音乐';
+    }
+    if (_containsAny(text, const ['暖', '柔和', '自然光', '温柔', '生活', '居家'])) {
+      return '温暖柔和的无歌词音乐';
+    }
+    if (_containsAny(text, const ['产品', '广告', '质感', '高级', '商业', '特写'])) {
+      return '干净现代的无歌词广告氛围音乐';
+    }
+    return '与画面氛围匹配的轻量无歌词音乐';
+  }
+
+  static String _soundAtmosphereFromText(String text, String scene) {
+    final sceneText = scene.trim().isEmpty ? '场景' : scene.trim();
+    if (_containsAny(text, const ['特写', '细节', '触碰', '打开', '拿起'])) {
+      return '$sceneText空间底噪配合轻微细节动作声，不添加对白';
+    }
+    if (_containsAny(text, const ['走', '跑', '移动', '跟拍'])) {
+      return '$sceneText环境声配合主体移动声，不添加对白';
+    }
+    return '$sceneText低强度环境声轻铺，不添加对白';
   }
 
   static int? _shotScale(String value) {

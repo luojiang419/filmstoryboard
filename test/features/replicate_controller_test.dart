@@ -7,6 +7,7 @@ import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
+import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
 import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
@@ -119,6 +120,7 @@ void main() {
     });
 
     expect(controller.composePromptModelLabel, '可灵');
+    expect(controller.usesOfficialH3PromptWriting, isFalse);
     expect(
       controller.composePromptConcurrency,
       ReplicateController.klingComposePromptConcurrency,
@@ -129,10 +131,174 @@ void main() {
     );
 
     expect(controller.composePromptModelLabel, 'MiniMax H3');
+    expect(controller.usesOfficialH3PromptWriting, isTrue);
     expect(
       controller.composePromptConcurrency,
       ReplicateController.defaultComposePromptConcurrency,
     );
+    expect(
+      controller.selectedH3PromptStyle,
+      same(H3PromptStyle.general),
+      reason: '旧设置必须默认使用通用 H3',
+    );
+
+    await controller.selectH3PromptStyle('brand-promo');
+
+    expect(controller.selectedH3PromptStyle.id, 'brand-promo');
+    expect(settingsController.value.h3PromptStyleId, 'brand-promo');
+    expect(settingsRepository.load().h3PromptStyleId, 'brand-promo');
+  });
+
+  test('确认页手动镜头组的 H3 提示词包含整组帧和组内全部资产', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_manual_group_prompt_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    await settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultMiniMaxVideoGenerationConfigId,
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '手动镜头组合成提示词');
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final frames = <File>[];
+    for (var index = 1; index <= 3; index++) {
+      frames.add(
+        await File(
+          '${root.path}/manual-group-frame-$index.png',
+        ).writeAsBytes([137, 80, 78, 71, index]),
+      );
+    }
+    final first = shootingController.addShot()!;
+    final middle = shootingController.addShot()!;
+    final tail = shootingController.addShot()!;
+    for (final entry in [
+      (shot: first, frame: frames[0], content: '人物开始拿起产品'),
+      (shot: middle, frame: frames[1], content: '人物抬手展示产品'),
+      (shot: tail, frame: frames[2], content: '人物完成展示动作'),
+    ]) {
+      shootingController.updateShot(
+        entry.shot.copyWith(
+          framePath: entry.frame.path,
+          durationSeconds: 2,
+          content: entry.content,
+        ),
+      );
+    }
+    expect(
+      shootingController.setContinuousShotRange(
+        startShotId: first.id,
+        endShotId: tail.id,
+      ),
+      isTrue,
+    );
+
+    final now = DateTime.now().toUtc();
+    final productFile = await File(
+      '${root.path}/manual-group-product.png',
+    ).writeAsBytes([1, 2, 3]);
+    final sceneFile = await File(
+      '${root.path}/manual-group-scene.png',
+    ).writeAsBytes([4, 5, 6]);
+    for (final asset in [
+      ScriptAsset(
+        id: 'manual-group-product',
+        scriptId: first.scriptId,
+        type: ReplicateAssetType.product,
+        name: '透明水杯',
+        description: '银色杯盖',
+        path: productFile.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: 'manual-group-scene',
+        scriptId: first.scriptId,
+        type: ReplicateAssetType.scene,
+        name: '白色展台',
+        description: '银色台面',
+        path: sceneFile.path,
+        referenceNumber: 2,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    ]) {
+      workflowRepository.upsertScriptAsset(asset);
+    }
+    for (final link in [
+      ScriptShotAssetLink(
+        shotId: middle.id,
+        scriptAssetId: 'manual-group-product',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '中间镜头资产',
+        confirmed: true,
+        locked: true,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: tail.id,
+        scriptAssetId: 'manual-group-scene',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '尾镜头资产',
+        confirmed: true,
+        locked: true,
+        sortOrder: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    ]) {
+      workflowRepository.upsertLink(link);
+    }
+
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      workflowRepository: workflowRepository,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await controller.composeAllPrompts(maxConcurrent: 1);
+
+    expect(controller.value.prompts, hasLength(1));
+    final prompt = controller.value.prompts.single;
+    expect(prompt.scriptShotId, first.id);
+    expect(
+      prompt.assetIds,
+      containsAll(['manual-group-product', 'manual-group-scene']),
+    );
+    expect(prompt.prompt, contains('@图片1至@图片3是同一连续镜头的顺序动作参考'));
+    expect(prompt.prompt, contains('图片4：产品参考'));
+    expect(prompt.prompt, contains('图片5：场景参考'));
+    expect(prompt.prompt, isNot(contains('首帧参考图')));
+    expect(prompt.prompt, isNot(contains('尾帧参考图')));
+    expect(prompt.prompt, isNot(contains('只补足@图片1到@图片2之间')));
+
+    await controller.regeneratePrompt(prompt.id);
+
+    expect(controller.value.prompts, hasLength(1));
+    expect(controller.value.prompts.single.prompt, contains('图片5：场景参考'));
   });
 
   test('三步复刻任务可恢复，素材编号删除后不复用并能导出提示词', () async {
@@ -257,13 +423,13 @@ void main() {
     expect(controller.value.prompts, hasLength(1));
     final prompt = controller.value.prompts.single.prompt;
     final generated = controller.value.prompts.single;
-    expect(prompt, contains('以图片1作为首帧和主体外观参考'));
+    expect(prompt, contains('图片1为起始画面与主体参考'));
     expect(controller.promptFormatFor(generated), ShotPromptFormat.kling);
     expect(controller.value.run?.completedCount, 1);
     expect(shootingController.value.shots.single.prompt, prompt);
     expect(
       controller.promptTextFor(generated, ShotPromptFormat.kling),
-      contains('以图片1作为首帧和主体外观参考'),
+      contains('图片1为起始画面与主体参考'),
     );
     expect(
       controller.promptTextFor(generated, ShotPromptFormat.h3),
@@ -303,13 +469,13 @@ void main() {
     expect(storedPrompt.prompt, isNot(contains('旧版提示词')));
     expect(storedPrompt.prompt, isNot(contains('原视频蓝色包装瓶')));
     final storedRaw = jsonDecode(storedPrompt.rawResponse) as Map;
-    expect(storedRaw['promptRulesVersion'], 3);
+    expect(storedRaw['promptRulesVersion'], 19);
     expect(
       shootingController.value.shots.single.prompt,
       isNot(contains('旧版提示词')),
     );
     controller.selectPromptFormat(generated.id, ShotPromptFormat.kling);
-    expect(controller.value.prompts.single.prompt, contains('以图片1作为首帧和主体外观参考'));
+    expect(controller.value.prompts.single.prompt, contains('图片1为起始画面与主体参考'));
     expect(
       controller.promptFormatFor(controller.value.prompts.single),
       ShotPromptFormat.kling,
@@ -368,12 +534,32 @@ void main() {
     );
     expect(
       controller.value.prompts,
-      isEmpty,
-      reason: '镜头信息变化后进入步骤 3 必须为空，等待用户主动重新合成',
+      hasLength(1),
+      reason: '镜头信息变化后仍应保留上一次成功提示词供用户查看',
+    );
+    final retainedPrompt = controller.value.prompts.single.prompt;
+    expect(
+      replicateRepository.listPrompts(controller.value.run!.id),
+      hasLength(1),
+      reason: '待重新合成状态不得删除数据库中的最后有效结果',
+    );
+
+    controller.dispose();
+    controller = ReplicateController(
+      repository: replicateRepository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    expect(controller.value.prompts.single.prompt, retainedPrompt);
+    expect(
+      controller.value.run?.composePromptsStatus,
+      ProcessingStatus.pending,
+      reason: '软件重启式恢复后既要保留旧结果，也要保留待重新合成提示',
     );
   });
 
-  test('合成提示词会剥离原视频帧服装和配饰描述', () async {
+  test('合成提示词纯拼接构建字段并剥离原视频帧服装和配饰描述', () async {
     final root = await Directory.systemTemp.createTemp(
       'replicate_prompt_clean_source_visual_',
     );
@@ -401,31 +587,14 @@ void main() {
       directories: directories,
     );
     final replicateRepository = ReplicateRepository(database);
-    final visionService = _RecordingVisionStoryboardService()
-      ..resolvedPrompt = '''
-<think>这里不应该进入最终提示词：黑色皮质手提包、白色阔腿裤、条纹衬衫。</think>
-【参考素材说明】
-@图片1 是复刻分镜图，锁定新品背包、人物姿态、场景空间、构图和光影。
-
-【核心创意】
-5秒视频，女模特自然展示新品背包，广告质感，画面干净。
-
-【画面过程描述】
-0-5秒：中景，镜头轻微推近，人物保持自然站姿，清晰展示新品背包。
-
-【整体要求补充】
-主体外观、产品结构、动作方向和光源方向保持稳定；不要字幕、不要水印、不要乱码文字、不要无关Logo。
-
-【声音设计】
-自然环境底噪和轻微脚步声。
-
-非叙事性音乐：N/A
-''';
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final visionService = _RecordingVisionStoryboardService();
     final controller = ReplicateController(
       repository: replicateRepository,
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
+      workflowRepository: workflowRepository,
       visionService: visionService,
     );
     addTearDown(() async {
@@ -448,8 +617,37 @@ void main() {
         colorPalette: '暖灰褐石墙为底，搭配深棕皮、彩色条纹与黑白软包',
         visualFocus: '白色阔腿裤、条纹衬衫、黑色皮质手提包',
         cameraNotes: '右手自然垂挂手提包对应的动作细节',
-        transitionHint: '适合开场建立品牌形象',
+        transitionHint: '黑色皮质手提包掠过后切入下一镜',
+        movementTrend: '彩色条纹与黑色软质手提包向画面左侧移动',
+        actionStage: '白色阔腿裤和条纹衬衫进入展示阶段',
         sound: '黑色软质手提包、金属门锁产生的轻微接触声',
+      ),
+    );
+    final now = DateTime.now().toUtc();
+    workflowRepository.upsertAnalysis(
+      ScriptShotAnalysisRecord(
+        id: 'analysis-${shot.id}',
+        shotId: shot.id,
+        model: 'test-vlm',
+        status: ProcessingStatus.completed,
+        fieldSources: const {'content': 'model'},
+        fieldConfidence: const {'content': 0.9},
+        promptContext: const ScriptShotPromptContext(
+          subject: {'people': '身穿白色阔腿裤和条纹衬衫的女模特', 'props': '黑色皮质手提包'},
+          action: {'bodyAction': '抬手展示新品背包'},
+          scene: {
+            'subjectDirection': '身体面向画面右侧',
+            'spatialRelation': '人物位于石墙前，背包位于身体右侧',
+          },
+          continuity: {'narrativeFunction': '广告产品记忆点'},
+        ),
+        promptContextSchemaVersion: 2,
+        sourceImageFingerprint: 'sha256:replicated-frame',
+        analysisRuleVersion: 2,
+        rawResponse: '{}',
+        errorMessage: '',
+        createdAt: now,
+        updatedAt: now,
       ),
     );
 
@@ -490,22 +688,20 @@ void main() {
       ),
     );
     controller.refresh();
+    expect(controller.structuredPromptContextReadyCount, 1);
+    expect(controller.structuredPromptContextMissingCount, 0);
+
+    await controller.selectH3PromptStyle('minimalist-product-ad');
 
     await controller.composeAllPrompts();
 
     final generated = controller.value.prompts.single;
     expect(controller.promptFormatFor(generated), ShotPromptFormat.h3);
-    expect(visionService.completionPrompts, hasLength(1));
     expect(
-      visionService.completionPrompts.single,
-      contains('目标视频模型：MiniMax H3'),
+      visionService.completionPrompts,
+      isEmpty,
+      reason: '合成阶段不得再次调用视觉模型分析图片或重写故事',
     );
-    expect(visionService.completionPrompts.single, contains('图片1 是本镜头的复刻分镜图'));
-    expect(visionService.completionPrompts.single, contains('绑定资产图'));
-    expect(visionService.completionImagePaths.single, [
-      replicatedSource.path,
-      product.path,
-    ]);
     for (final format in ShotPromptFormat.values) {
       final text = controller.promptTextFor(generated, format);
       expect(text, isNot(contains('白色阔腿裤')));
@@ -514,24 +710,114 @@ void main() {
       expect(text, isNot(contains('黑色软质手提包')));
       expect(text, isNot(contains('彩色条纹')));
       expect(text, isNot(contains('YERAD')));
+      expect(text, contains('身体面向画面右侧'));
+      expect(text, contains('人物位于石墙前'));
+      if (format == ShotPromptFormat.sd2) {
+        expect(text, contains('广告产品记忆点'));
+      } else {
+        expect(text, isNot(contains('广告产品记忆点')));
+      }
     }
     expect(
-      controller.promptTextFor(generated, ShotPromptFormat.h3),
-      contains('新品背包'),
+      controller.promptTextFor(generated, ShotPromptFormat.kling),
+      contains('中部偏右'),
     );
     final h3Prompt = controller.promptTextFor(generated, ShotPromptFormat.h3);
     expect(h3Prompt, isNot(contains('<think>')));
-    expect(_occurrences(h3Prompt, '【参考素材说明】'), 1);
-    expect(_occurrences(h3Prompt, '【核心创意】'), 1);
+    expect(h3Prompt, startsWith('【参考素材说明】'));
     expect(_occurrences(h3Prompt, '【画面过程描述】'), 1);
-    expect(_occurrences(h3Prompt, '【整体要求补充】'), 1);
-    expect(_occurrences(h3Prompt, '【声音设计】'), 1);
+    expect(_occurrences(h3Prompt, '【镜头叙事风格】'), 1);
+    expect(_occurrences(h3Prompt, '【声音设计】'), 0);
     expect(_occurrences(h3Prompt, '非叙事性音乐：'), 1);
-    expect(h3Prompt, isNot(contains('主体与素材定义：')));
-    expect(h3Prompt, isNot(contains('整体约束：')));
+    expect(h3Prompt, contains('新品背包'));
+    expect(h3Prompt, isNot(contains('new backpack')));
+    expect(h3Prompt, isNot(contains('身穿和的')));
+    expect(h3Prompt, isNot(contains('广告产品记忆点')));
+    expect(h3Prompt, contains('产品本体颜色'));
+    expect(h3Prompt, contains('3–5 个英文词'));
+    final raw = jsonDecode(generated.rawResponse) as Map;
+    expect(raw['promptSource'], 'localStructuredAssembler');
+    expect(raw['assemblyMode'], 'concatenateConfirmedScriptFields');
+    expect(raw['analysisStage'], 'buildScript');
+    expect(raw['visionModelCalls'], 0);
+    expect(raw['h3PromptStyleId'], 'minimalist-product-ad');
+    expect(raw.containsKey('visionPromptSynthesis'), isFalse);
+
+    await controller.selectH3PromptStyle('brand-promo');
+
+    expect(
+      controller.value.prompts,
+      hasLength(1),
+      reason: 'H3 风格变化后保留上一次提示词，状态标记为待重新合成',
+    );
+    expect(settingsRepository.load().h3PromptStyleId, 'brand-promo');
+    await controller.composeAllPrompts();
+    final brandPrompt = controller.value.prompts.single;
+    final brandPromptText = controller.promptTextFor(
+      brandPrompt,
+      ShotPromptFormat.h3,
+    );
+    final brandPromptRaw = jsonDecode(brandPrompt.rawResponse) as Map;
+    expect(brandPromptRaw['h3PromptStyleId'], 'brand-promo');
+    expect(visionService.completionPrompts, isEmpty);
+    expect(brandPromptText, contains('场景/意图'));
+    expect(brandPromptText, contains('不虚构任何功能'));
+    expect(brandPromptText, isNot(contains('3–5 个英文词')));
+    expect(brandPromptText, isNot(h3Prompt));
+
+    final storedAnalysis = workflowRepository.getAnalysis(shot.id)!;
+    workflowRepository.upsertAnalysis(
+      storedAnalysis.copyWith(
+        promptContext: const ScriptShotPromptContext(
+          subject: {'people': '女模特'},
+          action: {'bodyAction': '转身展示新品背包侧面'},
+          scene: {
+            'subjectDirection': '身体面向画面左侧',
+            'spatialRelation': '人物位于石墙前，背包位于身体左侧',
+          },
+          continuity: {'narrativeFunction': '突出背包侧面轮廓'},
+        ),
+        sourceImageFingerprint: 'sha256:updated-replicated-frame',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    controller.refresh();
+
+    expect(
+      controller.value.prompts,
+      hasLength(1),
+      reason: '结构化解析上下文变化后保留上一次提示词',
+    );
+    expect(
+      controller.value.run?.composePromptsStatus,
+      ProcessingStatus.pending,
+    );
+
+    await controller.composeAllPrompts();
+    final refreshedPrompt = controller.value.prompts.single;
+    expect(
+      controller.promptTextFor(refreshedPrompt, ShotPromptFormat.h3),
+      contains('面向画面左侧'),
+    );
+
+    await controller.regeneratePrompt(refreshedPrompt.id);
+    final regeneratedPrompt = controller.value.prompts.single;
+    expect(
+      controller.promptTextFor(regeneratedPrompt, ShotPromptFormat.h3),
+      startsWith('【参考素材说明】'),
+      reason: '单条重新生成也必须只拼接本地结构化字段',
+    );
+    final regeneratedRaw = jsonDecode(regeneratedPrompt.rawResponse) as Map;
+    expect(regeneratedRaw['visionModelCalls'], 0);
+    expect(visionService.completionPrompts, isEmpty);
+
+    controller.updateAsset(product.copyWith(description: '哑光黑硬挺通勤双肩包'));
+    controller.refresh();
+
+    expect(controller.value.prompts, hasLength(1), reason: '素材描述变化后保留上一次提示词');
   });
 
-  test('合成提示词会按限制并发调用视觉模型并保持镜头顺序', () async {
+  test('50 个 H3 镜头零视觉调用并保持顺序与纯本地拼接性能', () async {
     final root = await Directory.systemTemp.createTemp(
       'replicate_prompt_concurrency_',
     );
@@ -559,29 +845,7 @@ void main() {
       directories: directories,
     );
     final replicateRepository = ReplicateRepository(database);
-    final releaseVision = Completer<void>();
-    final secondVisionStarted = Completer<void>();
-    final visionService = _RecordingVisionStoryboardService()
-      ..completionGate = releaseVision.future
-      ..secondCompletionStarted = secondVisionStarted
-      ..resolvedPrompt = '''
-【参考素材说明】
-@图片1 是画面参考图。
-
-【核心创意】
-并发合成提示词。
-
-【画面过程描述】
-0-3秒：保持画面稳定。
-
-【整体要求补充】
-不要字幕、不要水印。
-
-【声音设计】
-自然环境声。
-
-非叙事性音乐：N/A
-''';
+    final visionService = _RecordingVisionStoryboardService();
     final controller = ReplicateController(
       repository: replicateRepository,
       shootingScriptController: shootingController,
@@ -597,9 +861,9 @@ void main() {
       await root.delete(recursive: true);
     });
 
-    shootingController.createEmpty(name: '并发合成脚本');
+    shootingController.createEmpty(name: '本地批量合成脚本');
     final shots = <ScriptShot>[];
-    for (var index = 0; index < 3; index++) {
+    for (var index = 0; index < 50; index++) {
       final shot = shootingController.addShot()!;
       shootingController.updateShot(
         shot.copyWith(
@@ -634,26 +898,29 @@ void main() {
     }
     controller.refresh();
 
-    final composeFuture = controller.composeAllPrompts(maxConcurrent: 2);
-    await secondVisionStarted.future;
+    final stopwatch = Stopwatch()..start();
+    await controller.composeAllPrompts(maxConcurrent: 2);
+    stopwatch.stop();
 
-    expect(visionService.completionPrompts, hasLength(2));
-    expect(visionService.maxActiveCompletions, 2);
-    expect(controller.value.isBusy, isTrue);
-
-    releaseVision.complete();
-    await composeFuture;
-
-    expect(visionService.completionPrompts, hasLength(3));
-    expect(controller.value.prompts.map((prompt) => prompt.shotNumber), [
-      1,
-      2,
-      3,
-    ]);
-    expect(controller.value.run!.completedCount, 3);
+    expect(visionService.completionPrompts, isEmpty);
+    expect(visionService.maxActiveCompletions, 0);
+    expect(
+      controller.value.prompts.map((prompt) => prompt.shotNumber),
+      List.generate(50, (index) => index + 1),
+    );
+    expect(controller.value.run!.completedCount, 50);
+    expect(
+      stopwatch.elapsed,
+      lessThan(const Duration(seconds: 3)),
+      reason: '纯本地结构化编译 50 个镜头应在 3 秒内完成',
+    );
     expect(controller.value.message, contains('MiniMax H3'));
-    expect(controller.value.message, contains('并发生成 3 个'));
+    expect(controller.value.message, contains('拼接 50 个'));
+    expect(controller.value.message, contains('视觉模型 0 次'));
     final raw = jsonDecode(controller.value.prompts.first.rawResponse) as Map;
+    expect(raw['promptSource'], 'localStructuredAssembler');
+    expect(raw['assemblyMode'], 'concatenateConfirmedScriptFields');
+    expect(raw['visionModelCalls'], 0);
     expect(raw['videoModelPromptRule'], {
       'format': ShotPromptFormat.h3.name,
       'label': 'MiniMax H3',
@@ -856,7 +1123,11 @@ void main() {
       imageService.requests[0].prompt,
       contains('严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图'),
     );
-    expect(imageService.requests[0].prompt, contains('色彩硬约束：以图片1的色彩风格'));
+    expect(imageService.requests[0].prompt, contains('色彩锁定硬约束：以图片1可见的色彩风格'));
+    expect(
+      imageService.requests[0].prompt,
+      contains('严禁根据图片2起的资产图、资产文字、镜头色彩字段'),
+    );
     expect(imageService.requests[0].prompt, contains('产品主体必须清晰可辨'));
     expect(imageService.requests[0].prompt, contains('画面文字与标识零容忍硬约束'));
     expect(imageService.requests[0].prompt, contains('默认输出必须是纯净无字画面'));
@@ -901,6 +1172,33 @@ void main() {
       ),
       isTrue,
     );
+
+    final releaseManualRequests = Completer<void>();
+    final firstManualRequestStarted = Completer<void>();
+    imageService
+      ..requestStarted = firstManualRequestStarted
+      ..requestGate = releaseManualRequests.future;
+    final firstManualFuture = controller.replicateShot(first.id);
+    await firstManualRequestStarted.future;
+
+    final secondManualRequestStarted = Completer<void>();
+    imageService.requestStarted = secondManualRequestStarted;
+    final secondManualFuture = controller.replicateShot(second.id);
+    await Future.any([secondManualRequestStarted.future, secondManualFuture]);
+    expect(
+      secondManualRequestStarted.isCompleted,
+      isTrue,
+      reason: '首个手动复刻仍在运行时，第二个镜头必须立即提交到 API',
+    );
+    expect(controller.value.isBusy, isTrue);
+
+    releaseManualRequests.complete();
+    expect(await firstManualFuture, isTrue);
+    expect(await secondManualFuture, isTrue);
+    imageService
+      ..requestStarted = null
+      ..requestGate = null;
+    expect(controller.value.isBusy, isFalse);
 
     visionService.resolvedPrompt = '清理后的最终提示词：使用新模特，不出现原人物的耳环、眼镜和帽子。';
     final firstShotForInstructions = shootingController.value.shots.firstWhere(
@@ -1364,6 +1662,8 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeCount++;

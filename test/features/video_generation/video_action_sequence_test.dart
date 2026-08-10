@@ -1,5 +1,5 @@
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
-import 'package:filmstoryboard/features/shooting_script/domain/script_shot_continuity_refiner.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/script_shot_group.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_generation/domain/video_action_sequence.dart';
 import 'package:test/test.dart';
@@ -33,8 +33,8 @@ void main() {
     expect(sequences, hasLength(4));
   });
 
-  test('自动解析后处理补齐单侧连续标记并保留中间动作端点', () {
-    final refined = const ScriptShotContinuityRefiner().refine([
+  test('动作文字相似但没有手动双向标记时保持独立', () {
+    final shots = [
       _shot(
         4,
         content: '女模特开始举手向前走',
@@ -55,14 +55,11 @@ void main() {
         actionStage: '结果',
         continuesFromPrevious: true,
       ),
-    ]);
+    ];
+    final sequences = resolver.resolve(shots);
 
-    final sequences = resolver.resolve(refined);
-
-    expect(refined[1].continuesFromPrevious, isTrue);
-    expect(refined[1].continuesToNext, isTrue);
-    expect(sequences.single.head.shotNumber, 4);
-    expect(sequences.single.tail.shotNumber, 6);
+    expect(sequences, hasLength(3));
+    expect(ScriptShotGroup.group(shots), hasLength(3));
   });
 }
 

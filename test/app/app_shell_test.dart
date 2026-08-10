@@ -131,21 +131,51 @@ void main() {
     );
     expect(
       find.byKey(const ValueKey('shooting-script-right-resize-handle')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('shooting-script-step-right-resize-handle')),
       findsOneWidget,
     );
+    final stepPanelFrame = tester.widget<DecoratedBox>(
+      find.byKey(const ValueKey('embedded-step-right-panel-frame')),
+    );
+    final stepPanelDecoration = stepPanelFrame.decoration as BoxDecoration;
+    expect(stepPanelDecoration.borderRadius, BorderRadius.circular(16));
+    expect(stepPanelDecoration.border, isNotNull);
+    expect(find.byKey(const ValueKey('confirm-story-panel')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('confirm-story-panel-resize-handle')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('manage-shooting-asset-library')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('collapse-asset-library-panel')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('expand-asset-library-panel')),
+      findsNothing,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('collapse-confirm-story-panel')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('expand-confirm-story-panel')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('expand-confirm-story-panel')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('confirm-story-panel')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('collapse-script-sidebar')));
     await tester.pump();
     expect(find.byKey(const ValueKey('expand-script-sidebar')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('expand-script-sidebar')));
     await tester.pump();
-    await tester.tap(
-      find.byKey(const ValueKey('collapse-asset-library-panel')),
-    );
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('expand-asset-library-panel')),
-      findsOneWidget,
-    );
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-设置')));
     await tester.pumpAndSettle();

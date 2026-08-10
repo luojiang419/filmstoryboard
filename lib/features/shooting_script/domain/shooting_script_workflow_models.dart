@@ -105,6 +105,65 @@ class ScriptShotAssetLink {
   );
 }
 
+class ScriptShotPromptContext {
+  static const currentSchemaVersion = 2;
+
+  const ScriptShotPromptContext({
+    this.subject = const {},
+    this.action = const {},
+    this.scene = const {},
+    this.camera = const {},
+    this.visualStyle = const {},
+    this.continuity = const {},
+    this.audio = const {},
+  });
+
+  final Map<String, String> subject;
+  final Map<String, String> action;
+  final Map<String, String> scene;
+  final Map<String, String> camera;
+  final Map<String, String> visualStyle;
+  final Map<String, String> continuity;
+  final Map<String, String> audio;
+
+  bool get isEmpty =>
+      subject.isEmpty &&
+      action.isEmpty &&
+      scene.isEmpty &&
+      camera.isEmpty &&
+      visualStyle.isEmpty &&
+      continuity.isEmpty &&
+      audio.isEmpty;
+
+  Map<String, Object> toJson() => {
+    'subject': subject,
+    'action': action,
+    'scene': scene,
+    'camera': camera,
+    'visualStyle': visualStyle,
+    'continuity': continuity,
+    'audio': audio,
+  };
+
+  factory ScriptShotPromptContext.fromJson(Map<dynamic, dynamic> json) =>
+      ScriptShotPromptContext(
+        subject: _stringMap(json['subject']),
+        action: _stringMap(json['action']),
+        scene: _stringMap(json['scene']),
+        camera: _stringMap(json['camera']),
+        visualStyle: _stringMap(json['visualStyle']),
+        continuity: _stringMap(json['continuity']),
+        audio: _stringMap(json['audio']),
+      );
+
+  static Map<String, String> _stringMap(Object? value) {
+    if (value is! Map) return const {};
+    return Map.unmodifiable(
+      value.map((key, item) => MapEntry('$key', item == null ? '' : '$item')),
+    );
+  }
+}
+
 class ScriptShotAnalysisRecord {
   const ScriptShotAnalysisRecord({
     required this.id,
@@ -113,6 +172,10 @@ class ScriptShotAnalysisRecord {
     required this.status,
     required this.fieldSources,
     required this.fieldConfidence,
+    this.promptContext = const ScriptShotPromptContext(),
+    this.promptContextSchemaVersion = 0,
+    this.sourceImageFingerprint = '',
+    this.analysisRuleVersion = 0,
     required this.rawResponse,
     required this.errorMessage,
     required this.createdAt,
@@ -125,6 +188,10 @@ class ScriptShotAnalysisRecord {
   final ProcessingStatus status;
   final Map<String, String> fieldSources;
   final Map<String, double> fieldConfidence;
+  final ScriptShotPromptContext promptContext;
+  final int promptContextSchemaVersion;
+  final String sourceImageFingerprint;
+  final int analysisRuleVersion;
   final String rawResponse;
   final String errorMessage;
   final DateTime createdAt;
@@ -135,6 +202,10 @@ class ScriptShotAnalysisRecord {
     ProcessingStatus? status,
     Map<String, String>? fieldSources,
     Map<String, double>? fieldConfidence,
+    ScriptShotPromptContext? promptContext,
+    int? promptContextSchemaVersion,
+    String? sourceImageFingerprint,
+    int? analysisRuleVersion,
     String? rawResponse,
     String? errorMessage,
     DateTime? updatedAt,
@@ -145,6 +216,12 @@ class ScriptShotAnalysisRecord {
     status: status ?? this.status,
     fieldSources: fieldSources ?? this.fieldSources,
     fieldConfidence: fieldConfidence ?? this.fieldConfidence,
+    promptContext: promptContext ?? this.promptContext,
+    promptContextSchemaVersion:
+        promptContextSchemaVersion ?? this.promptContextSchemaVersion,
+    sourceImageFingerprint:
+        sourceImageFingerprint ?? this.sourceImageFingerprint,
+    analysisRuleVersion: analysisRuleVersion ?? this.analysisRuleVersion,
     rawResponse: rawResponse ?? this.rawResponse,
     errorMessage: errorMessage ?? this.errorMessage,
     createdAt: createdAt,

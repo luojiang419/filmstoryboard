@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -14,9 +13,11 @@ import '../../shooting_script/domain/shooting_asset_library_models.dart';
 import '../../shooting_script/application/script_asset_binding_controller.dart';
 import '../../shooting_script/data/script_multimodal_analysis_service.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
+import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/data/shooting_script_workflow_repository.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
+import '../../shooting_script/domain/structured_prompt_shot_adapter.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../storyboard/data/vision_storyboard_service.dart';
 import '../../storyboard/domain/image_generation_provider_resolver.dart';
@@ -28,6 +29,7 @@ import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
+import '../domain/h3_prompt_style.dart';
 import '../domain/replicate_models.dart';
 
 final replicateControllerProvider = Provider<ReplicateController>(
@@ -182,9 +184,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }
 
   static const promptModel = 'Seedance 2';
-  static const _promptRulesVersion = 3;
-  static const _visionPromptImageMaxBytes = 3 * 1024 * 1024;
-  static const _visionPromptImageMaxDimension = 1280;
+  static const _promptRulesVersion = 19;
   static const defaultComposePromptConcurrency = 4;
   static const klingComposePromptConcurrency = 2;
   static const defaultBatchReplicateConcurrency = 1000;
@@ -204,7 +204,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final Uuid _uuid;
   bool _disposed = false;
   String? _pendingStartFrameShotId;
-  final _activeReplicationScriptIds = <String>{};
+  String? _pendingManualShotGroupStartId;
+  final _activeReplicationCountsByScriptId = <String, int>{};
+  final _activeBatchReplicationScriptIds = <String>{};
   final _replicationMessagesByScriptId = <String, String>{};
 
   @override
@@ -273,7 +275,28 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   String get composePromptModelLabel => _composePromptModelRule.label;
 
+  bool get usesOfficialH3PromptWriting =>
+      _composePromptModelRule.format == ShotPromptFormat.h3;
+
+  H3PromptStyle get selectedH3PromptStyle =>
+      H3PromptStyle.resolve(_settingsController.value.h3PromptStyleId);
+
+  Future<void> selectH3PromptStyle(String styleId) async {
+    final style = H3PromptStyle.resolve(styleId);
+    if (_settingsController.value.h3PromptStyleId == style.id) return;
+    await _settingsController.setH3PromptStyleId(style.id);
+    if (!_disposed) _restoreFromShootingScript();
+  }
+
   int get composePromptConcurrency => _composePromptModelRule.maxConcurrent;
+
+  int get structuredPromptContextReadyCount => ScriptShotGroup.group(
+    value.confirmedShots,
+  ).where((group) => _hasUsablePromptContext(group.shots.first.id)).length;
+
+  int get structuredPromptContextMissingCount =>
+      ScriptShotGroup.group(value.confirmedShots).length -
+      structuredPromptContextReadyCount;
 
   void refresh() => _restoreFromShootingScript();
 
@@ -689,21 +712,79 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   String? get pendingStartFrameShotId => _pendingStartFrameShotId;
 
+  String? get pendingManualShotGroupStartId => _pendingManualShotGroupStartId;
+
+  bool canSelectManualShotGroupStart(String shotId) {
+    final shot = _shotById(shotId);
+    return shot != null &&
+        value.shots.any((item) => item.shotNumber > shot.shotNumber);
+  }
+
+  bool canSelectManualShotGroupEnd(String shotId) {
+    final startId = _pendingManualShotGroupStartId;
+    if (startId == null || startId == shotId) return false;
+    final start = _shotById(startId);
+    final end = _shotById(shotId);
+    return start != null && end != null && end.shotNumber > start.shotNumber;
+  }
+
+  bool shotIsInManualGroup(String shotId) {
+    final index = value.shots.indexWhere((shot) => shot.id == shotId);
+    if (index < 0) return false;
+    final previousConnected =
+        index > 0 &&
+        value.shots[index - 1].continuesToNext &&
+        value.shots[index].continuesFromPrevious;
+    final nextConnected =
+        index + 1 < value.shots.length &&
+        value.shots[index].continuesToNext &&
+        value.shots[index + 1].continuesFromPrevious;
+    return previousConnected || nextConnected;
+  }
+
+  void selectManualShotGroupStart(String shotId) {
+    if (!canSelectManualShotGroupStart(shotId)) return;
+    _pendingManualShotGroupStartId = shotId;
+    final shot = _shotById(shotId);
+    value = value.copyWith(
+      message: shot == null
+          ? '请选择结束帧'
+          : '已选择镜头 ${shot.shotNumber} 为首帧，请右键后续镜头设为结束帧',
+      errorMessage: '',
+    );
+  }
+
+  void setManualShotGroupEnd(String endShotId) {
+    final startId = _pendingManualShotGroupStartId;
+    if (startId == null || !canSelectManualShotGroupEnd(endShotId)) {
+      value = value.copyWith(errorMessage: '请选择首帧之后的镜头作为结束帧', message: '');
+      return;
+    }
+    _pendingManualShotGroupStartId = null;
+    _shootingScriptController.setContinuousShotRange(
+      startShotId: startId,
+      endShotId: endShotId,
+    );
+  }
+
+  void clearManualShotGroup(String shotId) {
+    if (_pendingManualShotGroupStartId == shotId) {
+      _pendingManualShotGroupStartId = null;
+    }
+    _shootingScriptController.clearContinuousShotGroup(shotId);
+  }
+
   List<VideoActionSequence> startEndSequencesFor(List<ScriptShot> shots) {
     final run = value.run;
-    if (run == null || !startEndFrameModeEnabled) {
-      return [
-        for (final shot in shots) VideoActionSequence([shot]),
-      ];
-    }
-    return const VideoActionSequenceResolver().resolveManual(
+    return const VideoActionSequenceResolver().resolveConfiguredGroups(
       shots,
-      run.startEndPairs,
+      pairs: startEndFrameModeEnabled
+          ? run?.startEndPairs ?? const []
+          : const [],
     );
   }
 
   List<ScriptShot> get startEndRows {
-    if (!startEndFrameModeEnabled) return [...value.shots];
     return startEndSequencesFor(
       value.shots,
     ).map((sequence) => sequence.head).toList(growable: false);
@@ -788,14 +869,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   Future<bool> replicateShot(String shotId) async {
     final context = _replicationContext();
-    if (context == null ||
-        _activeReplicationScriptIds.contains(context.scriptId)) {
-      return false;
-    }
+    if (context == null) return false;
     final shot = _shotById(shotId);
     if (shot == null) return false;
     final shots = _replicationEndpointsForShot(shot);
-    _activeReplicationScriptIds.add(context.scriptId);
+    _beginReplication(context.scriptId);
     value = value.copyWith(
       isBusy: true,
       message: startEndFrameModeEnabled && shots.length > 1
@@ -805,12 +883,15 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     );
     _replicationMessagesByScriptId[context.scriptId] = value.message;
     var succeededCount = 0;
-    for (final target in shots) {
-      final succeeded = await _generateReplicatedShot(target, context);
-      if (succeeded) succeededCount++;
+    try {
+      for (final target in shots) {
+        final succeeded = await _generateReplicatedShot(target, context);
+        if (succeeded) succeededCount++;
+      }
+    } finally {
+      _finishReplication(context.scriptId);
     }
     final succeeded = succeededCount == shots.length;
-    _activeReplicationScriptIds.remove(context.scriptId);
     if (!_disposed) {
       final errors = [
         for (final target in shots)
@@ -821,11 +902,15 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
                 ? '镜头 ${shot.shotNumber} 首尾帧复刻完成'
                 : '镜头 ${shot.shotNumber} 复刻完成'
           : '';
-      _replicationMessagesByScriptId[context.scriptId] = message;
+      final remainingCount = _activeReplicationCount(context.scriptId);
+      final visibleMessage = remainingCount > 0
+          ? '仍有 $remainingCount 个复刻任务生成中…'
+          : message;
+      _replicationMessagesByScriptId[context.scriptId] = visibleMessage;
       if (value.selectedScriptId == context.scriptId) {
         value = value.copyWith(
-          isBusy: false,
-          message: message,
+          isBusy: remainingCount > 0,
+          message: visibleMessage,
           errorMessage: succeeded ? '' : errors,
         );
       }
@@ -839,7 +924,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }) async {
     final context = _replicationContext();
     if (context == null ||
-        _activeReplicationScriptIds.contains(context.scriptId)) {
+        _activeBatchReplicationScriptIds.contains(context.scriptId)) {
       return;
     }
     final shots = _replicationTargetsForAll();
@@ -847,7 +932,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       value = value.copyWith(errorMessage: '当前脚本暂无可复刻的镜头', message: '');
       return;
     }
-    _activeReplicationScriptIds.add(context.scriptId);
+    _activeBatchReplicationScriptIds.add(context.scriptId);
+    _beginReplication(context.scriptId);
     value = value.copyWith(
       isBusy: true,
       message: startEndFrameModeEnabled
@@ -887,10 +973,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       }
       await Future.wait(active);
     } finally {
-      _activeReplicationScriptIds.remove(context.scriptId);
+      _activeBatchReplicationScriptIds.remove(context.scriptId);
+      _finishReplication(context.scriptId);
       if (!_disposed) {
         final failed = shots.length - succeeded;
-        final message = failed == 0
+        final completedMessage = failed == 0
             ? startEndFrameModeEnabled
                   ? '已完成 ${shots.length} 张首尾帧复刻'
                   : '已完成 ${shots.length} 个镜头复刻'
@@ -900,11 +987,15 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
             : startEndFrameModeEnabled
             ? '$failed 张首尾帧复刻失败，可单独重试'
             : '$failed 个镜头复刻失败，可单独重试';
-        _replicationMessagesByScriptId[context.scriptId] = message;
+        final remainingCount = _activeReplicationCount(context.scriptId);
+        final visibleMessage = remainingCount > 0
+            ? '仍有 $remainingCount 个复刻任务生成中…'
+            : completedMessage;
+        _replicationMessagesByScriptId[context.scriptId] = visibleMessage;
         if (value.selectedScriptId == context.scriptId) {
           value = value.copyWith(
-            isBusy: false,
-            message: message,
+            isBusy: remainingCount > 0,
+            message: visibleMessage,
             errorMessage: error,
           );
         }
@@ -1166,7 +1257,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }) =>
       '$automaticPrompt\n\n'
       '【用户补充说明：最高优先级】$instructions\n'
-      '冲突处理：若以上自动解析、原帧描述、资产描述或固定约束与用户补充说明冲突，必须删除或改写冲突内容，始终按用户补充说明生成；不得保留原人物的服装、首饰、眼镜、帽子、包、手表或其他配饰，除非用户明确要求保留。\n'
+      '冲突处理：用户补充说明可覆盖自动解析、资产描述和固定复刻规则，但不得改变图片1的色彩风格、色温、明暗关系、对比度、光影层次或电影调色；这些视觉基准始终以原视频帧为准。不得保留原人物的服装、首饰、眼镜、帽子、包、手表或其他配饰，除非用户明确要求保留。\n'
       '文字例外判定：只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才可开放该段指定文本；其他情况仍必须执行无文字、无 Logo 硬约束。';
 
   static String _userPriorityResolutionPrompt({
@@ -1178,7 +1269,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       '''
 你是图像生成提示词编辑器。请根据图片1和以下文本，输出一份可直接提交给图片生成 API 的中文最终提示词。
 
-最高优先级规则：用户补充说明高于自动解析、原视频帧、镜头脚本和任何固定复刻规则。若两者冲突，必须删除或改写自动提示词中的冲突描述，绝不能把彼此矛盾的要求同时保留。
+最高优先级规则：用户补充说明高于自动解析、镜头脚本和固定复刻规则；但图片1原视频帧的色彩风格、色温、明暗关系、对比度、光影层次和电影调色不可被任何文本覆盖。若用户说明涉及调色，只能将新实体融入图片1调色，不得另行换色或重调。
 
 镜头：${shot.shotNumber}
 当前绑定素材：${references.map((item) => '${_replacementTypeLabel(item.type)}「${item.name}」').join('、')}
@@ -1190,7 +1281,7 @@ $instructions
 $automaticPrompt
 
 编辑要求：
-1. 保留与用户说明不冲突的镜头叙事、构图、动作、光影和已绑定素材要求。
+1. 保留与用户说明不冲突的镜头叙事、构图、动作、光影和已绑定素材要求；色彩与调色必须完整沿用图片1。
 2. 用户要求替换、移除或不要出现的元素，必须明确写为“不出现/替换为”并移除原有相反表述；人物配饰包括首饰、眼镜、帽子、包、手表、发饰等。
 3. 不得复刻图片1原人物的身份、脸部、服装或配饰，除非用户明确要求保留；已绑定的新人物或产品始终优先使用。
 4. 必须完整保留自动提示词中的“画面文字与标识零容忍硬约束”。只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才允许该段指定文本；不得把参考图中的其他文字或 Logo 带入成图。
@@ -1273,11 +1364,15 @@ $automaticPrompt
     }
   }
 
-  Future<void> composeAllPrompts({int? maxConcurrent}) async {
+  Future<void> composeAllPrompts({
+    int? maxConcurrent,
+    bool navigateToComposeStep = true,
+  }) async {
     final run = value.run;
-    final shots = startEndFrameModeEnabled
-        ? startEndRows
-        : value.confirmedShots;
+    final sequences = startEndSequencesFor(value.confirmedShots);
+    final shots = sequences
+        .map((sequence) => sequence.head)
+        .toList(growable: false);
     final assets = _readyAssets(value.assets);
     final modelRule = _composePromptModelRule;
     if (run == null || shots.isEmpty) {
@@ -1285,7 +1380,9 @@ $automaticPrompt
       return;
     }
     final running = run.copyWith(
-      currentStep: ReplicateStep.composePrompts,
+      currentStep: navigateToComposeStep
+          ? ReplicateStep.composePrompts
+          : run.currentStep,
       status: ProcessingStatus.running,
       composePromptsStatus: ProcessingStatus.running,
       completedCount: 0,
@@ -1297,17 +1394,13 @@ $automaticPrompt
     value = value.copyWith(
       run: running,
       isBusy: true,
-      prompts: const [],
-      message: '正在按${modelRule.label}规则并发合成 0/${shots.length} 个提示词…',
+      message: '正在拼接 0/${shots.length} 个${modelRule.label}提示词…',
       errorMessage: '',
     );
     final prompts = List<ShotPrompt?>.filled(shots.length, null);
     var completed = 0;
     var succeeded = 0;
     var nextIndex = 0;
-    final sequences = startEndFrameModeEnabled
-        ? startEndSequencesFor(value.confirmedShots)
-        : const <VideoActionSequence>[];
     final requestedConcurrency = maxConcurrent ?? modelRule.maxConcurrent;
     final concurrency = requestedConcurrency.clamp(1, shots.length).toInt();
 
@@ -1318,7 +1411,7 @@ $automaticPrompt
         nextIndex++;
         final shot = shots[index];
         final actionSequence = _actionSequenceForPrompt(shot, sequences);
-        var prompt = _composePrompt(
+        final prompt = _composePrompt(
           run: running,
           shot: shot,
           assets: assets,
@@ -1327,12 +1420,6 @@ $automaticPrompt
           nextShot: index + 1 < shots.length ? shots[index + 1] : null,
           selectedFormat: modelRule.format,
         );
-        prompt = await _refineSelectedPromptWithVision(
-          prompt: prompt,
-          shot: shot,
-          assets: assets,
-          actionSequence: actionSequence,
-        );
         prompts[index] = prompt;
         completed++;
         if (prompt.status == ProcessingStatus.completed) {
@@ -1340,9 +1427,8 @@ $automaticPrompt
         }
         if (!_disposed) {
           value = value.copyWith(
-            prompts: [for (final item in prompts) ?item],
             message:
-                '正在按${modelRule.label}规则并发合成提示词 '
+                '正在拼接${modelRule.label}提示词 '
                 '$completed/${shots.length}，成功 $succeeded 个…',
           );
         }
@@ -1373,14 +1459,14 @@ $automaticPrompt
         prompts: finishedPrompts,
         isBusy: false,
         message: failed == 0
-            ? '已按${modelRule.label}规则并发生成 ${finishedPrompts.length} 个提示词'
+            ? '已从构建脚本字段拼接 ${finishedPrompts.length} 个${modelRule.label}提示词（视觉模型 0 次）'
             : '',
         errorMessage: finished.errorMessage,
       );
     }
   }
 
-  void regeneratePrompt(String promptId) {
+  Future<void> regeneratePrompt(String promptId) async {
     final run = value.run;
     final index = value.prompts.indexWhere((prompt) => prompt.id == promptId);
     if (run == null || index < 0) {
@@ -1393,35 +1479,119 @@ $automaticPrompt
     }
     final orderedShots = [...value.confirmedShots]
       ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
-    final shotIndex = orderedShots.indexWhere((item) => item.id == shot.id);
+    final sequences = startEndSequencesFor(orderedShots);
+    final actionSequence = _actionSequenceForPrompt(shot, sequences);
+    final promptShots = sequences
+        .map((sequence) => sequence.head)
+        .toList(growable: false);
+    final shotIndex = promptShots.indexWhere((item) => item.id == shot.id);
     final updated = _composePrompt(
       run: run,
       shot: shot,
       assets: _readyAssets(value.assets),
-      actionSequence: startEndFrameModeEnabled
-          ? const VideoActionSequenceResolver()
-                .manualSequenceFor(orderedShots, run.startEndPairs, shot.id)
-                .shots
-          : const [],
-      previousShot: shotIndex > 0 ? orderedShots[shotIndex - 1] : null,
-      nextShot: shotIndex >= 0 && shotIndex + 1 < orderedShots.length
-          ? orderedShots[shotIndex + 1]
+      actionSequence: actionSequence,
+      previousShot: shotIndex > 0 ? promptShots[shotIndex - 1] : null,
+      nextShot: shotIndex >= 0 && shotIndex + 1 < promptShots.length
+          ? promptShots[shotIndex + 1]
           : null,
       selectedFormat: _composePromptModelRule.format,
     );
+    if (_disposed) return;
     _repository.upsertPrompt(updated);
     final prompts = [...value.prompts]..[index] = updated;
     _updatePromptProgress(run, prompts, message: '镜头 ${shot.shotNumber} 已重新生成');
     _syncScriptPromptFields(prompts);
   }
 
-  void retryFailedPrompts() {
+  Future<void> composePromptsForShotIds(Iterable<String> shotIds) async {
+    final run = value.run;
+    final targetIds = shotIds.toSet();
+    final sequences = startEndSequencesFor(value.confirmedShots);
+    final shots = sequences
+        .map((sequence) => sequence.head)
+        .toList(growable: false);
+    if (run == null || shots.isEmpty || targetIds.isEmpty) return;
+
+    final existingByShotId = <String, ShotPrompt>{
+      for (final prompt in value.prompts)
+        if ((prompt.scriptShotId ?? '').isNotEmpty)
+          prompt.scriptShotId!: prompt,
+    };
+    final assets = _readyAssets(value.assets);
+    final modelRule = _composePromptModelRule;
+    final prompts = <ShotPrompt>[];
+    var rebuiltCount = 0;
+    var repairedCount = 0;
+    for (var index = 0; index < shots.length; index++) {
+      final shot = shots[index];
+      final existing = existingByShotId[shot.id];
+      final isTarget = targetIds.contains(shot.id);
+      final needsRepair =
+          existing == null ||
+          existing.status != ProcessingStatus.completed ||
+          existing.prompt.trim().isEmpty;
+      if (!isTarget && !needsRepair) {
+        prompts.add(existing);
+        continue;
+      }
+      final actionSequence = _actionSequenceForPrompt(shot, sequences);
+      prompts.add(
+        _composePrompt(
+          run: run,
+          shot: shot,
+          assets: assets,
+          actionSequence: actionSequence,
+          previousShot: index > 0 ? shots[index - 1] : null,
+          nextShot: index + 1 < shots.length ? shots[index + 1] : null,
+          selectedFormat: modelRule.format,
+        ),
+      );
+      if (isTarget) {
+        rebuiltCount++;
+      } else {
+        repairedCount++;
+      }
+    }
+
+    _repository.replacePrompts(run.id, prompts);
+    final failed = prompts
+        .where((prompt) => prompt.status == ProcessingStatus.failed)
+        .length;
+    final completed = prompts.length - failed;
+    final finished = run.copyWith(
+      status: failed == 0
+          ? ProcessingStatus.completed
+          : ProcessingStatus.partial,
+      composePromptsStatus: failed == 0
+          ? ProcessingStatus.completed
+          : ProcessingStatus.partial,
+      completedCount: completed,
+      totalCount: prompts.length,
+      errorMessage: failed == 0 ? '' : '$failed 个镜头提示词拼接失败',
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertRun(finished);
+    _syncScriptPromptFields(prompts);
+    if (_disposed) return;
+    value = value.copyWith(
+      run: finished,
+      prompts: prompts,
+      isBusy: false,
+      message: failed == 0
+          ? '已根据反馈重拼 $rebuiltCount 个镜头提示词'
+                '${repairedCount == 0 ? '' : '，并补齐 $repairedCount 个缺失结果'}'
+          : '',
+      errorMessage: finished.errorMessage,
+    );
+  }
+
+  Future<void> retryFailedPrompts() async {
     final failed = [
       for (final prompt in value.prompts)
         if (prompt.status == ProcessingStatus.failed) prompt.id,
     ];
     for (final id in failed) {
-      regeneratePrompt(id);
+      await regeneratePrompt(id);
     }
   }
 
@@ -1564,7 +1734,7 @@ $automaticPrompt
         missingCount: missing,
       );
       value = value.copyWith(
-        isBusy: _activeReplicationScriptIds.contains(value.selectedScriptId),
+        isBusy: _isReplicatingScript(value.selectedScriptId),
         message: missing == 0
             ? '已导出 $copied 张复刻分镜图到 ${directory.path}'
             : '已导出 $copied 张复刻分镜图，另有 $missing 个镜头缺图',
@@ -1573,7 +1743,7 @@ $automaticPrompt
       return result;
     } catch (error) {
       value = value.copyWith(
-        isBusy: _activeReplicationScriptIds.contains(value.selectedScriptId),
+        isBusy: _isReplicatingScript(value.selectedScriptId),
         message: '',
         errorMessage: '导出复刻分镜图失败：$error',
       );
@@ -1622,6 +1792,26 @@ $automaticPrompt
       return;
     }
     value = value.copyWith(message: message);
+  }
+
+  int _activeReplicationCount(String scriptId) =>
+      _activeReplicationCountsByScriptId[scriptId] ?? 0;
+
+  bool _isReplicatingScript(String scriptId) =>
+      _activeReplicationCount(scriptId) > 0;
+
+  void _beginReplication(String scriptId) {
+    _activeReplicationCountsByScriptId[scriptId] =
+        _activeReplicationCount(scriptId) + 1;
+  }
+
+  void _finishReplication(String scriptId) {
+    final remaining = _activeReplicationCount(scriptId) - 1;
+    if (remaining <= 0) {
+      _activeReplicationCountsByScriptId.remove(scriptId);
+    } else {
+      _activeReplicationCountsByScriptId[scriptId] = remaining;
+    }
   }
 
   void _restoreFromShootingScript({String? selectScriptId}) {
@@ -1730,6 +1920,7 @@ $automaticPrompt
     }
     if (prompts.isNotEmpty &&
         _promptsAreStale(
+          run: run,
           prompts: prompts,
           shots: shooting.shots,
           confirmedShotIds: confirmedIds,
@@ -1742,10 +1933,8 @@ $automaticPrompt
         updatedAt: DateTime.now().toUtc(),
       );
       _repository.upsertRun(run);
-      _repository.deletePrompts(run.id);
-      prompts = const [];
     }
-    final isReplicating = _activeReplicationScriptIds.contains(scriptId);
+    final isReplicating = _isReplicatingScript(scriptId);
     value = value.copyWith(
       scripts: scripts,
       shots: shooting.shots,
@@ -1796,7 +1985,7 @@ $automaticPrompt
       run: run,
       message: message,
       errorMessage: errorMessage,
-      isBusy: _activeReplicationScriptIds.contains(value.selectedScriptId),
+      isBusy: _isReplicatingScript(value.selectedScriptId),
     );
   }
 
@@ -1845,17 +2034,24 @@ $automaticPrompt
     required ShotPromptFormat selectedFormat,
   }) {
     try {
-      final promptShot = _shotWithoutSourceVisualContent(shot);
+      final promptShot = _structuredPromptShot(shot);
       final promptActionSequence = actionSequence
-          .map(_shotWithoutSourceVisualContent)
+          .map(_structuredPromptShot)
           .toList(growable: false);
       final promptPreviousShot = previousShot == null
           ? null
-          : _shotWithoutSourceVisualContent(previousShot);
+          : _structuredPromptShot(previousShot);
       final promptNextShot = nextShot == null
           ? null
-          : _shotWithoutSourceVisualContent(nextShot);
-      final linkedAssets = _confirmedScriptAssets(shot.id);
+          : _structuredPromptShot(nextShot);
+      final referenceShots = actionSequence.isEmpty
+          ? <ScriptShot>[shot]
+          : actionSequence;
+      final linkedAssets = _confirmedScriptAssetsForShots(referenceShots);
+      final usesExactH3StartEndFrames =
+          startEndFrameModeEnabled &&
+          referenceShots.length == 2 &&
+          linkedAssets.isEmpty;
       final result = linkedAssets.isNotEmpty
           ? _promptService.generateFromScriptAssets(
               shot: promptShot,
@@ -1877,7 +2073,8 @@ $automaticPrompt
         promptShot,
         sourcePrompt: '',
         actionSequence: promptActionSequence,
-        availableImageReferences: promptActionSequence.length > 1 ? 2 : 1,
+        availableImageReferences: referenceShots.length,
+        useStartEndFrameReferences: usesExactH3StartEndFrames,
         globalStyle: run.globalStyle,
         constraints: run.constraints,
       );
@@ -1885,12 +2082,22 @@ $automaticPrompt
         promptShot,
         sourcePrompt: '',
         actionSequence: promptActionSequence,
-        availableImageReferences: promptActionSequence.length > 1 ? 2 : 1,
+        availableImageReferences: referenceShots.length,
+        useStartEndFrameReferences: startEndFrameModeEnabled,
         globalStyle: run.globalStyle,
+        narrativeStyle: selectedFormat == ShotPromptFormat.h3
+            ? selectedH3PromptStyle.videoPromptInstruction
+            : '',
         constraints: run.constraints,
         referenceDefinitions: linkedAssets.isNotEmpty
-            ? _h3ReferenceDefinitionsFromScriptAssets(linkedAssets)
-            : _h3ReferenceDefinitionsFromReplicateAssets(assets),
+            ? _h3ReferenceDefinitionsFromScriptAssets(
+                linkedAssets,
+                startImageNumber: referenceShots.length + 1,
+              )
+            : _h3ReferenceDefinitionsFromReplicateAssets(
+                assets,
+                startImageNumber: referenceShots.length + 1,
+              ),
       );
       final selectedPrompt = switch (selectedFormat) {
         ShotPromptFormat.h3 => h3Prompt,
@@ -1908,7 +2115,28 @@ $automaticPrompt
         rawResponse: jsonEncode({
           'warnings': result.warnings,
           'promptRulesVersion': _promptRulesVersion,
+          'h3PromptStyleId': selectedFormat == ShotPromptFormat.h3
+              ? selectedH3PromptStyle.id
+              : H3PromptStyle.generalId,
           'shotFingerprint': _shotFingerprint(shot),
+          'promptInputFingerprint': _promptInputFingerprint(
+            run: run,
+            shot: shot,
+            assets: assets,
+            actionSequence: actionSequence,
+            previousShot: previousShot,
+            nextShot: nextShot,
+            selectedFormat: selectedFormat,
+          ),
+          'promptContextSchemaVersion':
+              _workflowRepository
+                  ?.getAnalysis(shot.id)
+                  ?.promptContextSchemaVersion ??
+              0,
+          'promptSource': 'localStructuredAssembler',
+          'assemblyMode': 'concatenateConfirmedScriptFields',
+          'analysisStage': 'buildScript',
+          'visionModelCalls': 0,
           'sd2Prompt': result.prompt,
           'klingPrompt': klingPrompt,
           'h3Prompt': h3Prompt,
@@ -1939,306 +2167,11 @@ $automaticPrompt
     }
   }
 
-  Future<ShotPrompt> _refineSelectedPromptWithVision({
-    required ShotPrompt prompt,
-    required ScriptShot shot,
-    required List<ReplicateAsset> assets,
-    required List<ScriptShot> actionSequence,
-  }) async {
-    if (prompt.status != ProcessingStatus.completed) return prompt;
-    final storyboardImageFiles = _replicatedPromptImageFiles(
-      shot: shot,
-      actionSequence: actionSequence,
-    );
-    final assetReferences = _visionPromptAssetReferences(
-      shot.id,
-      fallbackAssets: assets,
-      selectedAssetIds: prompt.assetIds.toSet(),
-    );
-    final imageFiles = [
-      ...storyboardImageFiles,
-      for (final reference in assetReferences) File(reference.path),
-    ];
-    if (imageFiles.isEmpty) return prompt;
-    final format = promptFormatFor(prompt);
-    final raw = _promptRaw(prompt);
-    final draft = '${raw[_promptKey(format)] ?? prompt.prompt}'.trim();
-    if (draft.isEmpty) return prompt;
-    final preparedDirectory = _visionPromptImageDirectory(prompt.id);
-    try {
-      final preparedImageFiles = await _prepareVisionPromptImages(
-        imageFiles,
-        preparedDirectory,
-      );
-      final refined = await _visionService.complete(
-        settings: _settingsController.value,
-        imageFiles: preparedImageFiles,
-        maxTokens: 2200,
-        allowThinking: false,
-        prompt: _visionPromptSynthesisPrompt(
-          format: format,
-          shot: shot,
-          draft: draft,
-          storyboardImageCount: storyboardImageFiles.length,
-          assetReferences: assetReferences,
-        ),
-      );
-      final normalized = _normalizeVisionPromptResult(refined);
-      if (normalized.isEmpty) return prompt;
-      raw[_promptKey(format)] = normalized;
-      raw['selectedPromptFormat'] = format.name;
-      raw['visionPromptSynthesis'] = {
-        'format': format.name,
-        'imageCount': imageFiles.length,
-        'storyboardImageCount': storyboardImageFiles.length,
-        'assetImageCount': assetReferences.length,
-        'preparedImageCount': preparedImageFiles.length,
-        'source': 'replicatedStoryboardAndAssets',
-      };
-      return prompt.copyWith(
-        prompt: normalized,
-        rawResponse: jsonEncode(raw),
-        updatedAt: DateTime.now().toUtc(),
-      );
-    } catch (error) {
-      raw['visionPromptSynthesisError'] = '$error';
-      return prompt.copyWith(rawResponse: jsonEncode(raw));
-    } finally {
-      await _deleteVisionPromptImageDirectory(preparedDirectory);
-    }
-  }
-
-  Future<List<File>> _prepareVisionPromptImages(
-    List<File> imageFiles,
-    Directory directory,
-  ) async {
-    final prepared = <File>[];
-    for (var index = 0; index < imageFiles.length; index++) {
-      prepared.add(
-        await _prepareVisionPromptImage(
-          imageFiles[index],
-          directory: directory,
-          index: index,
-        ),
-      );
-    }
-    return prepared;
-  }
-
-  Directory _visionPromptImageDirectory(String promptId) => Directory(
-    p.join(
-      _directories.temp.path,
-      'vision_prompt_synthesis',
-      _safeFileName(promptId),
-    ),
-  );
-
-  Future<void> _deleteVisionPromptImageDirectory(Directory directory) async {
-    if (!directory.existsSync()) return;
-    final tempRoot = p.canonicalize(_directories.temp.absolute.path);
-    final target = p.canonicalize(directory.absolute.path);
-    if (!p.isWithin(tempRoot, target)) return;
-    await directory.delete(recursive: true);
-  }
-
-  Future<File> _prepareVisionPromptImage(
-    File file, {
-    required Directory directory,
-    required int index,
-  }) async {
-    if (!file.existsSync()) return file;
-    final length = await file.length();
-    if (length <= _visionPromptImageMaxBytes) return file;
-    final bytes = await file.readAsBytes();
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) return file;
-    var image = decoded;
-    final maxSide = image.width > image.height ? image.width : image.height;
-    if (maxSide > _visionPromptImageMaxDimension) {
-      final scale = _visionPromptImageMaxDimension / maxSide;
-      image = img.copyResize(
-        image,
-        width: (image.width * scale).round().clamp(1, image.width),
-        height: (image.height * scale).round().clamp(1, image.height),
-        interpolation: img.Interpolation.average,
-      );
-    }
-    var quality = 84;
-    var encoded = img.encodeJpg(image, quality: quality);
-    while (encoded.length > _visionPromptImageMaxBytes && quality > 58) {
-      quality -= 8;
-      encoded = img.encodeJpg(image, quality: quality);
-    }
-    await directory.create(recursive: true);
-    final output = File(p.join(directory.path, 'image-${index + 1}.jpg'));
-    await output.writeAsBytes(encoded, flush: true);
-    return output;
-  }
-
-  List<_VisionAssetReference> _visionPromptAssetReferences(
-    String shotId, {
-    required List<ReplicateAsset> fallbackAssets,
-    required Set<String> selectedAssetIds,
-  }) {
-    final linked = _confirmedScriptAssets(shotId);
-    final linkedReferences = [
-      for (final asset in linked)
-        if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
-            asset.path.trim().isNotEmpty &&
-            File(asset.path).existsSync())
-          _VisionAssetReference(
-            type: asset.type,
-            name: asset.name,
-            description: asset.description,
-            path: asset.path,
-          ),
-    ];
-    if (linkedReferences.isNotEmpty) return linkedReferences;
-    return [
-      for (final asset in _readyAssets(fallbackAssets))
-        if ((selectedAssetIds.isEmpty || selectedAssetIds.contains(asset.id)) &&
-            _mediaKindForType(asset.type) == ReplicateMediaKind.image &&
-            asset.path.trim().isNotEmpty &&
-            File(asset.path).existsSync())
-          _VisionAssetReference(
-            type: asset.type,
-            name: asset.name,
-            description: asset.description,
-            path: asset.path,
-          ),
-    ];
-  }
-
-  List<File> _replicatedPromptImageFiles({
-    required ScriptShot shot,
-    required List<ScriptShot> actionSequence,
-  }) {
-    final orderedShots = actionSequence.isEmpty ? [shot] : actionSequence;
-    final files = <File>[];
-    final seen = <String>{};
-    for (final item in orderedShots) {
-      final image = _replicatedImageForShot(item.id);
-      if (image == null || image.status != ProcessingStatus.completed) {
-        continue;
-      }
-      final path = image.generatedFramePath.trim();
-      if (path.isEmpty || !seen.add(path)) continue;
-      final file = File(path);
-      if (file.existsSync()) files.add(file);
-    }
-    return files;
-  }
-
-  static String _visionPromptSynthesisPrompt({
-    required ShotPromptFormat format,
-    required ScriptShot shot,
-    required String draft,
-    required int storyboardImageCount,
-    required List<_VisionAssetReference> assetReferences,
-  }) {
-    final storyboardRole = storyboardImageCount > 1
-        ? '图片1-图片$storyboardImageCount 是复刻分镜图的首帧到尾帧'
-        : '图片1 是本镜头的复刻分镜图';
-    final assetStartIndex = storyboardImageCount + 1;
-    final assetDefinitions = [
-      for (var index = 0; index < assetReferences.length; index++)
-        '图片${assetStartIndex + index} 是${_h3AssetRole(assetReferences[index].type)}：'
-            '${_joinNonEmpty([assetReferences[index].name, assetReferences[index].description])}。',
-    ];
-    final assetRole = assetDefinitions.isEmpty
-        ? '未提供额外绑定资产图；只允许使用复刻分镜图中真实可见且与草稿结构一致的主体/产品。'
-        : '''
- 绑定资产图：
- ${assetDefinitions.join('\n')}
-
- 资产优先级硬规则：
- - 复刻分镜图只负责锁定镜头语言、姿态、动作阶段、空间关系、构图、光影和色彩氛围。
- - 人物身份、脸、发型、体型、服装轮廓、产品外观、材质、比例和使用关系，以绑定资产图为最高事实来源。
- - 若复刻分镜图里存在未绑定的包、首饰、帽子、眼镜、旧衣服、品牌字、Logo 或其他旧道具，且它们没有出现在绑定资产图定义中，必须删除，不得写入最终提示词。
- ''';
-    return '''
-你是视频生成提示词总编。请只基于当前附图和下方目标模型规则，把本地草稿归纳成一条可直接提交的视频生成提示词。
-
-最高优先级视觉依据：
-$storyboardRole。
-$assetRole
-
-目标视频模型：${_promptFormatLabel(format)}
-目标格式模板：
-${_promptFormatTemplate(format, shot)}
-
-本地草稿（只作为素材编号、时长、声音和基础结构参考；其中可能混有原视频帧残留，必须清理）：
-$draft
-
-整理要求：
-1. 严格按目标格式模板输出，不要混入其他模型的章节结构。
-2. 删除草稿里未在绑定资产图出现的具体服装、手提包、首饰、眼镜、帽子、品牌字、Logo、字幕、包装文字和原视频道具描述；不要把复刻分镜图中未绑定的旧穿搭/旧道具写入提示词。
-3. 若草稿存在重复章节、重复段落或多个完整提示词嵌套，只保留一套目标格式。
-4. 保留复刻分镜图中的动作、构图、光影、色彩和空间关系；人物/产品/服装/道具外观以绑定资产图为准。
-5. 保留必要的时长、镜号、音效和无字幕/无Logo/无水印约束。
-6. 只输出最终提示词正文，不要解释、标题、Markdown、JSON 或分析过程。
-''';
-  }
-
   static String _promptFormatLabel(ShotPromptFormat format) => switch (format) {
     ShotPromptFormat.h3 => 'MiniMax H3',
     ShotPromptFormat.kling => '可灵',
     ShotPromptFormat.sd2 => '即梦',
   };
-
-  static String _promptFormatTemplate(
-    ShotPromptFormat format,
-    ScriptShot shot,
-  ) {
-    final shotNumber = shot.shotNumber <= 0 ? 'N' : '${shot.shotNumber}';
-    return switch (format) {
-      ShotPromptFormat.h3 =>
-        '''
-【参考素材说明】
-@图片1 是画面参考图，用于锁定复刻分镜图中的主体外观、产品、场景空间、构图、光影和整体视觉质感。
-
-【核心创意】
-一句话概括视频目标，只写当前复刻分镜图真实可见内容和整体风格。
-
-【画面过程描述】
-0-X秒：按时间描述主体动作、镜头运动、构图变化和产品展示。
-
-【整体要求补充】
-稳定主体外观、产品结构、动作方向、光源方向；不要字幕、不要水印、不要乱码文字、不要无关Logo。
-
-【声音设计】
-与画面动作同步的自然声或指定音效。
-
-非叙事性音乐：N/A 或指定音乐。
-''',
-      ShotPromptFormat.kling =>
-        '''
-以图片1作为首帧和主体外观参考；主体与动作：只描述复刻分镜图中的主体、产品和动作；背景与运动：描述场景空间和运动趋势；镜头语言：景别、机位、运镜和构图；光影氛围：光线、色彩和质感；声音：必要音效；整体风格：广告质感；约束：不要字幕、不要Logo、不要水印、不要重复人物。
-''',
-      ShotPromptFormat.sd2 =>
-        '''
-主体与素材定义：用图片编号定义当前附图和绑定资产。
-
-镜头$shotNumber：景别、运镜、时长、主体动作、产品展示、场景、构图、光影、色彩、声音。
-
-全局风格：广告质感、细节丰富、色彩自然、光影层次清晰。
-
-整体约束：保持主体外观、产品结构与场景连续稳定；保持无字幕，避免生成任何文字或字幕，不要生成 Logo，不要生成水印。
-''',
-    };
-  }
-
-  static String _normalizeVisionPromptResult(String value) {
-    return value
-        .trim()
-        .replaceAll(
-          RegExp(r'<think>[\s\S]*?</think>', caseSensitive: false),
-          '',
-        )
-        .replaceFirst(RegExp(r'^```(?:text|markdown)?\s*', multiLine: true), '')
-        .replaceFirst(RegExp(r'\s*```$', multiLine: true), '')
-        .trim();
-  }
 
   ScriptShot _shotWithoutSourceVisualContent(ScriptShot shot) {
     String clean(String value) =>
@@ -2248,6 +2181,8 @@ $draft
     return shot.copyWith(
       visual: '',
       content: clean(shot.content),
+      shotSize: clean(shot.shotSize),
+      cameraMovement: clean(shot.cameraMovement),
       scene: clean(shot.scene),
       cameraNotes: clean(shot.cameraNotes),
       composition: clean(shot.composition),
@@ -2257,6 +2192,9 @@ $draft
         shot.colorPalette,
       ),
       visualFocus: clean(shot.visualFocus),
+      transitionHint: clean(shot.transitionHint),
+      movementTrend: clean(shot.movementTrend),
+      actionStage: clean(shot.actionStage),
       productCode: '',
       productStyling: '',
       sound: clean(shot.sound),
@@ -2322,15 +2260,7 @@ $draft
       updatedAt: DateTime.now().toUtc(),
     );
     _repository.upsertRun(updated);
-    if (value.prompts.isNotEmpty) {
-      _repository.deletePrompts(run.id);
-    }
-    value = value.copyWith(
-      run: updated,
-      prompts: const [],
-      message: message,
-      errorMessage: '',
-    );
+    value = value.copyWith(run: updated, message: message, errorMessage: '');
   }
 
   StartEndFramePair? _pairContainingShot(String shotId) {
@@ -2582,14 +2512,14 @@ $draft
     }
     return [
       '任务类型：基于参考重新创作一张清晰、可拍摄的全新分镜图，不是图片修复或高清重绘。',
-      '图片1是原视频镜头 ${shot.shotNumber} 的结构蓝图，只用于分析镜头语言、画幅、机位、构图、透视、光影、色彩氛围和空间方向；禁止从图片1复用人物身份、服装款式、产品款式、道具外观、品牌包装或具体画面描述。',
+      '图片1是原视频镜头 ${shot.shotNumber} 的唯一视觉母版：其镜头语言、画幅、机位、构图、透视、光影、色彩氛围和空间方向必须逐项沿用；禁止从图片1复用人物身份、服装款式、产品款式、道具外观、品牌包装或具体画面描述。',
       ...definitions,
       ...assetRequirements,
       '绑定资产硬约束：图片2起的每一张图片都是当前镜头明确绑定的指定素材，必须按其人物、产品、场景或道具角色使用；禁止遗漏任一绑定素材，也禁止以图片1中的同类人物、产品、场景或道具替代。',
       '从零开始生成新的高质量画面：重新渲染全部人物、服装、产品、背景、光影和细节。输出必须清晰锐利、细节完整、主体边缘干净、没有压缩噪点、运动模糊或低清纹理。',
       '严格复现图片1的画幅、景别、机位、构图、透视、主体数量、空间方向、视线方向、遮挡关系、光源方向、色温、景深和镜头承接。若同时提供人物、产品和场景参考，必须让该人物在该场景中穿着或使用该产品；人物服装、产品外观和道具样式始终以图片2起绑定资产为准。',
       '屏幕方向硬约束：以查看图片1时的画面左/右为唯一坐标系，不是人物自身左右，也不随图片2起素材的朝向变化。必须保持主体在画面内的左右位置、脸部/身体/视线朝向、身体倾斜、肢体动作、道具朝向及相对位置；严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图。若任何素材描述与此冲突，始终以图片1为准。',
-      '色彩硬约束：以图片1的色彩风格、色温、明暗关系、对比度、光影层次和电影调色为唯一基准；新人物、产品、场景和道具必须融入该原帧色彩风格，任何通用风格描述都不得覆盖这一要求。',
+      '色彩锁定硬约束：以图片1可见的色彩风格、色温、明暗关系、对比度、阴影、高光、光影层次和电影调色为唯一基准，必须保持一致；新人物、产品、场景和道具只替换视觉实体，必须被统一调入图片1原帧色彩。严禁根据图片2起的资产图、资产文字、镜头色彩字段、视觉分析文字、通用风格词或用户补充说明重新配色、换色、增强饱和度、改变冷暖调、改变曝光或生成另一套调色。',
       '绝对不要：超分辨率、锐化、去噪、修复、放大、以图生图描摹、保留原帧像素、复制原帧的模糊或瑕疵。',
       _textAndLogoExclusionConstraint,
       ..._shotStructureInstructions(shot),
@@ -2604,7 +2534,6 @@ $draft
     _visionInstruction('机位', shot.cameraAngle),
     _visionInstruction('运镜', shot.cameraMovement),
     _visionInstruction('光影与氛围', shot.lightingMood),
-    _visionInstruction('色彩风格', shot.colorPalette),
     _visionInstruction('剪辑衔接', shot.transitionHint),
     _visionInstruction('摄影备注', shot.cameraNotes),
   ].where((instruction) => instruction.isNotEmpty).toList(growable: false);
@@ -2632,10 +2561,7 @@ $draft
       '动作阶段与运动趋势',
       _joinVisionValues([analysis.actionStage, analysis.movementTrend]),
     ),
-    _visionInstruction(
-      '光影与色彩',
-      _joinVisionValues([analysis.lightingMood, analysis.colorPalette]),
-    ),
+    _visionInstruction('光影（色彩以图片1实际画面为准）', analysis.lightingMood),
     _visionInstruction(
       '叙事时刻与镜头承接',
       _joinVisionValues([
@@ -2852,24 +2778,150 @@ $draft
     );
   }
 
-  static bool _promptsAreStale({
+  ScriptShot _structuredPromptShot(ScriptShot shot) {
+    final analysis = _workflowRepository?.getAnalysis(shot.id);
+    if (!_isUsablePromptContext(analysis)) {
+      return _shotWithoutSourceVisualContent(shot);
+    }
+    final structured = const StructuredPromptShotAdapter().apply(
+      shot,
+      analysis!.promptContext,
+    );
+    return _shotWithoutSourceVisualContent(structured);
+  }
+
+  bool _hasUsablePromptContext(String shotId) =>
+      _isUsablePromptContext(_workflowRepository?.getAnalysis(shotId));
+
+  static bool _isUsablePromptContext(ScriptShotAnalysisRecord? analysis) =>
+      analysis != null &&
+      analysis.status == ProcessingStatus.completed &&
+      analysis.promptContextSchemaVersion ==
+          ScriptShotPromptContext.currentSchemaVersion &&
+      !analysis.promptContext.isEmpty;
+
+  String _promptInputFingerprint({
+    required ReplicateRun run,
+    required ScriptShot shot,
+    required List<ReplicateAsset> assets,
+    required List<ScriptShot> actionSequence,
+    required ScriptShot? previousShot,
+    required ScriptShot? nextShot,
+    required ShotPromptFormat selectedFormat,
+  }) {
+    final relatedShots = <ScriptShot>[
+      shot,
+      ...actionSequence,
+      ?previousShot,
+      ?nextShot,
+    ];
+    return jsonEncode({
+      'promptRulesVersion': _promptRulesVersion,
+      'format': selectedFormat.name,
+      'h3PromptStyleId': selectedFormat == ShotPromptFormat.h3
+          ? selectedH3PromptStyle.id
+          : H3PromptStyle.generalId,
+      'globalStyle': run.globalStyle,
+      'constraints': run.constraints,
+      'shot': _shotFingerprint(shot),
+      'actionSequence': actionSequence.map(_shotFingerprint).toList(),
+      'previousShot': previousShot == null
+          ? ''
+          : _shotFingerprint(previousShot),
+      'nextShot': nextShot == null ? '' : _shotFingerprint(nextShot),
+      'promptContexts': {
+        for (final item in relatedShots)
+          item.id: _promptContextFingerprint(item.id),
+      },
+      'assets': _promptAssetFingerprint(
+        actionSequence.isEmpty
+            ? [shot.id]
+            : actionSequence.map((item) => item.id),
+        assets,
+      ),
+    });
+  }
+
+  String _promptContextFingerprint(String shotId) {
+    final analysis = _workflowRepository?.getAnalysis(shotId);
+    if (analysis == null || analysis.status != ProcessingStatus.completed) {
+      return '';
+    }
+    return jsonEncode({
+      'context': analysis.promptContext.toJson(),
+      'schemaVersion': analysis.promptContextSchemaVersion,
+      'sourceImageFingerprint': analysis.sourceImageFingerprint,
+      'analysisRuleVersion': analysis.analysisRuleVersion,
+    });
+  }
+
+  String _promptAssetFingerprint(
+    Iterable<String> shotIds,
+    List<ReplicateAsset> fallbackAssets,
+  ) {
+    final linked = [..._confirmedScriptAssetsForShotIds(shotIds)]
+      ..sort((first, second) => first.id.compareTo(second.id));
+    if (linked.isNotEmpty) {
+      return jsonEncode([
+        for (final asset in linked)
+          {
+            'id': asset.id,
+            'type': asset.type.name,
+            'name': asset.name,
+            'description': asset.description,
+            'path': asset.path,
+            'referenceNumber': asset.referenceNumber,
+            'status': asset.status.name,
+          },
+      ]);
+    }
+    final ready = _readyAssets(fallbackAssets)
+      ..sort((first, second) => first.id.compareTo(second.id));
+    return jsonEncode([
+      for (final asset in ready)
+        {
+          'id': asset.id,
+          'type': asset.type.name,
+          'name': asset.name,
+          'description': asset.description,
+          'path': asset.path,
+          'referenceNumber': asset.referenceNumber,
+          'status': asset.status.name,
+        },
+    ]);
+  }
+
+  bool _promptsAreStale({
+    required ReplicateRun run,
     required List<ShotPrompt> prompts,
     required List<ScriptShot> shots,
     required List<String> confirmedShotIds,
     required List<ReplicateAsset> assets,
     Map<String, Set<String>> workflowAssetIdsByShot = const {},
   }) {
-    if (prompts.length != confirmedShotIds.length) {
-      return true;
-    }
     final shotById = {for (final shot in shots) shot.id: shot};
     final readyAssetIds = {for (final asset in _readyAssets(assets)) asset.id};
+    final sequences = startEndSequencesFor(shots);
+    final promptShots = sequences
+        .map((sequence) => sequence.head)
+        .where((shot) => confirmedShotIds.contains(shot.id))
+        .toList(growable: false);
+    if (prompts.length != promptShots.length) {
+      return true;
+    }
+    final promptShotIds = promptShots.map((shot) => shot.id).toSet();
     for (final prompt in prompts) {
       final shot = shotById[prompt.scriptShotId];
-      if (shot == null || !confirmedShotIds.contains(shot.id)) {
+      if (shot == null || !promptShotIds.contains(shot.id)) {
         return true;
       }
-      final expectedAssetIds = workflowAssetIdsByShot[shot.id] ?? readyAssetIds;
+      final actionSequence = _actionSequenceForPrompt(shot, sequences);
+      final linkedAssetIds = {
+        for (final item in actionSequence) ...?workflowAssetIdsByShot[item.id],
+      };
+      final expectedAssetIds = linkedAssetIds.isEmpty
+          ? readyAssetIds
+          : linkedAssetIds;
       if (prompt.shotNumber != shot.shotNumber ||
           prompt.assetIds.toSet().difference(expectedAssetIds).isNotEmpty ||
           expectedAssetIds.difference(prompt.assetIds.toSet()).isNotEmpty) {
@@ -2877,9 +2929,22 @@ $draft
       }
       try {
         final raw = jsonDecode(prompt.rawResponse);
+        final index = promptShots.indexWhere((item) => item.id == shot.id);
+        final expectedInputFingerprint = _promptInputFingerprint(
+          run: run,
+          shot: shot,
+          assets: assets,
+          actionSequence: actionSequence,
+          previousShot: index > 0 ? promptShots[index - 1] : null,
+          nextShot: index + 1 < promptShots.length
+              ? promptShots[index + 1]
+              : null,
+          selectedFormat: _composePromptModelRule.format,
+        );
         if (raw is! Map ||
             raw['promptRulesVersion'] != _promptRulesVersion ||
-            raw['shotFingerprint'] != _shotFingerprint(shot)) {
+            raw['shotFingerprint'] != _shotFingerprint(shot) ||
+            raw['promptInputFingerprint'] != expectedInputFingerprint) {
           return true;
         }
       } catch (_) {
@@ -2902,9 +2967,14 @@ $draft
     'colorPalette': shot.colorPalette,
     'visualFocus': shot.visualFocus,
     'transitionHint': shot.transitionHint,
+    'movementTrend': shot.movementTrend,
+    'actionStage': shot.actionStage,
+    'continuesFromPrevious': shot.continuesFromPrevious,
+    'continuesToNext': shot.continuesToNext,
     'scene': shot.scene,
     'dialogue': shot.dialogue,
     'sound': shot.sound,
+    'replicationInstructions': shot.replicationInstructions,
   });
 
   static ReplicateMediaKind _mediaKindForType(ReplicateAssetType type) {
@@ -2937,6 +3007,21 @@ $draft
       for (final link in repository.listLinksForShot(shotId))
         if (link.confirmed) ..._assetIfPresent(assetsById[link.scriptAssetId]),
     ];
+  }
+
+  List<ScriptAsset> _confirmedScriptAssetsForShots(
+    Iterable<ScriptShot> shots,
+  ) => _confirmedScriptAssetsForShotIds(shots.map((shot) => shot.id));
+
+  List<ScriptAsset> _confirmedScriptAssetsForShotIds(Iterable<String> shotIds) {
+    final assets = <ScriptAsset>[];
+    final usedIds = <String>{};
+    for (final shotId in shotIds) {
+      for (final asset in _confirmedScriptAssets(shotId)) {
+        if (usedIds.add(asset.id)) assets.add(asset);
+      }
+    }
+    return assets;
   }
 
   static Iterable<ScriptAsset> _assetIfPresent(ScriptAsset? asset) {
@@ -3026,9 +3111,10 @@ $draft
       };
 
   static List<String> _h3ReferenceDefinitionsFromReplicateAssets(
-    List<ReplicateAsset> assets,
-  ) {
-    var imageNumber = 2;
+    List<ReplicateAsset> assets, {
+    int startImageNumber = 2,
+  }) {
+    var imageNumber = startImageNumber;
     final result = <String>[];
     for (final asset in assets) {
       if (asset.path.trim().isEmpty) continue;
@@ -3041,9 +3127,10 @@ $draft
   }
 
   static List<String> _h3ReferenceDefinitionsFromScriptAssets(
-    List<ScriptAsset> assets,
-  ) {
-    var imageNumber = 2;
+    List<ScriptAsset> assets, {
+    int startImageNumber = 2,
+  }) {
+    var imageNumber = startImageNumber;
     final result = <String>[];
     for (final asset in assets) {
       if (asset.path.trim().isEmpty) continue;
@@ -3148,20 +3235,6 @@ class _ReplacementReference {
   });
 
   final String id;
-  final ReplicateAssetType type;
-  final String name;
-  final String description;
-  final String path;
-}
-
-class _VisionAssetReference {
-  const _VisionAssetReference({
-    required this.type,
-    required this.name,
-    required this.description,
-    required this.path,
-  });
-
   final ReplicateAssetType type;
   final String name;
   final String description;

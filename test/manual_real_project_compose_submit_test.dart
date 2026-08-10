@@ -212,7 +212,7 @@ void main() {
           ])}',
         );
         print(
-          'REAL_SUBMIT_VISION_SYNTHESIS=${jsonEncode(raw['visionPromptSynthesis'])}',
+          'REAL_SUBMIT_PROMPT_ASSEMBLY=${jsonEncode({'source': raw['promptSource'], 'mode': raw['assemblyMode'], 'analysisStage': raw['analysisStage'], 'visionModelCalls': raw['visionModelCalls']})}',
         );
         print('REAL_SUBMIT_PROMPT_BEGIN');
         print(promptText);

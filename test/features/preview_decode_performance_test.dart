@@ -87,6 +87,7 @@ void main() {
       ProviderScope(
         overrides: [
           appDatabaseProvider.overrideWithValue(fixture.database),
+          projectDirectoriesProvider.overrideWithValue(fixture.directories),
           settingsControllerProvider.overrideWithValue(
             fixture.settingsController,
           ),
@@ -157,6 +158,7 @@ void main() {
       ProviderScope(
         overrides: [
           appDatabaseProvider.overrideWithValue(fixture.database),
+          projectDirectoriesProvider.overrideWithValue(fixture.directories),
           settingsControllerProvider.overrideWithValue(
             fixture.settingsController,
           ),
@@ -239,6 +241,7 @@ void main() {
       ProviderScope(
         overrides: [
           appDatabaseProvider.overrideWithValue(fixture.database),
+          projectDirectoriesProvider.overrideWithValue(fixture.directories),
           settingsControllerProvider.overrideWithValue(
             fixture.settingsController,
           ),

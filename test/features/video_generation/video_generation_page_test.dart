@@ -35,10 +35,56 @@ void main() {
     expect(source, contains('缩略图加载失败'));
     expect(source, contains('本地视频不可用'));
     expect(source, contains("VideoGenerationTaskStatus.running => '视频生成中'"));
-    expect(source, contains("? '首帧图'"));
-    expect(source, contains(": '复刻分镜图'"));
+    expect(
+      source,
+      contains("import '../../shooting_script/domain/script_shot_group.dart';"),
+    );
+    expect(
+      source,
+      contains('final groups = ScriptShotGroup.group(state.shots)'),
+    );
+    expect(source, contains("const _HeaderCell('原视频帧')"));
+    expect(source, contains("const _HeaderCell('复刻分镜图')"));
+    expect(source, contains("const _HeaderCell('时长')"));
+    expect(source, contains("'video-generation-five-column-table'"));
+    expect(source, contains('class _GenerationDurationCell'));
+    expect(source, contains('controller.updateDesiredDurationFor'));
+    expect(source, contains('生成提示词中的秒数会同步更新'));
+    expect(source, contains('class _VideoGroupFrameStrip'));
+    expect(
+      source,
+      contains(
+        "'video-generation-\$keyPrefix-range-\${group.startNumber}-\${group.endNumber}'",
+      ),
+    );
+    expect(source, contains('fileForShot: controller.videoFrameFileForShot'));
+    expect(
+      source,
+      contains('endShot: group.shots.length > 1 ? group.shots.last : null'),
+    );
+    expect(source, contains('start: widget.range.inPoint'));
+    expect(source, contains('end: widget.range.outPoint'));
+    expect(
+      source,
+      isNot(contains('Media(widget.range.sourceVideo.path), play: false')),
+    );
+    expect(
+      source,
+      contains('fileForShot: controller.replicatedImageFileForShot'),
+    );
+    expect(source, contains('Future<void> _showScriptShotGroupImageGallery'));
+    expect(source, contains('required String initialShotId'));
+    expect(source, contains('final ValueChanged<ScriptShot> onOpen'));
+    expect(source, contains('onTap: hasFile ? onTap : null'));
+    expect(
+      source,
+      contains('items.indexWhere((item) => item.shotId == initialShotId)'),
+    );
+    expect(
+      source,
+      contains('initialIndex: initialIndex < 0 ? 0 : initialIndex'),
+    );
     expect(source, contains('来源：复刻分镜图'));
-    expect(source, contains('来源：视频帧图'));
     expect(source, contains("value: 'continue_query'"));
     expect(source, contains("Text('继续查询')"));
     expect(source, contains('controller.resumeTaskQuery(latest)'));
@@ -51,6 +97,12 @@ void main() {
     expect(
       source,
       contains('tasks.where(_shouldKeepVideoTaskInCell).firstOrNull'),
+    );
+    expect(source, contains("key: const ValueKey('export-timeline-xml')"));
+    expect(source, contains("label: const Text('导出时间线')"));
+    expect(
+      source.indexOf("key: const ValueKey('generate-all-videos')"),
+      lessThan(source.indexOf("key: const ValueKey('export-timeline-xml')")),
     );
     expect(source, contains('bool _shouldKeepVideoTaskInCell'));
     final keepHelperStart = source.indexOf('bool _shouldKeepVideoTaskInCell');
@@ -76,7 +128,7 @@ void main() {
     expect(progressBranch, lessThan(completedBranch));
   });
 
-  test('生成视频右侧作品管理面板按脚本镜头顺序复用本地播放器', () {
+  test('生成视频右侧作品管理面板按脚本镜头折叠归纳版本', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
     ).readAsStringSync();
@@ -97,17 +149,36 @@ void main() {
     expect(source, contains("'作品管理'"));
     expect(
       source,
-      contains("List<_WorkVideoTaskEntry> _orderedWorkVideoTaskEntries"),
+      contains("List<_WorkVideoShotGroup> _orderedWorkVideoShotGroups"),
     );
+    expect(source, contains("class _WorkVideoShotGroup"));
+    expect(source, contains("class _WorkManagementShotGroupTile"));
+    expect(source, contains("ExpansionTile("));
+    expect(source, contains("_shouldExpandWorkGroup(group, controller)"));
     expect(source, contains("for (final shot in state.shots)"));
     expect(source, contains("task.shotId == shot.id"));
     expect(source, contains("task.scriptId == selectedScriptId"));
-    expect(source, contains("class _WorkManagementVideoItem"));
     expect(
       source,
       contains(
-        "key: ValueKey(\n                        'work-management-generated-video-player-\${task.id}',",
+        'final entries = group.entries.reversed.toList(growable: false)',
       ),
+    );
+    expect(source, contains('entry: entries[index]'));
+    expect(source, contains("'work-management-generated-shot-group-list'"));
+    expect(source, contains("'work-management-shot-group-\${group.shot.id}'"));
+    expect(
+      source,
+      contains("'work-management-shot-group-version-list-\${group.shot.id}'"),
+    );
+    expect(
+      source,
+      contains("Divider(\n                            height: 17"),
+    );
+    expect(source, contains("class _WorkManagementVideoItem"));
+    expect(
+      source,
+      contains("'work-management-generated-video-player-\${task.id}'"),
     );
     expect(source, contains("file: file"));
     expect(source, contains("_showFullscreenGeneratedVideo("));
@@ -122,5 +193,53 @@ void main() {
     expect(itemSource, contains("_InlineGeneratedVideoPlayer("));
     expect(itemSource, isNot(contains('onGenerate')));
     expect(itemSource, isNot(contains('generateShot')));
+    expect(itemSource, contains('onSecondaryTapDown:'));
+    expect(itemSource, contains("title: Text('打开路径')"));
+    expect(itemSource, contains("title: Text('另存为')"));
+    expect(itemSource, contains("title: Text('删除')"));
+    expect(itemSource, contains('controller.revealGeneratedVideo(task)'));
+    expect(itemSource, contains('controller.saveGeneratedVideoCopy('));
+    expect(itemSource, contains('controller.deleteTask(task)'));
+    expect(itemSource, contains('删除该作品？'));
+  });
+
+  test('合成提示词页按镜头组显示多帧画面', () {
+    final source = File(
+      'lib/features/replicate/presentation/replicate_page.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('final groups = ScriptShotGroup.group(shots)'));
+    expect(source, contains("_ComposeTableHeaderCell('原视频帧')"));
+    expect(source, contains("_ComposeTableHeaderCell('复刻分镜图')"));
+    expect(source, contains('class _ComposeGroupFrameCell'));
+    expect(source, contains('class _ComposeGroupFrameThumbnail'));
+    expect(
+      source,
+      contains(
+        "'compose-prompt-\$keyPrefix-range-\${group.startNumber}-\${group.endNumber}'",
+      ),
+    );
+    expect(source, contains('prompt: prompts[group.shots.first.id]'));
+    expect(source, isNot(contains('controller.tailShotForDisplay(shot)')));
+  });
+
+  test('视频提示词输入框保持控制器，连续键入不会因草稿更新时间重建', () {
+    final source = File(
+      'lib/features/video_generation/presentation/video_generation_page.dart',
+    ).readAsStringSync();
+
+    final promptCellStart = source.indexOf('class _PromptCell extends');
+    final cellEnd = source.indexOf('class _Cell extends', promptCellStart);
+    final promptCell = source.substring(promptCellStart, cellEnd);
+    expect(promptCell, contains('class _PromptCell extends StatefulWidget'));
+    expect(
+      promptCell,
+      contains('late final TextEditingController _textController'),
+    );
+    expect(promptCell, contains('void didUpdateWidget'));
+    expect(promptCell, contains("ValueKey('video-prompt-\${widget.shot.id}')"));
+    expect(promptCell, contains('controller: _textController'));
+    expect(promptCell, isNot(contains('updatedAt.microsecondsSinceEpoch')));
+    expect(promptCell, isNot(contains('initialValue:')));
   });
 }

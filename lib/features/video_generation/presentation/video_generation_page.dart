@@ -10,6 +10,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
+import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../application/video_generation_controller.dart';
 import '../data/kling_cli_models.dart';
@@ -32,10 +33,12 @@ class VideoGenerationWorkspace extends ConsumerStatefulWidget {
     super.key,
     this.scriptId,
     this.showScriptSelector = false,
+    this.externalizeWorkPanel = false,
   });
 
   final String? scriptId;
   final bool showScriptSelector;
+  final bool externalizeWorkPanel;
 
   @override
   ConsumerState<VideoGenerationWorkspace> createState() =>
@@ -120,6 +123,9 @@ class _VideoGenerationWorkspaceState
                     onGenerateShot: (shot) =>
                         _confirmShot(context, state, controller, shot),
                   );
+                  if (widget.externalizeWorkPanel) {
+                    return table;
+                  }
                   final panel = _WorkManagementPanel(
                     state: state,
                     controller: controller,
@@ -778,10 +784,70 @@ class _Toolbar extends StatelessWidget {
               icon: const Icon(Icons.movie_creation_outlined),
               label: const Text('一键生成全部'),
             ),
+            OutlinedButton.icon(
+              key: const ValueKey('export-timeline-xml'),
+              onPressed: state.isBusy || !controller.canExportTimelineXml
+                  ? null
+                  : controller.exportTimelineXml,
+              icon: const Icon(Icons.account_tree_outlined),
+              label: const Text('导出时间线'),
+            ),
           ],
         ),
       ),
     );
+  }
+}
+
+class VideoGenerationExternalWorkPanel extends ConsumerStatefulWidget {
+  const VideoGenerationExternalWorkPanel({
+    super.key,
+    this.scriptId,
+    required this.collapsed,
+    required this.onToggleCollapsed,
+  });
+
+  final String? scriptId;
+  final bool collapsed;
+  final VoidCallback onToggleCollapsed;
+
+  @override
+  ConsumerState<VideoGenerationExternalWorkPanel> createState() =>
+      _VideoGenerationExternalWorkPanelState();
+}
+
+class _VideoGenerationExternalWorkPanelState
+    extends ConsumerState<VideoGenerationExternalWorkPanel> {
+  @override
+  Widget build(BuildContext context) {
+    final controller = ref.watch(videoGenerationControllerProvider);
+    _syncRequestedScript(controller);
+    return ValueListenableBuilder<VideoGenerationState>(
+      valueListenable: controller,
+      builder: (context, state, _) {
+        if (state.scripts.isEmpty) {
+          return const Center(child: Text('还没有可生成视频的拍摄脚本'));
+        }
+        return _WorkManagementPanel(
+          state: state,
+          controller: controller,
+          collapsed: widget.collapsed,
+          onToggleCollapsed: widget.onToggleCollapsed,
+        );
+      },
+    );
+  }
+
+  void _syncRequestedScript(VideoGenerationController controller) {
+    final scriptId = widget.scriptId;
+    if (scriptId == null ||
+        scriptId.isEmpty ||
+        controller.value.selectedScriptId == scriptId) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) controller.selectScript(scriptId);
+    });
   }
 }
 
@@ -837,7 +903,11 @@ class _WorkManagementPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = _orderedWorkVideoTaskEntries(state);
+    final groups = _orderedWorkVideoShotGroups(state);
+    final workCount = groups.fold<int>(
+      0,
+      (total, group) => total + group.entries.length,
+    );
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     return DecoratedBox(
@@ -890,7 +960,7 @@ class _WorkManagementPanel extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        '${entries.length} 个作品',
+                        '$workCount 个作品',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: colorScheme.onSurfaceVariant,
                         ),
@@ -910,23 +980,28 @@ class _WorkManagementPanel extends StatelessWidget {
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: entries.isEmpty
+                  child: groups.isEmpty
                       ? const Center(child: Text('该脚本暂无生成作品'))
                       : ListView.separated(
                           key: const ValueKey(
-                            'work-management-generated-video-list',
+                            'work-management-generated-shot-group-list',
                           ),
                           padding: const EdgeInsets.all(12),
-                          itemCount: entries.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(height: 12),
+                          itemCount: groups.length,
+                          separatorBuilder: (context, _) => Divider(
+                            height: 17,
+                            thickness: 1,
+                            color: colorScheme.outlineVariant.withValues(
+                              alpha: 0.72,
+                            ),
+                          ),
                           itemBuilder: (context, index) {
-                            final entry = entries[index];
-                            return _WorkManagementVideoItem(
+                            final group = groups[index];
+                            return _WorkManagementShotGroupTile(
                               key: ValueKey(
-                                'work-management-video-task-${entry.task.id}',
+                                'work-management-shot-group-${group.shot.id}',
                               ),
-                              entry: entry,
+                              group: group,
                               controller: controller,
                             );
                           },
@@ -934,6 +1009,72 @@ class _WorkManagementPanel extends StatelessWidget {
                 ),
               ],
             ),
+    );
+  }
+}
+
+class _WorkManagementShotGroupTile extends StatelessWidget {
+  const _WorkManagementShotGroupTile({
+    super.key,
+    required this.group,
+    required this.controller,
+  });
+
+  final _WorkVideoShotGroup group;
+  final VideoGenerationController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final latest = group.entries.last;
+    final entries = group.entries.reversed.toList(growable: false);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: ExpansionTile(
+        key: PageStorageKey('work-management-shot-group-tile-${group.shot.id}'),
+        initiallyExpanded: _shouldExpandWorkGroup(group, controller),
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+        childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+        title: Text(
+          '镜头 ${group.shot.shotNumber}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        subtitle: Text(
+          '${group.entries.length} 个版本 · 最新：${latest.task.status.name}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+        children: [
+          Column(
+            key: ValueKey(
+              'work-management-shot-group-version-list-${group.shot.id}',
+            ),
+            children: [
+              for (var index = 0; index < entries.length; index += 1) ...[
+                _WorkManagementVideoItem(
+                  key: ValueKey(
+                    'work-management-video-task-${entries[index].task.id}',
+                  ),
+                  entry: entries[index],
+                  controller: controller,
+                ),
+                if (index + 1 < entries.length) const SizedBox(height: 8),
+              ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -957,75 +1098,189 @@ class _WorkManagementVideoItem extends StatelessWidget {
     final isActive = _isActiveVideoTask(task);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    return Material(
-      color: colorScheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '镜头 ${shot.shotNumber} · 版本 ${entry.version}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+    return GestureDetector(
+      key: ValueKey('work-management-video-context-menu-${task.id}'),
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (details) =>
+          _showContextMenu(context, details, task: task, file: file),
+      child: Material(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '镜头 ${shot.shotNumber} · 版本 ${entry.version}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
-                ),
-                Text(
-                  task.status.name,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 150,
-              child: hasLocalVideo
-                  ? _InlineGeneratedVideoPlayer(
-                      key: ValueKey(
-                        'work-management-generated-video-player-${task.id}',
-                      ),
-                      file: file,
-                      onFullscreen: () => _showFullscreenGeneratedVideo(
-                        context,
-                        file,
-                        title: '镜头 ${shot.shotNumber} · 作品版本 ${entry.version}',
-                      ),
-                    )
-                  : _GeneratedVideoPlaceholder(
-                      icon: isActive
-                          ? Icons.hourglass_top_rounded
-                          : Icons.videocam_off_rounded,
-                      message: isActive
-                          ? _activeVideoTaskLabel(task.status)
-                          : _missingWorkVideoMessage(task),
+                  Text(
+                    task.status.name,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
                     ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '${task.model} · ${task.durationSeconds}s · '
-              '${task.createdAt.toLocal()}',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
+                  ),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 150,
+                child: hasLocalVideo
+                    ? _InlineGeneratedVideoPlayer(
+                        key: ValueKey(
+                          'work-management-generated-video-player-${task.id}',
+                        ),
+                        file: file,
+                        onFullscreen: () => _showFullscreenGeneratedVideo(
+                          context,
+                          file,
+                          title:
+                              '镜头 ${shot.shotNumber} · 作品版本 ${entry.version}',
+                        ),
+                      )
+                    : _GeneratedVideoPlaceholder(
+                        icon: isActive
+                            ? Icons.hourglass_top_rounded
+                            : Icons.videocam_off_rounded,
+                        message: isActive
+                            ? _activeVideoTaskLabel(task.status)
+                            : _missingWorkVideoMessage(task),
+                      ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${task.model} · ${task.durationSeconds}s · '
+                '${task.createdAt.toLocal()}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+
+  Future<void> _showContextMenu(
+    BuildContext context,
+    TapDownDetails details, {
+    required VideoGenerationTask task,
+    required File file,
+  }) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(details.globalPosition, details.globalPosition),
+      Offset.zero & overlay.size,
+    );
+    final action = await showMenu<_WorkVideoMenuAction>(
+      context: context,
+      position: position,
+      items: [
+        PopupMenuItem(
+          value: _WorkVideoMenuAction.openPath,
+          enabled: file.existsSync(),
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.folder_open_rounded),
+            title: Text('打开路径'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _WorkVideoMenuAction.saveAs,
+          enabled: file.existsSync(),
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.save_as_rounded),
+            title: Text('另存为'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: _WorkVideoMenuAction.delete,
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.delete_outline_rounded),
+            title: Text('删除'),
+          ),
+        ),
+      ],
+    );
+    if (action == null || !context.mounted) return;
+    switch (action) {
+      case _WorkVideoMenuAction.openPath:
+        await controller.revealGeneratedVideo(task);
+      case _WorkVideoMenuAction.saveAs:
+        await _saveAs(context, task, file);
+      case _WorkVideoMenuAction.delete:
+        await _confirmDelete(context, task);
+    }
+  }
+
+  Future<void> _saveAs(
+    BuildContext context,
+    VideoGenerationTask task,
+    File source,
+  ) async {
+    final location = await getSaveLocation(
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'MP4 视频', extensions: ['mp4']),
+      ],
+      initialDirectory: source.parent.path,
+      suggestedName: source.uri.pathSegments.isEmpty
+          ? '生成视频.mp4'
+          : source.uri.pathSegments.last,
+      confirmButtonText: '保存',
+      canCreateDirectories: true,
+    );
+    if (location == null) return;
+    final saved = await controller.saveGeneratedVideoCopy(task, location.path);
+    if (saved != null && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('视频已保存到：${saved.path}')));
+    }
+  }
+
+  Future<void> _confirmDelete(
+    BuildContext context,
+    VideoGenerationTask task,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除该作品？'),
+        content: const Text('本地视频和对应任务记录会一并删除，此操作不可恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await controller.deleteTask(task);
+  }
 }
+
+enum _WorkVideoMenuAction { openPath, saveAs, delete }
 
 class _WorkVideoTaskEntry {
   const _WorkVideoTaskEntry({
@@ -1039,11 +1294,18 @@ class _WorkVideoTaskEntry {
   final int version;
 }
 
-List<_WorkVideoTaskEntry> _orderedWorkVideoTaskEntries(
+class _WorkVideoShotGroup {
+  const _WorkVideoShotGroup({required this.shot, required this.entries});
+
+  final ScriptShot shot;
+  final List<_WorkVideoTaskEntry> entries;
+}
+
+List<_WorkVideoShotGroup> _orderedWorkVideoShotGroups(
   VideoGenerationState state,
 ) {
   final selectedScriptId = state.selectedScriptId;
-  final entries = <_WorkVideoTaskEntry>[];
+  final groups = <_WorkVideoShotGroup>[];
   for (final shot in state.shots) {
     final tasks =
         state.tasks
@@ -1060,13 +1322,25 @@ List<_WorkVideoTaskEntry> _orderedWorkVideoTaskEntries(
                 ? byCreatedAt
                 : first.id.compareTo(second.id);
           });
+    if (tasks.isEmpty) continue;
+    final entries = <_WorkVideoTaskEntry>[];
     for (var index = 0; index < tasks.length; index += 1) {
       entries.add(
         _WorkVideoTaskEntry(shot: shot, task: tasks[index], version: index + 1),
       );
     }
+    groups.add(_WorkVideoShotGroup(shot: shot, entries: entries));
   }
-  return entries;
+  return groups;
+}
+
+bool _shouldExpandWorkGroup(
+  _WorkVideoShotGroup group,
+  VideoGenerationController controller,
+) {
+  final latest = group.entries.last.task;
+  if (_isActiveVideoTask(latest)) return true;
+  return controller.generatedVideoFileFor(latest).existsSync();
 }
 
 String _missingWorkVideoMessage(VideoGenerationTask task) {
@@ -1087,50 +1361,54 @@ class _GenerationTable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sourceImageHeader = controller.startEndFrameModeEnabled
-        ? '首帧图'
-        : '复刻分镜图';
+    final groups = ScriptShotGroup.group(state.shots);
     return Scrollbar(
       child: SingleChildScrollView(
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 1480,
+            width: 1670,
             child: Table(
-              key: const ValueKey('video-generation-four-column-table'),
+              key: const ValueKey('video-generation-five-column-table'),
               border: TableBorder.all(
                 color: Theme.of(context).colorScheme.outlineVariant,
               ),
               columnWidths: const {
-                0: FixedColumnWidth(260),
+                0: FixedColumnWidth(320),
                 1: FixedColumnWidth(320),
-                2: FixedColumnWidth(380),
-                3: FlexColumnWidth(),
+                2: FixedColumnWidth(110),
+                3: FixedColumnWidth(380),
+                4: FlexColumnWidth(),
               },
               defaultVerticalAlignment: TableCellVerticalAlignment.top,
               children: [
                 TableRow(
                   children: [
-                    const _HeaderCell('原视频'),
-                    _HeaderCell(sourceImageHeader),
+                    const _HeaderCell('原视频帧'),
+                    const _HeaderCell('复刻分镜图'),
+                    const _HeaderCell('时长'),
                     const _HeaderCell('生成视频'),
                     const _HeaderCell('生成提示词'),
                   ],
                 ),
-                for (final shot in state.shots)
+                for (final group in groups)
                   TableRow(
                     children: [
-                      _OriginalVideoCell(shot: shot, controller: controller),
-                      _SourceImageCell(shot: shot, controller: controller),
+                      _OriginalVideoCell(group: group, controller: controller),
+                      _SourceImageCell(group: group, controller: controller),
+                      _GenerationDurationCell(
+                        shot: group.shots.first,
+                        controller: controller,
+                      ),
                       _GeneratedVideoCell(
-                        shot: shot,
+                        shot: group.shots.first,
                         controller: controller,
                         enabled: !state.isGeneratingAll,
-                        onGenerate: () => onGenerateShot(shot),
+                        onGenerate: () => onGenerateShot(group.shots.first),
                       ),
                       _PromptCell(
-                        shot: shot,
-                        draft: state.drafts[shot.id],
+                        shot: group.shots.first,
+                        draft: state.drafts[group.shots.first.id],
                         controller: controller,
                       ),
                     ],
@@ -1157,16 +1435,108 @@ class _HeaderCell extends StatelessWidget {
   );
 }
 
+class _GenerationDurationCell extends StatefulWidget {
+  const _GenerationDurationCell({required this.shot, required this.controller});
+
+  final ScriptShot shot;
+  final VideoGenerationController controller;
+
+  @override
+  State<_GenerationDurationCell> createState() =>
+      _GenerationDurationCellState();
+}
+
+class _GenerationDurationCellState extends State<_GenerationDurationCell> {
+  late final TextEditingController _textController;
+  late final FocusNode _focusNode;
+
+  double get _duration => widget.controller.desiredDurationFor(widget.shot);
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(text: _editableSeconds(_duration));
+    _focusNode = FocusNode()..addListener(_handleFocusChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _GenerationDurationCell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_focusNode.hasFocus) return;
+    final text = _editableSeconds(_duration);
+    if (_textController.text != text) {
+      _textController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode
+      ..removeListener(_handleFocusChanged)
+      ..dispose();
+    _textController.dispose();
+    super.dispose();
+  }
+
+  void _handleFocusChanged() {
+    if (!_focusNode.hasFocus) _commit();
+  }
+
+  void _commit() {
+    final seconds = double.tryParse(
+      _textController.text.trim().replaceAll('秒', ''),
+    );
+    if (seconds == null || !seconds.isFinite || seconds <= 0) {
+      _textController.text = _editableSeconds(_duration);
+      return;
+    }
+    widget.controller.updateDesiredDurationFor(widget.shot, seconds);
+  }
+
+  @override
+  Widget build(BuildContext context) => _Cell(
+    child: Tooltip(
+      message: '默认按画面内容自动判断；手动修改后，生成提示词中的秒数会同步更新。',
+      child: TextField(
+        key: ValueKey('video-duration-${widget.shot.id}'),
+        controller: _textController,
+        focusNode: _focusNode,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) {
+          _commit();
+          _focusNode.unfocus();
+        },
+        decoration: const InputDecoration(
+          isDense: true,
+          labelText: '视频时长',
+          suffixText: '秒',
+          helperText: '默认可直接使用',
+        ),
+      ),
+    ),
+  );
+}
+
+String _editableSeconds(double seconds) => seconds == seconds.roundToDouble()
+    ? '${seconds.toInt()}'
+    : seconds.toStringAsFixed(1);
+
 class _VideoShotCellLayout extends StatelessWidget {
   const _VideoShotCellLayout({
     required this.shot,
     required this.slotName,
     required this.child,
+    this.title,
   });
 
   final ScriptShot shot;
   final String slotName;
   final Widget child;
+  final String? title;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -1177,7 +1547,7 @@ class _VideoShotCellLayout extends StatelessWidget {
         height: 20,
         child: Align(
           alignment: Alignment.centerLeft,
-          child: Text('镜头 ${shot.shotNumber}'),
+          child: Text(title ?? '镜头 ${shot.shotNumber}'),
         ),
       ),
       const SizedBox(height: 8),
@@ -1191,14 +1561,18 @@ class _VideoShotCellLayout extends StatelessWidget {
 }
 
 class _OriginalVideoCell extends StatelessWidget {
-  const _OriginalVideoCell({required this.shot, required this.controller});
+  const _OriginalVideoCell({required this.group, required this.controller});
 
-  final ScriptShot shot;
+  final ScriptShotGroup group;
   final VideoGenerationController controller;
 
   @override
   Widget build(BuildContext context) {
-    final range = controller.sourcePreviewFor(shot);
+    final shot = group.shots.first;
+    final range = controller.sourcePreviewFor(
+      shot,
+      endShot: group.shots.length > 1 ? group.shots.last : null,
+    );
     final thumbnail = range?.thumbnailFile;
     void openPreview() {
       if (range == null) return;
@@ -1212,51 +1586,23 @@ class _OriginalVideoCell extends StatelessWidget {
       child: _VideoShotCellLayout(
         shot: shot,
         slotName: 'original',
+        title: group.rangeLabel,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (thumbnail?.existsSync() == true)
-              Tooltip(
-                message: '点击播放原视频 IO 区间',
-                child: InkWell(
-                  key: ValueKey('source-video-thumbnail-${shot.id}'),
-                  onTap: openPreview,
-                  borderRadius: BorderRadius.circular(8),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        Image.file(
-                          thumbnail!,
-                          width: 230,
-                          height: 130,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const SizedBox(
-                            width: 230,
-                            height: 130,
-                            child: Center(child: Text('原视频缩略图加载失败')),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.62),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.play_arrow_rounded,
-                            color: Colors.white,
-                            size: 30,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              )
-            else
-              Text(range == null ? '原视频不可用' : '原视频缩略图不可用'),
+            _VideoGroupFrameStrip(
+              group: group,
+              keyPrefix: 'original',
+              emptyLabel: '原视频帧暂不可用',
+              fileForShot: controller.videoFrameFileForShot,
+              onOpen: (shot) => _showScriptShotGroupImageGallery(
+                context,
+                group: group,
+                initialShotId: shot.id,
+                label: '原视频帧',
+                fileForShot: controller.videoFrameFileForShot,
+              ),
+            ),
             if (range != null) ...[
               const SizedBox(height: 6),
               Text(
@@ -1267,7 +1613,9 @@ class _OriginalVideoCell extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: range == null ? null : openPreview,
               icon: const Icon(Icons.play_circle_outline_rounded),
-              label: const Text('按 IO 点预览'),
+              label: Text(
+                thumbnail?.existsSync() == true ? '按 IO 点预览' : '预览源视频',
+              ),
             ),
           ],
         ),
@@ -1277,59 +1625,175 @@ class _OriginalVideoCell extends StatelessWidget {
 }
 
 class _SourceImageCell extends StatelessWidget {
-  const _SourceImageCell({required this.shot, required this.controller});
+  const _SourceImageCell({required this.group, required this.controller});
 
-  final ScriptShot shot;
+  final ScriptShotGroup group;
   final VideoGenerationController controller;
 
   @override
   Widget build(BuildContext context) {
-    final image = controller.replicatedImageFor(shot.id);
-    final requiresReplicatedImage = !controller.startEndFrameModeEnabled;
-    final file = controller.generationReferenceImageFileFor(shot);
-    final usesReplicatedImage = controller.usesReplicatedImageFor(shot);
-    final missingText = requiresReplicatedImage
-        ? '缺少复刻分镜图或视频帧图\n当前镜头不可生成'
-        : '缺少首帧图\n当前镜头不可生成';
-    final previewFailureText = requiresReplicatedImage ? '参考图预览失败' : '首帧图预览失败';
+    final shot = group.shots.first;
+    final completedCount = group.shots
+        .where((item) => controller.replicatedImageFileForShot(item) != null)
+        .length;
     return _Cell(
       child: _VideoShotCellLayout(
         shot: shot,
         slotName: 'source-image',
-        child: file == null
-            ? Text(missingText)
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Tooltip(
-                    message: usesReplicatedImage ? '点击全屏浏览复刻分镜图' : '点击全屏浏览视频帧图',
-                    child: InkWell(
-                      key: ValueKey(
-                        'video-generation-source-thumbnail-${shot.id}',
-                      ),
-                      onTap: () =>
-                          _showSourceImageGallery(context, controller, shot.id),
-                      borderRadius: BorderRadius.circular(8),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.file(
-                          file,
-                          width: 280,
-                          height: 150,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => Text(previewFailureText),
-                        ),
-                      ),
+        title: group.rangeLabel,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _VideoGroupFrameStrip(
+              group: group,
+              keyPrefix: 'replica',
+              emptyLabel: '待复刻分镜',
+              fileForShot: controller.replicatedImageFileForShot,
+              onOpen: (shot) => _showScriptShotGroupImageGallery(
+                context,
+                group: group,
+                initialShotId: shot.id,
+                label: '复刻分镜图',
+                fileForShot: controller.replicatedImageFileForShot,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              completedCount == group.shots.length
+                  ? '来源：复刻分镜图 · 已完成'
+                  : '来源：复刻分镜图 · $completedCount/${group.shots.length}',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoGroupFrameStrip extends StatelessWidget {
+  const _VideoGroupFrameStrip({
+    required this.group,
+    required this.keyPrefix,
+    required this.emptyLabel,
+    required this.fileForShot,
+    required this.onOpen,
+  });
+
+  final ScriptShotGroup group;
+  final String keyPrefix;
+  final String emptyLabel;
+  final File? Function(ScriptShot shot) fileForShot;
+  final ValueChanged<ScriptShot> onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final shots = group.shots.take(3).toList(growable: false);
+    final availableShots = group.shots
+        .where((shot) => fileForShot(shot)?.existsSync() == true)
+        .toList(growable: false);
+    return Tooltip(
+      message: '${group.rangeLabel} · $emptyLabel',
+      child: InkWell(
+        key: ValueKey(
+          'video-generation-$keyPrefix-range-${group.startNumber}-${group.endNumber}',
+        ),
+        onTap: availableShots.isEmpty
+            ? null
+            : () => onOpen(availableShots.first),
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          height: 150,
+          child: Row(
+            children: [
+              for (final shot in shots)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: _VideoGroupFrameThumbnail(
+                      file: fileForShot(shot),
+                      label: shot.shotNumber.toString(),
+                      emptyLabel: emptyLabel,
+                      onTap: () => onOpen(shot),
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    usesReplicatedImage
-                        ? '来源：复刻分镜图 · ${image?.status.name ?? ''}'
-                        : '来源：视频帧图',
+                ),
+              if (group.shots.length > shots.length)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Text('+${group.shots.length - shots.length}'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoGroupFrameThumbnail extends StatelessWidget {
+  const _VideoGroupFrameThumbnail({
+    required this.file,
+    required this.label,
+    required this.emptyLabel,
+    required this.onTap,
+  });
+
+  final File? file;
+  final String label;
+  final String emptyLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final hasFile = file?.existsSync() == true;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: hasFile ? onTap : null,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ColoredBox(
+              color: scheme.surfaceContainerHighest,
+              child: hasFile
+                  ? Image.file(
+                      file!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) =>
+                          Center(child: Text('$emptyLabel加载失败')),
+                    )
+                  : Center(
+                      child: Text(
+                        emptyLabel,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    ),
+            ),
+            Positioned(
+              left: 5,
+              bottom: 5,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.66),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
                   ),
-                ],
+                  child: Text(
+                    label,
+                    style: const TextStyle(color: Colors.white, fontSize: 10),
+                  ),
+                ),
               ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2185,7 +2649,7 @@ Future<void> _showFullscreenGeneratedVideo(
   ),
 );
 
-class _PromptCell extends StatelessWidget {
+class _PromptCell extends StatefulWidget {
   const _PromptCell({
     required this.shot,
     required this.draft,
@@ -2197,7 +2661,40 @@ class _PromptCell extends StatelessWidget {
   final VideoGenerationController controller;
 
   @override
+  State<_PromptCell> createState() => _PromptCellState();
+}
+
+class _PromptCellState extends State<_PromptCell> {
+  late final TextEditingController _textController;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(
+      text: widget.draft?.selectedPrompt ?? '',
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _PromptCell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final prompt = widget.draft?.selectedPrompt ?? '';
+    if (_textController.text == prompt) return;
+    _textController.value = TextEditingValue(
+      text: prompt,
+      selection: TextSelection.collapsed(offset: prompt.length),
+    );
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final draft = widget.draft;
     if (draft == null) return const _Cell(child: Text('提示词尚未准备'));
     return _Cell(
       child: Column(
@@ -2216,23 +2713,22 @@ class _PromptCell extends StatelessWidget {
               ButtonSegment(value: VideoPromptMode.original, label: Text('即梦')),
               ButtonSegment(value: VideoPromptMode.edited, label: Text('手工稿')),
             ],
-            selected: {draft!.promptMode},
-            onSelectionChanged: (selection) =>
-                controller.updatePromptMode(shot.id, selection.first),
+            selected: {draft.promptMode},
+            onSelectionChanged: (selection) => widget.controller
+                .updatePromptMode(widget.shot.id, selection.first),
           ),
           const SizedBox(height: 8),
           TextFormField(
-            key: ValueKey(
-              'video-prompt-${shot.id}-${draft!.updatedAt.microsecondsSinceEpoch}',
-            ),
-            initialValue: draft!.selectedPrompt,
+            key: ValueKey('video-prompt-${widget.shot.id}'),
+            controller: _textController,
             minLines: 5,
             maxLines: 10,
             decoration: const InputDecoration(
               border: OutlineInputBorder(),
               helperText: '编辑后自动切换为手工稿；历史提交文本不会改变',
             ),
-            onChanged: (value) => controller.updateEditedPrompt(shot.id, value),
+            onChanged: (value) =>
+                widget.controller.updateEditedPrompt(widget.shot.id, value),
           ),
         ],
       ),
@@ -2294,8 +2790,14 @@ class _SourceRangePreviewDialogState extends State<_SourceRangePreviewDialog> {
 
   Future<void> _open() async {
     try {
-      await _player.open(Media(widget.range.sourceVideo.path), play: false);
-      await _player.seek(widget.range.inPoint);
+      await _player.open(
+        Media(
+          widget.range.sourceVideo.path,
+          start: widget.range.inPoint,
+          end: widget.range.outPoint,
+        ),
+        play: false,
+      );
       if (mounted) setState(() => _position = widget.range.inPoint);
       await _player.play();
     } catch (error) {
@@ -2392,39 +2894,44 @@ class _SourceRangePreviewDialogState extends State<_SourceRangePreviewDialog> {
 
 class _SourceGalleryItem {
   const _SourceGalleryItem({
+    required this.shotId,
     required this.shotNumber,
     required this.file,
     required this.label,
   });
 
+  final String shotId;
   final int shotNumber;
   final File file;
   final String label;
 }
 
-Future<void> _showSourceImageGallery(
-  BuildContext context,
-  VideoGenerationController controller,
-  String initialShotId,
-) {
+Future<void> _showScriptShotGroupImageGallery(
+  BuildContext context, {
+  required ScriptShotGroup group,
+  required String initialShotId,
+  required String label,
+  required File? Function(ScriptShot shot) fileForShot,
+}) {
   final items = <_SourceGalleryItem>[];
-  var initialIndex = 0;
-  for (final shot in controller.value.shots) {
-    final file = controller.generationReferenceImageFileFor(shot);
+  for (final shot in group.shots) {
+    final file = fileForShot(shot);
     if (file == null) continue;
-    if (shot.id == initialShotId) initialIndex = items.length;
     items.add(
       _SourceGalleryItem(
+        shotId: shot.id,
         shotNumber: shot.shotNumber,
         file: file,
-        label: controller.usesReplicatedImageFor(shot) ? '复刻分镜图' : '视频帧图',
+        label: label,
       ),
     );
   }
+  if (items.isEmpty) return Future<void>.value();
+  final initialIndex = items.indexWhere((item) => item.shotId == initialShotId);
   return showFullscreenZoomGallery<_SourceGalleryItem>(
     context: context,
     items: items,
-    initialIndex: initialIndex,
+    initialIndex: initialIndex < 0 ? 0 : initialIndex,
     labelBuilder: (item, index, total) =>
         '镜头 ${item.shotNumber.toString().padLeft(2, '0')} · ${item.label} · ${index + 1}/$total',
     itemBuilder: (context, item) => Image.file(
@@ -2432,7 +2939,7 @@ Future<void> _showSourceImageGallery(
       key: ValueKey('video-generation-source-gallery-image-${item.shotNumber}'),
       fit: BoxFit.contain,
       errorBuilder: (_, _, _) => const Center(
-        child: Text('首帧图无法读取', style: TextStyle(color: Colors.white)),
+        child: Text('参考图无法读取', style: TextStyle(color: Colors.white)),
       ),
     ),
   );

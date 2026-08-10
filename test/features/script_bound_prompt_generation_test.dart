@@ -100,7 +100,7 @@ void main() {
     final prompt = controller.value.prompts.single;
     expect(prompt.assetIds, [hero.id]);
     expect(controller.promptFormatFor(prompt), ShotPromptFormat.kling);
-    expect(prompt.prompt, contains('以图片1作为首帧和主体外观参考'));
+    expect(prompt.prompt, contains('图片1为起始画面与主体参考'));
     expect(
       controller.promptTextFor(prompt, ShotPromptFormat.sd2),
       contains('白衬衫人物'),

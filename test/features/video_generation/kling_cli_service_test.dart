@@ -15,6 +15,11 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  test('CLI 进程输出遇到非 UTF-8 字节时使用兼容编码而不抛异常', () {
+    expect(decodeKlingProcessOutput(utf8.encode('可灵正常输出')), '可灵正常输出');
+    expect(decodeKlingProcessOutput(const [0xd6, 0xd0]), isNotEmpty);
+  });
+
   test('结果下载会完整关闭临时文件并原子落盘', () async {
     final root = await Directory.systemTemp.createTemp('kling-download-');
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -68,12 +73,23 @@ void main() {
       p.join(root.path, Platform.isWindows ? 'kling.cmd' : 'kling'),
     );
     await kling.writeAsString('');
+    final cliEntryPoint = File(
+      p.join(root.path, 'node_modules', '@klingai', 'cli-cn', 'dist', 'cli.js'),
+    );
+    await cliEntryPoint.parent.create(recursive: true);
+    await cliEntryPoint.writeAsString('');
+    final calls = <({String executable, List<String> arguments, bool shell})>[];
 
     Future<ProcessResult> runner(
       String executable,
       List<String> arguments, {
       required bool runInShell,
     }) async {
+      calls.add((
+        executable: executable,
+        arguments: List<String>.of(arguments),
+        shell: runInShell,
+      ));
       if (executable == 'where.exe') {
         final command = arguments.single;
         if (command == 'node') {
@@ -96,9 +112,10 @@ void main() {
           arguments[1] == '-g') {
         return ProcessResult(1, 0, root.path, '');
       }
-      if (arguments.length == 1 &&
-          arguments.single == '--version' &&
-          executable == kling.path) {
+      if (arguments.length == 2 &&
+          arguments.first == cliEntryPoint.path &&
+          arguments.last == '--version' &&
+          executable.endsWith('node.exe')) {
         return ProcessResult(1, 0, 'kling-cli 0.1.3', '');
       }
       return ProcessResult(1, 1, '', 'unexpected $executable $arguments');
@@ -108,6 +125,26 @@ void main() {
 
     expect(environment.isReady, isTrue);
     expect(p.normalize(environment.klingPath), p.normalize(kling.path));
+    if (Platform.isWindows) {
+      expect(
+        p.normalize(environment.klingEntryPointPath),
+        p.normalize(cliEntryPoint.path),
+      );
+      expect(environment.commandExecutable, r'C:\bin\node.exe');
+      expect(environment.commandArgumentsPrefix, [cliEntryPoint.path]);
+      expect(environment.commandRunInShell, isFalse);
+      expect(
+        calls.any(
+          (call) =>
+              call.executable == r'C:\bin\node.exe' &&
+              call.shell == false &&
+              call.arguments.length == 2 &&
+              call.arguments.first == cliEntryPoint.path &&
+              call.arguments.last == '--version',
+        ),
+        isTrue,
+      );
+    }
   });
 
   test('CLI 服务兼容 camel/snake JSON 并以独立参数提交', () async {
@@ -218,6 +255,54 @@ void main() {
       containsAllInOrder(['--tailImage', r'C:\frames\replicated 03.png']),
     );
     expect(submitArguments.last, '人物缓慢转身，镜头轻推');
+  });
+
+  test('CLI 服务通过 Node 入口提交超长提示词且不启用 Windows shell', () async {
+    const cliEntryPoint =
+        r'C:\Users\tester\AppData\Roaming\npm\node_modules\@klingai\cli-cn\dist\cli.js';
+    final prompt = List.filled(9000, '镜').join();
+    String? calledExecutable;
+    List<String>? calledArguments;
+    bool? calledRunInShell;
+
+    Future<ProcessResult> runner(
+      String executable,
+      List<String> arguments, {
+      required bool runInShell,
+    }) async {
+      calledExecutable = executable;
+      calledArguments = List<String>.of(arguments);
+      calledRunInShell = runInShell;
+      return ProcessResult(
+        1,
+        0,
+        jsonEncode({
+          'ok': true,
+          'body': {'generationId': 'long-prompt-generation'},
+        }),
+        '',
+      );
+    }
+
+    final service = KlingCliService(
+      executable: r'C:\Program Files\nodejs\node.exe',
+      argumentPrefix: const [cliEntryPoint],
+      runInShell: false,
+      processRunner: runner,
+    );
+    final result = await service.submitImageToVideo(
+      model: 'kling-video-v3_0_omni',
+      imagePath: r'D:\project\frame.png',
+      parameters: const {'duration': '5'},
+      prompt: prompt,
+    );
+
+    expect(result.generationId, 'long-prompt-generation');
+    expect(calledExecutable, r'C:\Program Files\nodejs\node.exe');
+    expect(calledRunInShell, isFalse);
+    expect(calledArguments?.first, cliEntryPoint);
+    expect(calledArguments?[1], 'image_to_video');
+    expect(calledArguments?.last, prompt);
   });
 
   test('MiniMax 本地视频 API 非首尾帧按多参考图 multipart 提交', () async {

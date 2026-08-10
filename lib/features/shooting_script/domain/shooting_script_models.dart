@@ -73,6 +73,7 @@ class ScriptShot {
     required this.sound,
     required this.prompt,
     this.replicationInstructions = '',
+    this.generationFeedback = '',
     required this.status,
     required this.updatedAt,
   });
@@ -106,6 +107,7 @@ class ScriptShot {
   final String sound;
   final String prompt;
   final String replicationInstructions;
+  final String generationFeedback;
   final ProcessingStatus status;
   final DateTime updatedAt;
 
@@ -138,6 +140,7 @@ class ScriptShot {
     String? sound,
     String? prompt,
     String? replicationInstructions,
+    String? generationFeedback,
     ProcessingStatus? status,
     DateTime? updatedAt,
   }) => ScriptShot(
@@ -176,6 +179,7 @@ class ScriptShot {
     prompt: prompt ?? this.prompt,
     replicationInstructions:
         replicationInstructions ?? this.replicationInstructions,
+    generationFeedback: generationFeedback ?? this.generationFeedback,
     status: status ?? this.status,
     updatedAt: updatedAt ?? this.updatedAt,
   );

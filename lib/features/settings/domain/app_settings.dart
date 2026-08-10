@@ -107,6 +107,7 @@ class AppSettings {
     this.videoStartEndFrameModeEnabled = false,
     this.replicateDefaultGlobalStyle = defaultReplicateGlobalStyle,
     this.replicateDefaultConstraints = defaultReplicateConstraints,
+    this.h3PromptStyleId = defaultH3PromptStyleId,
     required this.cutImageNumberEnabled,
     required this.cutImageNumberPosition,
     required this.cutImageNumberBackgroundOpacity,
@@ -152,6 +153,7 @@ class AppSettings {
   static const defaultReplicateGlobalStyle = '高清电影广告质感，细节丰富，色彩自然，光影层次清晰';
   static const defaultReplicateConstraints =
       '保持主体外观、服装、产品结构与场景连续稳定；人物面部和身体比例自然，动作连续，无卡顿、无闪烁、无穿模；保持无字幕，避免生成任何文字或字幕，不要生成 Logo，不要生成水印，不出现重复人物或同款分身';
+  static const defaultH3PromptStyleId = 'general';
 
   final String exportDirectory;
   final AppThemePreference themePreference;
@@ -168,6 +170,7 @@ class AppSettings {
   final bool videoStartEndFrameModeEnabled;
   final String replicateDefaultGlobalStyle;
   final String replicateDefaultConstraints;
+  final String h3PromptStyleId;
   final bool cutImageNumberEnabled;
   final CutImageNumberPosition cutImageNumberPosition;
   final double cutImageNumberBackgroundOpacity;
@@ -241,6 +244,7 @@ class AppSettings {
     bool? videoStartEndFrameModeEnabled,
     String? replicateDefaultGlobalStyle,
     String? replicateDefaultConstraints,
+    String? h3PromptStyleId,
     bool? cutImageNumberEnabled,
     CutImageNumberPosition? cutImageNumberPosition,
     double? cutImageNumberBackgroundOpacity,
@@ -293,6 +297,7 @@ class AppSettings {
           replicateDefaultGlobalStyle ?? this.replicateDefaultGlobalStyle,
       replicateDefaultConstraints:
           replicateDefaultConstraints ?? this.replicateDefaultConstraints,
+      h3PromptStyleId: h3PromptStyleId ?? this.h3PromptStyleId,
       cutImageNumberEnabled:
           cutImageNumberEnabled ?? this.cutImageNumberEnabled,
       cutImageNumberPosition:

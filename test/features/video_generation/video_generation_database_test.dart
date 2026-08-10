@@ -72,6 +72,12 @@ void main() {
           .single['source_video_frame_id'],
       'frame-1',
     );
+    expect(
+      database
+          .selectRows('PRAGMA table_info(script_shots);')
+          .map((row) => row['name']),
+      contains('generation_feedback'),
+    );
     for (final table in const [
       'video_generation_profiles',
       'video_generation_drafts',

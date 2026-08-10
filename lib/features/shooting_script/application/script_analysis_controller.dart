@@ -1,17 +1,21 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/vision_request_rate_limiter.dart';
+import '../../replicate/data/h3_skill_library.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
+import '../../replicate/domain/h3_prompt_style.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/script_multimodal_analysis_service.dart';
 import '../data/shooting_script_workflow_repository.dart';
-import '../domain/script_shot_continuity_refiner.dart';
+import '../domain/script_shot_group.dart';
 import '../domain/shooting_script_models.dart';
 import '../domain/shooting_script_workflow_models.dart';
 import 'shooting_script_controller.dart';
@@ -87,11 +91,14 @@ class ScriptAnalysisState {
 
 class ShootingScriptAnalysisController
     extends ValueNotifier<ScriptAnalysisState> {
+  static const _analysisRuleVersion = 5;
+
   ShootingScriptAnalysisController({
     required ShootingScriptController shootingScriptController,
     required ShootingScriptWorkflowRepository repository,
     required SettingsController settingsController,
     ScriptMultimodalAnalysisService? analysisService,
+    H3SkillLibrary? skillLibrary,
     SeedancePromptGenerationService promptService =
         const SeedancePromptGenerationService(),
     Uuid uuid = const Uuid(),
@@ -100,6 +107,7 @@ class ShootingScriptAnalysisController
        _settingsController = settingsController,
        _analysisService = analysisService ?? ScriptMultimodalAnalysisService(),
        _ownsAnalysisService = analysisService == null,
+       _skillLibrary = skillLibrary ?? BundledH3SkillLibrary(),
        _promptService = promptService,
        _uuid = uuid,
        super(const ScriptAnalysisState()) {
@@ -112,9 +120,11 @@ class ShootingScriptAnalysisController
   final SettingsController _settingsController;
   final ScriptMultimodalAnalysisService _analysisService;
   final bool _ownsAnalysisService;
+  final H3SkillLibrary _skillLibrary;
   final SeedancePromptGenerationService _promptService;
   final Uuid _uuid;
   bool _disposed = false;
+  bool _cancelRequested = false;
 
   @override
   void dispose() {
@@ -154,6 +164,7 @@ class ShootingScriptAnalysisController
     Map<String, String> imagePathOverrides = const {},
     bool requireImageOverrides = false,
   }) async {
+    _cancelRequested = false;
     final script = _shootingScriptController.value.selectedScript;
     final shots = _shootingScriptController.value.shots;
     if (script == null || shots.isEmpty) {
@@ -177,6 +188,8 @@ class ShootingScriptAnalysisController
       );
       return;
     }
+    final creativeBrief = await _loadCreativeBriefOrReport();
+    if (creativeBrief == null) return;
     value = value.copyWith(
       scriptId: script.id,
       analyses: const [],
@@ -190,7 +203,7 @@ class ShootingScriptAnalysisController
     var nextIndex = 0;
     var processed = 0;
     Future<void> processTargets() async {
-      while (!_disposed && nextIndex < targets.length) {
+      while (!_disposed && !_cancelRequested && nextIndex < targets.length) {
         final shot = targets[nextIndex++];
         await _analyzeOne(
           script: script,
@@ -198,6 +211,7 @@ class ShootingScriptAnalysisController
           overwriteExisting: overwriteExisting,
           imagePathOverrides: imagePathOverrides,
           requireImageOverrides: requireImageOverrides,
+          creativeBrief: creativeBrief,
         );
         processed++;
         if (!_disposed) {
@@ -214,7 +228,12 @@ class ShootingScriptAnalysisController
     await Future.wait([
       for (var index = 0; index < workers; index++) processTargets(),
     ]);
-    _refineContinuity(script.id);
+    if (_cancelRequested) {
+      if (!_disposed) {
+        value = value.copyWith(isBusy: false, message: '已取消脚本构建');
+      }
+      return;
+    }
     final failed = value.failedCount;
     if (!_disposed) {
       value = value.copyWith(
@@ -223,6 +242,30 @@ class ShootingScriptAnalysisController
         errorMessage: failed == 0 ? '' : '$failed 个镜头解析失败',
       );
     }
+  }
+
+  Future<bool> buildScript({
+    Map<String, String> imagePathOverrides = const {},
+    bool requireImageOverrides = false,
+    bool onlyFeedbackGroups = false,
+  }) => buildScriptFromShotGroups(
+    overwriteExisting: true,
+    imagePathOverrides: imagePathOverrides,
+    requireImageOverrides: requireImageOverrides,
+    onlyFeedbackGroups: onlyFeedbackGroups,
+  );
+
+  void updateGenerationFeedback(String shotId, String feedback) {
+    final shot = _shootingScriptController.value.shots
+        .where((item) => item.id == shotId)
+        .firstOrNull;
+    if (shot == null || shot.generationFeedback == feedback) return;
+    _shootingScriptController.updateShot(
+      shot.copyWith(
+        generationFeedback: feedback,
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
   }
 
   Future<void> analyzeShot(
@@ -236,6 +279,8 @@ class ShootingScriptAnalysisController
         .where((item) => item.id == shotId)
         .firstOrNull;
     if (script == null || shot == null) return;
+    final creativeBrief = await _loadCreativeBriefOrReport();
+    if (creativeBrief == null) return;
     value = value.copyWith(
       isBusy: true,
       message: '正在解析镜头 ${shot.shotNumber}…',
@@ -247,6 +292,7 @@ class ShootingScriptAnalysisController
       overwriteExisting: overwriteExisting,
       imagePathOverrides: imagePathOverrides,
       requireImageOverrides: requireImageOverrides,
+      creativeBrief: creativeBrief,
     );
     if (!_disposed) {
       value = value.copyWith(
@@ -256,9 +302,114 @@ class ShootingScriptAnalysisController
     }
   }
 
+  Future<bool> buildScriptFromShotGroups({
+    bool overwriteExisting = true,
+    Map<String, String> imagePathOverrides = const {},
+    bool requireImageOverrides = false,
+    bool onlyFeedbackGroups = false,
+  }) async {
+    _cancelRequested = false;
+    final script = _shootingScriptController.value.selectedScript;
+    final shots = _shootingScriptController.value.shots;
+    if (script == null || shots.isEmpty) {
+      value = value.copyWith(message: '', errorMessage: '当前脚本没有可构建的镜头');
+      return false;
+    }
+    final allGroups = _groupShots(shots);
+    final groups = onlyFeedbackGroups
+        ? allGroups
+              .where(
+                (group) => group.first.generationFeedback.trim().isNotEmpty,
+              )
+              .toList(growable: false)
+        : allGroups;
+    if (groups.isEmpty) {
+      value = value.copyWith(
+        message: onlyFeedbackGroups ? '没有需要根据反馈重构的镜头组' : '',
+        errorMessage: '',
+      );
+      return false;
+    }
+    final creativeBrief = await _loadCreativeBriefOrReport();
+    if (creativeBrief == null) return false;
+    value = value.copyWith(
+      scriptId: script.id,
+      isBusy: true,
+      completedCount: 0,
+      failedCount: 0,
+      totalCount: groups.length,
+      message: '正在构建 0/${groups.length} 个镜头组…',
+      errorMessage: '',
+    );
+    final workers = VisionRequestRateLimiter.maxConcurrentRequestsFor(
+      _settingsController.value,
+    ).clamp(1, groups.length);
+    var nextIndex = 0;
+    var completed = 0;
+    var failed = 0;
+    Future<void> processGroups() async {
+      while (!_disposed &&
+          !_cancelRequested &&
+          value.isBusy &&
+          nextIndex < groups.length) {
+        final group = groups[nextIndex++];
+        final success = await _analyzeGroup(
+          script: script,
+          shots: group,
+          overwriteExisting: overwriteExisting,
+          imagePathOverrides: imagePathOverrides,
+          requireImageOverrides: requireImageOverrides,
+          creativeBrief: creativeBrief,
+        );
+        if (success) {
+          completed++;
+        } else {
+          failed++;
+        }
+        if (!_disposed) {
+          value = value.copyWith(
+            completedCount: completed,
+            failedCount: failed,
+            message:
+                '${workers > 1 ? '正在并发构建' : '正在构建'} ${completed + failed}/${groups.length} 个镜头组…',
+          );
+        }
+      }
+    }
+
+    await Future.wait([
+      for (var index = 0; index < workers; index++) processGroups(),
+    ]);
+    if (_cancelRequested) {
+      if (!_disposed) {
+        value = value.copyWith(isBusy: false, message: '已取消脚本构建');
+      }
+      return false;
+    }
+    final buildCompleted =
+        !_disposed && completed == groups.length && failed == 0;
+    if (!_disposed) {
+      value = value.copyWith(
+        isBusy: false,
+        message: buildCompleted
+            ? '构建脚本完成'
+            : failed > 0
+            ? '构建完成，但有 $failed 个镜头组失败'
+            : '脚本构建未完成',
+        errorMessage: buildCompleted
+            ? ''
+            : failed > 0
+            ? '$failed 个镜头组构建失败'
+            : '脚本构建未完成',
+      );
+    }
+    return buildCompleted;
+  }
+
   void cancel() {
+    _cancelRequested = true;
     _analysisService.cancelActiveRequests();
-    value = value.copyWith(isBusy: false, message: '已取消自动解析');
+    value = value.copyWith(isBusy: false, message: '已取消脚本构建');
   }
 
   Future<void> _analyzeOne({
@@ -267,6 +418,7 @@ class ShootingScriptAnalysisController
     required bool overwriteExisting,
     required Map<String, String> imagePathOverrides,
     required bool requireImageOverrides,
+    required String creativeBrief,
   }) async {
     final now = DateTime.now().toUtc();
     final existing = _repository.getAnalysis(shot.id);
@@ -304,6 +456,12 @@ class ShootingScriptAnalysisController
         imageFile: imageFile,
         previousImageFile: adjacentFile(shotIndex - 1),
         nextImageFile: adjacentFile(shotIndex + 1),
+        creativeBrief: creativeBrief,
+        storyContext: _storyContextForRange(
+          script: script,
+          startShotNumber: shot.shotNumber,
+          endShotNumber: shot.shotNumber,
+        ),
       );
       var updatedShot = _applyPatch(
         shot,
@@ -346,6 +504,11 @@ class ShootingScriptAnalysisController
           status: ProcessingStatus.completed,
           fieldSources: sources,
           fieldConfidence: patch.fieldConfidence,
+          promptContext: patch.promptContext,
+          promptContextSchemaVersion:
+              ScriptShotPromptContext.currentSchemaVersion,
+          sourceImageFingerprint: await _sourceImageFingerprint([imageFile]),
+          analysisRuleVersion: _analysisRuleVersion,
           rawResponse: patch.rawResponse,
           errorMessage: '',
           createdAt: existing?.createdAt ?? now,
@@ -356,6 +519,254 @@ class ShootingScriptAnalysisController
     } catch (error) {
       _saveFailure(shot: shot, existing: existing, message: '$error', now: now);
     }
+  }
+
+  Future<bool> _analyzeGroup({
+    required ShootingScript script,
+    required List<ScriptShot> shots,
+    required bool overwriteExisting,
+    required Map<String, String> imagePathOverrides,
+    required bool requireImageOverrides,
+    required String creativeBrief,
+  }) async {
+    final head = shots.first;
+    final now = DateTime.now().toUtc();
+    final existing = _repository.getAnalysis(head.id);
+    final replicaFiles = _completeImageFileGroup(
+      shots.map((shot) => imagePathOverrides[shot.id] ?? ''),
+    );
+    final originalFiles = requireImageOverrides
+        ? null
+        : _completeImageFileGroup(shots.map((shot) => shot.framePath));
+    final files = replicaFiles ?? originalFiles;
+    if (files == null) {
+      _saveFailure(
+        shot: head,
+        existing: existing,
+        message: requireImageOverrides
+            ? '脚本条目缺少完整复刻分镜图组，无法构建'
+            : '脚本条目既无完整复刻分镜图组，也无完整原视频帧组，无法构建',
+        now: now,
+      );
+      return false;
+    }
+    try {
+      final patch = await _analysisService.analyzeShotGroup(
+        settings: _settingsController.value,
+        shots: shots,
+        imageFiles: files,
+        creativeBrief: _creativeBriefForRevision(head, creativeBrief),
+        storyContext: _storyContextForRange(
+          script: script,
+          startShotNumber: shots.first.shotNumber,
+          endShotNumber: shots.last.shotNumber,
+        ),
+        neighboringCameraPlan: _neighboringCameraPlan(
+          startShotNumber: shots.first.shotNumber,
+          endShotNumber: shots.last.shotNumber,
+        ),
+      );
+      final durationText = patch.values['durationSeconds'];
+      final nonDurationValues = Map<String, String>.of(patch.values)
+        ..remove('durationSeconds');
+      var updatedHead = _applyPatch(
+        head,
+        nonDurationValues,
+        overwriteExisting: overwriteExisting,
+      );
+      final durationSeconds = double.tryParse(durationText?.trim() ?? '');
+      final durationTarget = shots.last;
+      final updatedDurationTarget =
+          durationSeconds != null &&
+              durationSeconds.isFinite &&
+              durationSeconds > 0
+          ? durationTarget.copyWith(durationSeconds: durationSeconds)
+          : durationTarget;
+      if (shots.length == 1) {
+        updatedHead = updatedHead.copyWith(
+          durationSeconds: updatedDurationTarget.durationSeconds,
+        );
+      }
+      if (head.generationFeedback.trim().isNotEmpty) {
+        updatedHead = updatedHead.copyWith(generationFeedback: '');
+      }
+      if (overwriteExisting || updatedHead.prompt.trim().isEmpty) {
+        updatedHead = updatedHead.copyWith(
+          prompt: _promptService
+              .generate(
+                shot: shots.length == 1
+                    ? updatedHead
+                    : updatedHead.copyWith(
+                        durationSeconds: updatedDurationTarget.durationSeconds,
+                      ),
+                assets: const [],
+                globalStyle:
+                    _settingsController.value.replicateDefaultGlobalStyle,
+                constraints:
+                    _settingsController.value.replicateDefaultConstraints,
+                videoReferenceInstruction: script.sourceVideoId == null
+                    ? null
+                    : '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻；保持角色、产品和场景在镜头间连续一致。',
+              )
+              .prompt,
+        );
+      }
+      _shootingScriptController.updateShot(updatedHead);
+      if (durationTarget.id != head.id &&
+          updatedDurationTarget.durationSeconds !=
+              durationTarget.durationSeconds) {
+        _shootingScriptController.updateShot(updatedDurationTarget);
+      }
+      _repository.upsertAnalysis(
+        ScriptShotAnalysisRecord(
+          id: existing?.id ?? _uuid.v4(),
+          shotId: head.id,
+          model: _settingsController.value.visionModel,
+          status: ProcessingStatus.completed,
+          fieldSources: {
+            for (final field in _analysisFields)
+              field: _sourceForField(
+                field: field,
+                original: field == 'durationSeconds' ? durationTarget : head,
+                updated: field == 'durationSeconds'
+                    ? updatedDurationTarget
+                    : updatedHead,
+                patch: patch,
+                overwriteExisting: overwriteExisting,
+              ),
+          },
+          fieldConfidence: patch.fieldConfidence,
+          promptContext: patch.promptContext,
+          promptContextSchemaVersion:
+              ScriptShotPromptContext.currentSchemaVersion,
+          sourceImageFingerprint: await _sourceImageFingerprint(files),
+          analysisRuleVersion: _analysisRuleVersion,
+          rawResponse: patch.rawResponse,
+          errorMessage: '',
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        ),
+      );
+      return true;
+    } catch (error) {
+      _saveFailure(shot: head, existing: existing, message: '$error', now: now);
+      return false;
+    }
+  }
+
+  static List<List<ScriptShot>> _groupShots(List<ScriptShot> shots) {
+    return ScriptShotGroup.group(
+      shots,
+    ).map((group) => group.shots).toList(growable: false);
+  }
+
+  Future<String?> _loadCreativeBriefOrReport() async {
+    try {
+      return await _creativeBrief();
+    } catch (error) {
+      if (!_disposed) {
+        value = value.copyWith(
+          isBusy: false,
+          message: '',
+          errorMessage: '读取所选叙事风格的完整官方 Skill 失败：$error',
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<String> _creativeBrief() async {
+    final settings = _settingsController.value;
+    final style = H3PromptStyle.resolve(settings.h3PromptStyleId);
+    return [
+      '内容类型：${style.label}。${style.description}',
+      if (settings.replicateDefaultGlobalStyle.trim().isNotEmpty)
+        '全局影像风格：${settings.replicateDefaultGlobalStyle.trim()}',
+      if (!style.isGeneral)
+        (await _skillLibrary.loadForStyle(style)).toVisionModelContext(),
+      if (style.visualPromptInstruction.trim().isNotEmpty)
+        '逐镜头快速核对契约（不得替代上方完整 Skill）：\n${style.visualPromptInstruction.trim()}',
+      if (settings.replicateDefaultConstraints.trim().isNotEmpty)
+        '制作边界：${settings.replicateDefaultConstraints.trim()}',
+      '''本次构建的时长与节拍规则（用户要求，优先于上方 Skill 中的每秒指令或固定时间段）：
+根据当前画面中的动作阶段、状态变化、运镜幅度和信息量设计自然节奏；不要在画面描述、动作阶段、运镜、声音或转场字段中写“第 N 秒”“0-N 秒”或逐秒任务表。只描述自然的先后关系和完整动作，让视频模型在最终总时长内自行适配。''',
+    ].join('\n');
+  }
+
+  String _creativeBriefForRevision(ScriptShot shot, String creativeBrief) {
+    final feedback = shot.generationFeedback.trim();
+    if (feedback.isEmpty) return creativeBrief;
+    return [
+      creativeBrief,
+      '用户对上一稿的生成反馈（必须优先纠正）：$feedback',
+      '上一稿画面描述：${shot.content.trim().isEmpty ? '未填写' : shot.content.trim()}',
+      '上一稿导演运镜：${shot.cameraMovement.trim().isEmpty ? '未填写' : shot.cameraMovement.trim()}',
+      '请保留与反馈不冲突的正确信息，针对反馈重新设计该镜头的动作、表情、节奏、构图和运镜，不得忽略、改写或弱化用户反馈。',
+    ].join('\n');
+  }
+
+  String _storyContextForRange({
+    required ShootingScript script,
+    required int startShotNumber,
+    required int endShotNumber,
+  }) {
+    final shots = [..._shootingScriptController.value.shots]
+      ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
+    final currentIndex = shots.indexWhere(
+      (shot) => shot.shotNumber == startShotNumber,
+    );
+    final rangeLabel = startShotNumber == endShotNumber
+        ? '镜头 $startShotNumber'
+        : '镜头 $startShotNumber-$endShotNumber';
+    final sequence = shots
+        .map((shot) {
+          final analysis = _repository.getAnalysis(shot.id);
+          final narrativeFunction =
+              analysis?.promptContext.continuity['narrativeFunction']?.trim() ??
+              '';
+          final story = _firstNonEmpty([
+            shot.content,
+            shot.visual,
+            shot.visualFocus,
+          ]);
+          final functionText = narrativeFunction.isEmpty
+              ? ''
+              : '［$narrativeFunction］';
+          return '${shot.shotNumber}$functionText：${story.isEmpty ? '待分析' : story}';
+        })
+        .join(' | ');
+    return [
+      '脚本《${script.name}》，共 ${shots.length} 个分镜，当前处理 $rangeLabel（第 ${currentIndex < 0 ? startShotNumber : currentIndex + 1}/${shots.length} 个位置）。',
+      '故事顺序：$sequence',
+      '请判断当前镜头承担建立、推进、揭示、证明、反应、转折、产品记忆点、结果或收束中的哪一项，并让运镜只服务该功能。',
+    ].join('\n');
+  }
+
+  String _neighboringCameraPlan({
+    required int startShotNumber,
+    required int endShotNumber,
+  }) {
+    final shots = [..._shootingScriptController.value.shots]
+      ..sort((a, b) => a.shotNumber.compareTo(b.shotNumber));
+    final previous = shots
+        .where((shot) => shot.shotNumber < startShotNumber)
+        .lastOrNull;
+    final next = shots
+        .where((shot) => shot.shotNumber > endShotNumber)
+        .firstOrNull;
+    return [
+      if (previous != null && previous.cameraMovement.trim().isNotEmpty)
+        '上一镜头 ${previous.shotNumber}：${previous.cameraMovement.trim()}',
+      if (next != null && next.cameraMovement.trim().isNotEmpty)
+        '下一镜头 ${next.shotNumber}（待最终构建）：${next.cameraMovement.trim()}',
+    ].join('；');
+  }
+
+  static String _firstNonEmpty(Iterable<String> values) {
+    for (final value in values) {
+      if (value.trim().isNotEmpty) return value.trim();
+    }
+    return '';
   }
 
   static File? _analysisImageFileForShot(
@@ -372,6 +783,18 @@ class ShootingScriptAnalysisController
     if (path.isEmpty) return null;
     final file = File(path);
     return file.existsSync() ? file : null;
+  }
+
+  static List<File>? _completeImageFileGroup(Iterable<String> paths) {
+    final files = <File>[];
+    for (final path in paths) {
+      final normalized = path.trim();
+      if (normalized.isEmpty) return null;
+      final file = File(normalized);
+      if (!file.existsSync()) return null;
+      files.add(file);
+    }
+    return files.isEmpty ? null : List.unmodifiable(files);
   }
 
   void _saveFailure({
@@ -415,23 +838,6 @@ class ShootingScriptAnalysisController
     }
   }
 
-  void _refineContinuity(String scriptId) {
-    final current = _shootingScriptController.value;
-    if (current.selectedScriptId != scriptId || current.shots.length < 2) {
-      return;
-    }
-    final refined = const ScriptShotContinuityRefiner().refine(current.shots);
-    for (var index = 0; index < refined.length; index++) {
-      final original = current.shots[index];
-      final updated = refined[index];
-      if (original.continuesFromPrevious == updated.continuesFromPrevious &&
-          original.continuesToNext == updated.continuesToNext) {
-        continue;
-      }
-      _shootingScriptController.updateShot(updated);
-    }
-  }
-
   void _handleScriptChanged() {
     if (!_disposed) refresh(preserveBusy: true);
   }
@@ -450,14 +856,24 @@ class ShootingScriptAnalysisController
     'transitionHint',
     'movementTrend',
     'actionStage',
-    'continuesFromPrevious',
-    'continuesToNext',
     'cameraNotes',
     'scene',
     'productCode',
     'productStyling',
     'sound',
   ];
+
+  static Future<String> _sourceImageFingerprint(List<File> files) async {
+    if (files.isEmpty) return '';
+    if (files.length == 1) {
+      return 'sha256:${sha256.convert(await files.single.readAsBytes())}';
+    }
+    final componentDigests = <String>[];
+    for (final file in files) {
+      componentDigests.add(sha256.convert(await file.readAsBytes()).toString());
+    }
+    return 'sha256:${sha256.convert(utf8.encode(componentDigests.join('|')))}';
+  }
 
   static String _sourceForField({
     required String field,
@@ -488,6 +904,7 @@ class ShootingScriptAnalysisController
   }) {
     var updated = shot;
     for (final entry in values.entries) {
+      if (_manualShotGroupFields.contains(entry.key)) continue;
       final current = _fieldValue(updated, entry.key);
       if (!overwriteExisting &&
           !_shouldApplyWithoutOverwrite(entry.key, current, entry.value)) {
@@ -505,10 +922,6 @@ class ShootingScriptAnalysisController
   ) {
     if (field == 'colorPalette') {
       return _shouldApplyColorPaletteWithoutOverwrite(current, incoming);
-    }
-    if (field == 'continuesFromPrevious' || field == 'continuesToNext') {
-      return current.trim().toLowerCase() != 'true' &&
-          incoming.trim().toLowerCase() == 'true';
     }
     return current.trim().isEmpty;
   }
@@ -550,8 +963,6 @@ class ShootingScriptAnalysisController
     'transitionHint' => shot.transitionHint,
     'movementTrend' => shot.movementTrend,
     'actionStage' => shot.actionStage,
-    'continuesFromPrevious' => shot.continuesFromPrevious.toString(),
-    'continuesToNext' => shot.continuesToNext.toString(),
     'cameraNotes' => shot.cameraNotes,
     'scene' => shot.scene,
     'productCode' => shot.productCode,
@@ -579,12 +990,6 @@ class ShootingScriptAnalysisController
         'transitionHint' => shot.copyWith(transitionHint: value),
         'movementTrend' => shot.copyWith(movementTrend: value),
         'actionStage' => shot.copyWith(actionStage: value),
-        'continuesFromPrevious' => shot.copyWith(
-          continuesFromPrevious: value.trim().toLowerCase() == 'true',
-        ),
-        'continuesToNext' => shot.copyWith(
-          continuesToNext: value.trim().toLowerCase() == 'true',
-        ),
         'cameraNotes' => shot.copyWith(cameraNotes: value),
         'scene' => shot.copyWith(scene: value),
         'productCode' => shot.copyWith(productCode: value),
@@ -592,6 +997,11 @@ class ShootingScriptAnalysisController
         'sound' => shot.copyWith(sound: value),
         _ => shot,
       };
+
+  static const _manualShotGroupFields = {
+    'continuesFromPrevious',
+    'continuesToNext',
+  };
 }
 
 extension<T> on Iterable<T> {

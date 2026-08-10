@@ -53,6 +53,7 @@ class SourceVideoPreviewResolver {
     required SourceVideo video,
     required List<VideoFrame> frames,
     required ScriptShot shot,
+    ScriptShot? endShot,
     required Directory workspaceRoot,
     double paddingSeconds = 1.5,
   }) {
@@ -63,6 +64,20 @@ class SourceVideoPreviewResolver {
     if (sourceVideo == null || video.durationMs <= 0) return null;
 
     final frame = _matchingFrame(frames, shot, workspaceRoot);
+    final rangeEndShot = endShot;
+    if (frame != null && rangeEndShot != null) {
+      final endFrame = _matchingFrame(frames, rangeEndShot, workspaceRoot);
+      final startMs = frame.timestampMs.clamp(0, video.durationMs);
+      final endMs = endFrame?.timestampMs.clamp(0, video.durationMs);
+      if (endMs != null && endMs > startMs) {
+        return SourceVideoPreviewRange(
+          sourceVideo: sourceVideo,
+          inPoint: Duration(milliseconds: startMs),
+          outPoint: Duration(milliseconds: endMs),
+          thumbnailFile: _firstExistingFile([frame.path], workspaceRoot),
+        );
+      }
+    }
     return SourceVideoPreviewRange.aroundFrame(
       sourceVideo: sourceVideo,
       timestampMs: frame?.timestampMs ?? 0,

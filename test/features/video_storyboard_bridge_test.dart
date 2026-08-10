@@ -442,6 +442,8 @@ class _FakeVideoStoryboardVisionService extends VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeImageCount++;

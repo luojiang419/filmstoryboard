@@ -46,8 +46,16 @@ class VisionImageAnalysis {
     required this.expression,
     required this.bodyAction,
     required this.movementTrend,
+    this.soundDesign = '',
     required this.shotSize,
     this.cameraMovement = '',
+    this.cameraDesign = '',
+    this.cameraPurpose = '',
+    this.speedCurve = '',
+    this.startComposition = '',
+    this.endComposition = '',
+    this.focusPath = '',
+    this.transitionExecution = '',
     required this.composition,
     required this.subjectDirection,
     required this.gazeDirection,
@@ -76,7 +84,15 @@ class VisionImageAnalysis {
   final String expression;
   final String bodyAction;
   final String movementTrend;
+  final String soundDesign;
   final String cameraMovement;
+  final String cameraDesign;
+  final String cameraPurpose;
+  final String speedCurve;
+  final String startComposition;
+  final String endComposition;
+  final String focusPath;
+  final String transitionExecution;
   final String shotSize;
   final String composition;
   final String subjectDirection;
@@ -120,7 +136,15 @@ class VisionImageAnalysis {
       expression: expression,
       bodyAction: bodyAction,
       movementTrend: movementTrend,
+      soundDesign: soundDesign,
       cameraMovement: cameraMovement,
+      cameraDesign: cameraDesign,
+      cameraPurpose: cameraPurpose,
+      speedCurve: speedCurve,
+      startComposition: startComposition,
+      endComposition: endComposition,
+      focusPath: focusPath,
+      transitionExecution: transitionExecution,
       shotSize: shotSize,
       composition: composition,
       subjectDirection: subjectDirection,
@@ -142,6 +166,18 @@ class VisionImageAnalysis {
       rawResponse: rawResponse,
     );
   }
+}
+
+class VisionShotGroupAnalysis {
+  const VisionShotGroupAnalysis({
+    required this.frames,
+    required this.motion,
+    required this.rawResponse,
+  });
+
+  final List<VisionImageAnalysis> frames;
+  final VisionShotMotionAnalysis motion;
+  final String rawResponse;
 }
 
 class VisionStoryboardSummaryResult {
@@ -174,6 +210,13 @@ class VisionShotMotionAnalysis {
   const VisionShotMotionAnalysis({
     required this.isSameShot,
     required this.cameraMovement,
+    this.designedCameraMovement = '',
+    this.cameraPurpose = '',
+    this.speedCurve = '',
+    this.startComposition = '',
+    this.endComposition = '',
+    this.focusPath = '',
+    this.transitionExecution = '',
     required this.cameraAngle,
     required this.evidence,
     required this.rawResponse,
@@ -181,6 +224,13 @@ class VisionShotMotionAnalysis {
 
   final bool isSameShot;
   final String cameraMovement;
+  final String designedCameraMovement;
+  final String cameraPurpose;
+  final String speedCurve;
+  final String startComposition;
+  final String endComposition;
+  final String focusPath;
+  final String transitionExecution;
   final String cameraAngle;
   final String evidence;
   final String rawResponse;
@@ -255,6 +305,15 @@ class VisionStoryboardService {
 如果前后帧证据冲突，优先选择“画面中心/边缘参照物位移”所支持的运镜；证据不足时写“固定”或空字符串。
 ''';
 
+  static const _narrativeStyleExecutionGuide = '''
+叙事风格逐字段执行规则：
+1. 如果上文提供“已选镜头叙事风格执行契约（强制）”，它不是背景简介，而是本次镜头设计的强制规则。图片可见事实和用户已给事实优先；在不篡改这些事实的前提下，必须按执行契约重新设计叙事、画面材质、镜头节奏、动作连续性和声音。
+2. 不能只在 detail 中写一句风格名，也不能用“电影感、唯美、高级”等通用形容词代替执行。caption/detail、camera_design、shot_size、composition、camera_angle、visual_focus、lighting_mood、color_palette、body_action、movement_trend、action_stage、spatial_relation、sound_design、narrative_function 和 transition_hint 各字段必须互相一致地体现同一种镜头语法。
+3. 至少把两个该风格独有、可见或可听的特征写入对应字段；例如专属材质、特定动作机制、UI/文字规则、纸艺机关、节拍切点、品牌事实链或身份/空间锚点。不得只照抄执行契约原句，必须结合当前图片和故事改写成具体镜头内容。
+4. 如果执行契约包含固定阶段、时间段或故事脊柱，只输出当前镜头对应的阶段；根据“全局故事与当前镜头位置”判断阶段，不要把整套流程机械塞进一个镜头。
+5. hard constraints 与负向边界同样具有约束力。不得在正向字段中重新引入被禁止的材质、运动、文字、音频、品牌事实或叙事事件。
+''';
+
   http.Client _client;
   final bool _ownsClient;
   bool _closed = false;
@@ -269,6 +328,8 @@ class VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     _validateSettings(settings);
@@ -317,9 +378,11 @@ class VisionStoryboardService {
           columnIndex,
           hasPrevious: hasPrevious,
           hasNext: hasNext,
+          creativeBrief: creativeBrief,
+          storyContext: storyContext,
         ),
         images: imageDataUrls,
-        maxTokens: 1400,
+        maxTokens: 2200,
       );
       return _analysisFromContent(
         initialContent,
@@ -341,7 +404,7 @@ class VisionStoryboardService {
             rawResponse: initialContent,
             parseError: recoveryErrors.last,
           ),
-          maxTokens: 1400,
+          maxTokens: 2200,
         );
         return _analysisFromContent(
           repairedContent,
@@ -365,9 +428,11 @@ class VisionStoryboardService {
           columnIndex,
           hasPrevious: hasPrevious,
           hasNext: hasNext,
+          creativeBrief: creativeBrief,
+          storyContext: storyContext,
         ),
         images: imageDataUrls,
-        maxTokens: 1400,
+        maxTokens: 2200,
       );
       return _analysisFromContent(
         retryContent,
@@ -415,6 +480,22 @@ class VisionStoryboardService {
     required List<String> recoveryErrors,
   }) {
     final json = _extractJsonObject(content);
+    return _analysisFromJson(
+      json,
+      recoveryMode: recoveryMode,
+      rawResponse: rawResponse,
+      requestCount: requestCount,
+      recoveryErrors: recoveryErrors,
+    );
+  }
+
+  VisionImageAnalysis _analysisFromJson(
+    Map<String, dynamic> json, {
+    VisionImageRecoveryMode recoveryMode = VisionImageRecoveryMode.none,
+    required String rawResponse,
+    required int requestCount,
+    required List<String> recoveryErrors,
+  }) {
     final caption = _stringValue(json, 'caption');
     final detail = _stringValue(json, 'detail');
     if (caption.isEmpty || detail.isEmpty) {
@@ -436,9 +517,37 @@ class VisionStoryboardService {
         'movement_trend',
         'movementTrend',
       ]),
+      soundDesign: _firstStringValue(json, const [
+        'sound_design',
+        'soundDesign',
+      ]),
       cameraMovement: _firstStringValue(json, const [
+        'observed_camera_movement',
+        'observedCameraMovement',
         'camera_movement',
         'cameraMovement',
+      ]),
+      cameraDesign: _firstStringValue(json, const [
+        'camera_design',
+        'cameraDesign',
+      ]),
+      cameraPurpose: _firstStringValue(json, const [
+        'camera_purpose',
+        'cameraPurpose',
+      ]),
+      speedCurve: _firstStringValue(json, const ['speed_curve', 'speedCurve']),
+      startComposition: _firstStringValue(json, const [
+        'start_composition',
+        'startComposition',
+      ]),
+      endComposition: _firstStringValue(json, const [
+        'end_composition',
+        'endComposition',
+      ]),
+      focusPath: _firstStringValue(json, const ['focus_path', 'focusPath']),
+      transitionExecution: _firstStringValue(json, const [
+        'transition_execution',
+        'transitionExecution',
       ]),
       shotSize: _firstStringValue(json, const ['shot_size', 'shotSize']),
       composition: _stringValue(json, 'composition'),
@@ -498,6 +607,74 @@ class VisionStoryboardService {
       requestCount: requestCount,
       recoveryErrors: List.unmodifiable(recoveryErrors),
       rawResponse: rawResponse,
+    );
+  }
+
+  /// Analyzes every frame in a start/end-frame shot group and its motion in one
+  /// multimodal API request. Image order is preserved as the time order.
+  Future<VisionShotGroupAnalysis> analyzeShotGroupImages({
+    required AppSettings settings,
+    required List<File> imageFiles,
+    required int shotNumber,
+    String creativeBrief = '',
+    String storyContext = '',
+    String neighboringCameraPlan = '',
+    bool allowThinking = false,
+  }) async {
+    if (imageFiles.length < 2) {
+      throw const FormatException('组级视觉解析至少需要两帧');
+    }
+    final content = await complete(
+      settings: settings,
+      prompt: _shotGroupAnalysisPrompt(
+        shotNumber: shotNumber,
+        frameCount: imageFiles.length,
+        creativeBrief: creativeBrief,
+        storyContext: storyContext,
+        neighboringCameraPlan: neighboringCameraPlan,
+      ),
+      imageFiles: imageFiles,
+      maxTokens: 4200,
+      allowThinking: allowThinking,
+    );
+    final json = _extractJsonObject(content);
+    final rawFrames = json['frames'];
+    if (rawFrames is! List) {
+      throw const FormatException('镜头组视觉模型未返回 frames 数组');
+    }
+    final frameMaps = rawFrames
+        .whereType<Map>()
+        .map(
+          (item) => <String, dynamic>{
+            for (final entry in item.entries) '${entry.key}': entry.value,
+          },
+        )
+        .toList(growable: false);
+    if (frameMaps.length != imageFiles.length) {
+      throw FormatException(
+        '镜头组视觉模型返回 ${frameMaps.length} 帧，期望 ${imageFiles.length} 帧',
+      );
+    }
+    final rawMotion = json['motion'];
+    if (rawMotion is! Map) {
+      throw const FormatException('镜头组视觉模型未返回 motion 对象');
+    }
+    final motionJson = <String, dynamic>{
+      for (final entry in rawMotion.entries) '${entry.key}': entry.value,
+    };
+    return VisionShotGroupAnalysis(
+      frames: List.unmodifiable(
+        frameMaps.map(
+          (frame) => _analysisFromJson(
+            frame,
+            rawResponse: '',
+            requestCount: 1,
+            recoveryErrors: const [],
+          ),
+        ),
+      ),
+      motion: _shotMotionFromJson(motionJson, rawResponse: content),
+      rawResponse: content,
     );
   }
 
@@ -575,6 +752,9 @@ class VisionStoryboardService {
     required List<File> imageFiles,
     required List<VisionImageAnalysis> analyses,
     required int shotNumber,
+    String creativeBrief = '',
+    String storyContext = '',
+    String neighboringCameraPlan = '',
     bool allowThinking = false,
   }) async {
     if (imageFiles.length < 2 || analyses.length < 2) {
@@ -588,26 +768,55 @@ class VisionStoryboardService {
       prompt: _shotMotionPrompt(
         shotNumber: shotNumber,
         analyses: selectedAnalyses,
+        creativeBrief: creativeBrief,
+        storyContext: storyContext,
+        neighboringCameraPlan: neighboringCameraPlan,
       ),
       imageFiles: selectedImages,
-      maxTokens: 900,
+      maxTokens: 1800,
       allowThinking: allowThinking,
     );
     final json = _extractJsonObject(content);
-    return VisionShotMotionAnalysis(
-      isSameShot: _boolValue(json, const ['is_same_shot', 'isSameShot']),
-      cameraMovement: _firstStringValue(json, const [
-        'camera_movement',
-        'cameraMovement',
-      ]),
-      cameraAngle: _firstStringValue(json, const [
-        'camera_angle',
-        'cameraAngle',
-      ]),
-      evidence: _stringValue(json, 'evidence'),
-      rawResponse: content,
-    );
+    return _shotMotionFromJson(json, rawResponse: content);
   }
+
+  VisionShotMotionAnalysis _shotMotionFromJson(
+    Map<String, dynamic> json, {
+    required String rawResponse,
+  }) => VisionShotMotionAnalysis(
+    isSameShot: _boolValue(json, const ['is_same_shot', 'isSameShot']),
+    cameraMovement: _firstStringValue(json, const [
+      'observed_camera_movement',
+      'observedCameraMovement',
+      'camera_movement',
+      'cameraMovement',
+    ]),
+    designedCameraMovement: _firstStringValue(json, const [
+      'designed_camera_movement',
+      'designedCameraMovement',
+    ]),
+    cameraPurpose: _firstStringValue(json, const [
+      'camera_purpose',
+      'cameraPurpose',
+    ]),
+    speedCurve: _firstStringValue(json, const ['speed_curve', 'speedCurve']),
+    startComposition: _firstStringValue(json, const [
+      'start_composition',
+      'startComposition',
+    ]),
+    endComposition: _firstStringValue(json, const [
+      'end_composition',
+      'endComposition',
+    ]),
+    focusPath: _firstStringValue(json, const ['focus_path', 'focusPath']),
+    transitionExecution: _firstStringValue(json, const [
+      'transition_execution',
+      'transitionExecution',
+    ]),
+    cameraAngle: _firstStringValue(json, const ['camera_angle', 'cameraAngle']),
+    evidence: _stringValue(json, 'evidence'),
+    rawResponse: rawResponse,
+  );
 
   Future<VisionStoryboardCaptionRewriteResult> rewriteStoryboardCaptions({
     required AppSettings settings,
@@ -975,6 +1184,8 @@ class VisionStoryboardService {
     int columnIndex, {
     bool hasPrevious = false,
     bool hasNext = false,
+    String creativeBrief = '',
+    String storyContext = '',
   }) {
     final sequenceGuide = switch ((hasPrevious, hasNext)) {
       (true, true) =>
@@ -983,16 +1194,35 @@ class VisionStoryboardService {
       (false, true) => '本次按时间顺序提供两张图：当前帧、下一帧。所有主体、动作和运动字段必须以第一张当前帧为中心，结合下一帧判断。',
       (false, false) => '本次只提供当前帧；无法可靠判断运动方向时必须明确写不明显。',
     };
+    final directorContext = _directorContext(
+      creativeBrief: creativeBrief,
+      storyContext: storyContext,
+    );
     return '''
-你正在为故事板自动生成画面描述，并为后续自动重排序提取专业镜头线索。
+你正在为故事板构建可直接执行的导演脚本。先忠实识别画面事实，再根据故事作用设计镜头语言；“观测到什么”和“建议怎么拍”必须分开回答。
 请分析第 $sequenceNo 张图片，它位于第 ${rowIndex + 1} 行、第 ${columnIndex + 1} 列。
 $sequenceGuide
 禁止根据单帧姿态猜测运动：只有前后帧出现可见位移、姿态推进或动作结果时，才能判断运动趋势和动作阶段。
 $_cameraMovementGuide
+$directorContext
+$_narrativeStyleExecutionGuide
+导演式运镜设计规则：
+1. camera_movement 只记录参考画面可证实的原始运镜；camera_design 才是根据叙事功能、内容类型和镜头位置设计的最终执行方案。
+2. camera_design 必须写清起始机位/构图、运动路径与幅度、速度变化、焦点落点，形成“起势—过程—落点”，不能只写“推、拉、摇、移、固定”。
+3. 运镜服务叙事：建立交代空间，推进跟随动作，揭示通过遮挡/角度/焦点变化制造信息出现，产品记忆点强调材质与轮廓，反应镜头强调情绪，收束镜头给出明确视觉句号。
+4. 内容类型不同，镜头语法必须不同：品牌宣传强调自信、精确、英雄化与商业节拍；极简产品展示强调微距、轮廓光、受控弧线/滑轨与材质焦点；剧情强调视线、关系、悬念与因果；MV 强调节拍、身体动势和转场动机；手作/纸艺强调触感、层次和定格节奏。
+5. 不得为“丰富”而无目的堆叠运镜。一个镜头只保留一条可执行主路径，最多组合两个连续动作，并说明组合原因。
+6. “固定/锁定机位”只能是主动设计：必须说明为何静止、画内动作如何调度、最终视觉落点是什么。证据不足不能自动批量写固定。
+7. 结合前后镜头避免连续重复相同运镜；若沿用同类运动，必须改变幅度、方向、速度曲线或叙事目的。
+音效设计规则：
+1. sound_design 只写画面可见环境、动作和道具接触能够直接支持的声音，不写对白、旁白或背景音乐。
+2. 按事件写清“什么动作触发什么声音”，有前后帧时结合动作阶段安排先后；脚步、触碰、开合、碰撞、摩擦等必须逐次贴合对应画面事件。
+3. 所有声音按真实时间速度播放，保持自然音高、正常瞬态和合理空间距离；禁止慢放、时间拉伸、低沉变调、拖长尾音、过长混响或把多个动作合成一声。
+4. 画面没有可证实的发声事件时，只保留与场景匹配的自然环境底噪，不为丰富而编造音效。
 请判断当前动作是否承接上一帧、是否继续到下一帧；必须同时满足人物/主体、场景和动作因果连续，单纯处于同一场景不算同一组动作。
 描述要有镜头画面感：把主体、环境、动作、情绪、光线、视觉焦点和镜头意图连成一句自然中文。
 称呼规范：成年女性统一称为“女模特”，成年男性统一称为“男模特”，不要使用“女子”“男子”。
-请额外细分神态、姿态动作、运动趋势、景别、构图、人物朝向、视线方向、动作阶段、空间关系、时间进度线索、机位角度、视觉焦点、光线情绪、色彩调性、镜头叙事功能和剪辑承接。
+请额外细分神态、姿态动作、运动趋势、景别、构图、镜头运镜、人物朝向、视线方向、动作阶段、空间关系、时间进度线索、机位角度、视觉焦点、光线情绪、色彩调性、镜头叙事功能和剪辑承接。
 景别只能从全景/中景/近景/特写/大全景/远景/中近景/大特写中选择一个；动作阶段优先判断为建立/准备/进行/反应/结果/收束/静态。
 人物朝向和视线方向必须以观看图片时的画面左/右为准，不是人物自身左右；需要写清楚面向画面左/右/正面/背向/三分之二侧面，以及看向画内主体、画外方向、镜头或不明显。
 运动趋势包括向左、向右、靠近、远离、起身、坐下、转身等可见方向或动作变化。
@@ -1014,7 +1244,15 @@ JSON 字段：
   "expression": "面部神态、视线方向和情绪状态；没有人物则写空字符串",
   "body_action": "身体姿态和正在发生的动作，例如站立、倚靠、伸手、起身、回头",
  "movement_trend": "可见方向、位移或动作趋势，例如向右行走、身体左转、准备起身；无法判断则写静止不明显",
-  "camera_movement": "镜头运镜，只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；必须依据前后帧构图/边缘参照物/主体尺度证据选择；单张画面无法可靠判断时写空字符串",
+  "sound_design": "画面可证实的环境声与物理动作声；写明触发动作、声音类型和同步关系，使用真实时间速度与自然音高，禁止慢放、拉伸、低沉变调和过长混响；不写对白或背景音乐",
+  "camera_movement": "参考画面中可证实的原始运镜，只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；单张画面无法可靠判断时写空字符串",
+  "camera_design": "导演式最终运镜方案；自然中文写清起始状态、主运动路径/幅度、速度变化和结束落点，不得只写运镜标签",
+  "camera_purpose": "这条运镜在本镜头中的单一核心叙事目的",
+  "speed_curve": "速度曲线，例如静止蓄势—快速横移—末段缓停，或匀速跟随—动作发生时短促加速—产品特写前减速锁定",
+  "start_composition": "镜头开始时的景别、机位、主体位置、前景/背景关系",
+  "end_composition": "镜头结束时的景别、机位、主体位置与视觉落点",
+  "focus_path": "观众注意力或焦点如何从起点转移到最终落点",
+  "transition_execution": "与上一镜头切入及下一镜头切出的具体执行方式，包含动作、方向、遮挡、构图或声音匹配",
   "shot_size": "景别，只能从全景、中景、近景、特写、大全景、远景、中近景、大特写中选择一个；无法判断时写空字符串",
   "composition": "构图和主体位置，例如主体居中、左侧留白、右侧前景遮挡、俯视/仰视",
   "subject_direction": "人物或主体朝向，例如面向画面右侧、背对镜头、正面看向镜头、无人物/不适用",
@@ -1040,13 +1278,15 @@ JSON 字段：
     int columnIndex, {
     bool hasPrevious = false,
     bool hasNext = false,
+    String creativeBrief = '',
+    String storyContext = '',
   }) {
     return '''
 上一次解析第 $sequenceNo 张图片时，模型响应无法通过标准 JSON 校验。
 请重新观察图片并完整分析，不要复用上一次的错误格式。
 特别注意：JSON 字符串内部禁止出现未转义英文双引号；画面文字统一使用中文引号“”。
 
-${_imagePrompt(sequenceNo, rowIndex, columnIndex, hasPrevious: hasPrevious, hasNext: hasNext)}
+${_imagePrompt(sequenceNo, rowIndex, columnIndex, hasPrevious: hasPrevious, hasNext: hasNext, creativeBrief: creativeBrief, storyContext: storyContext)}
 ''';
   }
 
@@ -1086,6 +1326,7 @@ JSON 字段：
   "people": "人物与可见动作",
   "body_action": "身体姿态和动作",
   "movement_trend": "可见运动方向或静止不明显",
+  "sound_design": "画面可证实且与动作逐次同步的自然环境声和物理声；真实速度、自然音高，不写对白或背景音乐",
   "camera_movement": "镜头运镜；从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；无法可靠判断时写空字符串",
   "shot_size": "景别",
   "composition": "构图与主体位置",
@@ -1217,18 +1458,82 @@ JSON 字段：
     return [analyses.first, analyses[analyses.length ~/ 2], analyses.last];
   }
 
+  String _shotGroupAnalysisPrompt({
+    required int shotNumber,
+    required int frameCount,
+    String creativeBrief = '',
+    String storyContext = '',
+    String neighboringCameraPlan = '',
+  }) {
+    final directorContext = _directorContext(
+      creativeBrief: creativeBrief,
+      storyContext: storyContext,
+      neighboringCameraPlan: neighboringCameraPlan,
+    );
+    return '''
+你正在为第 $shotNumber 个连续镜头组完成一次性多帧视觉解析和导演式运镜设计。
+本次请求按时间顺序提供 $frameCount 张图片；两张时为首帧、尾帧，三张或更多时为首帧、中间帧、尾帧的完整时间序列。
+必须同时对比全部图片后再判断主体动作、空间连续性、构图变化和运镜，不要把它们当成互不相关的独立分镜。
+$_cameraMovementGuide
+$directorContext
+$_narrativeStyleExecutionGuide
+
+返回一个 JSON 对象，不要 Markdown，不要解释。
+frames 数组必须严格按输入图片顺序返回 $frameCount 项，每项必须包含：
+caption, detail, scene, props, people, expression, body_action, movement_trend,
+sound_design,
+shot_size, composition, subject_direction, gaze_direction, action_stage,
+spatial_relation, chronology_cue, camera_angle, visual_focus, lighting_mood,
+color_palette, narrative_function, transition_hint, continues_from_previous,
+continues_to_next。
+
+motion 对象必须综合全部帧，包含：
+is_same_shot, observed_camera_movement, designed_camera_movement,
+camera_purpose, speed_curve, start_composition, end_composition, focus_path,
+transition_execution, camera_angle, evidence。
+
+designed_camera_movement 要写清起始状态、主路径与幅度、速度变化和结束落点；先用 observed_camera_movement 记录多帧可证实的原始运镜。
+每个 frame 的 sound_design 必须根据该动作阶段写清可听事件与触发动作；跨帧动作按图片顺序连续安排，所有音效按真实时间速度逐次贴合画面，保持自然音高和正常瞬态，禁止慢放、时间拉伸、低沉变调、拖尾或过长混响，不写对白或背景音乐。
+对同一镜头，背景、场景、主体身份和空间关系应连续；只有可见内容突然切换时才将 is_same_shot 设为 false。
+
+JSON 结构：
+下方 frames 内容只示意单项字段；实际返回时必须按图片顺序重复为 $frameCount 项，不得少项。
+{
+  "frames": [
+    {"caption":"", "detail":"", "scene":"", "props":"", "people":"", "expression":"", "body_action":"", "movement_trend":"", "sound_design":"", "shot_size":"", "composition":"", "subject_direction":"", "gaze_direction":"", "action_stage":"", "spatial_relation":"", "chronology_cue":"", "camera_angle":"", "visual_focus":"", "lighting_mood":"", "color_palette":"", "narrative_function":"", "transition_hint":"", "continues_from_previous":false, "continues_to_next":true}
+  ],
+  "motion": {"is_same_shot":true, "observed_camera_movement":"", "designed_camera_movement":"", "camera_purpose":"", "speed_curve":"", "start_composition":"", "end_composition":"", "focus_path":"", "transition_execution":"", "camera_angle":"", "evidence":""}
+}
+''';
+  }
+
   String _shotMotionPrompt({
     required int shotNumber,
     required List<VisionImageAnalysis> analyses,
+    String creativeBrief = '',
+    String storyContext = '',
+    String neighboringCameraPlan = '',
   }) {
+    final directorContext = _directorContext(
+      creativeBrief: creativeBrief,
+      storyContext: storyContext,
+      neighboringCameraPlan: neighboringCameraPlan,
+    );
     final buffer = StringBuffer()
-      ..writeln('你正在复核参考视频第 $shotNumber 个镜头组的运镜和机位角度。')
+      ..writeln('你正在为第 $shotNumber 个连续镜头组完成“原始运镜复核 + 导演式最终运镜设计”。')
       ..writeln('本次按时间顺序提供同一候选镜头组的首帧、中间帧、尾帧；如果只有两帧，则为首帧和尾帧。')
       ..writeln(
         '核心规则：同一镜头通常背景、场景、主体身份和空间关系连续，背景不变或变化很少；这时必须把多帧作为一个连续镜头判断运镜，不要逐帧孤立猜测。',
       )
       ..writeln('如果背景/场景/主体突然切换，才判定不是同一镜头，并在 evidence 说明切换证据。')
       ..writeln(_cameraMovementGuide)
+      ..writeln(directorContext)
+      ..writeln(_narrativeStyleExecutionGuide)
+      ..writeln(
+        '先用 observed_camera_movement 忠实记录多帧证据，再用 designed_camera_movement 输出最终方案。',
+      )
+      ..writeln('最终方案必须服务当前镜头的叙事功能和内容类型，写清起势、路径、幅度、速度曲线与落点；大胆但可执行，不得机械复制原始运镜。')
+      ..writeln('检查相邻镜头计划，避免连续重复固定、轻推或同方向平移。固定只能是有明确画内调度和视觉目的的主动选择。')
       ..writeln('必须特别区分：')
       ..writeln('A. 画面从腰部/下半身上移到上半身/脸部，背景基本连续，这是升降或上摇，不是推。')
       ..writeln('B. 只有主体和背景整体同步变大、透视或空间纵深支持摄影机靠近，才是推。')
@@ -1240,8 +1545,17 @@ JSON 字段：
       ..writeln('{')
       ..writeln('  "is_same_shot": "true 或 false",')
       ..writeln(
-        '  "camera_movement": "只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；无法可靠判断时写固定",',
+        '  "observed_camera_movement": "参考多帧可证实的原始运镜；只能从固定、推、拉、摇、移、跟、环绕、升降、正跟随、倒跟随、手持、平移、摇移中选择一个；无法判断写空字符串",',
       )
+      ..writeln(
+        '  "designed_camera_movement": "导演式最终运镜，写清起始状态、主路径和幅度、速度变化、结束落点",',
+      )
+      ..writeln('  "camera_purpose": "唯一核心叙事目的",')
+      ..writeln('  "speed_curve": "可执行的速度曲线",')
+      ..writeln('  "start_composition": "开始景别、机位、主体位置和空间层次",')
+      ..writeln('  "end_composition": "结束景别、机位、主体位置和视觉落点",')
+      ..writeln('  "focus_path": "注意力或焦点从哪里转移到哪里",')
+      ..writeln('  "transition_execution": "承上启下的具体剪辑衔接执行",')
       ..writeln(
         '  "camera_angle": "组级机位角度，例如眼平、低角度仰拍、俯视、轻微上摇到眼平、过肩；无法判断时写不明显",',
       )
@@ -1266,6 +1580,21 @@ JSON 字段：
         ..writeln();
     }
     return buffer.toString();
+  }
+
+  static String _directorContext({
+    required String creativeBrief,
+    required String storyContext,
+    String neighboringCameraPlan = '',
+  }) {
+    final parts = <String>[
+      if (creativeBrief.trim().isNotEmpty)
+        '已选镜头叙事风格执行契约（强制）：\n${creativeBrief.trim()}',
+      if (storyContext.trim().isNotEmpty) '全局故事与当前镜头位置：${storyContext.trim()}',
+      if (neighboringCameraPlan.trim().isNotEmpty)
+        '相邻镜头已采用的运镜：${neighboringCameraPlan.trim()}',
+    ];
+    return parts.isEmpty ? '创作方向：通用电影化叙事，运镜必须服务镜头功能。' : parts.join('\n');
   }
 
   String _orderPrompt(List<VisionImageAnalysis> analyses) {

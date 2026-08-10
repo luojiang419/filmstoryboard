@@ -552,6 +552,8 @@ class _BlockingVisionStoryboardService extends VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     if (!started.isCompleted) {
@@ -583,6 +585,8 @@ class _ConcurrentVisionStoryboardService extends VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     _activeRequests++;
@@ -650,6 +654,8 @@ class _ShotMotionVisionStoryboardService extends VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     return VisionImageAnalysis(
@@ -692,6 +698,9 @@ class _ShotMotionVisionStoryboardService extends VisionStoryboardService {
     required List<VisionImageAnalysis> analyses,
     required int shotNumber,
     bool allowThinking = false,
+    String creativeBrief = '',
+    String storyContext = '',
+    String neighboringCameraPlan = '',
   }) async {
     shotMotionRequestCount++;
     expect(imageFiles, hasLength(3));

@@ -99,6 +99,34 @@ class VideoActionSequenceResolver {
     return List.unmodifiable(result);
   }
 
+  List<VideoActionSequence> resolveConfiguredGroups(
+    List<ScriptShot> shots, {
+    List<StartEndFramePair> pairs = const [],
+  }) {
+    if (shots.isEmpty) return const [];
+    final ordered = [...shots]
+      ..sort((first, second) => first.shotNumber.compareTo(second.shotNumber));
+    final configuredPairs = <StartEndFramePair>[...pairs];
+    var groupStart = 0;
+    for (var index = 1; index <= ordered.length; index++) {
+      final continues =
+          index < ordered.length &&
+          ordered[index - 1].continuesToNext &&
+          ordered[index].continuesFromPrevious;
+      if (continues) continue;
+      if (index - groupStart > 1) {
+        configuredPairs.add(
+          StartEndFramePair(
+            startShotId: ordered[groupStart].id,
+            tailShotId: ordered[index - 1].id,
+          ),
+        );
+      }
+      groupStart = index;
+    }
+    return resolveManual(ordered, configuredPairs);
+  }
+
   VideoActionSequence sequenceFor(List<ScriptShot> shots, String shotId) =>
       resolve(shots).firstWhere(
         (sequence) => sequence.contains(shotId),

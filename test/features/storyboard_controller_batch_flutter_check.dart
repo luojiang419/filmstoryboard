@@ -2829,6 +2829,8 @@ class _FakeVisionStoryboardService extends VisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     analyzeImageCount++;
@@ -3006,6 +3008,8 @@ class _BlockingVisionStoryboardService extends _FakeVisionStoryboardService {
     bool allowThinking = false,
     File? previousImageFile,
     File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
     void Function(VisionImageRecoveryMode mode)? onRecovery,
   }) async {
     if (!analysisStarted.isCompleted) {
@@ -3021,6 +3025,8 @@ class _BlockingVisionStoryboardService extends _FakeVisionStoryboardService {
       allowThinking: allowThinking,
       previousImageFile: previousImageFile,
       nextImageFile: nextImageFile,
+      creativeBrief: creativeBrief,
+      storyContext: storyContext,
       onRecovery: onRecovery,
     );
   }

@@ -44,6 +44,7 @@ class SettingsRepository {
       'videoStartEndFrameModeEnabled';
   static const _replicateDefaultGlobalStyleKey = 'replicateDefaultGlobalStyle';
   static const _replicateDefaultConstraintsKey = 'replicateDefaultConstraints';
+  static const _h3PromptStyleIdKey = 'h3PromptStyleId';
   static const _cutImageNumberEnabledKey = 'cutImageNumberEnabled';
   static const _cutImageNumberPositionKey = 'cutImageNumberPosition';
   static const _cutImageNumberBackgroundOpacityKey =
@@ -202,6 +203,9 @@ class SettingsRepository {
       replicateDefaultConstraints:
           _database.getSetting(_replicateDefaultConstraintsKey) ??
           AppSettings.defaultReplicateConstraints,
+      h3PromptStyleId:
+          _database.getSetting(_h3PromptStyleIdKey) ??
+          AppSettings.defaultH3PromptStyleId,
       cutImageNumberEnabled:
           _database.getSetting(_cutImageNumberEnabledKey) == 'true',
       cutImageNumberPosition: CutImageNumberPosition.fromName(
@@ -298,6 +302,7 @@ class SettingsRepository {
         _replicateDefaultConstraintsKey,
         settings.replicateDefaultConstraints,
       )
+      ..setSetting(_h3PromptStyleIdKey, settings.h3PromptStyleId)
       ..setSetting(
         _cutImageNumberEnabledKey,
         settings.cutImageNumberEnabled.toString(),
@@ -424,6 +429,7 @@ class SettingsRepository {
       videoStartEndFrameModeEnabled: false,
       replicateDefaultGlobalStyle: AppSettings.defaultReplicateGlobalStyle,
       replicateDefaultConstraints: AppSettings.defaultReplicateConstraints,
+      h3PromptStyleId: AppSettings.defaultH3PromptStyleId,
       cutImageNumberEnabled: false,
       cutImageNumberPosition: CutImageNumberPosition.topLeft,
       cutImageNumberBackgroundOpacity:

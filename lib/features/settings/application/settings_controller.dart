@@ -93,6 +93,15 @@ class SettingsController extends ValueNotifier<AppSettings> {
     value = next;
   }
 
+  Future<void> setH3PromptStyleId(String styleId) async {
+    final normalized = styleId.trim().isEmpty
+        ? AppSettings.defaultH3PromptStyleId
+        : styleId.trim();
+    final next = value.copyWith(h3PromptStyleId: normalized);
+    _repository.save(next);
+    value = next;
+  }
+
   Future<void> setCutImageNumberEnabled(bool enabled) async {
     final next = value.copyWith(cutImageNumberEnabled: enabled);
     _repository.save(next);

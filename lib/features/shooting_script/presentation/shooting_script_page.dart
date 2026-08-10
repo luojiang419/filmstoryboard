@@ -13,6 +13,7 @@ import '../../replicate/application/replicate_controller.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../replicate/domain/replicate_models.dart';
 import '../../replicate/presentation/replicate_page.dart';
+import '../../replicate/presentation/replicate_shot_navigation_controller.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../video_analysis/application/video_analysis_controller.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
@@ -54,15 +55,22 @@ class ShootingScriptPage extends ConsumerStatefulWidget {
 class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
   static const _collapsedPanelWidth = 56.0;
   static const _minimumScriptPanelWidth = 220.0;
-  static const _minimumAssetPanelWidth = 220.0;
+  static const _minimumStepPanelWidth = 260.0;
   static const _minimumWorkspaceWidth = 360.0;
   static const _panelGap = 8.0;
   static const _resizeHandleWidth = 10.0;
 
   var _scriptPanelWidth = 280.0;
-  var _assetPanelWidth = 260.0;
+  var _stepPanelWidth = 330.0;
   var _scriptPanelCollapsed = false;
-  var _assetPanelCollapsed = false;
+  var _stepPanelCollapsed = false;
+  final _shotNavigationController = ReplicateShotNavigationController();
+
+  @override
+  void dispose() {
+    _shotNavigationController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -99,6 +107,11 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                             _renameScript(context, controller, state),
                         onDelete: () =>
                             _deleteScript(context, controller, state),
+                        onManageAssets: () => _openAssetManager(
+                          context,
+                          assetLibraryController,
+                          replicateController,
+                        ),
                       ),
                       if (state.message.isNotEmpty ||
                           state.errorMessage.isNotEmpty ||
@@ -164,25 +177,19 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                   storyboardController.value.selectedBoard !=
                                   null,
                             );
-                            final workspace = ReplicatePage(
-                              key: const ValueKey('shooting-script-workflow'),
-                              embedded: true,
-                              onOpenShootingScript: () {},
-                            );
-                            final assetPanel = _AssetLibraryPanel(
-                              state: libraryState,
-                              collapsed: _assetPanelCollapsed,
-                              onManage: () => _openAssetManager(
-                                context,
-                                assetLibraryController,
-                                replicateController,
-                              ),
-                              onToggleCollapsed: () => setState(
-                                () => _assetPanelCollapsed =
-                                    !_assetPanelCollapsed,
-                              ),
-                            );
                             if (constraints.maxWidth < 900) {
+                              final workspace = ReplicatePage(
+                                key: const ValueKey('shooting-script-workflow'),
+                                embedded: true,
+                                onManageAssets: () => _openAssetManager(
+                                  context,
+                                  assetLibraryController,
+                                  replicateController,
+                                ),
+                                shotNavigationController:
+                                    _shotNavigationController,
+                                onOpenShootingScript: () {},
+                              );
                               return Column(
                                 children: [
                                   SizedBox(
@@ -194,7 +201,22 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                 ],
                               );
                             }
-                            if (constraints.maxWidth < 1100) {
+                            final useOuterStepPanel =
+                                constraints.maxWidth >= 1100;
+                            final workspace = ReplicatePage(
+                              key: const ValueKey('shooting-script-workflow'),
+                              embedded: true,
+                              externalizeStepRightPanel: useOuterStepPanel,
+                              onManageAssets: () => _openAssetManager(
+                                context,
+                                assetLibraryController,
+                                replicateController,
+                              ),
+                              shotNavigationController:
+                                  _shotNavigationController,
+                              onOpenShootingScript: () {},
+                            );
+                            if (!useOuterStepPanel) {
                               final availableWidth =
                                   constraints.maxWidth -
                                   _panelGap -
@@ -243,20 +265,20 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                             final minimumLeft = _scriptPanelCollapsed
                                 ? _collapsedPanelWidth
                                 : _minimumScriptPanelWidth;
-                            final minimumRight = _assetPanelCollapsed
+                            final minimumRight = _stepPanelCollapsed
                                 ? _collapsedPanelWidth
-                                : _minimumAssetPanelWidth;
+                                : _minimumStepPanelWidth;
                             final maximumRight = math.max(
                               minimumRight,
                               availablePanels -
                                   _minimumWorkspaceWidth -
                                   minimumLeft,
                             );
-                            final assetWidth = _assetPanelCollapsed
+                            final stepPanelWidth = _stepPanelCollapsed
                                 ? _collapsedPanelWidth
-                                : _assetPanelWidth
+                                : _stepPanelWidth
                                       .clamp(
-                                        _minimumAssetPanelWidth,
+                                        _minimumStepPanelWidth,
                                         maximumRight,
                                       )
                                       .toDouble();
@@ -264,7 +286,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                               minimumLeft,
                               availablePanels -
                                   _minimumWorkspaceWidth -
-                                  assetWidth,
+                                  stepPanelWidth,
                             );
                             final scriptWidth = _scriptPanelCollapsed
                                 ? _collapsedPanelWidth
@@ -299,21 +321,37 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                 const SizedBox(width: _panelGap),
                                 _PanelResizeHandle(
                                   key: const ValueKey(
-                                    'shooting-script-right-resize-handle',
+                                    'shooting-script-step-right-resize-handle',
                                   ),
-                                  onDrag: _assetPanelCollapsed
+                                  onDrag: _stepPanelCollapsed
                                       ? null
                                       : (delta) => setState(() {
-                                          _assetPanelWidth =
-                                              (assetWidth - delta)
+                                          _stepPanelWidth =
+                                              (stepPanelWidth - delta)
                                                   .clamp(
-                                                    _minimumAssetPanelWidth,
+                                                    _minimumStepPanelWidth,
                                                     maximumRight,
                                                   )
                                                   .toDouble();
                                         }),
                                 ),
-                                SizedBox(width: assetWidth, child: assetPanel),
+                                SizedBox(
+                                  width: stepPanelWidth,
+                                  child: ReplicateEmbeddedStepRightPanel(
+                                    collapsed: _stepPanelCollapsed,
+                                    shotNavigationController:
+                                        _shotNavigationController,
+                                    onManageAssets: () => _openAssetManager(
+                                      context,
+                                      assetLibraryController,
+                                      replicateController,
+                                    ),
+                                    onToggleCollapsed: () => setState(
+                                      () => _stepPanelCollapsed =
+                                          !_stepPanelCollapsed,
+                                    ),
+                                  ),
+                                ),
                               ],
                             );
                           },
@@ -361,6 +399,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
           replicateController: replicateController,
           onPickFiles: _pickLibraryFiles,
           onManualAdd: _manualAddLibraryAsset,
+          onGenerate: _generateLibraryAsset,
           onEdit: _editLibraryAsset,
         ),
       ),
@@ -411,6 +450,39 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     );
   }
 
+  Future<void> _generateLibraryAsset(
+    BuildContext context,
+    ShootingAssetLibraryController libraryController,
+    ReplicateController replicateController,
+    ReplicateAssetType initialType,
+  ) async {
+    final result = await _showLibraryAssetEditor(
+      context,
+      title: '按描述生成资产',
+      initialType: initialType.isImageType
+          ? initialType
+          : ReplicateAssetType.character,
+      allowTypeChange: true,
+      includePath: false,
+      imageTypesOnly: true,
+      confirmLabel: '开始生成',
+    );
+    if (result == null || result.description.trim().isEmpty) return;
+    final generated = await replicateController.generateImageAsset(
+      type: result.type,
+      name: result.name,
+      description: result.description,
+    );
+    if (generated == null || generated.path.trim().isEmpty) return;
+    await libraryController.importItem(
+      sourcePath: generated.path,
+      type: generated.type,
+      name: generated.name,
+      description: generated.description,
+      aliases: result.aliases,
+    );
+  }
+
   Future<void> _editLibraryAsset(
     BuildContext context,
     ShootingAssetLibraryController controller,
@@ -450,8 +522,12 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     String initialPath = '',
     required bool allowTypeChange,
     required bool includePath,
+    bool imageTypesOnly = false,
+    String confirmLabel = '保存',
   }) async {
-    var type = initialType;
+    var type = imageTypesOnly && !initialType.isImageType
+        ? ReplicateAssetType.character
+        : initialType;
     final nameController = TextEditingController(text: initialName);
     final descriptionController = TextEditingController(
       text: initialDescription,
@@ -473,7 +549,8 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                   decoration: const InputDecoration(labelText: '资产类型'),
                   items: [
                     for (final item in ReplicateAssetType.values)
-                      DropdownMenuItem(value: item, child: Text(item.label)),
+                      if (!imageTypesOnly || item.isImageType)
+                        DropdownMenuItem(value: item, child: Text(item.label)),
                   ],
                   onChanged: allowTypeChange
                       ? (value) {
@@ -531,7 +608,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                   path: pathController.text.trim(),
                 ),
               ),
-              child: const Text('保存'),
+              child: Text(confirmLabel),
             ),
           ],
         ),
@@ -709,6 +786,7 @@ class _PageHeader extends StatelessWidget {
     required this.onExportStoryboardImages,
     required this.onRename,
     required this.onDelete,
+    required this.onManageAssets,
   });
 
   final ShootingScriptState state;
@@ -716,6 +794,7 @@ class _PageHeader extends StatelessWidget {
   final VoidCallback onExportStoryboardImages;
   final VoidCallback onRename;
   final VoidCallback onDelete;
+  final VoidCallback onManageAssets;
 
   @override
   Widget build(BuildContext context) {
@@ -798,6 +877,12 @@ class _PageHeader extends StatelessWidget {
                 tooltip: '打开脚本导出目录',
                 onPressed: controller.openOutputDirectory,
                 icon: const Icon(Icons.folder_open_rounded),
+              ),
+              IconButton(
+                key: const ValueKey('manage-shooting-asset-library'),
+                tooltip: '管理资产库',
+                onPressed: onManageAssets,
+                icon: const Icon(Icons.tune_rounded),
               ),
               IconButton(
                 tooltip: '删除当前脚本',
@@ -1049,210 +1134,13 @@ class _PanelResizeHandle extends StatelessWidget {
   }
 }
 
-class _AssetLibraryPanel extends StatelessWidget {
-  const _AssetLibraryPanel({
-    required this.state,
-    required this.collapsed,
-    required this.onManage,
-    required this.onToggleCollapsed,
-  });
-
-  final ShootingAssetLibraryState state;
-  final bool collapsed;
-  final VoidCallback onManage;
-  final VoidCallback onToggleCollapsed;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow.withValues(alpha: 0.82),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
-      child: collapsed
-          ? Center(
-              child: IconButton(
-                key: const ValueKey('expand-asset-library-panel'),
-                tooltip: '展开资产库',
-                onPressed: onToggleCollapsed,
-                icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
-              ),
-            )
-          : Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '资产库',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ),
-                      IconButton.filledTonal(
-                        tooltip: '管理资产',
-                        onPressed: onManage,
-                        icon: const Icon(Icons.tune_rounded),
-                      ),
-                      IconButton(
-                        key: const ValueKey('collapse-asset-library-panel'),
-                        tooltip: '折叠资产库',
-                        onPressed: onToggleCollapsed,
-                        icon: const Icon(
-                          Icons.keyboard_double_arrow_right_rounded,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Expanded(
-                    child: state.items.isEmpty
-                        ? const Center(child: Text('暂无常用资产'))
-                        : _LazyAssetLibraryList(items: state.items),
-                  ),
-                ],
-              ),
-            ),
-    );
-  }
-}
-
-class _LazyAssetLibraryList extends StatelessWidget {
-  const _LazyAssetLibraryList({required this.items});
-
-  final List<ShootingAssetLibraryItem> items;
-
-  @override
-  Widget build(BuildContext context) {
-    final entries = <_AssetLibraryListEntry>[];
-    for (final type in ReplicateAssetType.values) {
-      final typedItems = [
-        for (final item in items)
-          if (item.type == type) item,
-      ];
-      if (typedItems.isEmpty) {
-        continue;
-      }
-      entries.add(_AssetLibraryListEntry.header(type, typedItems.length));
-      for (final item in typedItems) {
-        entries.add(_AssetLibraryListEntry.item(item));
-      }
-    }
-    return ListView.builder(
-      itemCount: entries.length,
-      itemBuilder: (context, index) {
-        final entry = entries[index];
-        if (entry.type case final type?) {
-          return Padding(
-            padding: const EdgeInsets.only(top: 8, bottom: 6),
-            child: Row(
-              children: [
-                Icon(type.icon, size: 16),
-                const SizedBox(width: 6),
-                Text(
-                  type.label,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  '${entry.itemCount}',
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-              ],
-            ),
-          );
-        }
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: _CompactLibraryAssetCard(item: entry.item!),
-        );
-      },
-    );
-  }
-}
-
-class _AssetLibraryListEntry {
-  const _AssetLibraryListEntry.header(this.type, this.itemCount) : item = null;
-
-  const _AssetLibraryListEntry.item(this.item) : type = null, itemCount = 0;
-
-  final ReplicateAssetType? type;
-  final int itemCount;
-  final ShootingAssetLibraryItem? item;
-}
-
-class _CompactLibraryAssetCard extends StatelessWidget {
-  const _CompactLibraryAssetCard({required this.item});
-
-  final ShootingAssetLibraryItem item;
-
-  @override
-  Widget build(BuildContext context) {
-    final child = Card(
-      margin: EdgeInsets.zero,
-      clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 58,
-              height: 58,
-              child: _LibraryAssetPreview(item, logicalWidth: 58),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  Text(
-                    item.type.label,
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                  if (item.description.isNotEmpty)
-                    Text(
-                      item.description,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-    return Draggable<ShootingAssetLibraryItem>(
-      data: item,
-      feedback: Material(
-        elevation: 8,
-        borderRadius: BorderRadius.circular(8),
-        child: SizedBox(width: 240, child: child),
-      ),
-      childWhenDragging: Opacity(opacity: 0.45, child: child),
-      child: child,
-    );
-  }
-}
-
 class _AssetManagerPage extends StatefulWidget {
   const _AssetManagerPage({
     required this.libraryController,
     required this.replicateController,
     required this.onPickFiles,
     required this.onManualAdd,
+    required this.onGenerate,
     required this.onEdit,
   });
 
@@ -1272,6 +1160,13 @@ class _AssetManagerPage extends StatefulWidget {
   onManualAdd;
   final Future<void> Function(
     BuildContext context,
+    ShootingAssetLibraryController libraryController,
+    ReplicateController replicateController,
+    ReplicateAssetType type,
+  )
+  onGenerate;
+  final Future<void> Function(
+    BuildContext context,
     ShootingAssetLibraryController controller,
     ShootingAssetLibraryItem item,
   )
@@ -1284,6 +1179,7 @@ class _AssetManagerPage extends StatefulWidget {
 class _AssetManagerPageState extends State<_AssetManagerPage> {
   ReplicateAssetType _type = ReplicateAssetType.character;
   var _isOpeningFilePicker = false;
+  var _isGeneratingAsset = false;
   var _isDraggingOver = false;
 
   Future<void> _pickFiles() async {
@@ -1316,6 +1212,21 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
           aliases: const <String>[],
         ),
     ]);
+  }
+
+  Future<void> _generateAsset() async {
+    if (_isGeneratingAsset || widget.replicateController.value.isBusy) return;
+    setState(() => _isGeneratingAsset = true);
+    try {
+      await widget.onGenerate(
+        context,
+        widget.libraryController,
+        widget.replicateController,
+        _type,
+      );
+    } finally {
+      if (mounted) setState(() => _isGeneratingAsset = false);
+    }
   }
 
   Future<void> _replaceDroppedFile(
@@ -1396,13 +1307,16 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
                             ),
                             const SizedBox(width: 10),
                             FilledButton.icon(
+                              key: const ValueKey(
+                                'asset-manager-upload-assets',
+                              ),
                               onPressed: _isOpeningFilePicker
                                   ? null
                                   : _pickFiles,
                               icon: const Icon(
                                 Icons.add_photo_alternate_outlined,
                               ),
-                              label: const Text('添加文件'),
+                              label: const Text('上传资产'),
                             ),
                             const SizedBox(width: 8),
                             OutlinedButton.icon(
@@ -1414,10 +1328,28 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
                               icon: const Icon(Icons.edit_note_rounded),
                               label: const Text('手动添加'),
                             ),
+                            const SizedBox(width: 8),
+                            FilledButton.tonalIcon(
+                              key: const ValueKey(
+                                'asset-manager-generate-from-description',
+                              ),
+                              onPressed:
+                                  _isGeneratingAsset ||
+                                      widget.replicateController.value.isBusy
+                                  ? null
+                                  : _generateAsset,
+                              icon: const Icon(Icons.auto_awesome_rounded),
+                              label: Text(
+                                _isGeneratingAsset ? '生成中…' : '按描述生成',
+                              ),
+                            ),
                           ],
                         ),
                         const SizedBox(height: 14),
-                        if (state.isBusy || _isOpeningFilePicker)
+                        if (state.isBusy ||
+                            _isOpeningFilePicker ||
+                            _isGeneratingAsset ||
+                            widget.replicateController.value.isBusy)
                           const LinearProgressIndicator(minHeight: 3),
                         Expanded(
                           child: state.items.isEmpty
@@ -1604,10 +1536,9 @@ class _LibraryAssetReplaceDropTargetState
 }
 
 class _LibraryAssetPreview extends StatelessWidget {
-  const _LibraryAssetPreview(this.item, {this.logicalWidth = 256});
+  const _LibraryAssetPreview(this.item);
 
   final ShootingAssetLibraryItem item;
-  final double logicalWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -1631,7 +1562,7 @@ class _LibraryAssetPreview extends StatelessWidget {
       return Image(
         image: previewFileImageProvider(
           path: item.path,
-          logicalWidth: logicalWidth,
+          logicalWidth: 256,
           devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
           maxCacheWidth: 512,
         ),
@@ -2173,5 +2104,15 @@ extension on ReplicateAssetType {
     ReplicateAssetType.audio => Icons.audio_file_outlined,
     ReplicateAssetType.reference => Icons.collections_outlined,
     ReplicateAssetType.other => Icons.attach_file_rounded,
+  };
+
+  bool get isImageType => switch (this) {
+    ReplicateAssetType.character ||
+    ReplicateAssetType.product ||
+    ReplicateAssetType.scene ||
+    ReplicateAssetType.prop ||
+    ReplicateAssetType.reference ||
+    ReplicateAssetType.other => true,
+    ReplicateAssetType.video || ReplicateAssetType.audio => false,
   };
 }

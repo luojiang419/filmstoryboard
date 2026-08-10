@@ -224,11 +224,47 @@ void main() {
       globalStyle: '',
       constraints: '',
     );
+    final neutral = service.generate(
+      shot: _shot(
+        now,
+      ).copyWith(content: '人物站在展台前看向产品', cameraMovement: '', shotSize: '中景'),
+      assets: [asset],
+      globalStyle: '',
+      constraints: '',
+    );
 
     expect(running.prompt, contains('平稳跟拍主体'));
-    expect(productDetail.prompt, contains('缓慢推近主体'));
-    expect(reveal.prompt, contains('缓慢拉远'));
-    expect({running.prompt, productDetail.prompt, reveal.prompt}, hasLength(3));
+    expect(productDetail.prompt, contains('沿主体动作方向短促推进'));
+    expect(productDetail.prompt, isNot(contains('缓慢推近主体')));
+    expect(reveal.prompt, contains('拉远或升高'));
+    expect(reveal.prompt, isNot(contains('缓慢拉远')));
+    expect(neutral.prompt, contains('速度匹配叙事节拍'));
+    expect(neutral.prompt, isNot(contains('轻微平稳推近')));
+    expect({
+      running.prompt,
+      productDetail.prompt,
+      reveal.prompt,
+      neutral.prompt,
+    }, hasLength(4));
+  });
+
+  test('声音为空时按画面氛围补充音乐和音效提示', () {
+    final result = service.generate(
+      shot: _shot(now).copyWith(
+        sound: '',
+        lightingMood: '暖光柔和',
+        colorPalette: '暖白高调商业质感',
+        scene: '白色摄影棚桌面',
+      ),
+      assets: const [],
+      globalStyle: '',
+      constraints: '',
+    );
+
+    expect(result.prompt, contains('音乐氛围：'));
+    expect(result.prompt, contains('音效氛围：'));
+    expect(result.prompt, contains('温暖柔和'));
+    expect(result.prompt, isNot(contains('非叙事性音乐：N/A')));
   });
 }
 
