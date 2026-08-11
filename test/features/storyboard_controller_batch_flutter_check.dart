@@ -1527,8 +1527,8 @@ void main() {
     expect(fixture.database.countRows('storyboard_summaries'), 2);
   });
 
-  test('视觉任务队列会写回已关闭画板且不抢当前选中画板', () async {
-    final visionService = _BlockingVisionStoryboardService();
+  test('不同画板视觉任务会并行并写回已关闭画板', () async {
+    final visionService = _ParallelVisionStoryboardService();
     final fixture = await _createVisionFixture(visionService: visionService);
     final controller = fixture.controller;
     final firstAsset = await _registeredAsset(
@@ -1550,12 +1550,13 @@ void main() {
 
     controller.selectBoard(firstBoardId);
     final firstFuture = controller.analyzeSelectedBoardWithVision();
-    await visionService.analysisStarted.future;
+    await visionService.firstStarted.future;
 
     controller.closeBoard(firstBoardId);
     expect(controller.value.openBoardIds, isNot(contains(firstBoardId)));
     expect(controller.value.selectedBoardId, secondBoardId);
     final secondFuture = controller.analyzeSelectedBoardWithVision();
+    await visionService.bothStarted.future;
 
     expect(
       controller.value.isVisionTaskActiveFor(
@@ -1565,14 +1566,15 @@ void main() {
       isTrue,
     );
     expect(
-      controller.value.isVisionTaskQueuedFor(
+      controller.value.isVisionTaskActiveFor(
         secondBoardId,
         StoryboardVisionTaskKind.analyze,
       ),
       isTrue,
     );
+    expect(controller.value.queuedVisionTasks, isEmpty);
 
-    visionService.releaseAnalysis();
+    visionService.releaseAll();
     await Future.wait([firstFuture, secondFuture]);
 
     final firstBoard = controller.value.boards.firstWhere(
@@ -1585,6 +1587,104 @@ void main() {
     expect(secondBoard.itemAtSlot(0)?.caption, '镜头1');
     expect(controller.value.selectedBoardId, secondBoardId);
     expect(controller.value.activeVisionBoardId, isNull);
+    expect(controller.value.queuedVisionTasks, isEmpty);
+  });
+
+  test('切换画板恢复各自视觉状态且取消当前画板不影响其他画板', () async {
+    final visionService = _ParallelVisionStoryboardService();
+    final fixture = await _createVisionFixture(visionService: visionService);
+    final controller = fixture.controller;
+    final firstAsset = await _registeredAsset(
+      fixture.database,
+      fixture.root,
+      1,
+    );
+    final secondAsset = await _registeredAsset(
+      fixture.database,
+      fixture.root,
+      2,
+    );
+
+    final firstBoardId = controller.value.selectedBoard!.id;
+    controller.setAssetsUsed([firstAsset], true);
+    final firstFuture = controller.analyzeSelectedBoardWithVision();
+    await visionService.firstStarted.future;
+
+    controller.addBoard();
+    final secondBoardId = controller.value.selectedBoard!.id;
+    controller.setAssetsUsed([secondAsset], true);
+    final secondFuture = controller.analyzeSelectedBoardWithVision();
+    await visionService.bothStarted.future;
+
+    expect(controller.value.isAnalyzing, isTrue);
+    expect(controller.value.activeVisionBoardId, secondBoardId);
+    expect(controller.value.activeVisionTasks, hasLength(2));
+    controller.selectBoard(firstBoardId);
+    expect(controller.value.isAnalyzing, isTrue);
+    expect(controller.value.activeVisionBoardId, firstBoardId);
+
+    controller.cancelVisionAnalysis();
+    expect(controller.value.isCancellingAnalysis, isTrue);
+    expect(visionService.cancelCalled, isFalse);
+    visionService.releasePath(firstAsset.path);
+    await firstFuture;
+
+    expect(
+      controller.value.isVisionTaskActiveFor(
+        secondBoardId,
+        StoryboardVisionTaskKind.analyze,
+      ),
+      isTrue,
+    );
+    expect(controller.value.isAnalyzing, isFalse);
+    expect(controller.value.message, '已取消自动解析');
+    controller.selectBoard(secondBoardId);
+    expect(controller.value.isAnalyzing, isTrue);
+
+    visionService.releasePath(secondAsset.path);
+    await secondFuture;
+
+    final firstBoard = controller.value.boards.firstWhere(
+      (board) => board.id == firstBoardId,
+    );
+    final secondBoard = controller.value.boards.firstWhere(
+      (board) => board.id == secondBoardId,
+    );
+    expect(firstBoard.itemAtSlot(0)?.caption, isEmpty);
+    expect(secondBoard.itemAtSlot(0)?.caption, '镜头1');
+    expect(controller.value.isAnalyzing, isFalse);
+    expect(visionService.cancelCalled, isFalse);
+  });
+
+  test('同一画板的视觉解析与重排保持串行', () async {
+    final visionService = _ParallelVisionStoryboardService();
+    final fixture = await _createVisionFixture(visionService: visionService);
+    final controller = fixture.controller;
+    final assets = [
+      await _registeredAsset(fixture.database, fixture.root, 1),
+      await _registeredAsset(fixture.database, fixture.root, 2),
+    ];
+    controller.setAssetsUsed(assets, true);
+    final boardId = controller.value.selectedBoard!.id;
+
+    final analyzeFuture = controller.analyzeSelectedBoardWithVision();
+    await visionService.firstStarted.future;
+    final reorderFuture = controller.reorderSelectedBoardByVisionAnalysis();
+
+    expect(
+      controller.value.isVisionTaskQueuedFor(
+        boardId,
+        StoryboardVisionTaskKind.reorder,
+      ),
+      isTrue,
+    );
+    expect(visionService.orderRequestCount, 0);
+
+    visionService.releaseAll();
+    await Future.wait([analyzeFuture, reorderFuture]);
+
+    expect(visionService.orderRequestCount, 1);
+    expect(controller.value.activeVisionTasks, isEmpty);
     expect(controller.value.queuedVisionTasks, isEmpty);
   });
 
@@ -1838,9 +1938,11 @@ void main() {
 
     expect(controller.value.isAnalyzing, isTrue);
     controller.cancelVisionAnalysis();
+    expect(visionService.cancelCalled, isFalse);
+    visionService.releaseOrder();
     await reorderFuture;
 
-    expect(visionService.cancelCalled, isTrue);
+    expect(visionService.cancelCalled, isFalse);
     expect(controller.value.isAnalyzing, isFalse);
     expect(controller.value.isCancellingAnalysis, isFalse);
     expect(controller.value.message, '已取消自动重排序');
@@ -2053,6 +2155,68 @@ void main() {
       2,
     });
     expect(controller.value.isGeneratingImage, isFalse);
+  });
+
+  test('图片生成忙碌状态按画板隔离并在切换后恢复', () async {
+    final fixture = await _createImageGenerationFixture(
+      imageServiceFactory: _ConcurrentImageGenerationService.new,
+    );
+    final imageService =
+        fixture.imageService as _ConcurrentImageGenerationService;
+    final controller = fixture.controller;
+    final firstAsset = await _registeredAsset(
+      fixture.database,
+      fixture.root,
+      1,
+    );
+    final secondAsset = await _registeredAsset(
+      fixture.database,
+      fixture.root,
+      2,
+    );
+
+    controller.setAssetsUsed([firstAsset], true);
+    final firstBoardId = controller.value.selectedBoard!.id;
+    final firstTask = controller.generateReplacementForItem(
+      item: controller.value.selectedBoard!.itemAtSlot(0)!,
+      prompt: '画板一图片任务',
+      model: 'nano-banana-fast',
+      aspectRatio: '16:9',
+      imageSize: '2K',
+      quality: 'auto',
+      extraReferenceImagePaths: const [],
+    );
+
+    controller.addBoard();
+    controller.setAssetsUsed([secondAsset], true);
+    final secondBoardId = controller.value.selectedBoard!.id;
+    final secondTask = controller.generateReplacementForItem(
+      item: controller.value.selectedBoard!.itemAtSlot(0)!,
+      prompt: '画板二图片任务',
+      model: 'nano-banana-fast',
+      aspectRatio: '16:9',
+      imageSize: '2K',
+      quality: 'auto',
+      extraReferenceImagePaths: const [],
+    );
+    await imageService.bothStarted.future;
+
+    expect(controller.value.isGeneratingImage, isTrue);
+    expect(controller.value.isGeneratingImageFor(firstBoardId), isTrue);
+    expect(controller.value.isGeneratingImageFor(secondBoardId), isTrue);
+
+    imageService.releaseAt(0);
+    expect(await firstTask, isTrue);
+    controller.selectBoard(firstBoardId);
+    expect(controller.value.isGeneratingImage, isFalse);
+    expect(controller.value.message, '图片修改完成，已替换当前格');
+    controller.selectBoard(secondBoardId);
+    expect(controller.value.isGeneratingImage, isTrue);
+
+    imageService.releaseAt(1);
+    expect(await secondTask, isTrue);
+    expect(controller.value.isGeneratingImage, isFalse);
+    expect(controller.value.generatingImageBoardIds, isEmpty);
   });
 
   test('高清重绘当前画板固定使用Gemini Pro参数并并发替换', () async {
@@ -2966,6 +3130,12 @@ class _CancellableVisionStoryboardService extends _FakeVisionStoryboardService {
   final _orderBlocker = Completer<void>();
   var cancelCalled = false;
 
+  void releaseOrder() {
+    if (!_orderBlocker.isCompleted) {
+      _orderBlocker.complete();
+    }
+  }
+
   @override
   Future<VisionStoryboardOrderResult> suggestStoryboardOrder({
     required AppSettings settings,
@@ -3029,6 +3199,79 @@ class _BlockingVisionStoryboardService extends _FakeVisionStoryboardService {
       storyContext: storyContext,
       onRecovery: onRecovery,
     );
+  }
+}
+
+class _ParallelVisionStoryboardService extends _FakeVisionStoryboardService {
+  final firstStarted = Completer<void>();
+  final bothStarted = Completer<void>();
+  final startedPaths = <String>[];
+  final _blockersByPath = <String, Completer<void>>{};
+  var cancelCalled = false;
+  var _releasedAll = false;
+
+  void releasePath(String path) {
+    final blocker = _blockersByPath[path];
+    if (blocker != null && !blocker.isCompleted) {
+      blocker.complete();
+    }
+  }
+
+  void releaseAll() {
+    _releasedAll = true;
+    for (final blocker in _blockersByPath.values) {
+      if (!blocker.isCompleted) {
+        blocker.complete();
+      }
+    }
+  }
+
+  @override
+  Future<VisionImageAnalysis> analyzeImage({
+    required AppSettings settings,
+    required File imageFile,
+    required int sequenceNo,
+    required int rowIndex,
+    required int columnIndex,
+    bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
+    void Function(VisionImageRecoveryMode mode)? onRecovery,
+  }) async {
+    final path = imageFile.path;
+    startedPaths.add(path);
+    final blocker = _blockersByPath.putIfAbsent(path, Completer<void>.new);
+    if (_releasedAll && !blocker.isCompleted) {
+      blocker.complete();
+    }
+    if (!firstStarted.isCompleted) {
+      firstStarted.complete();
+    }
+    if (startedPaths.length >= 2 && !bothStarted.isCompleted) {
+      bothStarted.complete();
+    }
+    await blocker.future;
+    return super.analyzeImage(
+      settings: settings,
+      imageFile: imageFile,
+      sequenceNo: sequenceNo,
+      rowIndex: rowIndex,
+      columnIndex: columnIndex,
+      allowThinking: allowThinking,
+      previousImageFile: previousImageFile,
+      nextImageFile: nextImageFile,
+      creativeBrief: creativeBrief,
+      storyContext: storyContext,
+      onRecovery: onRecovery,
+    );
+  }
+
+  @override
+  void cancelActiveRequests() {
+    cancelCalled = true;
+    releaseAll();
   }
 }
 
@@ -3102,6 +3345,13 @@ class _ConcurrentImageGenerationService extends _FakeImageGenerationService {
       if (!blocker.isCompleted) {
         blocker.complete();
       }
+    }
+  }
+
+  void releaseAt(int index) {
+    final blocker = _blockers[index];
+    if (!blocker.isCompleted) {
+      blocker.complete();
     }
   }
 

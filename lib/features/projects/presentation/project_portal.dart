@@ -11,6 +11,7 @@ import 'package:intl/intl.dart';
 import '../../../app/app_shell.dart';
 import '../../../app/window_title_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../remote_access/application/remote_workspace_registry.dart';
 import '../application/project_workspace_controller.dart';
 import '../domain/project_models.dart';
 
@@ -30,10 +31,12 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
   );
 
   late final ProjectWorkspaceController _controller;
+  late final RemoteWorkspaceRegistry _remoteWorkspaceRegistry;
 
   @override
   void initState() {
     super.initState();
+    _remoteWorkspaceRegistry = ref.read(remoteWorkspaceRegistryProvider);
     _controller = ProjectWorkspaceController(
       appDirectories: ref.read(appDirectoriesProvider),
       globalDatabase: ref.read(globalDatabaseProvider),
@@ -50,6 +53,9 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
 
   @override
   void dispose() {
+    _remoteWorkspaceRegistry.detach(
+      projectId: _controller.session?.manifest.projectId,
+    );
     _controller.removeListener(_handleChanged);
     unawaited(_controller.disposeSession());
     _controller.dispose();
@@ -57,6 +63,12 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
   }
 
   void _handleChanged() {
+    final session = _controller.session;
+    if (session == null) {
+      _remoteWorkspaceRegistry.detach();
+    } else {
+      _remoteWorkspaceRegistry.attach(session);
+    }
     if (mounted) {
       setState(() {});
     }

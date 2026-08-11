@@ -102,12 +102,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
                                         context,
                                         controller,
                                       ),
-                                onGenerateStoryboard:
-                                    state.frameAnalyses.any(
-                                      (analysis) =>
-                                          analysis.status ==
-                                          ProcessingStatus.completed,
-                                    )
+                                onGenerateStoryboard: state.frames.isNotEmpty
                                     ? () => _generateStoryboard(context)
                                     : null,
                               ),

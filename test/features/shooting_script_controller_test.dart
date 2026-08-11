@@ -172,6 +172,93 @@ void main() {
     expect(restored.value.scripts.any((item) => item.name == '正式拍摄脚本'), isTrue);
   });
 
+  test('待解析候选帧可先建脚本且解析回填保留用户已填写内容', () async {
+    final fixture = await _createFixture();
+    final now = DateTime.utc(2026, 8, 11);
+    final frameFile = await _writeImage(
+      fixture.directories.frames,
+      'pending-frame.png',
+      img.ColorRgb8(80, 120, 200),
+    );
+    final video = _video(now);
+    final frame = _frame(
+      'pending-frame',
+      video.id,
+      0,
+      frameFile.path,
+      now,
+    ).copyWith(status: ProcessingStatus.pending);
+    VideoAnalysisRepository(fixture.database)
+      ..upsertSourceVideo(video)
+      ..upsertVideoFrame(frame);
+
+    final initialScript = fixture.controller.createFromVideo(
+      video: video,
+      frames: [frame],
+      videoShots: const [],
+      analyses: const [],
+    )!;
+    final initialShot = fixture.controller.value.shots.single;
+    expect(initialShot.content, isEmpty);
+    fixture.controller.updateShot(initialShot.copyWith(content: '用户提前填写的镜头内容'));
+
+    final updatedScript = fixture.controller.createFromVideo(
+      video: video,
+      frames: [frame.copyWith(status: ProcessingStatus.completed)],
+      videoShots: const [],
+      analyses: [
+        _analysis(
+          'pending-analysis',
+          video.id,
+          frame.id,
+          1,
+          now,
+          caption: '模型解析镜头内容',
+          shotSize: '近景',
+          movement: '固定',
+          scene: '室内',
+        ),
+      ],
+    )!;
+    final updatedShot = fixture.controller.value.shots.single;
+
+    expect(updatedScript.id, initialScript.id);
+    expect(updatedShot.id, initialShot.id);
+    expect(updatedShot.content, '用户提前填写的镜头内容');
+    expect(updatedShot.shotSize, '近景');
+    expect(updatedShot.scene, '室内');
+  });
+
+  test('单镜头编辑只更新当前行并仅通知一次', () async {
+    final fixture = await _createFixture();
+    final script = fixture.controller.createEmpty(name: '单行更新脚本');
+    final first = fixture.controller.addShot()!;
+    final second = fixture.controller.addShot()!;
+    final versionBefore = fixture.controller.value.selectedScript!.version;
+    final secondUpdatedAtBefore = fixture.controller.value.shots
+        .firstWhere((shot) => shot.id == second.id)
+        .updatedAt;
+    var notifications = 0;
+    void listener() => notifications++;
+    fixture.controller.addListener(listener);
+    addTearDown(() => fixture.controller.removeListener(listener));
+
+    fixture.controller.updateShot(first.copyWith(content: '只修改第一个镜头'));
+
+    expect(notifications, 1);
+    expect(fixture.controller.value.selectedScript!.version, versionBefore + 1);
+    expect(fixture.controller.value.selectedShotId, first.id);
+    expect(fixture.controller.value.shots.first.content, '只修改第一个镜头');
+    expect(fixture.controller.value.shots[1].updatedAt, secondUpdatedAtBefore);
+    final repository = ShootingScriptRepository(fixture.database);
+    expect(repository.getScript(script.id)!.version, versionBefore + 1);
+    expect(repository.getShot(script.id, first.id)!.content, '只修改第一个镜头');
+    expect(
+      repository.getShot(script.id, second.id)!.updatedAt,
+      secondUpdatedAtBefore,
+    );
+  });
+
   test('加载旧工程脚本时将相对帧图路径转换为可显示路径', () async {
     final fixture = await _createFixture();
     final source = await _writeImage(

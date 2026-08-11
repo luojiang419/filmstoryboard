@@ -8,7 +8,9 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/vision_request_rate_limiter.dart';
+import '../../replicate/data/bundled_video_skill_library.dart';
 import '../../replicate/data/h3_skill_library.dart';
+import '../../replicate/data/video_skill_router.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../replicate/domain/h3_prompt_style.dart';
 import '../../settings/application/settings_controller.dart';
@@ -91,7 +93,7 @@ class ScriptAnalysisState {
 
 class ShootingScriptAnalysisController
     extends ValueNotifier<ScriptAnalysisState> {
-  static const _analysisRuleVersion = 5;
+  static const _analysisRuleVersion = 6;
 
   ShootingScriptAnalysisController({
     required ShootingScriptController shootingScriptController,
@@ -99,6 +101,7 @@ class ShootingScriptAnalysisController
     required SettingsController settingsController,
     ScriptMultimodalAnalysisService? analysisService,
     H3SkillLibrary? skillLibrary,
+    VideoSkillLibrary? videoSkillLibrary,
     SeedancePromptGenerationService promptService =
         const SeedancePromptGenerationService(),
     Uuid uuid = const Uuid(),
@@ -108,6 +111,7 @@ class ShootingScriptAnalysisController
        _analysisService = analysisService ?? ScriptMultimodalAnalysisService(),
        _ownsAnalysisService = analysisService == null,
        _skillLibrary = skillLibrary ?? BundledH3SkillLibrary(),
+       _videoSkillLibrary = videoSkillLibrary ?? BundledVideoSkillLibrary(),
        _promptService = promptService,
        _uuid = uuid,
        super(const ScriptAnalysisState()) {
@@ -121,6 +125,7 @@ class ShootingScriptAnalysisController
   final ScriptMultimodalAnalysisService _analysisService;
   final bool _ownsAnalysisService;
   final H3SkillLibrary _skillLibrary;
+  final VideoSkillLibrary _videoSkillLibrary;
   final SeedancePromptGenerationService _promptService;
   final Uuid _uuid;
   bool _disposed = false;
@@ -188,8 +193,6 @@ class ShootingScriptAnalysisController
       );
       return;
     }
-    final creativeBrief = await _loadCreativeBriefOrReport();
-    if (creativeBrief == null) return;
     value = value.copyWith(
       scriptId: script.id,
       analyses: const [],
@@ -211,7 +214,6 @@ class ShootingScriptAnalysisController
           overwriteExisting: overwriteExisting,
           imagePathOverrides: imagePathOverrides,
           requireImageOverrides: requireImageOverrides,
-          creativeBrief: creativeBrief,
         );
         processed++;
         if (!_disposed) {
@@ -279,8 +281,6 @@ class ShootingScriptAnalysisController
         .where((item) => item.id == shotId)
         .firstOrNull;
     if (script == null || shot == null) return;
-    final creativeBrief = await _loadCreativeBriefOrReport();
-    if (creativeBrief == null) return;
     value = value.copyWith(
       isBusy: true,
       message: '正在解析镜头 ${shot.shotNumber}…',
@@ -292,7 +292,6 @@ class ShootingScriptAnalysisController
       overwriteExisting: overwriteExisting,
       imagePathOverrides: imagePathOverrides,
       requireImageOverrides: requireImageOverrides,
-      creativeBrief: creativeBrief,
     );
     if (!_disposed) {
       value = value.copyWith(
@@ -330,8 +329,6 @@ class ShootingScriptAnalysisController
       );
       return false;
     }
-    final creativeBrief = await _loadCreativeBriefOrReport();
-    if (creativeBrief == null) return false;
     value = value.copyWith(
       scriptId: script.id,
       isBusy: true,
@@ -359,7 +356,6 @@ class ShootingScriptAnalysisController
           overwriteExisting: overwriteExisting,
           imagePathOverrides: imagePathOverrides,
           requireImageOverrides: requireImageOverrides,
-          creativeBrief: creativeBrief,
         );
         if (success) {
           completed++;
@@ -418,7 +414,6 @@ class ShootingScriptAnalysisController
     required bool overwriteExisting,
     required Map<String, String> imagePathOverrides,
     required bool requireImageOverrides,
-    required String creativeBrief,
   }) async {
     final now = DateTime.now().toUtc();
     final existing = _repository.getAnalysis(shot.id);
@@ -439,6 +434,7 @@ class ShootingScriptAnalysisController
       return;
     }
     try {
+      final creativeBrief = await _creativeBrief([shot]);
       final orderedShots = _shootingScriptController.value.shots;
       final shotIndex = orderedShots.indexWhere((item) => item.id == shot.id);
       File? adjacentFile(int index) {
@@ -527,7 +523,6 @@ class ShootingScriptAnalysisController
     required bool overwriteExisting,
     required Map<String, String> imagePathOverrides,
     required bool requireImageOverrides,
-    required String creativeBrief,
   }) async {
     final head = shots.first;
     final now = DateTime.now().toUtc();
@@ -551,6 +546,7 @@ class ShootingScriptAnalysisController
       return false;
     }
     try {
+      final creativeBrief = await _creativeBrief(shots);
       final patch = await _analysisService.analyzeShotGroup(
         settings: _settingsController.value,
         shots: shots,
@@ -660,30 +656,26 @@ class ShootingScriptAnalysisController
     ).map((group) => group.shots).toList(growable: false);
   }
 
-  Future<String?> _loadCreativeBriefOrReport() async {
-    try {
-      return await _creativeBrief();
-    } catch (error) {
-      if (!_disposed) {
-        value = value.copyWith(
-          isBusy: false,
-          message: '',
-          errorMessage: '读取所选叙事风格的完整官方 Skill 失败：$error',
-        );
-      }
-      return null;
-    }
-  }
-
-  Future<String> _creativeBrief() async {
+  Future<String> _creativeBrief(Iterable<ScriptShot> shots) async {
     final settings = _settingsController.value;
-    final style = H3PromptStyle.resolve(settings.h3PromptStyleId);
+    final preferredStyle = H3PromptStyle.resolve(settings.h3PromptStyleId);
+    final route = const VideoSkillRouter().resolve(
+      config: settings.activeVideoGenerationApiConfig,
+      narrativeText: _skillRoutingText(shots),
+      preferredStyle: preferredStyle,
+    );
+    final style = route.promptStyle;
+    final videoSkillDocument = await _videoSkillLibrary.loadForConfig(
+      settings.activeVideoGenerationApiConfig,
+    );
     return [
-      '内容类型：${style.label}。${style.description}',
+      if (route.supportsH3NarrativeSkill)
+        '内容类型：${style.label}。${style.description}${route.automaticallySelected ? '（已按当前剧情自动匹配）' : ''}',
       if (settings.replicateDefaultGlobalStyle.trim().isNotEmpty)
         '全局影像风格：${settings.replicateDefaultGlobalStyle.trim()}',
-      if (!style.isGeneral)
+      if (route.supportsH3NarrativeSkill && !style.isGeneral)
         (await _skillLibrary.loadForStyle(style)).toVisionModelContext(),
+      if (videoSkillDocument != null) videoSkillDocument.toVisionModelContext(),
       if (style.visualPromptInstruction.trim().isNotEmpty)
         '逐镜头快速核对契约（不得替代上方完整 Skill）：\n${style.visualPromptInstruction.trim()}',
       if (settings.replicateDefaultConstraints.trim().isNotEmpty)
@@ -692,6 +684,19 @@ class ShootingScriptAnalysisController
 根据当前画面中的动作阶段、状态变化、运镜幅度和信息量设计自然节奏；不要在画面描述、动作阶段、运镜、声音或转场字段中写“第 N 秒”“0-N 秒”或逐秒任务表。只描述自然的先后关系和完整动作，让视频模型在最终总时长内自行适配。''',
     ].join('\n');
   }
+
+  static String _skillRoutingText(Iterable<ScriptShot> shots) => shots
+      .expand(
+        (shot) => [
+          shot.freeCreationDescription,
+          shot.content,
+          shot.replicationInstructions,
+          shot.generationFeedback,
+          shot.cameraNotes,
+        ],
+      )
+      .where((part) => part.trim().isNotEmpty)
+      .join('\n');
 
   String _creativeBriefForRevision(ScriptShot shot, String creativeBrief) {
     final feedback = shot.generationFeedback.trim();

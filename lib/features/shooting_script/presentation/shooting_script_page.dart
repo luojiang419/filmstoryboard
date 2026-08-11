@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -8,6 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../replicate/application/replicate_controller.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
@@ -53,6 +56,8 @@ class ShootingScriptPage extends ConsumerStatefulWidget {
 }
 
 class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
+  static const _uiStateKey = 'shootingScriptPageUiState';
+  static const _stepPanelCollapsedKey = 'shootingScriptStepPanelCollapsed';
   static const _collapsedPanelWidth = 56.0;
   static const _minimumScriptPanelWidth = 220.0;
   static const _minimumStepPanelWidth = 260.0;
@@ -65,6 +70,12 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
   var _scriptPanelCollapsed = false;
   var _stepPanelCollapsed = false;
   final _shotNavigationController = ReplicateShotNavigationController();
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreUiState();
+  }
 
   @override
   void dispose() {
@@ -143,39 +154,41 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                       Expanded(
                         child: LayoutBuilder(
                           builder: (context, constraints) {
-                            final sidebar = _ScriptSidebar(
-                              state: state,
-                              controller: controller,
-                              collapsed: _scriptPanelCollapsed,
-                              onCreate: () =>
-                                  _createScript(context, controller),
-                              onDeleteScript: (script) => _deleteScript(
-                                context,
-                                controller,
-                                state,
-                                script,
+                            final sidebar = CollapsiblePanelRegistration(
+                              expanded: !_scriptPanelCollapsed,
+                              onExpandedChanged: _setScriptPanelExpanded,
+                              child: _ScriptSidebar(
+                                state: state,
+                                controller: controller,
+                                collapsed: _scriptPanelCollapsed,
+                                onCreate: () =>
+                                    _createScript(context, controller),
+                                onDeleteScript: (script) => _deleteScript(
+                                  context,
+                                  controller,
+                                  state,
+                                  script,
+                                ),
+                                onToggleCollapsed: _toggleScriptPanel,
+                                onCreateFromVideo: () =>
+                                    controller.createFromVideo(
+                                      video:
+                                          videoController.value.selectedVideo!,
+                                      frames: videoController.value.frames,
+                                      videoShots: videoController.value.shots,
+                                      analyses:
+                                          videoController.value.frameAnalyses,
+                                    ),
+                                canCreateFromVideo:
+                                    videoController.value.selectedVideo != null,
+                                onCreateFromStoryboard: () =>
+                                    controller.createFromStoryboard(
+                                      storyboardController.value.selectedBoard,
+                                    ),
+                                canCreateFromStoryboard:
+                                    storyboardController.value.selectedBoard !=
+                                    null,
                               ),
-                              onToggleCollapsed: () => setState(
-                                () => _scriptPanelCollapsed =
-                                    !_scriptPanelCollapsed,
-                              ),
-                              onCreateFromVideo: () =>
-                                  controller.createFromVideo(
-                                    video: videoController.value.selectedVideo!,
-                                    frames: videoController.value.frames,
-                                    videoShots: videoController.value.shots,
-                                    analyses:
-                                        videoController.value.frameAnalyses,
-                                  ),
-                              canCreateFromVideo:
-                                  videoController.value.selectedVideo != null,
-                              onCreateFromStoryboard: () =>
-                                  controller.createFromStoryboard(
-                                    storyboardController.value.selectedBoard,
-                                  ),
-                              canCreateFromStoryboard:
-                                  storyboardController.value.selectedBoard !=
-                                  null,
                             );
                             if (constraints.maxWidth < 900) {
                               final workspace = ReplicatePage(
@@ -203,6 +216,9 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                             }
                             final useOuterStepPanel =
                                 constraints.maxWidth >= 1100;
+                            if (useOuterStepPanel) {
+                              _restoreSharedStepPanelState();
+                            }
                             final workspace = ReplicatePage(
                               key: const ValueKey('shooting-script-workflow'),
                               embedded: true,
@@ -241,6 +257,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                     key: const ValueKey(
                                       'shooting-script-left-resize-handle',
                                     ),
+                                    onDragEnd: _saveUiState,
                                     onDrag: _scriptPanelCollapsed
                                         ? null
                                         : (delta) => setState(() {
@@ -304,6 +321,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                   key: const ValueKey(
                                     'shooting-script-left-resize-handle',
                                   ),
+                                  onDragEnd: _saveUiState,
                                   onDrag: _scriptPanelCollapsed
                                       ? null
                                       : (delta) => setState(() {
@@ -323,6 +341,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                   key: const ValueKey(
                                     'shooting-script-step-right-resize-handle',
                                   ),
+                                  onDragEnd: _saveUiState,
                                   onDrag: _stepPanelCollapsed
                                       ? null
                                       : (delta) => setState(() {
@@ -335,20 +354,21 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
                                                   .toDouble();
                                         }),
                                 ),
-                                SizedBox(
-                                  width: stepPanelWidth,
-                                  child: ReplicateEmbeddedStepRightPanel(
-                                    collapsed: _stepPanelCollapsed,
-                                    shotNavigationController:
-                                        _shotNavigationController,
-                                    onManageAssets: () => _openAssetManager(
-                                      context,
-                                      assetLibraryController,
-                                      replicateController,
-                                    ),
-                                    onToggleCollapsed: () => setState(
-                                      () => _stepPanelCollapsed =
-                                          !_stepPanelCollapsed,
+                                CollapsiblePanelRegistration(
+                                  expanded: !_stepPanelCollapsed,
+                                  onExpandedChanged: _setStepPanelExpanded,
+                                  child: SizedBox(
+                                    width: stepPanelWidth,
+                                    child: ReplicateEmbeddedStepRightPanel(
+                                      collapsed: _stepPanelCollapsed,
+                                      shotNavigationController:
+                                          _shotNavigationController,
+                                      onManageAssets: () => _openAssetManager(
+                                        context,
+                                        assetLibraryController,
+                                        replicateController,
+                                      ),
+                                      onToggleCollapsed: _toggleStepPanel,
                                     ),
                                   ),
                                 ),
@@ -364,6 +384,100 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
             ),
       ),
     );
+  }
+
+  void _toggleScriptPanel() {
+    _setScriptPanelExpanded(_scriptPanelCollapsed);
+  }
+
+  void _setScriptPanelExpanded(bool expanded) {
+    if (_scriptPanelCollapsed == !expanded) {
+      return;
+    }
+    setState(() => _scriptPanelCollapsed = !expanded);
+    _saveUiState();
+  }
+
+  void _toggleStepPanel() {
+    _setStepPanelExpanded(_stepPanelCollapsed);
+  }
+
+  void _setStepPanelExpanded(bool expanded) {
+    if (_stepPanelCollapsed == !expanded) {
+      return;
+    }
+    setState(() => _stepPanelCollapsed = !expanded);
+    _saveUiState(syncSharedStepState: false);
+  }
+
+  void _restoreUiState() {
+    try {
+      final database = ref.read(appDatabaseProvider);
+      final raw = database.getSetting(_uiStateKey);
+      if (raw != null && raw.trim().isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, Object?>) {
+          _scriptPanelWidth = _jsonDouble(
+            decoded['scriptPanelWidth'],
+            280,
+          ).clamp(_minimumScriptPanelWidth, 720).toDouble();
+          _stepPanelWidth = _jsonDouble(
+            decoded['stepPanelWidth'],
+            330,
+          ).clamp(_minimumStepPanelWidth, 720).toDouble();
+          _scriptPanelCollapsed = _jsonBool(
+            decoded['scriptPanelCollapsed'],
+            false,
+          );
+          _stepPanelCollapsed = _jsonBool(decoded['stepPanelCollapsed'], false);
+        }
+      }
+      _restoreSharedStepPanelState();
+    } catch (_) {
+      return;
+    }
+  }
+
+  void _restoreSharedStepPanelState() {
+    try {
+      final sharedStepPanelState = ref
+          .read(appDatabaseProvider)
+          .getSetting(_stepPanelCollapsedKey);
+      if (sharedStepPanelState == 'true' || sharedStepPanelState == 'false') {
+        _stepPanelCollapsed = sharedStepPanelState == 'true';
+      }
+    } catch (_) {
+      return;
+    }
+  }
+
+  void _saveUiState({bool syncSharedStepState = true}) {
+    try {
+      if (syncSharedStepState) {
+        _restoreSharedStepPanelState();
+      }
+      ref.read(appDatabaseProvider)
+        ..setSetting(
+          _uiStateKey,
+          jsonEncode({
+            'scriptPanelWidth': _scriptPanelWidth,
+            'stepPanelWidth': _stepPanelWidth,
+            'scriptPanelCollapsed': _scriptPanelCollapsed,
+            'stepPanelCollapsed': _stepPanelCollapsed,
+          }),
+        )
+        ..setSetting(_stepPanelCollapsedKey, _stepPanelCollapsed.toString());
+    } catch (_) {
+      // 测试或预览环境可能没有注入数据库，生产环境会正常保存。
+    }
+  }
+
+  double _jsonDouble(Object? value, double fallback) {
+    return value is num ? value.toDouble() : fallback;
+  }
+
+  bool _jsonBool(Object? value, bool fallback) {
+    return value is bool ? value : fallback;
   }
 
   static String _noticeText(
@@ -1103,9 +1217,10 @@ class _ScriptListCard extends StatelessWidget {
 }
 
 class _PanelResizeHandle extends StatelessWidget {
-  const _PanelResizeHandle({super.key, required this.onDrag});
+  const _PanelResizeHandle({super.key, required this.onDrag, this.onDragEnd});
 
   final ValueChanged<double>? onDrag;
+  final VoidCallback? onDragEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -1119,6 +1234,7 @@ class _PanelResizeHandle extends StatelessWidget {
         onHorizontalDragUpdate: onDrag == null
             ? null
             : (details) => onDrag!(details.delta.dx),
+        onHorizontalDragEnd: onDrag == null ? null : (_) => onDragEnd?.call(),
         child: SizedBox(
           width: _ShootingScriptPageState._resizeHandleWidth,
           child: Center(

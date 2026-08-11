@@ -79,6 +79,34 @@ class VideoAnalysisService {
     void Function(VideoFrameAnalysis analysis)? onFrameCompleted,
     bool Function()? shouldContinue,
   }) async {
+    final includeShotDetails = settings.videoAnalysisShotDetailsEnabled;
+    final includeMultiDimension = settings.videoAnalysisMultiDimensionEnabled;
+    if (!includeShotDetails) {
+      repository
+        ..deleteVideoShots(video.id)
+        ..deleteVideoFrameAnalyses(video.id);
+    }
+    if (!includeMultiDimension) {
+      repository.deleteMarketingAnalyses(video.id);
+    }
+    if (!includeShotDetails && !includeMultiDimension) {
+      repository.deleteVideoSummary(video.id);
+      return const VideoAnalysisRunResult(
+        completedCount: 0,
+        failedCount: 0,
+        summary: null,
+      );
+    }
+    if (!includeShotDetails) {
+      return _analyzeMultiDimensionOnly(
+        settings: settings,
+        video: video,
+        resolveFrame: resolveFrame,
+        onProgress: onProgress,
+        shouldContinue: shouldContinue,
+      );
+    }
+
     var completed = 0;
     var failed = 0;
     var processed = 0;
@@ -203,14 +231,16 @@ class VideoAnalysisService {
     final analyses = refinedAnalyses.map(_visionFromStored).toList();
     final summary = await _saveSummary(video, settings, analyses, totalFailed);
     _saveShots(video, allFrames, refinedAnalyses);
-    await _saveMarketingAnalysis(
-      video,
-      settings,
-      allFrames,
-      refinedAnalyses,
-      summary,
-      analyses,
-    );
+    if (includeMultiDimension) {
+      await _saveMarketingAnalysis(
+        video,
+        settings,
+        allFrames,
+        refinedAnalyses,
+        summary,
+        analyses,
+      );
+    }
     repository.upsertSourceVideo(
       video.copyWith(
         successfulFrames: refinedAnalyses.length,
@@ -227,6 +257,113 @@ class VideoAnalysisService {
       failedCount: failed,
       summary: summary,
     );
+  }
+
+  Future<VideoAnalysisRunResult> _analyzeMultiDimensionOnly({
+    required AppSettings settings,
+    required SourceVideo video,
+    required File Function(VideoFrame frame)? resolveFrame,
+    required void Function(int completed, int total)? onProgress,
+    required bool Function()? shouldContinue,
+  }) async {
+    final allFrames = repository.listVideoFrames(video.id)
+      ..sort((first, second) {
+        final byIndex = first.index.compareTo(second.index);
+        return byIndex != 0
+            ? byIndex
+            : first.timestampMs.compareTo(second.timestampMs);
+      });
+    if (shouldContinue?.call() == false) {
+      return VideoAnalysisRunResult(
+        completedCount: 0,
+        failedCount: 0,
+        summary: repository.getVideoSummary(video.id),
+        interrupted: true,
+      );
+    }
+    final sampledFrames = _uniformlySampleFrames(allFrames, limit: 12);
+    final imageFiles = [
+      for (final frame in sampledFrames)
+        resolveFrame?.call(frame) ?? File(frame.path),
+    ].where((file) => file.existsSync()).toList(growable: false);
+    if (imageFiles.isEmpty) {
+      throw const FormatException('没有可用于多维度分析的视频帧文件');
+    }
+    onProgress?.call(0, allFrames.length);
+    final result = await visionService.analyzeVideoDimensionsFromImages(
+      settings: settings,
+      imageFiles: imageFiles,
+      allowThinking: settings.videoAnalysisThinkingEnabled,
+    );
+    if (shouldContinue?.call() == false) {
+      return VideoAnalysisRunResult(
+        completedCount: 0,
+        failedCount: 0,
+        summary: repository.getVideoSummary(video.id),
+        interrupted: true,
+      );
+    }
+    final now = DateTime.now().toUtc();
+    final summary = VideoSummary(
+      id: _uuid.v4(),
+      videoId: video.id,
+      fields: {
+        'outline': result.dimensions['视频结构'] ?? '',
+        'content': result.dimensions['叙事推进'] ?? '',
+      },
+      rawResponse: result.rawResponse,
+      status: ProcessingStatus.completed,
+      errorMessage: '',
+      updatedAt: now,
+    );
+    repository
+      ..upsertMarketingAnalysis(
+        MarketingAnalysis(
+          id: '${video.id}-video-dimensions',
+          videoId: video.id,
+          scope: 'video',
+          dimensions: result.dimensions,
+          rawResponse: result.rawResponse,
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      )
+      ..upsertVideoSummary(summary);
+    for (final frame in allFrames) {
+      repository.upsertVideoFrame(
+        frame.copyWith(status: ProcessingStatus.completed, errorMessage: ''),
+      );
+    }
+    repository.upsertSourceVideo(
+      video.copyWith(
+        successfulFrames: allFrames.length,
+        failedFrames: 0,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: now,
+      ),
+    );
+    onProgress?.call(allFrames.length, allFrames.length);
+    return VideoAnalysisRunResult(
+      completedCount: allFrames.length,
+      failedCount: 0,
+      summary: summary,
+    );
+  }
+
+  static List<VideoFrame> _uniformlySampleFrames(
+    List<VideoFrame> frames, {
+    required int limit,
+  }) {
+    if (frames.length <= limit) return frames;
+    final selected = <VideoFrame>[];
+    for (var index = 0; index < limit; index++) {
+      final sourceIndex = (index * (frames.length - 1) / (limit - 1)).round();
+      selected.add(frames[sourceIndex]);
+    }
+    return selected;
   }
 
   Future<List<VideoFrameAnalysis>> _refineShotCameraMotion({

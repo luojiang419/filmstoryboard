@@ -34,7 +34,7 @@ class VideoStoryboardBridge {
     resolveFramePath: resolveFramePath,
   ).first;
 
-  /// 将一个视频的全部已解析镜头放入同一张故事板。
+  /// 将一个视频的全部可用候选帧放入同一张故事板。
   ///
   /// 保留列表返回值以兼容调用方；每个视频始终只会返回一个结果。
   static List<VideoStoryboardBuildResult> buildSegments({
@@ -56,7 +56,12 @@ class VideoStoryboardBridge {
     };
     final orderedFrames =
         frames
-            .where((frame) => analysesByFrameId.containsKey(frame.id))
+            .where(
+              (frame) =>
+                  frame.path.trim().isNotEmpty &&
+                  frame.width > 0 &&
+                  frame.height > 0,
+            )
             .toList()
           ..sort((first, second) {
             final byIndex = first.index.compareTo(second.index);

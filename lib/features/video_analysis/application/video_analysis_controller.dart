@@ -238,10 +238,24 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   final VideoAnalysisService _analysisService;
   final AnalysisReportExportService _reportExportService;
   final Uuid _uuid;
-  bool _continueAnalysis = true;
-  bool _cancelAnalysisRequested = false;
+  final _analysisSessionsByVideoId = <String, _VideoAnalysisSession>{};
   final _removedFrameUndoHistory = <String, List<_RemovedVideoFrame>>{};
   final _removedFrameRedoHistory = <String, List<_RemovedVideoFrame>>{};
+
+  bool isAnalysisActiveFor(String videoId) =>
+      _analysisSessionsByVideoId[videoId]?.isAnalyzing ?? false;
+
+  void _publishAnalysisSession(_VideoAnalysisSession session) {
+    if (value.selectedVideoId != session.videoId) return;
+    value = value.copyWith(
+      isAnalyzing: session.isAnalyzing,
+      isPaused: session.isPaused,
+      completedProgress: session.completedProgress,
+      totalProgress: session.totalProgress,
+      message: session.message,
+      errorMessage: session.errorMessage,
+    );
+  }
 
   bool get canUndoFrameRemoval {
     final videoId = value.selectedVideoId;
@@ -335,8 +349,8 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   Future<void> importVideo(File file) => importVideos([file]);
 
   /// 依次处理所选视频，避免 FFmpeg 与视觉模型请求相互抢占资源。
-  /// 全自动模式下，每个视频提取完候选帧后立即继续后续链路；普通模式
-  /// 则等待用户选择“解析全部”或“继续未完成”。
+  /// 每个视频提取完候选帧后立即创建故事板和拍摄脚本；全自动模式再继续
+  /// 视觉解析，普通模式则等待用户选择“解析全部”或“继续未完成”。
   Future<void> importVideos(List<File> files) async {
     if (value.isBusy) {
       return;
@@ -349,7 +363,11 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     }
     for (final file in selectedFiles) {
       final imported = await _importSingleVideo(file);
-      if (imported && _settingsController.value.fullAutomationEnabled) {
+      final settings = _settingsController.value;
+      if (imported &&
+          settings.fullAutomationEnabled &&
+          (settings.videoAnalysisMultiDimensionEnabled ||
+              settings.videoAnalysisShotDetailsEnabled)) {
         await startAnalysis(forceAll: true);
       }
     }
@@ -458,19 +476,36 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
           totalProgress: result.frameFiles.length,
         );
       }
-      _repository.upsertSourceVideo(
-        result.video.copyWith(
-          status: failed == 0
-              ? ProcessingStatus.pending
-              : ProcessingStatus.partial,
-          failedFrames: failed,
-          successfulFrames: result.frameFiles.length - failed,
-          errorMessage: failed == 0 ? '' : '$failed 个候选帧无法读取',
-          updatedAt: DateTime.now().toUtc(),
-        ),
+      final importedVideo = result.video.copyWith(
+        status: failed == 0
+            ? ProcessingStatus.pending
+            : ProcessingStatus.partial,
+        failedFrames: failed,
+        successfulFrames: result.frameFiles.length - failed,
+        errorMessage: failed == 0 ? '' : '$failed 个候选帧无法读取',
+        updatedAt: DateTime.now().toUtc(),
       );
-      value = value.copyWith(isImporting: false, message: '候选帧提取完成，可开始视觉解析');
+      _repository.upsertSourceVideo(importedVideo);
+      value = value.copyWith(isImporting: false);
       refresh(selectVideoId: result.video.id);
+      try {
+        final artifacts = await _createFollowUpArtifacts(
+          importedVideo,
+          runScriptAnalysis: false,
+        );
+        final artifactMessage = artifacts.message.isEmpty
+            ? ''
+            : '；${artifacts.message.substring(1)}';
+        value = value.copyWith(
+          message: '候选帧提取完成$artifactMessage，可开始视觉解析',
+          errorMessage: artifacts.errorMessage,
+        );
+      } catch (error) {
+        value = value.copyWith(
+          message: '候选帧提取完成，可开始视觉解析',
+          errorMessage: '自动创建故事板和拍摄脚本失败：$error',
+        );
+      }
       return true;
     } catch (error) {
       value = value.copyWith(
@@ -497,7 +532,16 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     bool allVideos = false,
   }) async {
     final video = value.selectedVideo;
-    if (video == null || value.isBusy) {
+    final settings = _settingsController.value;
+    if (video == null ||
+        value.isImporting ||
+        value.isExporting ||
+        value.isGeneratingStoryboard) {
+      return;
+    }
+    if (!settings.videoAnalysisMultiDimensionEnabled &&
+        !settings.videoAnalysisShotDetailsEnabled) {
+      value = value.copyWith(message: '请先在设置的“解析维度”中勾选至少一项');
       return;
     }
     final targets = <_VideoAnalysisTarget>[];
@@ -506,17 +550,30 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       final analysisByFrame = {
         for (final analysis in analyses) analysis.frameId: analysis,
       };
-      final frames = _repository.listVideoFrames(candidate.id).where((frame) {
-        final analysis = analysisByFrame[frame.id];
-        if (retryFailedOnly) {
-          return analysis?.status == ProcessingStatus.failed;
-        }
-        if (forceAll) {
-          return true;
-        }
-        return analysis?.status != ProcessingStatus.completed;
-      }).toList();
-      if (frames.isNotEmpty) {
+      final allFrames = _repository.listVideoFrames(candidate.id);
+      final marketing = _repository.listMarketingAnalyses(candidate.id);
+      final hasCompletedMultiDimension = marketing.any(
+        (item) => item.status == ProcessingStatus.completed,
+      );
+      final frames = settings.videoAnalysisShotDetailsEnabled
+          ? allFrames.where((frame) {
+              final analysis = analysisByFrame[frame.id];
+              if (retryFailedOnly) {
+                return analysis?.status == ProcessingStatus.failed;
+              }
+              if (forceAll) {
+                return true;
+              }
+              return analysis?.status != ProcessingStatus.completed;
+            }).toList()
+          : (forceAll || !hasCompletedMultiDimension
+                ? allFrames
+                : <VideoFrame>[]);
+      final needsMultiDimension =
+          settings.videoAnalysisMultiDimensionEnabled &&
+          !hasCompletedMultiDimension &&
+          !retryFailedOnly;
+      if (frames.isNotEmpty || needsMultiDimension) {
         targets.add(_VideoAnalysisTarget(video: candidate, frames: frames));
       }
     }
@@ -526,91 +583,112 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       );
       return;
     }
-    _continueAnalysis = true;
-    _cancelAnalysisRequested = false;
-    value = value.copyWith(
-      isAnalyzing: true,
-      isPaused: false,
-      completedProgress: 0,
-      totalProgress: targets.fold<int>(
-        0,
-        (sum, target) => sum + target.frames.length,
-      ),
+    await Future.wait([
+      for (final target in targets)
+        _startAnalysisSession(
+          target,
+          retryFailedOnly: retryFailedOnly,
+          allVideos: allVideos,
+        ),
+    ]);
+  }
+
+  Future<void> _startAnalysisSession(
+    _VideoAnalysisTarget target, {
+    required bool retryFailedOnly,
+    required bool allVideos,
+  }) {
+    final existing = _analysisSessionsByVideoId[target.video.id];
+    if (existing?.isAnalyzing == true) {
+      return existing!.future ?? Future<void>.value();
+    }
+    final session = _VideoAnalysisSession(
+      videoId: target.video.id,
+      totalProgress: target.frames.length,
       message: allVideos
-          ? '正在逐个解析已添加的视频…'
+          ? '正在解析 ${target.video.fileName}…'
           : retryFailedOnly
           ? '正在重试失败帧…'
           : '正在逐帧解析…',
-      errorMessage: '',
     );
+    _analysisSessionsByVideoId[target.video.id] = session;
+    _publishAnalysisSession(session);
+    final future = _runAnalysisSession(target, session);
+    session.future = future;
+    return future;
+  }
+
+  Future<void> _runAnalysisSession(
+    _VideoAnalysisTarget target,
+    _VideoAnalysisSession session,
+  ) async {
     try {
-      var completedBefore = 0;
       var interrupted = false;
       final followUpMessages = <String>[];
       final followUpErrors = <String>[];
-      for (var index = 0; index < targets.length; index++) {
-        final target = targets[index];
-        if (!_continueAnalysis) {
-          interrupted = true;
-          break;
-        }
-        value = value.copyWith(
-          message: allVideos
-              ? '正在解析 ${target.video.fileName}（${index + 1}/${targets.length}）…'
-              : null,
-        );
-        var result = await _analysisService.analyzeFrames(
-          settings: _settingsController.value,
-          video: target.video,
-          frames: target.frames,
-          resolveFrame: resolveFrame,
-          shouldContinue: () => _continueAnalysis,
-          onProgress: (completed, total) {
-            value = value.copyWith(
-              completedProgress: completedBefore + completed,
-              message: completed == total
-                  ? '候选帧解析完成，正在汇总 ${target.video.fileName}…'
-                  : null,
+      var result = await _analysisService.analyzeFrames(
+        settings: _settingsController.value,
+        video: target.video,
+        frames: target.frames,
+        resolveFrame: resolveFrame,
+        shouldContinue: () => session.shouldContinue,
+        onProgress: (completed, total) {
+          session
+            ..completedProgress = completed
+            ..message = completed == total
+                ? '候选帧解析完成，正在汇总 ${target.video.fileName}…'
+                : session.message;
+          _publishAnalysisSession(session);
+        },
+        onFrameCompleted: (_) {
+          if (value.selectedVideoId == target.video.id) {
+            _loadSelectedVideo(notifyMessage: false);
+          }
+        },
+      );
+      if (!result.interrupted &&
+          _settingsController.value.fullAutomationEnabled &&
+          result.failedCount > 0) {
+        session.message = '存在失败帧，将在一分钟后自动重试…';
+        _publishAnalysisSession(session);
+        await Future<void>.delayed(const Duration(minutes: 1));
+        if (session.shouldContinue) {
+          final failedFrames = _repository
+              .listVideoFrames(target.video.id)
+              .where((frame) => frame.status == ProcessingStatus.failed)
+              .toList();
+          if (failedFrames.isNotEmpty) {
+            result = await _analysisService.analyzeFrames(
+              settings: _settingsController.value,
+              video: target.video,
+              frames: failedFrames,
+              resolveFrame: resolveFrame,
+              shouldContinue: () => session.shouldContinue,
+              onProgress: (completed, total) {
+                session.message =
+                    '正在自动重试 ${target.video.fileName} 的失败帧 $completed/$total…';
+                _publishAnalysisSession(session);
+              },
+              onFrameCompleted: (_) {
+                if (value.selectedVideoId == target.video.id) {
+                  _loadSelectedVideo(notifyMessage: false);
+                }
+              },
             );
-          },
-          onFrameCompleted: (_) => _loadSelectedVideo(notifyMessage: false),
-        );
-        completedBefore += target.frames.length;
-        if (!result.interrupted &&
-            _settingsController.value.fullAutomationEnabled &&
-            result.failedCount > 0) {
-          value = value.copyWith(message: '存在失败帧，将在一分钟后自动重试…');
-          await Future<void>.delayed(const Duration(minutes: 1));
-          if (_continueAnalysis) {
-            final failedFrames = _repository
-                .listVideoFrames(target.video.id)
-                .where((frame) => frame.status == ProcessingStatus.failed)
-                .toList();
-            if (failedFrames.isNotEmpty) {
-              result = await _analysisService.analyzeFrames(
-                settings: _settingsController.value,
-                video: target.video,
-                frames: failedFrames,
-                resolveFrame: resolveFrame,
-                shouldContinue: () => _continueAnalysis,
-                onProgress: (completed, total) {
-                  value = value.copyWith(
-                    completedProgress: completedBefore,
-                    message:
-                        '正在自动重试 ${target.video.fileName} 的失败帧 $completed/$total…',
-                  );
-                },
-                onFrameCompleted: (_) =>
-                    _loadSelectedVideo(notifyMessage: false),
-              );
-            }
           }
         }
-        if (result.interrupted) {
-          interrupted = true;
-          break;
-        }
-        final followUp = await _createFollowUpArtifacts(target.video);
+      }
+      if (result.interrupted || !session.shouldContinue) {
+        interrupted = true;
+      } else {
+        final followUp = await _createFollowUpArtifacts(
+          target.video,
+          shouldContinue: () => session.shouldContinue,
+          onStatus: (message) {
+            session.message = message;
+            _publishAnalysisSession(session);
+          },
+        );
         if (followUp.message.isNotEmpty) {
           followUpMessages.add(followUp.message.substring(1));
         }
@@ -618,66 +696,68 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
           followUpErrors.add(followUp.errorMessage);
         }
       }
-      _loadSelectedVideo(notifyMessage: false);
-      final targetVideoIds = targets.map((target) => target.video.id).toSet();
-      final completedCount = _repository
-          .listSourceVideos()
-          .where((candidate) => targetVideoIds.contains(candidate.id))
-          .expand(
-            (candidate) => _repository.listVideoFrameAnalyses(candidate.id),
-          )
-          .where((analysis) => analysis.status == ProcessingStatus.completed)
-          .length;
-      final failedCount = _repository
-          .listSourceVideos()
-          .where((candidate) => targetVideoIds.contains(candidate.id))
-          .expand(
-            (candidate) => _repository.listVideoFrameAnalyses(candidate.id),
-          )
-          .where((analysis) => analysis.status == ProcessingStatus.failed)
-          .length;
-      final wasCancelled = _cancelAnalysisRequested;
-      value = value.copyWith(
-        isAnalyzing: false,
-        isPaused: interrupted && !wasCancelled,
-        message: interrupted
-            ? wasCancelled
+      final completedCount =
+          _settingsController.value.videoAnalysisShotDetailsEnabled
+          ? _repository
+                .listVideoFrameAnalyses(target.video.id)
+                .where(
+                  (analysis) => analysis.status == ProcessingStatus.completed,
+                )
+                .length
+          : result.completedCount;
+      final failedCount =
+          _settingsController.value.videoAnalysisShotDetailsEnabled
+          ? _repository
+                .listVideoFrameAnalyses(target.video.id)
+                .where((analysis) => analysis.status == ProcessingStatus.failed)
+                .length
+          : result.failedCount;
+      session
+        ..isAnalyzing = false
+        ..isPaused = interrupted && !session.cancelRequested
+        ..message = interrupted
+            ? session.cancelRequested
                   ? '解析已取消，可重新开始处理剩余帧'
                   : '解析已暂停，可继续处理剩余帧'
-            : '解析完成：成功 $completedCount，失败 $failedCount${followUpMessages.isEmpty ? '' : '；${followUpMessages.join('；')}'}',
-        errorMessage: followUpErrors.join('\n'),
-      );
+            : '解析完成：成功 $completedCount，失败 $failedCount${followUpMessages.isEmpty ? '' : '；${followUpMessages.join('；')}'}'
+        ..errorMessage = followUpErrors.join('\n');
     } catch (error) {
-      // 无论汇总、存储或模型请求在哪个阶段异常，都必须收敛忙碌状态。
-      // 否则界面会永久显示“解析中”，且无法再次开始或重试。
-      _loadSelectedVideo(notifyMessage: false);
-      value = value.copyWith(
-        isAnalyzing: false,
-        isPaused: false,
-        message: '',
-        errorMessage: '视频解析未完成：$error',
-      );
+      session
+        ..isAnalyzing = false
+        ..isPaused = false
+        ..message = ''
+        ..errorMessage = '视频解析未完成：$error';
     } finally {
-      _cancelAnalysisRequested = false;
+      session.isAnalyzing = false;
+      _publishAnalysisSession(session);
+      if (value.selectedVideoId == target.video.id) {
+        _loadSelectedVideo(notifyMessage: false);
+      }
     }
   }
 
   void pauseAnalysis() {
-    if (!value.isAnalyzing) {
-      return;
-    }
-    _continueAnalysis = false;
-    value = value.copyWith(message: '正在等待当前帧完成后暂停…');
+    final session = _analysisSessionsByVideoId[value.selectedVideoId];
+    if (session?.isAnalyzing != true) return;
+    session!
+      ..shouldContinue = false
+      ..cancelRequested = false
+      ..message = '正在等待当前帧完成后暂停…';
+    _publishAnalysisSession(session);
   }
 
   void cancelAnalysis() {
-    if (!value.isAnalyzing) {
-      return;
-    }
-    _cancelAnalysisRequested = true;
-    _continueAnalysis = false;
-    _analysisService.visionService.cancelActiveRequests();
-    value = value.copyWith(isPaused: false, message: '正在取消解析…');
+    final session = _analysisSessionsByVideoId[value.selectedVideoId];
+    if (session?.isAnalyzing != true) return;
+    session!
+      ..cancelRequested = true
+      ..shouldContinue = false
+      ..isPaused = false
+      ..message = '正在取消解析…';
+    // 底层服务的 cancelActiveRequests 会取消共享客户端上的
+    // 全部请求。按视频取消时只停止该会话后续帧，不伤及
+    // 其他正在并行的视频。
+    _publishAnalysisSession(session);
   }
 
   Future<bool> generateStoryboardForSelectedVideo() async {
@@ -712,8 +792,11 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   }
 
   Future<_FollowUpArtifactsResult> _createFollowUpArtifacts(
-    SourceVideo video,
-  ) async {
+    SourceVideo video, {
+    bool Function()? shouldContinue,
+    void Function(String message)? onStatus,
+    bool runScriptAnalysis = true,
+  }) async {
     final storyboardController = _storyboardController;
     final shootingScriptController = _shootingScriptController;
     if (storyboardController == null || shootingScriptController == null) {
@@ -742,6 +825,8 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
             boardName: storyboard.boardName,
             images: storyboard.images,
             summary: storyboard.summary,
+            selectBoard: false,
+            preserveExistingCaptions: true,
           );
       if (boardId == null) {
         failures.add(storyboard.boardName);
@@ -763,6 +848,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
         videoShots: _repository.listVideoShots(video.id),
         analyses: analyses,
         sourceStoryboardId: board.id,
+        selectScript: false,
       );
       if (script == null) {
         failures.add(storyboard.boardName);
@@ -778,7 +864,9 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
           ? ''
           : '自动创建失败：${failures.join('、')}，请检查视频帧文件后重试',
     );
-    if (!_settingsController.value.fullAutomationEnabled || scripts.isEmpty) {
+    if (!runScriptAnalysis ||
+        !_settingsController.value.fullAutomationEnabled ||
+        scripts.isEmpty) {
       return result;
     }
     final scriptAnalysisController = _scriptAnalysisController;
@@ -792,9 +880,9 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       }
     }
     if (failedScriptIds.isEmpty) return result;
-    value = value.copyWith(message: '分镜脚本有失败项，将在一分钟后自动重试…');
+    onStatus?.call('分镜脚本有失败项，将在一分钟后自动重试…');
     await Future<void>.delayed(const Duration(minutes: 1));
-    if (_continueAnalysis) {
+    if (shouldContinue?.call() ?? true) {
       for (final scriptId in failedScriptIds) {
         shootingScriptController.selectScript(scriptId);
         await scriptAnalysisController.analyzeAll(onlyFailed: true);
@@ -906,6 +994,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
         frameAnalyses: value.frameAnalyses,
         summary: summary,
         marketingAnalyses: value.marketingAnalyses,
+        includeMultiDimensionAnalysis:
+            _settingsController.value.videoAnalysisMultiDimensionEnabled,
+        includeShotDetails:
+            _settingsController.value.videoAnalysisShotDetailsEnabled,
         resolveFrame: resolveFrame,
       );
       value = value.copyWith(
@@ -993,6 +1085,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       return;
     }
     final frames = _repository.listVideoFrames(videoId);
+    final session = _analysisSessionsByVideoId[videoId];
     final selectedId =
         selectedFrameId ??
         (frames.any((frame) => frame.id == value.selectedFrameId)
@@ -1007,7 +1100,13 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       summary: _repository.getVideoSummary(videoId),
       clearSummary: _repository.getVideoSummary(videoId) == null,
       selectedFrameId: selectedId,
-      message: message ?? (notifyMessage ? value.message : null),
+      isAnalyzing: session?.isAnalyzing ?? false,
+      isPaused: session?.isPaused ?? false,
+      completedProgress: session?.completedProgress ?? 0,
+      totalProgress: session?.totalProgress ?? 0,
+      message:
+          message ?? session?.message ?? (notifyMessage ? value.message : null),
+      errorMessage: session?.errorMessage ?? '',
     );
   }
 
@@ -1028,7 +1127,9 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
 
   @override
   void dispose() {
-    _continueAnalysis = false;
+    for (final session in _analysisSessionsByVideoId.values) {
+      session.shouldContinue = false;
+    }
     _analysisService.visionService
       ..cancelActiveRequests()
       ..close();
@@ -1041,6 +1142,25 @@ class _VideoAnalysisTarget {
 
   final SourceVideo video;
   final List<VideoFrame> frames;
+}
+
+class _VideoAnalysisSession {
+  _VideoAnalysisSession({
+    required this.videoId,
+    required this.totalProgress,
+    required this.message,
+  });
+
+  final String videoId;
+  bool shouldContinue = true;
+  bool cancelRequested = false;
+  bool isAnalyzing = true;
+  bool isPaused = false;
+  int completedProgress = 0;
+  int totalProgress;
+  String message;
+  String errorMessage = '';
+  Future<void>? future;
 }
 
 class _RemovedVideoFrame {

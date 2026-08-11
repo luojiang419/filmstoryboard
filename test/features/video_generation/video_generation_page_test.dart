@@ -3,6 +3,53 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 void main() {
+  test('LibTV 预设在设置页和生成页提供浏览器授权与即梦规则提示', () {
+    final generationSource = File(
+      'lib/features/video_generation/presentation/video_generation_page.dart',
+    ).readAsStringSync();
+    final settingsSource = File(
+      'lib/features/settings/presentation/settings_page.dart',
+    ).readAsStringSync();
+
+    expect(generationSource, contains("'confirm-libtv-login'"));
+    expect(generationSource, contains("'confirm-libtv-batch'"));
+    expect(
+      generationSource,
+      contains('controller.shouldRequestActiveCliLogin'),
+    );
+    expect(
+      generationSource,
+      contains('controller.shouldRequestActiveCliInstall'),
+    );
+    expect(generationSource, contains("'confirm-libtv-install'"));
+    expect(generationSource, contains("'confirm-kling-install'"));
+    expect(generationSource, contains('KlingCliInstallRegion.china'));
+    expect(generationSource, contains('KlingCliInstallRegion.global'));
+    expect(generationSource, contains('await _runCliLoginAuthorization'));
+    expect(generationSource, contains('安装包内置的 LibTV 官方安装脚本'));
+    expect(generationSource, contains('通过 winget 安装 Node.js LTS'));
+    final controllerSource = File(
+      'lib/features/video_generation/application/video_generation_controller.dart',
+    ).readAsStringSync();
+    expect(controllerSource, contains('seconds.round().clamp(4, 15)'));
+    expect(generationSource, contains('即梦提示词'));
+    expect(generationSource, contains("'libtv-aspect-ratio-"));
+    expect(generationSource, contains("'libtv-resolution-"));
+    expect(generationSource, contains("'libtv-enable-sound-"));
+    expect(generationSource, contains("'libtv-search-enabled-"));
+    expect(generationSource, contains('controller.updateLibTvAspectRatio'));
+    expect(generationSource, contains('controller.updateLibTvResolution'));
+    expect(generationSource, contains('controller.updateLibTvSoundEnabled'));
+    expect(generationSource, contains('controller.updateLibTvSearchEnabled'));
+    expect(settingsSource, contains('VideoGenerationApiConfigKind.libTvCli'));
+    expect(settingsSource, contains('即梦 2.0 官方提示词教程'));
+    expect(settingsSource, contains('脚本专属 LibTV 画布'));
+    expect(
+      settingsSource,
+      contains('AppSettings.defaultLibTvCliVideoGenerationModel'),
+    );
+  });
+
   test('完成视频恢复格子内直接点击播放，生成中格子不使用持续动画', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
@@ -241,5 +288,29 @@ void main() {
     expect(promptCell, contains('controller: _textController'));
     expect(promptCell, isNot(contains('updatedAt.microsecondsSinceEpoch')));
     expect(promptCell, isNot(contains('initialValue:')));
+  });
+
+  test('批量生成中只锁定正在运行的镜头', () {
+    final source = File(
+      'lib/features/video_generation/presentation/video_generation_page.dart',
+    ).readAsStringSync();
+
+    expect(
+      source,
+      contains(
+        'final canGenerateAny = controller.generationTargets().isNotEmpty',
+      ),
+    );
+    expect(
+      source,
+      contains('state.isBusy && !state.isGeneratingAll'),
+      reason: '生成批次本身不应锁死一键生成入口',
+    );
+    expect(
+      source,
+      contains('!controller.isGenerationActiveFor(owner)'),
+      reason: '已终止或已失败镜头应可在原页面立即重新生成',
+    );
+    expect(source, isNot(contains('enabled: !state.isGeneratingAll')));
   });
 }

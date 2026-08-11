@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../projects/application/project_workspace_controller.dart';
+import '../../remote_access/domain/remote_auth_models.dart';
 import '../../storyboard/domain/image_generation_model_catalog.dart';
 import '../../storyboard/presentation/widgets/image_generation_model_selector.dart';
 import '../../updater/domain/app_update_config.dart';
@@ -27,9 +29,11 @@ class SettingsPage extends ConsumerStatefulWidget {
 
 enum _SettingsSection {
   projects,
+  remoteAccess,
   exportDirectory,
   storyboardExport,
   visionApi,
+  analysisDimensions,
   videoAnalysis,
   promptDefaults,
   imageGenerationApi,
@@ -411,6 +415,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ),
             const SizedBox(height: 14),
             _CollapsibleSection(
+              title: '导演远程访问',
+              expanded: _sectionExpanded(_SettingsSection.remoteAccess),
+              onToggle: () => _toggleSection(_SettingsSection.remoteAccess),
+              child: _sectionExpanded(_SettingsSection.remoteAccess)
+                  ? const _RemoteAccessSettingsPanel()
+                  : const SizedBox.shrink(),
+            ),
+            const SizedBox(height: 14),
+            _CollapsibleSection(
               title: '导出文件夹',
               expanded: _sectionExpanded(_SettingsSection.exportDirectory),
               onToggle: () => _toggleSection(_SettingsSection.exportDirectory),
@@ -508,6 +521,41 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       '添加视频后自动完成视频解析、故事板、拍摄脚本和分镜脚本解析；失败任务将在一分钟后自动重试一次。',
                     ),
                     onChanged: settingsController.setFullAutomationEnabled,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            _CollapsibleSection(
+              title: '解析维度',
+              expanded: _sectionExpanded(_SettingsSection.analysisDimensions),
+              onToggle: () =>
+                  _toggleSection(_SettingsSection.analysisDimensions),
+              child: Column(
+                children: [
+                  CheckboxListTile(
+                    key: const ValueKey(
+                      'video-analysis-multi-dimension-checkbox',
+                    ),
+                    value: settings.videoAnalysisMultiDimensionEnabled,
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: const Text('多维度分析'),
+                    subtitle: const Text('分析视频结构、留存、转化、画面风格与平台适配等视频级维度'),
+                    onChanged: (enabled) => settingsController
+                        .setVideoAnalysisMultiDimensionEnabled(
+                          enabled ?? false,
+                        ),
+                  ),
+                  CheckboxListTile(
+                    key: const ValueKey('video-analysis-shot-details-checkbox'),
+                    value: settings.videoAnalysisShotDetailsEnabled,
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: const Text('镜头明细'),
+                    subtitle: const Text('逐帧分析画面、人物、动作、景别、运镜、构图、光影与色彩'),
+                    onChanged: (enabled) => settingsController
+                        .setVideoAnalysisShotDetailsEnabled(enabled ?? false),
                   ),
                 ],
               ),
@@ -1567,7 +1615,12 @@ class _VideoGenerationApiConfigSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '点击卡片即可设为默认；可灵 CLI 使用本机登录与命令行能力，MiniMax H3 本地 API 默认地址为 http://127.0.0.1:7860。',
+          '点击卡片即可设为默认。视觉模型只读取当前所选视频模型对应的后端 Skill：可灵只读可灵、LibTV/Seedance 只读 LibTV、MiniMax H3 先读通用 H3，再按每个镜头的剧情描述最多自动追加一个专项 Skill；未知 HTTP 模型不会误加载 H3。可灵与 LibTV CLI 均使用本机命令行并在需要时自动打开浏览器授权；LibTV 为每个脚本复用独立画布。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 4),
+        SelectableText(
+          '即梦 2.0 官方提示词教程：https://www.volcengine.com/docs/82379/2222480?lang=zh',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 10),
@@ -1582,7 +1635,9 @@ class _VideoGenerationApiConfigSection extends StatelessWidget {
                 deleteEnabled:
                     configs.length > 1 &&
                     config.id !=
-                        AppSettings.defaultKlingCliVideoGenerationConfigId,
+                        AppSettings.defaultKlingCliVideoGenerationConfigId &&
+                    config.id !=
+                        AppSettings.defaultLibTvCliVideoGenerationConfigId,
                 onSelect: () => onSelect(config.id),
                 onEdit: () => _edit(context, config),
                 onDelete: () => onDelete(config.id),
@@ -1629,14 +1684,22 @@ class _VideoGenerationApiConfigCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final model = config.isKlingCli
-        ? '本机可灵 CLI'
-        : (config.model.trim().isEmpty ? '未设置模型' : config.model);
-    final baseUrl = config.isKlingCli
-        ? '使用可灵登录状态与命令行能力'
-        : (config.baseUrl.trim().isEmpty
-              ? '未设置 API 地址'
-              : config.baseUrl.trim());
+    final model = switch (config.kind) {
+      VideoGenerationApiConfigKind.klingCli => switch (config.klingCliRegion) {
+        'china' => '本机可灵 CLI · 中国区',
+        'global' => '本机可灵 CLI · 海外区',
+        _ => '本机可灵 CLI · 首次安装时选择区域',
+      },
+      VideoGenerationApiConfigKind.libTvCli => '${config.model}（即梦 2.0）',
+      VideoGenerationApiConfigKind.httpApi =>
+        config.model.trim().isEmpty ? '未设置模型' : config.model,
+    };
+    final baseUrl = switch (config.kind) {
+      VideoGenerationApiConfigKind.klingCli => '使用可灵登录状态与命令行能力',
+      VideoGenerationApiConfigKind.libTvCli => '浏览器授权 · 脚本专属 LibTV 画布',
+      VideoGenerationApiConfigKind.httpApi =>
+        config.baseUrl.trim().isEmpty ? '未设置 API 地址' : config.baseUrl.trim(),
+    };
     return SizedBox(
       width: 272,
       child: Material(
@@ -1661,7 +1724,7 @@ class _VideoGenerationApiConfigCard extends StatelessWidget {
                 Row(
                   children: [
                     Icon(
-                      config.isKlingCli
+                      !config.isHttpApi
                           ? Icons.terminal_rounded
                           : Icons.movie_creation_outlined,
                       color: selected
@@ -1762,6 +1825,7 @@ class _VideoGenerationApiConfigDialogState
   late final TextEditingController _apiKeyController;
   late final TextEditingController _modelController;
   late VideoGenerationApiConfigKind _kind;
+  late String _klingCliRegion;
   var _apiKeyObscured = true;
 
   @override
@@ -1769,15 +1833,16 @@ class _VideoGenerationApiConfigDialogState
     super.initState();
     final config = widget.config;
     _kind = config?.kind ?? VideoGenerationApiConfigKind.httpApi;
+    _klingCliRegion = config?.klingCliRegion ?? '';
     _nameController = TextEditingController(text: config?.name ?? '');
     _baseUrlController = TextEditingController(
-      text: config?.isKlingCli == true
+      text: config?.isHttpApi == false
           ? ''
           : config?.baseUrl ?? AppSettings.defaultVideoGenerationApiBaseUrl,
     );
     _apiKeyController = TextEditingController(text: config?.apiKey ?? '');
     _modelController = TextEditingController(
-      text: config?.isKlingCli == true
+      text: config?.isHttpApi == false
           ? ''
           : config?.model ?? AppSettings.defaultVideoGenerationModel,
     );
@@ -1810,6 +1875,11 @@ class _VideoGenerationApiConfigDialogState
                     value: VideoGenerationApiConfigKind.klingCli,
                     label: Text('可灵 CLI'),
                     icon: Icon(Icons.terminal_rounded),
+                  ),
+                  ButtonSegment(
+                    value: VideoGenerationApiConfigKind.libTvCli,
+                    label: Text('LibTV CLI'),
+                    icon: Icon(Icons.video_library_outlined),
                   ),
                   ButtonSegment(
                     value: VideoGenerationApiConfigKind.httpApi,
@@ -1865,8 +1935,42 @@ class _VideoGenerationApiConfigDialogState
                   hintText: AppSettings.defaultVideoGenerationModel,
                 ),
               ),
-            ] else
-              const Text('可灵 CLI 会复用本机可灵命令行、登录状态和模型配置；这里只保存一个默认入口卡片。'),
+            ] else if (_kind == VideoGenerationApiConfigKind.libTvCli)
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'LibTV CLI 固定使用 Seedance 2.0（即梦 2.0）预设。首次使用会自动打开浏览器授权；生成时上传镜头参考图到当前脚本专属画布，并遵循“主体 + 动作 + 场景 + 光色 + 单一运镜 + 风格/约束”的官方提示词结构。',
+                ),
+              )
+            else ...[
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '可灵中国区与海外区使用不同的官方 CLI 包。首次自动安装前必须选择区域，软件不会同时安装两个版本。',
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'china', label: Text('中国区')),
+                    ButtonSegment(value: 'global', label: Text('海外区')),
+                  ],
+                  selected: _klingCliRegion.isEmpty
+                      ? const <String>{}
+                      : {_klingCliRegion},
+                  emptySelectionAllowed: true,
+                  onSelectionChanged: (selection) {
+                    setState(
+                      () => _klingCliRegion = selection.isEmpty
+                          ? ''
+                          : selection.first,
+                    );
+                  },
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -1887,13 +1991,266 @@ class _VideoGenerationApiConfigDialogState
               apiKey: isHttpApi ? _apiKeyController.text.trim() : '',
               model: isHttpApi
                   ? _modelController.text.trim()
+                  : _kind == VideoGenerationApiConfigKind.libTvCli
+                  ? AppSettings.defaultLibTvCliVideoGenerationModel
                   : AppSettings.defaultKlingCliVideoGenerationModel,
+              klingCliRegion: _kind == VideoGenerationApiConfigKind.klingCli
+                  ? _klingCliRegion
+                  : '',
             ),
           ),
           child: const Text('保存'),
         ),
       ],
     );
+  }
+}
+
+class _RemoteAccessSettingsPanel extends ConsumerWidget {
+  const _RemoteAccessSettingsPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(remoteAccessControllerProvider);
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final scheme = Theme.of(context).colorScheme;
+        final pairing = controller.pairingCode;
+        final sessions = controller.sessions;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: controller.isRunning
+                    ? scheme.primaryContainer.withValues(alpha: 0.52)
+                    : scheme.surfaceContainerHighest.withValues(alpha: 0.46),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    controller.isRunning
+                        ? Icons.public_rounded
+                        : Icons.public_off_rounded,
+                    color: controller.isRunning
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          controller.isRunning ? '远程工作台运行中' : '远程工作台已关闭',
+                          style: Theme.of(context).textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          controller.isRunning
+                              ? '导演可通过配对码访问当前打开工程的拍摄脚本。'
+                              : '默认关闭；开启后才会监听本机端口。',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: controller.config.enabled,
+                    onChanged: controller.isBusy
+                        ? null
+                        : (value) => controller.setEnabled(value),
+                  ),
+                ],
+              ),
+            ),
+            if (controller.isBusy) ...[
+              const SizedBox(height: 10),
+              const LinearProgressIndicator(),
+            ],
+            if (controller.errorMessage case final error?) ...[
+              const SizedBox(height: 10),
+              Text(error, style: TextStyle(color: scheme.error)),
+            ],
+            const SizedBox(height: 16),
+            TextFormField(
+              key: ValueKey('remote-port-${controller.config.port}'),
+              initialValue: '${controller.config.port}',
+              enabled: !controller.isBusy,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '本地服务端口',
+                helperText: '范围 1024–65535；修改后会自动重启远程服务。',
+                prefixIcon: Icon(Icons.settings_ethernet_rounded),
+              ),
+              onFieldSubmitted: (value) async {
+                final port = int.tryParse(value.trim());
+                if (port == null) {
+                  _showMessage(context, '请输入有效的数字端口');
+                  return;
+                }
+                try {
+                  await controller.setPort(port);
+                } on FormatException catch (error) {
+                  if (context.mounted) _showMessage(context, error.message);
+                }
+              },
+            ),
+            const SizedBox(height: 14),
+            Text('本机访问地址', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest.withValues(alpha: 0.42),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Expanded(child: SelectableText(controller.localAccessUrl)),
+                  IconButton(
+                    tooltip: '复制地址',
+                    onPressed: () async {
+                      await Clipboard.setData(
+                        ClipboardData(text: controller.localAccessUrl),
+                      );
+                      if (context.mounted) _showMessage(context, '地址已复制');
+                    },
+                    icon: const Icon(Icons.copy_rounded),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              controller.webAssetsAvailable
+                  ? 'Web 页面资源已就绪。内网穿透目标请填写上方地址，并在公网侧启用 HTTPS。'
+                  : '未找到 Web 页面资源；API 可启动，但安装包需要重新构建后才能打开页面。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: controller.webAssetsAvailable
+                    ? scheme.onSurfaceVariant
+                    : scheme.error,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text('安全配对', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                FilledButton.icon(
+                  onPressed: controller.isRunning
+                      ? () => controller.createPairingCode(
+                          RemoteAccessRole.director,
+                        )
+                      : null,
+                  icon: const Icon(Icons.movie_filter_rounded),
+                  label: const Text('生成导演配对码'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: controller.isRunning
+                      ? () => controller.createPairingCode(
+                          RemoteAccessRole.viewer,
+                        )
+                      : null,
+                  icon: const Icon(Icons.visibility_outlined),
+                  label: const Text('生成只读配对码'),
+                ),
+                if (sessions.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: controller.revokeAllSessions,
+                    icon: const Icon(Icons.phonelink_erase_rounded),
+                    label: const Text('撤销全部会话'),
+                  ),
+              ],
+            ),
+            if (pairing != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [scheme.primaryContainer, scheme.tertiaryContainer],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      pairing.role == RemoteAccessRole.director
+                          ? '导演权限配对码'
+                          : '只读权限配对码',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 6),
+                    SelectableText(
+                      pairing.code,
+                      style: Theme.of(context).textTheme.headlineMedium
+                          ?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 7,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '有效至 ${_formatTime(pairing.expiresAt)}，使用一次后立即失效。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (sessions.isNotEmpty) ...[
+              const SizedBox(height: 18),
+              Text(
+                '已连接设备（${sessions.length}）',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 6),
+              for (final session in sessions)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const CircleAvatar(
+                    child: Icon(Icons.devices_rounded, size: 19),
+                  ),
+                  title: Text(session.clientName),
+                  subtitle: Text(
+                    '${session.role == RemoteAccessRole.director ? '导演' : '只读'} · 最近活动 ${_formatTime(session.lastSeenAt)}',
+                  ),
+                  trailing: IconButton(
+                    tooltip: '撤销会话',
+                    onPressed: () => controller.revokeSession(session.id),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  static String _formatTime(DateTime value) {
+    final local = value.toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  static void _showMessage(BuildContext context, Object message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('$message')));
   }
 }
 

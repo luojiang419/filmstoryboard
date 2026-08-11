@@ -71,6 +71,18 @@ class SettingsController extends ValueNotifier<AppSettings> {
     value = next;
   }
 
+  Future<void> setVideoAnalysisMultiDimensionEnabled(bool enabled) async {
+    final next = value.copyWith(videoAnalysisMultiDimensionEnabled: enabled);
+    _repository.save(next);
+    value = next;
+  }
+
+  Future<void> setVideoAnalysisShotDetailsEnabled(bool enabled) async {
+    final next = value.copyWith(videoAnalysisShotDetailsEnabled: enabled);
+    _repository.save(next);
+    value = next;
+  }
+
   Future<void> setReplicatePromptDefaults({
     required String globalStyle,
     required String constraints,
@@ -559,25 +571,33 @@ class SettingsController extends ValueNotifier<AppSettings> {
   Future<void> saveVideoGenerationApiConfig(
     VideoGenerationApiConfig config,
   ) async {
-    final normalized = config.isKlingCli
-        ? config.copyWith(
-            name: config.name.trim().isEmpty ? '可灵 CLI' : config.name.trim(),
-            kind: VideoGenerationApiConfigKind.klingCli,
-            baseUrl: '',
-            apiKey: '',
-            model: AppSettings.defaultKlingCliVideoGenerationModel,
-          )
-        : config.copyWith(
-            name: config.name.trim().isEmpty
-                ? '未命名视频生成 API'
-                : config.name.trim(),
-            kind: VideoGenerationApiConfigKind.httpApi,
-            baseUrl: config.baseUrl.trim(),
-            apiKey: config.apiKey.trim(),
-            model: config.model.trim().isEmpty
-                ? AppSettings.defaultVideoGenerationModel
-                : config.model.trim(),
-          );
+    final normalized = switch (config.kind) {
+      VideoGenerationApiConfigKind.klingCli => config.copyWith(
+        name: config.name.trim().isEmpty ? '可灵 CLI' : config.name.trim(),
+        kind: VideoGenerationApiConfigKind.klingCli,
+        baseUrl: '',
+        apiKey: '',
+        model: AppSettings.defaultKlingCliVideoGenerationModel,
+      ),
+      VideoGenerationApiConfigKind.libTvCli => config.copyWith(
+        name: config.name.trim().isEmpty
+            ? 'LibTV CLI · 即梦 2.0'
+            : config.name.trim(),
+        kind: VideoGenerationApiConfigKind.libTvCli,
+        baseUrl: '',
+        apiKey: '',
+        model: AppSettings.defaultLibTvCliVideoGenerationModel,
+      ),
+      VideoGenerationApiConfigKind.httpApi => config.copyWith(
+        name: config.name.trim().isEmpty ? '未命名视频生成 API' : config.name.trim(),
+        kind: VideoGenerationApiConfigKind.httpApi,
+        baseUrl: config.baseUrl.trim(),
+        apiKey: config.apiKey.trim(),
+        model: config.model.trim().isEmpty
+            ? AppSettings.defaultVideoGenerationModel
+            : config.model.trim(),
+      ),
+    };
     final exists = value.videoGenerationApiConfigs.any(
       (item) => item.id == normalized.id,
     );
@@ -611,9 +631,25 @@ class SettingsController extends ValueNotifier<AppSettings> {
     value = next;
   }
 
+  Future<void> setActiveKlingCliRegion(String region) async {
+    final normalized = switch (region.trim()) {
+      'china' => 'china',
+      'global' => 'global',
+      _ => '',
+    };
+    final active = value.activeVideoGenerationApiConfig;
+    if (active == null || !active.isKlingCli) return;
+    await saveVideoGenerationApiConfig(
+      active.copyWith(klingCliRegion: normalized),
+    );
+  }
+
   Future<void> deleteVideoGenerationApiConfig(String configId) async {
     if (value.videoGenerationApiConfigs.length <= 1) return;
-    if (configId == AppSettings.defaultKlingCliVideoGenerationConfigId) return;
+    if (configId == AppSettings.defaultKlingCliVideoGenerationConfigId ||
+        configId == AppSettings.defaultLibTvCliVideoGenerationConfigId) {
+      return;
+    }
     final configs = value.videoGenerationApiConfigs
         .where((item) => item.id != configId)
         .toList();

@@ -24,6 +24,7 @@ import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -140,6 +141,23 @@ void main() {
       controller.selectedH3PromptStyle,
       same(H3PromptStyle.general),
       reason: '旧设置必须默认使用通用 H3',
+    );
+
+    await settingsController.saveVideoGenerationApiConfig(
+      const VideoGenerationApiConfig(
+        id: 'jimeng-test',
+        name: '即梦视频',
+        baseUrl: 'https://example.test',
+        apiKey: 'test',
+        model: 'Seedance 2.0',
+      ),
+    );
+
+    expect(controller.composePromptModelLabel, '即梦');
+    expect(controller.usesOfficialH3PromptWriting, isFalse);
+    expect(
+      controller.composePromptConcurrency,
+      ReplicateController.defaultComposePromptConcurrency,
     );
 
     await controller.selectH3PromptStyle('brand-promo');
@@ -521,7 +539,7 @@ void main() {
       settingsController: settingsController,
     );
     expect(controller.value.prompts.single.prompt, contains('图片2'));
-    expect(controller.value.run?.currentStep, ReplicateStep.composePrompts);
+    expect(controller.value.run?.currentStep, ReplicateStep.confirmShots);
 
     final restoredShot = shootingController.value.shots.single;
     shootingController.updateShot(
@@ -897,6 +915,11 @@ void main() {
       );
     }
     controller.refresh();
+    expect(
+      controller.replicatedImageRecoveryScanCount,
+      0,
+      reason: '所有已记录路径都有效时不得扫描 generated_images',
+    );
 
     final stopwatch = Stopwatch()..start();
     await controller.composeAllPrompts(maxConcurrent: 2);
@@ -925,6 +948,24 @@ void main() {
       'format': ShotPromptFormat.h3.name,
       'label': 'MiniMax H3',
     });
+
+    final missingImage = controller.value.replicatedImages.first;
+    final missingFile = File(missingImage.generatedFramePath);
+    final recoveredFile = File(
+      p.join(
+        directories.generatedImages.path,
+        'recovery',
+        p.basename(missingFile.path),
+      ),
+    );
+    await recoveredFile.parent.create(recursive: true);
+    await missingFile.rename(recoveredFile.path);
+    controller.refresh();
+    expect(controller.replicatedImageRecoveryScanCount, 1);
+    expect(
+      controller.value.replicatedImages.first.generatedFramePath,
+      recoveredFile.path,
+    );
   });
 
   test('错峰批量复刻按镜号提交原帧和新资产并持久化结果', () async {
@@ -1496,7 +1537,7 @@ void main() {
     controller.setFreeCreationEnabled(true);
     expect(controller.automaticFreeCreationStory, contains('人物进入咖啡馆'));
     expect(controller.effectiveFreeCreationStory, contains('产品特写'));
-    expect(controller.validateFreeCreationDescriptions(), isFalse);
+    expect(controller.validateFreeCreationDescriptions(), isTrue);
     expect(controller.missingFreeCreationDescriptionShotIds, [shot.id]);
 
     controller.updateFreeCreationDescription(shot.id, '人物快速拿起产品并停顿展示');
@@ -1540,7 +1581,7 @@ void main() {
     expect(controller.effectiveFreeCreationStory, contains('暖色咖啡馆'));
   });
 
-  test('自由创作整体多模态构建修复一次并保持附件顺序与手改保护', () async {
+  test('自由创作仅使用参考图用户描述和技能并保持手改保护', () async {
     final root = await Directory.systemTemp.createTemp('free-creation-build-');
     final directories = await AppDirectories.create(executableDirectory: root);
     final database = await AppDatabase.open(directories.databaseFile);
@@ -1549,7 +1590,9 @@ void main() {
       repository: settingsRepository,
       initialSettings: settingsRepository.load(),
     );
-    await settingsController.setH3PromptStyleId('brand-promo');
+    await settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultMiniMaxVideoGenerationConfigId,
+    );
     final shootingController = ShootingScriptController(
       repository: ShootingScriptRepository(database),
       directories: directories,
@@ -1568,7 +1611,7 @@ void main() {
       first.copyWith(
         sourceStoryboardAssetId: 'free-cut-1',
         framePath: firstFrame.path,
-        freeCreationDescription: '先快速推近人物手中产品，再减速停在瓶身细节',
+        freeCreationDescription: '品牌宣传短片：先快速推近人物手中产品，再减速停在瓶身细节',
         composition: '绝不能进入请求的旧构图',
         cameraNotes: '绝不能进入请求的旧摄影备注',
         continuesToNext: true,
@@ -1695,7 +1738,7 @@ void main() {
     final visionService = _RecordingVisionStoryboardService()
       ..completionResponses.addAll([
         '不合格的输出',
-        _validFreeCreationH3Prompt(pictureCount: 3, durationSeconds: 7),
+        _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 7),
       ]);
     final repository = ReplicateRepository(database);
     final controller = ReplicateController(
@@ -1715,6 +1758,11 @@ void main() {
     });
     controller.setFreeCreationEnabled(true);
     controller.updateFreeCreationStoryOverride('人物在室内完成一次从动作到产品特写的连续展示。');
+    controller.updatePromptRules(
+      globalStyle: '绝不应进入自由请求的全局风格',
+      constraints: '绝不应进入自由请求的制作边界',
+    );
+    controller.updateReplicationInstructions('绝不应进入自由请求的任务补充');
 
     final succeeded = await controller.buildFreeCreationPrompts(
       maxConcurrent: 1,
@@ -1724,33 +1772,85 @@ void main() {
     expect(visionService.analyzeCount, 0);
     expect(visionService.completionPrompts, hasLength(2));
     expect(
+      visionService.completionResponseTimeouts,
+      everyElement(ReplicateController.freeCreationVisionRequestTimeout),
+    );
+    expect(visionService.completionCompressOversizedImages, everyElement(true));
+    expect(
       visionService.completionImagePaths,
-      everyElement([firstFrame.path, secondFrame.path, productFile.path]),
+      everyElement([firstFrame.path, secondFrame.path]),
     );
     final firstRequest = visionService.completionPrompts.first;
     expect(firstRequest, contains('先快速推近人物手中产品'));
-    expect(firstRequest, contains('人物从画面左侧拿起白色瓶子'));
-    expect(firstRequest, contains('白色瓶子进入中心特写'));
-    expect(firstRequest, contains('室内完成一次从动作到产品特写'));
     expect(firstRequest, contains('<official_skill_file'));
+    expect(firstRequest, isNot(contains('人物从画面左侧拿起白色瓶子')));
+    expect(firstRequest, isNot(contains('白色瓶子进入中心特写')));
+    expect(firstRequest, isNot(contains('室内完成一次从动作到产品特写')));
+    expect(firstRequest, isNot(contains('无字白色瓶子')));
+    expect(firstRequest, isNot(contains('锁定哑光材质和细长比例')));
+    expect(firstRequest, isNot(contains('绝不应进入自由请求的全局风格')));
+    expect(firstRequest, isNot(contains('绝不应进入自由请求的制作边界')));
+    expect(firstRequest, isNot(contains('绝不应进入自由请求的任务补充')));
     expect(firstRequest, isNot(contains('绝不能进入请求的旧构图')));
     expect(firstRequest, isNot(contains('绝不能进入请求的旧摄影备注')));
     expect(visionService.completionPrompts.last, contains('这是唯一一次格式修复'));
 
     final prompt = controller.value.prompts.single;
     expect(prompt.status, ProcessingStatus.completed);
+    expect(controller.promptFormatFor(prompt), ShotPromptFormat.h3);
     expect(prompt.prompt, startsWith('subject_definitions:'));
     expect(prompt.prompt, contains('7秒视频'));
     expect(prompt.isUserEdited, isFalse);
     expect(shootingController.value.shots.last.durationSeconds, 7);
     final raw = jsonDecode(prompt.rawResponse) as Map<String, dynamic>;
-    expect(raw['promptSource'], 'freeCreationHolisticVision');
+    expect(raw['h3Prompt'], startsWith('subject_definitions:'));
+    expect(raw['klingPrompt'], contains('图片1至图片2'));
+    expect(raw['sd2Prompt'], contains('参考图1至参考图2'));
+    expect(raw['promptSource'], 'freeCreationReferenceVision');
+    expect(raw['h3PromptStyleId'], 'brand-promo');
+    expect(raw['videoSkillBackend'], 'minimaxH3');
+    expect(raw['videoSkillAutomaticallySelected'], isTrue);
     expect(raw['formatRepairCount'], 1);
-    expect(raw['referenceImagePaths'], [
-      firstFrame.path,
-      secondFrame.path,
-      productFile.path,
-    ]);
+    expect(raw['referenceImagePaths'], [firstFrame.path, secondFrame.path]);
+    expect(
+      raw['freeCreationContextMode'],
+      'referenceImagesOptionalUserDescriptionAndSkill',
+    );
+    expect(raw['storyContextIncluded'], isFalse);
+    expect(raw['linkedAssetImagesIncluded'], isFalse);
+    expect(prompt.assetIds, isEmpty);
+
+    controller.selectPromptFormat(prompt.id, ShotPromptFormat.kling);
+    expect(controller.value.prompts.single.prompt, startsWith('图片1至图片2'));
+    controller.selectPromptFormat(prompt.id, ShotPromptFormat.h3);
+    expect(
+      controller.value.prompts.single.prompt,
+      startsWith('subject_definitions:'),
+    );
+    controller.selectPromptFormat(prompt.id, ShotPromptFormat.sd2);
+    expect(controller.value.prompts.single.prompt, startsWith('参考图1至参考图2'));
+
+    controller.updateFreeCreationStoryOverride('这段新分镜故事也不应使自由创作提示词失效。');
+    workflowRepository.upsertScriptAsset(
+      ScriptAsset(
+        id: 'free-product',
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '修改后的资产名称',
+        description: '修改后的资产描述也不参与自由创作构建',
+        path: productFile.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    controller.refresh();
+    expect(
+      controller.value.run!.composePromptsStatus,
+      ProcessingStatus.completed,
+      reason: '分镜故事和资产变化不再使自由创作提示词失效',
+    );
 
     controller.updatePromptText(prompt.id, '${prompt.prompt}\n用户手动补充');
     final completionCountBeforeRebuild = visionService.completionPrompts.length;
@@ -1773,55 +1873,421 @@ void main() {
     expect(controller.value.prompts.single.status, ProcessingStatus.failed);
     expect(controller.value.prompts.single.prompt, manuallyEditedPrompt);
     expect(controller.value.prompts.single.isUserEdited, isTrue);
+  });
 
-    for (var index = 0; index < 7; index++) {
-      final extraFile = File('${root.path}/extra-asset-$index.png');
-      await extraFile.writeAsBytes(
-        await productFile.readAsBytes(),
-        flush: true,
+  test('自由创作允许空描述自动分析且构建前可彻底清空旧提示词', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'free-creation-empty-description-',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '空描述自动构建');
+    final frame = await File(
+      '${root.path}${Platform.pathSeparator}empty-description-frame.png',
+    ).writeAsBytes([137, 80, 78, 71, 1]);
+    final shot = shootingController.addShot()!;
+    shootingController.updateShot(shot.copyWith(framePath: frame.path));
+    final visionService = _RecordingVisionStoryboardService()
+      ..completionResponses.addAll([
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 5),
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 6),
+      ]);
+    final repository = ReplicateRepository(database);
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    controller.setFreeCreationEnabled(true);
+
+    expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
+    expect(visionService.completionPrompts.single, contains('用户未提供文字描述'));
+    expect(controller.value.prompts.single.prompt, contains('5秒视频'));
+
+    await settingsController.saveVideoGenerationApiConfig(
+      const VideoGenerationApiConfig(
+        id: 'empty-description-jimeng',
+        name: '即梦',
+        baseUrl: 'https://example.test',
+        apiKey: 'test',
+        model: 'Seedance 2.0',
+      ),
+    );
+    expect(
+      controller.promptFormatFor(controller.value.prompts.single),
+      ShotPromptFormat.sd2,
+    );
+    expect(controller.value.prompts.single.prompt, contains('参考图1'));
+    expect(shootingController.value.shots.single.prompt, contains('参考图1'));
+
+    controller.updatePromptText(
+      controller.value.prompts.single.id,
+      '${controller.value.prompts.single.prompt}\n上一次手工内容',
+    );
+    expect(shootingController.value.shots.single.prompt, contains('上一次手工内容'));
+
+    controller.clearPromptsBeforeBuild();
+
+    expect(controller.value.prompts, isEmpty);
+    expect(repository.listPrompts(controller.value.run!.id), isEmpty);
+    expect(shootingController.value.shots.single.prompt, isEmpty);
+    expect(
+      controller.value.run!.composePromptsStatus,
+      ProcessingStatus.pending,
+    );
+
+    expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
+    expect(controller.value.prompts.single.prompt, contains('6秒视频'));
+    expect(controller.value.prompts.single.prompt, isNot(contains('上一次手工内容')));
+  });
+
+  test('自由创作镜头范围变化后不复用首次构建的手改提示词', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'free-creation-range-rebuild-',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '自由创作范围重建');
+    final frames = <File>[];
+    for (var index = 1; index <= 3; index++) {
+      frames.add(
+        await File(
+          '${root.path}${Platform.pathSeparator}range-$index.png',
+        ).writeAsBytes([137, 80, 78, 71, index]),
       );
-      final assetId = 'free-extra-$index';
-      workflowRepository.upsertScriptAsset(
-        ScriptAsset(
-          id: assetId,
-          scriptId: shootingController.value.selectedScriptId,
-          type: ReplicateAssetType.product,
-          name: '附加资产 ${index + 1}',
-          description: '参考外形 ${index + 1}',
-          path: extraFile.path,
-          referenceNumber: index + 2,
+    }
+    final shots = [
+      for (var index = 0; index < 3; index++) shootingController.addShot()!,
+    ];
+    for (var index = 0; index < shots.length; index++) {
+      shootingController.updateShot(
+        shots[index].copyWith(
+          framePath: frames[index].path,
+          freeCreationDescription: '镜头 ${index + 1} 的当前剧情描述',
+        ),
+      );
+    }
+    expect(
+      shootingController.setContinuousShotRange(
+        startShotId: shots.first.id,
+        endShotId: shots.last.id,
+      ),
+      isTrue,
+    );
+
+    final visionService = _RecordingVisionStoryboardService()
+      ..completionResponses.addAll([
+        _validFreeCreationH3Prompt(pictureCount: 3, durationSeconds: 7),
+        _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 6),
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 4),
+      ]);
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    controller.setFreeCreationEnabled(true);
+
+    expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
+    expect(controller.value.prompts, hasLength(1));
+    expect(visionService.completionImagePaths, [
+      [frames[0].path, frames[1].path, frames[2].path],
+    ]);
+    final firstPrompt = controller.value.prompts.single;
+    controller.updatePromptText(
+      firstPrompt.id,
+      '${firstPrompt.prompt}\n旧范围用户手改内容',
+    );
+    expect(controller.value.prompts.single.isUserEdited, isTrue);
+
+    expect(
+      shootingController.setContinuousShotRange(
+        startShotId: shots.first.id,
+        endShotId: shots[1].id,
+      ),
+      isTrue,
+    );
+    expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
+
+    expect(visionService.completionImagePaths, [
+      [frames[0].path, frames[1].path, frames[2].path],
+      [frames[0].path, frames[1].path],
+      [frames[2].path],
+    ]);
+    expect(controller.value.prompts, hasLength(2));
+    final rebuiltFirst = controller.value.prompts.firstWhere(
+      (prompt) => prompt.scriptShotId == shots.first.id,
+    );
+    expect(rebuiltFirst.isUserEdited, isFalse);
+    expect(rebuiltFirst.prompt, isNot(contains('旧范围用户手改内容')));
+    final raw = jsonDecode(rebuiltFirst.rawResponse) as Map<String, dynamic>;
+    expect(raw['referenceImageCount'], 2);
+  });
+
+  test('不同拍摄脚本可并行构建且切换后恢复各自运行态', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'parallel-script-builds-',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+
+    ShootingScript createScript(String name, String marker) {
+      final script = shootingController.createEmpty(name: name);
+      final frame = File('${root.path}/$marker.png')
+        ..writeAsBytesSync([137, 80, 78, 71, marker.codeUnitAt(0)]);
+      final shot = shootingController.addShot()!;
+      shootingController.updateShot(
+        shot.copyWith(
+          framePath: frame.path,
+          freeCreationDescription: '$marker 脚本独立剧情',
+        ),
+      );
+      return script;
+    }
+
+    final scriptA = createScript('A 脚本', 'A');
+    final scriptB = createScript('B 脚本', 'B');
+    final release = Completer<void>();
+    final firstStarted = Completer<void>();
+    final secondStarted = Completer<void>();
+    final visionService = _RecordingVisionStoryboardService()
+      ..firstCompletionStarted = firstStarted
+      ..secondCompletionStarted = secondStarted
+      ..completionGate = release.future
+      ..completionResponses.addAll([
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 7),
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 8),
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 7),
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 8),
+      ]);
+    final repository = ReplicateRepository(database);
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      visionService: visionService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    controller.selectScript(scriptA.id);
+    controller.setFreeCreationEnabled(true);
+    final runAId = controller.value.run!.id;
+    final buildA = controller.buildFreeCreationPrompts(maxConcurrent: 1);
+    await firstStarted.future;
+    expect(controller.isBuildActiveFor(scriptA.id), isTrue);
+    expect(controller.value.isBusy, isTrue);
+
+    controller.selectScript(scriptB.id);
+    controller.setFreeCreationEnabled(true);
+    final runBId = controller.value.run!.id;
+    expect(controller.value.isBusy, isFalse);
+    final buildB = controller.buildFreeCreationPrompts(maxConcurrent: 1);
+    await secondStarted.future;
+    expect(controller.isBuildActiveFor(scriptB.id), isTrue);
+    expect(controller.value.isBusy, isTrue);
+
+    controller.selectScript(scriptA.id);
+    expect(controller.value.isBusy, isTrue);
+    expect(controller.value.run!.id, runAId);
+    controller.selectScript(scriptB.id);
+    expect(controller.value.isBusy, isTrue);
+    expect(controller.value.run!.id, runBId);
+
+    release.complete();
+    final results = await Future.wait([buildA, buildB]);
+    expect(
+      results,
+      everyElement(isTrue),
+      reason:
+          'A: ${repository.listPrompts(runAId).map((item) => item.errorMessage).join(' | ')}; '
+          'B: ${repository.listPrompts(runBId).map((item) => item.errorMessage).join(' | ')}',
+    );
+
+    expect(repository.listPrompts(runAId), hasLength(1));
+    expect(repository.listPrompts(runBId), hasLength(1));
+    expect(controller.isBuildActiveFor(scriptA.id), isFalse);
+    expect(controller.isBuildActiveFor(scriptB.id), isFalse);
+    expect(controller.value.selectedScriptId, scriptB.id);
+    expect(controller.value.prompts.single.runId, runBId);
+    expect(controller.value.isBusy, isFalse);
+  });
+
+  test('确认镜头可按整组排序和移除并同步关联镜号', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate-shot-group-actions-',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '镜头组操作');
+    final shots = [
+      for (var index = 0; index < 4; index++) shootingController.addShot()!,
+    ];
+    for (var index = 0; index < shots.length; index++) {
+      shootingController.updateShot(
+        shots[index].copyWith(content: '镜头 ${index + 1}'),
+      );
+    }
+    expect(
+      shootingController.setContinuousShotRange(
+        startShotId: shots[0].id,
+        endShotId: shots[1].id,
+      ),
+      isTrue,
+    );
+    final repository = ReplicateRepository(database);
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      enforceFreeCreationMode: true,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    final runId = controller.value.run!.id;
+    final now = DateTime.now().toUtc();
+    for (final shot in [shots[0], shots[2]]) {
+      repository.upsertPrompt(
+        ShotPrompt(
+          id: 'prompt-${shot.id}',
+          runId: runId,
+          shotNumber: shot.shotNumber,
+          scriptShotId: shot.id == shots[0].id ? null : shot.id,
+          assetIds: const [],
+          prompt: '提示词 ${shot.shotNumber}',
+          model: 'MiniMax H3',
+          rawResponse: '{}',
           status: ProcessingStatus.completed,
-          createdAt: now,
+          errorMessage: '',
           updatedAt: now,
         ),
       );
-      workflowRepository.upsertLink(
-        ScriptShotAssetLink(
-          shotId: first.id,
-          scriptAssetId: assetId,
-          matchSource: ScriptAssetMatchSource.manual,
-          confidence: 1,
-          matchReason: '用户确认',
-          confirmed: true,
-          locked: true,
-          sortOrder: index + 1,
+      repository.upsertReplicatedShotImage(
+        ReplicatedShotImage(
+          id: 'replica-${shot.id}',
+          runId: runId,
+          scriptShotId: shot.id,
+          shotNumber: shot.shotNumber,
+          originalFramePath: 'original-${shot.id}.png',
+          generatedFramePath: 'replica-${shot.id}.png',
+          assetIds: const [],
+          prompt: '',
+          model: 'test',
+          rawResponse: '{}',
+          status: ProcessingStatus.completed,
+          errorMessage: '',
           createdAt: now,
           updatedAt: now,
         ),
       );
     }
-    final completionCountBeforeLimitCheck =
-        visionService.completionPrompts.length;
-    final overLimitSucceeded = await controller.buildFreeCreationPrompts(
-      maxConcurrent: 1,
-    );
-    expect(overLimitSucceeded, isFalse);
-    expect(controller.value.errorMessage, contains('超过 9 张'));
-    expect(controller.value.errorMessage, contains('10 张'));
+    controller.refresh();
+
+    expect(controller.reorderShotGroups(0, 3), isTrue);
+    expect(controller.value.shots.map((shot) => shot.id), [
+      shots[2].id,
+      shots[3].id,
+      shots[0].id,
+      shots[1].id,
+    ]);
+    expect(controller.value.shots.map((shot) => shot.shotNumber), [1, 2, 3, 4]);
+    expect(controller.value.shots[2].continuesToNext, isTrue);
+    expect(controller.value.shots[3].continuesFromPrevious, isTrue);
+    expect(repository.listPrompts(runId).map((prompt) => prompt.shotNumber), [
+      1,
+      3,
+    ]);
     expect(
-      visionService.completionPrompts,
-      hasLength(completionCountBeforeLimitCheck),
-      reason: '参考图超限必须在发起模型请求前拦截',
+      repository
+          .listPrompts(runId)
+          .firstWhere((prompt) => prompt.id == 'prompt-${shots[0].id}')
+          .scriptShotId,
+      shots[0].id,
+      reason: '旧工程空镜头关联需在排序前按旧镜号补齐',
+    );
+    expect(
+      repository
+          .listReplicatedShotImages(runId)
+          .map((image) => image.shotNumber),
+      [1, 3],
+    );
+
+    expect(controller.removeShotGroup(shots[0].id), isTrue);
+    expect(controller.value.shots.map((shot) => shot.id), [
+      shots[2].id,
+      shots[3].id,
+    ]);
+    expect(repository.listPrompts(runId).map((prompt) => prompt.scriptShotId), [
+      shots[2].id,
+    ]);
+    expect(
+      repository
+          .listReplicatedShotImages(runId)
+          .map((image) => image.scriptShotId),
+      [shots[2].id],
     );
   });
 }
@@ -1832,24 +2298,27 @@ String _validFreeCreationH3Prompt({
 }) {
   final definitions = [
     for (var index = 1; index <= pictureCount; index++)
-      '<Picture $index> 是第 $index 张分镜或资产图，用于定义可见主体、构图和动作阶段。',
+      '<Picture $index> 是第 $index 张参考图，用于定义可见主体、构图和动作阶段。',
   ].join('\n');
   final retention = [
     for (var index = 1; index <= pictureCount; index++)
       '<Picture $index> ([Shot 1] 分镜规划参考): fully_preserved - 保留该图的主体特征、构图关系和动作意图。',
   ].join('\n');
+  final continuation = pictureCount >= 2
+      ? '动作过程参考 <Picture 2> 的手部与产品空间关系'
+      : '动作过程严格保持 <Picture 1> 的手部与产品空间关系';
   return '''subject_definitions:
 $definitions
 
 summary:
-[参考生成] $durationSeconds秒视频，根据全部分镜和资产图生成连续的产品展示镜头。
+[参考生成] $durationSeconds秒视频，根据参考图和用户描述生成连续镜头。
 
 retention_analysis:
 $retention
 
 detailed_description:
 目标视频采用清晰、克制且可执行的商业影像语言。
-[Shot 1] 画面从 <Picture 1> 所定义的人物位置与室内构图开始，人物按真实速度拿起产品，摄影机平稳推近；动作过程参考 <Picture 2> 的手部与产品空间关系，最后让 <Picture 3> 定义的产品材质和外形在画面中心稳定呈现。手指接触瓶身的轻微摩擦声与拿起动作同步，不出现无关文字、水印或 Logo。
+[Shot 1] 画面从 <Picture 1> 所定义的人物位置与室内构图开始，人物按真实速度拿起产品，摄影机平稳推近；$continuation，最后在画面中心稳定呈现。手指接触瓶身的轻微摩擦声与拿起动作同步，不出现无关文字、水印或 Logo。
 
 overall_soundscape:
 安静的室内环境底噪持续存在，仅保留与手部接触、产品拿起和放稳同步的自然物理声。
@@ -1897,10 +2366,13 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
   final completionResponses = <String>[];
   var activeCompletions = 0;
   var maxActiveCompletions = 0;
+  Completer<void>? firstCompletionStarted;
   Completer<void>? secondCompletionStarted;
   Future<void>? completionGate;
   final completionPrompts = <String>[];
   final completionImagePaths = <List<String>>[];
+  final completionResponseTimeouts = <Duration>[];
+  final completionCompressOversizedImages = <bool>[];
 
   @override
   Future<String> complete({
@@ -1909,6 +2381,8 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
     List<File> imageFiles = const [],
     int maxTokens = 1200,
     bool allowThinking = false,
+    Duration responseTimeout = VisionStoryboardService.requestTimeout,
+    bool compressOversizedImages = false,
   }) async {
     activeCompletions++;
     if (activeCompletions > maxActiveCompletions) {
@@ -1917,6 +2391,14 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
     try {
       completionPrompts.add(prompt);
       completionImagePaths.add([for (final file in imageFiles) file.path]);
+      completionResponseTimeouts.add(responseTimeout);
+      completionCompressOversizedImages.add(compressOversizedImages);
+      final firstStarted = firstCompletionStarted;
+      if (completionPrompts.length == 1 &&
+          firstStarted != null &&
+          !firstStarted.isCompleted) {
+        firstStarted.complete();
+      }
       final secondStarted = secondCompletionStarted;
       if (completionPrompts.length >= 2 &&
           secondStarted != null &&

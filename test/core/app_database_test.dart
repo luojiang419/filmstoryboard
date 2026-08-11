@@ -35,6 +35,8 @@ void main() {
     expect(defaults.cutImageNumberTextScale, 1.0);
     expect(defaults.storyboardCaptionNumberEnabled, isTrue);
     expect(defaults.storyboardSummaryPageEnabled, isTrue);
+    expect(defaults.videoAnalysisMultiDimensionEnabled, isTrue);
+    expect(defaults.videoAnalysisShotDetailsEnabled, isTrue);
     expect(defaults.visionApiBaseUrl, 'http://127.0.0.1:12345');
     expect(defaults.visionModel, 'test-vlm');
     expect(defaults.imageGenerationApiBaseUrl, 'https://grsai.dakka.com.cn');
@@ -66,6 +68,8 @@ void main() {
         cutImageNumberTextScale: 1.4,
         storyboardCaptionNumberEnabled: false,
         storyboardSummaryPageEnabled: false,
+        videoAnalysisMultiDimensionEnabled: false,
+        videoAnalysisShotDetailsEnabled: false,
         visionApiBaseUrl: 'http://localhost:9000',
         visionApiKey: 'custom-key',
         visionModel: 'custom-vlm',
@@ -93,6 +97,8 @@ void main() {
     expect(loaded.cutImageNumberTextScale, 1.4);
     expect(loaded.storyboardCaptionNumberEnabled, isFalse);
     expect(loaded.storyboardSummaryPageEnabled, isFalse);
+    expect(loaded.videoAnalysisMultiDimensionEnabled, isFalse);
+    expect(loaded.videoAnalysisShotDetailsEnabled, isFalse);
     expect(loaded.videoPreviewPaddingSeconds, 1.5);
     expect(loaded.visionApiBaseUrl, 'http://localhost:9000');
     expect(loaded.visionModel, 'custom-vlm');
@@ -110,7 +116,7 @@ void main() {
     expect(loaded.autoInstallUpdates, isTrue);
     expect(loaded.updateDownloadMode, UpdateDownloadMode.manual);
     expect(loaded.updateManualProxyUrl, 'http://127.0.0.1:7890');
-    expect(database.countRows('settings'), 41);
+    expect(database.countRows('settings'), 43);
   });
 
   test('记录图片生成任务结果', () async {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:filmstoryboard/core/database/app_database.dart';
@@ -118,7 +119,7 @@ void main() {
     expect(repository.listVideoFrameAnalyses(videoId), isEmpty);
   });
 
-  test('非全自动模式在手动视频解析完成后自动创建故事板和初始脚本', () async {
+  test('未解析候选帧可先创建故事板和脚本并在解析完成后原位回填', () async {
     final root = await Directory.systemTemp.createTemp('video_chain_');
     final directories = await AppDirectories.create(executableDirectory: root);
     final database = await AppDatabase.open(directories.databaseFile);
@@ -213,12 +214,27 @@ void main() {
       await root.delete(recursive: true);
     });
 
+    expect(await controller.generateStoryboardForSelectedVideo(), isTrue);
+    final initialBoard = storyboardController.value.boards.singleWhere(
+      (item) => item.id == 'external-board:video:$videoId',
+    );
+    final initialScript = shootingScriptController.value.scripts.single;
+    final initialShot = shootingScriptController.value.shots.single;
+    expect(initialBoard.items.single.caption, isEmpty);
+    expect(initialShot.content, isEmpty);
+    storyboardController
+      ..selectBoard(initialBoard.id)
+      ..updateCaption(0, '用户在解析期间填写的镜头内容');
+
     await controller.startAnalysis();
 
     final board = storyboardController.value.boards.singleWhere(
       (item) => item.id == 'external-board:video:$videoId',
     );
     final script = shootingScriptController.value.scripts.single;
+    expect(board.id, initialBoard.id);
+    expect(script.id, initialScript.id);
+    expect(shootingScriptController.value.shots.single.id, initialShot.id);
     expect(board.items, hasLength(1));
     expect(
       p.normalize(board.items.single.asset.path),
@@ -244,7 +260,11 @@ void main() {
       File(shootingScriptController.value.shots.single.framePath).existsSync(),
       isTrue,
     );
-    expect(shootingScriptController.value.shots.single.content, '自动生成的测试镜头');
+    expect(board.items.single.caption, '用户在解析期间填写的镜头内容');
+    expect(
+      shootingScriptController.value.shots.single.content,
+      '用户在解析期间填写的镜头内容',
+    );
     expect(controller.value.message, contains('已自动创建 1 个故事板、1 个拍摄脚本'));
 
     storyboardController.deleteBoard(board.id);
@@ -296,6 +316,19 @@ void main() {
       ..upsertVideoFrame(_frame(secondVideo.id, 'second-frame', 0, now))
       ..upsertVideoFrameAnalysis(
         _analysis(firstVideo.id, 'first-frame', 1, now),
+      )
+      ..upsertMarketingAnalysis(
+        MarketingAnalysis(
+          id: '${firstVideo.id}-video-dimensions',
+          videoId: firstVideo.id,
+          scope: 'video',
+          dimensions: const {},
+          rawResponse: '{}',
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          createdAt: now,
+          updatedAt: now,
+        ),
       );
     final analysisService = _CompletedVideoAnalysisService(
       repository: repository,
@@ -385,6 +418,97 @@ void main() {
       '{"before":"kept"}',
     );
   });
+
+  test('不同视频可并行解析并在切换后恢复各自进度', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'parallel-video-analysis-',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final repository = VideoAnalysisRepository(database);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final now = DateTime.utc(2026, 8, 11);
+    final videoA = _video('parallel-video-a', 'a.mp4', now);
+    final videoB = _video(
+      'parallel-video-b',
+      'b.mp4',
+      now.add(const Duration(seconds: 1)),
+    );
+    repository
+      ..upsertSourceVideo(videoA)
+      ..upsertSourceVideo(videoB)
+      ..upsertVideoFrame(
+        _frame(
+          videoA.id,
+          'parallel-frame-a',
+          0,
+          now,
+        ).copyWith(status: ProcessingStatus.pending),
+      )
+      ..upsertVideoFrame(
+        _frame(
+          videoB.id,
+          'parallel-frame-b',
+          0,
+          now,
+        ).copyWith(status: ProcessingStatus.pending),
+      );
+    final analysisService = _DeferredVideoAnalysisService(
+      repository: repository,
+    );
+    final controller = VideoAnalysisController(
+      directories: directories,
+      settingsController: settingsController,
+      repository: repository,
+      analysisService: analysisService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    controller.selectVideo(videoA.id);
+    final analysisA = controller.startAnalysis();
+    await analysisService.started(videoA.id);
+    expect(controller.isAnalysisActiveFor(videoA.id), isTrue);
+    expect(controller.value.isAnalyzing, isTrue);
+
+    controller.selectVideo(videoB.id);
+    expect(controller.value.isAnalyzing, isFalse);
+    final analysisB = controller.startAnalysis();
+    await analysisService.started(videoB.id);
+    expect(controller.isAnalysisActiveFor(videoB.id), isTrue);
+    expect(controller.value.isAnalyzing, isTrue);
+
+    controller.selectVideo(videoA.id);
+    expect(controller.value.isAnalyzing, isTrue);
+    expect(controller.value.completedProgress, 0);
+    controller.cancelAnalysis();
+    expect(controller.value.message, '正在取消解析…');
+    controller.selectVideo(videoB.id);
+    expect(controller.value.isAnalyzing, isTrue);
+    expect(controller.value.completedProgress, 0);
+
+    analysisService.release(videoA.id);
+    await analysisA;
+    expect(controller.isAnalysisActiveFor(videoA.id), isFalse);
+    expect(controller.isAnalysisActiveFor(videoB.id), isTrue);
+    expect(controller.value.selectedVideoId, videoB.id);
+    expect(controller.value.isAnalyzing, isTrue);
+
+    analysisService.release(videoB.id);
+    await analysisB;
+    expect(controller.isAnalysisActiveFor(videoB.id), isFalse);
+    expect(controller.value.isAnalyzing, isFalse);
+    expect(repository.listVideoFrameAnalyses(videoA.id), isEmpty);
+    expect(repository.listVideoFrameAnalyses(videoB.id), hasLength(1));
+  });
 }
 
 class _CompletedVideoAnalysisService extends VideoAnalysisService {
@@ -428,6 +552,53 @@ class _CompletedVideoAnalysisService extends VideoAnalysisService {
       completedCount: frames.length,
       failedCount: 0,
       summary: null,
+    );
+  }
+}
+
+class _DeferredVideoAnalysisService extends _CompletedVideoAnalysisService {
+  _DeferredVideoAnalysisService({required super.repository});
+
+  final _startedByVideoId = <String, Completer<void>>{};
+  final _releaseByVideoId = <String, Completer<void>>{};
+
+  Future<void> started(String videoId) =>
+      (_startedByVideoId[videoId] ??= Completer<void>()).future;
+
+  void release(String videoId) {
+    final completer = _releaseByVideoId[videoId] ??= Completer<void>();
+    if (!completer.isCompleted) completer.complete();
+  }
+
+  @override
+  Future<VideoAnalysisRunResult> analyzeFrames({
+    required settings,
+    required SourceVideo video,
+    required List<VideoFrame> frames,
+    File Function(VideoFrame frame)? resolveFrame,
+    void Function(int completed, int total)? onProgress,
+    void Function(VideoFrameAnalysis analysis)? onFrameCompleted,
+    bool Function()? shouldContinue,
+  }) async {
+    final started = _startedByVideoId[video.id] ??= Completer<void>();
+    if (!started.isCompleted) started.complete();
+    await (_releaseByVideoId[video.id] ??= Completer<void>()).future;
+    if (shouldContinue?.call() == false) {
+      return const VideoAnalysisRunResult(
+        completedCount: 0,
+        failedCount: 0,
+        summary: null,
+        interrupted: true,
+      );
+    }
+    return super.analyzeFrames(
+      settings: settings,
+      video: video,
+      frames: frames,
+      resolveFrame: resolveFrame,
+      onProgress: onProgress,
+      onFrameCompleted: onFrameCompleted,
+      shouldContinue: shouldContinue,
     );
   }
 }

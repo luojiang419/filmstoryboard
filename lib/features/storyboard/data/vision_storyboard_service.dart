@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 
 import '../../../core/services/vision_request_rate_limiter.dart';
 import '../../settings/domain/app_settings.dart';
@@ -291,6 +293,8 @@ class VisionStoryboardService {
   static const _maxMissingOrderRepairCount = 2;
 
   static const requestTimeout = Duration(seconds: 120);
+  static const _oversizedImageThresholdBytes = 3 * 1024 * 1024;
+  static const _compressedImageTargetBytes = 2 * 1024 * 1024;
 
   static const _cameraMovementGuide = '''
 运镜判断必须先比较同一镜头的起始/当前/结束帧构图变化，再选择一个主导运镜；不要只看当前帧主体大小。
@@ -747,6 +751,34 @@ class VisionStoryboardService {
     );
   }
 
+  Future<VisionVideoDimensionResult> analyzeVideoDimensionsFromImages({
+    required AppSettings settings,
+    required List<File> imageFiles,
+    bool allowThinking = false,
+  }) async {
+    if (imageFiles.isEmpty) {
+      throw const FormatException('多维度分析至少需要一张视频帧');
+    }
+    final content = await complete(
+      settings: settings,
+      prompt:
+          '${_videoDimensionPrompt(const [], const {})}\n'
+          '本次按视频时间顺序附带 ${imageFiles.length} 张候选帧。请直接根据这些图片完成分析；图片之间是时间连续采样，不要把相邻帧误判为不同视频。',
+      imageFiles: imageFiles,
+      maxTokens: 4200,
+      allowThinking: allowThinking,
+      compressOversizedImages: true,
+    );
+    final json = _extractJsonObject(content);
+    return VisionVideoDimensionResult(
+      dimensions: {
+        for (final field in videoAnalysisDimensionFields)
+          field: _stringValue(json, field),
+      },
+      rawResponse: content,
+    );
+  }
+
   Future<VisionShotMotionAnalysis> analyzeShotMotion({
     required AppSettings settings,
     required List<File> imageFiles,
@@ -993,6 +1025,7 @@ class VisionStoryboardService {
     List<String> imageDataUrls = const [],
     required int maxTokens,
     bool allowThinking = false,
+    Duration responseTimeout = requestTimeout,
   }) async {
     final completion = await _createChatCompletionDetailed(
       settings: settings,
@@ -1001,6 +1034,7 @@ class VisionStoryboardService {
       imageDataUrls: imageDataUrls,
       maxTokens: maxTokens,
       allowThinking: allowThinking,
+      responseTimeout: responseTimeout,
     );
     return completion.content;
   }
@@ -1013,15 +1047,28 @@ class VisionStoryboardService {
     List<File> imageFiles = const [],
     int maxTokens = 1200,
     bool allowThinking = false,
+    Duration responseTimeout = requestTimeout,
+    bool compressOversizedImages = false,
   }) async {
     _validateSettings(settings);
     final imageDataUrls = <String>[];
     for (final imageFile in imageFiles) {
       if (!imageFile.existsSync()) continue;
       final bytes = await imageFile.readAsBytes();
-      imageDataUrls.add(
-        'data:${_mimeTypeForPath(imageFile.path)};base64,${base64Encode(bytes)}',
-      );
+      if (compressOversizedImages &&
+          bytes.length > _oversizedImageThresholdBytes) {
+        final transferable = TransferableTypedData.fromList([bytes]);
+        imageDataUrls.add(
+          await Isolate.run(
+            () => _compressVisionImageInWorker(transferable, imageFile.path),
+          ),
+        );
+      } else {
+        imageDataUrls.add(
+          'data:${_mimeTypeForPath(imageFile.path)};base64,'
+          '${base64Encode(bytes)}',
+        );
+      }
     }
     return _createChatCompletion(
       settings: settings,
@@ -1029,6 +1076,7 @@ class VisionStoryboardService {
       imageDataUrls: imageDataUrls,
       maxTokens: maxTokens,
       allowThinking: allowThinking,
+      responseTimeout: responseTimeout,
     );
   }
 
@@ -1039,6 +1087,7 @@ class VisionStoryboardService {
     List<String> imageDataUrls = const [],
     required int maxTokens,
     bool allowThinking = false,
+    Duration responseTimeout = requestTimeout,
   }) async {
     await VisionRequestRateLimiter.waitForRequestSlot(settings);
     final endpoint = normalizeChatCompletionsEndpoint(
@@ -1092,10 +1141,10 @@ class VisionStoryboardService {
           }),
         )
         .timeout(
-          requestTimeout,
+          responseTimeout,
           onTimeout: () {
             throw TimeoutException(
-              '视觉模型请求超时：超过 ${requestTimeout.inSeconds} 秒未响应',
+              '视觉模型请求超时：超过 ${responseTimeout.inSeconds} 秒未响应',
             );
           },
         );
@@ -1269,6 +1318,7 @@ JSON 字段：
   ,"continues_from_previous": "布尔字符串 true 或 false；当前动作是否明确承接上一帧，没有上一帧时必须为 false"
   ,"continues_to_next": "布尔字符串 true 或 false；当前动作是否明确继续到下一帧，没有下一帧时必须为 false"
 }
+
 ''';
   }
 
@@ -2287,4 +2337,46 @@ String _normalizedChatPath(String path) {
     return '$normalized/chat/completions';
   }
   return '$normalized/v1/chat/completions';
+}
+
+String _compressVisionImageInWorker(
+  TransferableTypedData transferable,
+  String sourcePath,
+) {
+  final bytes = transferable.materialize().asUint8List();
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) {
+    throw FormatException('超限视觉图片无法解码压缩：$sourcePath');
+  }
+
+  var current = decoded;
+  if (current.width > 1280 || current.height > 1280) {
+    current = current.width >= current.height
+        ? img.copyResize(current, width: 1280)
+        : img.copyResize(current, height: 1280);
+  }
+
+  var quality = 84;
+  var encoded = img.encodeJpg(current, quality: quality);
+  while (encoded.length > VisionStoryboardService._compressedImageTargetBytes &&
+      quality > 52) {
+    quality -= 8;
+    encoded = img.encodeJpg(current, quality: quality);
+  }
+  if (encoded.length > VisionStoryboardService._compressedImageTargetBytes &&
+      (current.width > 960 || current.height > 960)) {
+    current = current.width >= current.height
+        ? img.copyResize(current, width: 960)
+        : img.copyResize(current, height: 960);
+    quality = 76;
+    encoded = img.encodeJpg(current, quality: quality);
+    while (encoded.length >
+            VisionStoryboardService._compressedImageTargetBytes &&
+        quality > 40) {
+      quality -= 8;
+      encoded = img.encodeJpg(current, quality: quality);
+    }
+  }
+
+  return 'data:image/jpeg;base64,${base64Encode(encoded)}';
 }

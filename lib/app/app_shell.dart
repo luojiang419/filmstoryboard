@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/database/app_database.dart';
 import '../core/providers/app_providers.dart';
+import '../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../features/exporter/presentation/exporter_page.dart';
 import '../features/grid_cut/presentation/grid_cut_page.dart';
 import '../features/onboarding/application/onboarding_controller.dart';
@@ -16,7 +17,9 @@ import '../features/settings/presentation/settings_page.dart';
 import '../features/shooting_script/presentation/shooting_script_page.dart';
 import '../features/shooting_script/application/shooting_script_controller.dart';
 import '../features/story_design/presentation/story_design_page.dart';
+import '../features/remote_access/application/remote_storyboard_registry.dart';
 import '../features/storyboard/application/storyboard_controller.dart';
+import '../features/storyboard/application/storyboard_remote_source.dart';
 import '../features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
 import '../features/storyboard/presentation/storyboard_page.dart';
 import '../features/updater/application/updater_controller.dart';
@@ -49,9 +52,12 @@ class _AppShellState extends ConsumerState<AppShell> {
   static const _selectedTabIndexVersion = 5;
 
   late int _tabIndex;
+  final _visitedTabIndexes = <int>{};
   late final UpdaterController _updaterController;
   late final OnboardingController _onboardingController;
   late final StoryboardController _storyboardController;
+  late final StoryboardRemoteSource _storyboardRemoteSource;
+  late final RemoteStoryboardRegistry _remoteStoryboardRegistry;
   late final StoryboardShootingScriptSyncController
   _storyboardScriptSyncController;
   late final SettingsController _settingsController;
@@ -79,6 +85,9 @@ class _AppShellState extends ConsumerState<AppShell> {
     )..addListener(_handleOnboardingChanged);
     _storyboardController = ref.read(storyboardControllerProvider)
       ..addListener(_handleAssetNormalizationStateChanged);
+    _storyboardRemoteSource = StoryboardRemoteSource(_storyboardController);
+    _remoteStoryboardRegistry = ref.read(remoteStoryboardRegistryProvider)
+      ..attach(_storyboardRemoteSource);
     _storyboardScriptSyncController = StoryboardShootingScriptSyncController(
       storyboardController: _storyboardController,
       shootingScriptController: ref.read(shootingScriptControllerProvider),
@@ -88,6 +97,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     _tabIndex =
         _loadSavedTabIndex() ??
         widget.initialTabIndex.clamp(0, _tabs.length - 1).toInt();
+    _visitedTabIndexes.add(_tabIndex);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -106,6 +116,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     _onboardingController.removeListener(_handleOnboardingChanged);
     _onboardingController.dispose();
     _storyboardController.removeListener(_handleAssetNormalizationStateChanged);
+    _remoteStoryboardRegistry.detach(source: _storyboardRemoteSource);
+    _storyboardRemoteSource.dispose();
     _storyboardScriptSyncController.dispose();
     _settingsController.removeListener(_handleSettingsChanged);
     _updaterController.removeListener(_handleUpdaterStateChanged);
@@ -115,7 +127,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
+    final content = Scaffold(
       body: DecoratedBox(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -176,27 +188,37 @@ class _AppShellState extends ConsumerState<AppShell> {
         ),
       ),
     );
+    return CollapsiblePanelShortcutScope(child: content);
   }
 
   Widget _buildPageSwitcher() {
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 220),
-      switchInCurve: Curves.easeOutCubic,
-      switchOutCurve: Curves.easeInCubic,
-      child: KeyedSubtree(
-        key: ValueKey(_tabIndex),
-        child: switch (_tabIndex) {
-          0 => StoryDesignPage(onOpenGridCutPage: _showLegacyGridCutPage),
-          1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
-          2 => const StoryboardPage(),
-          3 => const ShootingScriptPage(),
-          4 => const VideoGenerationPage(),
-          5 => const ExporterPage(),
-          _ => const SettingsPage(),
-        },
-      ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        for (final index in _visitedTabIndexes.toList()..sort())
+          Positioned.fill(
+            key: ValueKey('app-shell-page-$index'),
+            child: Offstage(
+              offstage: index != _tabIndex,
+              child: TickerMode(
+                enabled: index == _tabIndex,
+                child: _buildPage(index),
+              ),
+            ),
+          ),
+      ],
     );
   }
+
+  Widget _buildPage(int index) => switch (index) {
+    0 => StoryDesignPage(onOpenGridCutPage: _showLegacyGridCutPage),
+    1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
+    2 => const StoryboardPage(),
+    3 => const ShootingScriptPage(),
+    4 => const VideoGenerationPage(),
+    5 => const ExporterPage(),
+    _ => const SettingsPage(),
+  };
 
   int? _loadSavedTabIndex() {
     try {
@@ -278,7 +300,10 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (_tabIndex == nextIndex) {
       return;
     }
-    setState(() => _tabIndex = nextIndex);
+    setState(() {
+      _tabIndex = nextIndex;
+      _visitedTabIndexes.add(nextIndex);
+    });
     if (!persist) {
       return;
     }

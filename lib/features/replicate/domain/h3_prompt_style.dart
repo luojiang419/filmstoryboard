@@ -55,8 +55,8 @@ class H3PromptStyle {
 
   static const general = H3PromptStyle(
     id: generalId,
-    label: '通用 H3',
-    description: '遵循官方 H3 结构，不额外改变镜头风格',
+    label: '自动匹配（通用 H3）',
+    description: '按每个镜头剧情自动匹配一个专项 Skill；没有明确特征时使用通用 H3',
     officialSkillPath: 'skills/h3-prompt-writing',
     narrativeStructure: '',
     visualMaterial: '',

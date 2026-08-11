@@ -1,5 +1,6 @@
 enum VideoGenerationApiConfigKind {
   klingCli('可灵 CLI'),
+  libTvCli('LibTV CLI'),
   httpApi('HTTP API');
 
   const VideoGenerationApiConfigKind(this.label);
@@ -22,6 +23,7 @@ class VideoGenerationApiConfig {
     required this.baseUrl,
     required this.apiKey,
     required this.model,
+    this.klingCliRegion = '',
   });
 
   final String id;
@@ -30,8 +32,10 @@ class VideoGenerationApiConfig {
   final String baseUrl;
   final String apiKey;
   final String model;
+  final String klingCliRegion;
 
   bool get isKlingCli => kind == VideoGenerationApiConfigKind.klingCli;
+  bool get isLibTvCli => kind == VideoGenerationApiConfigKind.libTvCli;
   bool get isHttpApi => kind == VideoGenerationApiConfigKind.httpApi;
 
   VideoGenerationApiConfig copyWith({
@@ -40,6 +44,7 @@ class VideoGenerationApiConfig {
     String? baseUrl,
     String? apiKey,
     String? model,
+    String? klingCliRegion,
   }) {
     return VideoGenerationApiConfig(
       id: id,
@@ -48,6 +53,7 @@ class VideoGenerationApiConfig {
       baseUrl: baseUrl ?? this.baseUrl,
       apiKey: apiKey ?? this.apiKey,
       model: model ?? this.model,
+      klingCliRegion: klingCliRegion ?? this.klingCliRegion,
     );
   }
 
@@ -58,6 +64,7 @@ class VideoGenerationApiConfig {
     'baseUrl': baseUrl,
     'apiKey': apiKey,
     'model': model,
+    'klingCliRegion': klingCliRegion,
   };
 
   factory VideoGenerationApiConfig.fromJson(Map<String, dynamic> json) {
@@ -65,9 +72,14 @@ class VideoGenerationApiConfig {
     final baseUrl = json['baseUrl'] as String? ?? '';
     final kind = json.containsKey('kind')
         ? VideoGenerationApiConfigKind.fromName(json['kind'] as String?)
-        : (id == 'default-kling-cli' || baseUrl.trim().isEmpty
-              ? VideoGenerationApiConfigKind.klingCli
-              : VideoGenerationApiConfigKind.httpApi);
+        : switch (id) {
+            'default-libtv-cli' => VideoGenerationApiConfigKind.libTvCli,
+            'default-kling-cli' => VideoGenerationApiConfigKind.klingCli,
+            _ =>
+              baseUrl.trim().isEmpty
+                  ? VideoGenerationApiConfigKind.klingCli
+                  : VideoGenerationApiConfigKind.httpApi,
+          };
     return VideoGenerationApiConfig(
       id: id,
       name: json['name'] as String? ?? '未命名视频生成 API',
@@ -75,6 +87,7 @@ class VideoGenerationApiConfig {
       baseUrl: baseUrl,
       apiKey: json['apiKey'] as String? ?? '',
       model: json['model'] as String? ?? '',
+      klingCliRegion: json['klingCliRegion'] as String? ?? '',
     );
   }
 }

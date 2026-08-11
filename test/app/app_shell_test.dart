@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:filmstoryboard/app/app_shell.dart';
 import 'package:filmstoryboard/app/app_theme.dart';
@@ -14,6 +16,7 @@ import 'package:filmstoryboard/features/onboarding/data/onboarding_repository.da
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/shooting_script/presentation/shooting_script_page.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/updater/application/updater_controller.dart';
 import 'package:filmstoryboard/features/updater/data/updater_service.dart';
@@ -120,7 +123,7 @@ void main() {
     );
     expect(find.text('确认镜头'), findsOneWidget);
     expect(find.text('准备资产'), findsOneWidget);
-    expect(find.text('合成提示词'), findsOneWidget);
+    expect(find.text('合成提示词'), findsNothing);
     expect(
       find.byKey(const ValueKey('start-replicate-from-shooting-script')),
       findsNothing,
@@ -177,11 +180,42 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('expand-script-sidebar')));
     await tester.pump();
 
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('expand-script-sidebar')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('expand-confirm-story-panel')),
+      findsOneWidget,
+    );
+    final savedPanelState =
+        jsonDecode(database.getSetting('shootingScriptPageUiState')!)
+            as Map<String, Object?>;
+    expect(savedPanelState['scriptPanelCollapsed'], isTrue);
+    expect(savedPanelState['stepPanelCollapsed'], isTrue);
+    expect(database.getSetting('shootingScriptStepPanelCollapsed'), 'true');
+    final shootingPageStateBeforeSwitch = tester.state(
+      find.byType(ShootingScriptPage),
+    );
+
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-设置')));
     await tester.pumpAndSettle();
 
     expect(find.text('外观'), findsOneWidget);
     expect(database.getSetting('appShellSelectedTabIndex'), '6');
+
+    await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('expand-script-sidebar')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('expand-confirm-story-panel')),
+      findsOneWidget,
+    );
+    expect(
+      tester.state(find.byType(ShootingScriptPage)),
+      same(shootingPageStateBeforeSwitch),
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

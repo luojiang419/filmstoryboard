@@ -12,6 +12,14 @@ class ShootingScriptRepository {
       .map(_scriptFromRow)
       .toList();
 
+  ShootingScript? getScript(String scriptId) {
+    final rows = _database.selectRows(
+      'SELECT * FROM shooting_scripts WHERE id = ? LIMIT 1;',
+      [scriptId],
+    );
+    return rows.isEmpty ? null : _scriptFromRow(rows.single);
+  }
+
   List<ScriptShot> listShots(String scriptId) => _database
       .selectRows(
         'SELECT * FROM script_shots WHERE script_id = ? ORDER BY shot_number;',
@@ -19,6 +27,59 @@ class ShootingScriptRepository {
       )
       .map(_shotFromRow)
       .toList();
+
+  ScriptShot? getShot(String scriptId, String shotId) {
+    final rows = _database.selectRows(
+      'SELECT * FROM script_shots WHERE script_id = ? AND id = ? LIMIT 1;',
+      [scriptId, shotId],
+    );
+    return rows.isEmpty ? null : _shotFromRow(rows.single);
+  }
+
+  bool updateShotIfScriptVersion({
+    required ShootingScript updatedScript,
+    required ScriptShot updatedShot,
+    required int expectedVersion,
+  }) {
+    if (updatedShot.scriptId != updatedScript.id ||
+        updatedScript.version != expectedVersion + 1) {
+      throw ArgumentError('镜头、脚本与预期版本不一致');
+    }
+    _database.executeStatement('BEGIN IMMEDIATE;');
+    try {
+      final current = _database.selectRows(
+        'SELECT version FROM shooting_scripts WHERE id = ? LIMIT 1;',
+        [updatedScript.id],
+      );
+      if (current.isEmpty || current.single['version'] != expectedVersion) {
+        _database.executeStatement('ROLLBACK;');
+        return false;
+      }
+      _insertShot(updatedShot);
+      _database.executeStatement(
+        '''
+        UPDATE shooting_scripts
+        SET name = ?, source_storyboard_id = ?, source_video_id = ?,
+            status = ?, version = ?, updated_at = ?
+        WHERE id = ?;
+        ''',
+        [
+          updatedScript.name,
+          updatedScript.sourceStoryboardId,
+          updatedScript.sourceVideoId,
+          updatedScript.status.name,
+          updatedScript.version,
+          updatedScript.updatedAt.toIso8601String(),
+          updatedScript.id,
+        ],
+      );
+      _database.executeStatement('COMMIT;');
+      return true;
+    } catch (_) {
+      _database.executeStatement('ROLLBACK;');
+      rethrow;
+    }
+  }
 
   void upsertScript(ShootingScript script) {
     _database.executeStatement(

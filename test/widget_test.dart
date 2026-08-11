@@ -911,6 +911,101 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('画布图片拖入裁切资源文件夹时显示微光并复制到目标文件夹', (tester) async {
+    tester.view.physicalSize = const Size(1600, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    late final Directory root;
+    late final AppDirectories directories;
+    late final AppDatabase database;
+    late final _FolderDropSpyStoryboardController controller;
+    late final StoryboardFolder targetFolder;
+    late final StoryboardCutAsset canvasAsset;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('storyboard_folder_drop_');
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+      final source = File(
+        '${root.path}${Platform.pathSeparator}canvas-source.png',
+      );
+      await source.writeAsBytes(base64Decode(_onePixelPng));
+      controller = _FolderDropSpyStoryboardController(
+        database: database,
+        directories: directories,
+      );
+      await controller.createFolder('目标文件夹');
+      targetFolder = controller.value.folders.single;
+      canvasAsset = StoryboardCutAsset(
+        id: 'canvas-folder-drop-asset',
+        imageId: 'canvas-folder-drop-image',
+        sourceName: 'canvas-source.png',
+        path: source.path,
+        indexNo: 1,
+      );
+      controller.setAssetsUsed([canvasAsset], true);
+    });
+    addTearDown(() async {
+      controller.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(database),
+          storyboardControllerProvider.overrideWithValue(controller),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.dark(),
+          home: const Scaffold(body: StoryboardPage()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final source = find.byKey(
+      const ValueKey('storyboard-item-canvas-folder-drop-asset'),
+    );
+    final folderHighlight = find.byKey(
+      ValueKey('storyboard-folder-drop-highlight-${targetFolder.id}'),
+    );
+    expect(source.hitTestable(), findsOneWidget);
+    expect(folderHighlight.hitTestable(), findsOneWidget);
+    BoxDecoration folderDecoration() =>
+        tester.widget<AnimatedContainer>(folderHighlight).decoration!
+            as BoxDecoration;
+    expect(folderDecoration().boxShadow, isEmpty);
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(source),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveBy(const Offset(-8, 0));
+    await tester.pump();
+    await gesture.moveTo(tester.getCenter(folderHighlight));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(folderDecoration().boxShadow, isNotEmpty);
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(controller.lastFolderCopyPaths, [canvasAsset.path]);
+    expect(controller.lastFolderCopyId, targetFolder.id);
+    expect(folderDecoration().boxShadow, isEmpty);
+    expect(
+      controller.value.selectedBoard!.items.single.asset.id,
+      canvasAsset.id,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+  });
+
   testWidgets('画板管理支持搜索并双击重新打开关闭画板', (tester) async {
     tester.view.physicalSize = const Size(1600, 1000);
     tester.view.devicePixelRatio = 1;
@@ -3435,6 +3530,26 @@ class _SpyStoryboardController extends StoryboardController {
   void addOrRemoveAsset(StoryboardCutAsset asset) {
     toggleCount++;
     super.addOrRemoveAsset(asset);
+  }
+}
+
+class _FolderDropSpyStoryboardController extends StoryboardController {
+  _FolderDropSpyStoryboardController({
+    required super.database,
+    required super.directories,
+  });
+
+  List<String> lastFolderCopyPaths = const [];
+  String? lastFolderCopyId;
+
+  @override
+  Future<void> copyPathsToFolder({
+    required Iterable<String> paths,
+    required String folderId,
+  }) {
+    lastFolderCopyPaths = paths.toList(growable: false);
+    lastFolderCopyId = folderId;
+    return Future<void>.value();
   }
 }
 

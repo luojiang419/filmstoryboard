@@ -6,26 +6,29 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('软件资源只收录 8 个中文 Skill 与必要引用文件', () async {
+  test('软件资源收录 8 个叙事 Skill 与通用 H3 中文 Skill', () async {
     final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
     final officialAssets = manifest
         .listAssets()
         .where((path) => path.startsWith('assets/minimax_h3_skills/skills/'))
         .toSet();
 
-    expect(officialAssets, hasLength(15));
+    expect(officialAssets, hasLength(18));
     expect(
       officialAssets.where((path) => path.endsWith('/SKILL.cn.md')),
       hasLength(8),
     );
-    expect(officialAssets.where((path) => path.endsWith('/SKILL.md')), isEmpty);
+    expect(
+      officialAssets.where((path) => path.endsWith('/SKILL.md')),
+      hasLength(1),
+    );
     expect(
       officialAssets.where((path) => path.endsWith('/meta.yaml')),
       isEmpty,
     );
     expect(
       officialAssets.where((path) => path.contains('/h3-prompt-writing/')),
-      isEmpty,
+      hasLength(3),
     );
     expect(
       officialAssets,

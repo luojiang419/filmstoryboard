@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../settings/domain/video_generation_api_config.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
 import '../../shooting_script/application/script_asset_binding_controller.dart';
 import '../../shooting_script/data/script_multimodal_analysis_service.dart';
@@ -26,11 +27,13 @@ import '../../video_analysis/domain/video_analysis_models.dart';
 import '../../video_generation/domain/video_action_sequence.dart';
 import '../../video_generation/domain/h3_video_prompt_adapter.dart';
 import '../../video_generation/domain/kling_video_prompt_adapter.dart';
+import '../data/bundled_video_skill_library.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
 import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
+import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
 import '../domain/replicate_models.dart';
 
@@ -45,6 +48,7 @@ final replicateControllerProvider = Provider<ReplicateController>(
         ref.watch(appDatabaseProvider),
       ),
       assetBindingController: ref.watch(scriptAssetBindingControllerProvider),
+      enforceFreeCreationMode: true,
     );
     ref.onDispose(controller.dispose);
     return controller;
@@ -168,6 +172,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     H3PromptWritingService h3PromptWritingService =
         const H3PromptWritingService(),
     H3SkillLibrary? h3SkillLibrary,
+    VideoSkillLibrary? videoSkillLibrary,
+    bool enforceFreeCreationMode = false,
     Uuid uuid = const Uuid(),
   }) : _repository = repository,
        _shootingScriptController = shootingScriptController,
@@ -183,17 +189,22 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _ownsVisionService = visionService == null,
        _h3PromptWritingService = h3PromptWritingService,
        _h3SkillLibrary = h3SkillLibrary ?? BundledH3SkillLibrary(),
+       _videoSkillLibrary = videoSkillLibrary ?? BundledVideoSkillLibrary(),
+       _enforceFreeCreationMode = enforceFreeCreationMode,
        _uuid = uuid,
        super(const ReplicateState()) {
     _shootingScriptController.addListener(_handleShootingScriptChanged);
     _assetBindingController?.addListener(_handleWorkflowChanged);
+    _settingsController.addListener(_handleSettingsChanged);
     _restoreFromShootingScript();
   }
 
   static const promptModel = 'Seedance 2';
   static const _promptRulesVersion = 19;
+  static const _freeCreationPromptRulesVersion = 22;
   static const defaultComposePromptConcurrency = 4;
   static const klingComposePromptConcurrency = 2;
+  static const freeCreationVisionRequestTimeout = Duration(minutes: 10);
   static const defaultBatchReplicateConcurrency = 1000;
   static const defaultBatchReplicateStagger = Duration(milliseconds: 20);
 
@@ -210,18 +221,28 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsVisionService;
   final H3PromptWritingService _h3PromptWritingService;
   final H3SkillLibrary _h3SkillLibrary;
+  final VideoSkillLibrary _videoSkillLibrary;
+  final bool _enforceFreeCreationMode;
   final Uuid _uuid;
   bool _disposed = false;
   String? _pendingManualShotGroupStartId;
   final _activeReplicationCountsByScriptId = <String, int>{};
   final _activeBatchReplicationScriptIds = <String>{};
   final _replicationMessagesByScriptId = <String, String>{};
+  final _activeBuildCountsByScriptId = <String, int>{};
+  final _buildMessagesByScriptId = <String, String>{};
+  final _buildErrorsByScriptId = <String, String>{};
+  var _replicatedImageRecoveryScanCount = 0;
+
+  @visibleForTesting
+  int get replicatedImageRecoveryScanCount => _replicatedImageRecoveryScanCount;
 
   @override
   void dispose() {
     _disposed = true;
     _shootingScriptController.removeListener(_handleShootingScriptChanged);
     _assetBindingController?.removeListener(_handleWorkflowChanged);
+    _settingsController.removeListener(_handleSettingsChanged);
     if (_ownsImageGenerationService) {
       _imageGenerationService.close();
     }
@@ -356,27 +377,30 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (run == null) {
       return false;
     }
-    if (step.index >= ReplicateStep.prepareAssets.index &&
+    final targetStep = step == ReplicateStep.composePrompts
+        ? ReplicateStep.confirmShots
+        : step;
+    if (targetStep.index >= ReplicateStep.prepareAssets.index &&
         value.shots.isEmpty) {
       value = value.copyWith(errorMessage: '当前脚本暂无可用镜头', message: '');
       return false;
     }
-    if (step.index >= ReplicateStep.generateVideos.index &&
+    if (targetStep.index >= ReplicateStep.generateVideos.index &&
         value.prompts.isEmpty) {
-      value = value.copyWith(errorMessage: '请先完成步骤 3 生成提示词', message: '');
+      value = value.copyWith(errorMessage: '请先在确认镜头页构建提示词', message: '');
       return false;
     }
     final updated = run.copyWith(
-      currentStep: step,
+      currentStep: targetStep,
       prepareAssetsStatus:
-          step.index >= ReplicateStep.composePrompts.index &&
+          targetStep.index >= ReplicateStep.generateVideos.index &&
               _hasWorkflowPromptAssets()
           ? ProcessingStatus.completed
           : run.prepareAssetsStatus,
       errorMessage: '',
       updatedAt: DateTime.now().toUtc(),
     );
-    _persistRun(updated, message: '已进入${_stepLabel(step)}');
+    _persistRun(updated, message: '已进入${_stepLabel(targetStep)}');
     return true;
   }
 
@@ -388,6 +412,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (run == null) {
       return;
     }
+    final shouldInvalidatePrompts =
+        value.prompts.isNotEmpty && !run.freeCreationEnabled;
     final updated = run.copyWith(
       globalStyle: globalStyle.trim().isEmpty
           ? _settingsController.value.replicateDefaultGlobalStyle
@@ -395,10 +421,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       constraints: constraints.trim().isEmpty
           ? _settingsController.value.replicateDefaultConstraints
           : constraints.trim(),
-      composePromptsStatus: value.prompts.isEmpty
-          ? run.composePromptsStatus
-          : ProcessingStatus.pending,
-      status: value.prompts.isEmpty ? run.status : ProcessingStatus.pending,
+      composePromptsStatus: shouldInvalidatePrompts
+          ? ProcessingStatus.pending
+          : run.composePromptsStatus,
+      status: shouldInvalidatePrompts ? ProcessingStatus.pending : run.status,
       updatedAt: DateTime.now().toUtc(),
     );
     _persistRun(updated, message: '提示词规则已保存');
@@ -420,6 +446,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   void setFreeCreationEnabled(bool enabled) {
     final run = value.run;
+    if (_enforceFreeCreationMode && !enabled) return;
     if (run == null || run.freeCreationEnabled == enabled) return;
     _persistRun(
       run.copyWith(
@@ -442,10 +469,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _persistRun(
       run.copyWith(
         freeCreationStoryOverride: normalized,
-        composePromptsStatus: value.prompts.isEmpty
-            ? run.composePromptsStatus
-            : ProcessingStatus.pending,
-        status: value.prompts.isEmpty ? run.status : ProcessingStatus.pending,
         updatedAt: DateTime.now().toUtc(),
       ),
       message: normalized.isEmpty ? '已恢复自动分镜故事' : '分镜故事已保存',
@@ -467,20 +490,39 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         group.shots.first.id,
   ];
 
-  void updateFreeCreationDescription(String groupHeadShotId, String text) {
+  bool updateFreeCreationDescription(String groupHeadShotId, String text) {
     final shot = _shotById(groupHeadShotId);
-    if (shot == null) return;
-    updateShot(shot.copyWith(freeCreationDescription: text));
+    if (shot == null) return false;
+    return updateShot(shot.copyWith(freeCreationDescription: text));
   }
 
   bool validateFreeCreationDescriptions() {
-    final missing = missingFreeCreationDescriptionShotIds;
-    if (missing.isEmpty) return true;
-    value = value.copyWith(
-      message: '',
-      errorMessage: '请先填写 ${missing.length} 个镜头组的剧情描述',
+    return true;
+  }
+
+  void clearPromptsBeforeBuild() {
+    final run = value.run;
+    if (run == null) return;
+    final updatedRun = run.copyWith(
+      status: ProcessingStatus.pending,
+      composePromptsStatus: ProcessingStatus.pending,
+      completedCount: 0,
+      totalCount: ScriptShotGroup.group(value.shots).length,
+      errorMessage: '',
+      updatedAt: DateTime.now().toUtc(),
     );
-    return false;
+    _repository.deletePrompts(run.id);
+    _repository.upsertRun(updatedRun);
+    value = value.copyWith(
+      run: updatedRun,
+      prompts: const [],
+      message: '已清理上一次提示词，正在重新构建…',
+      errorMessage: '',
+    );
+    _shootingScriptController.updateGeneratedFieldsForScript(
+      scriptId: _ownerScriptId(run),
+      promptsByShotId: {for (final shot in value.shots) shot.id: ''},
+    );
   }
 
   Future<ReplicateAsset?> importAsset({
@@ -759,12 +801,17 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
   }
 
-  void updateShot(ScriptShot shot) {
+  bool updateShot(ScriptShot shot) {
     if (shot.scriptId != value.selectedScriptId) {
-      return;
+      return false;
     }
+    final saved = _shootingScriptController.updateShot(shot);
+    if (!saved) return false;
     final run = value.run;
-    if (run != null && value.prompts.isNotEmpty) {
+    if (run != null &&
+        value.prompts.isNotEmpty &&
+        (run.status != ProcessingStatus.pending ||
+            run.composePromptsStatus != ProcessingStatus.pending)) {
       final pending = run.copyWith(
         status: ProcessingStatus.pending,
         composePromptsStatus: ProcessingStatus.pending,
@@ -773,11 +820,96 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _repository.upsertRun(pending);
       value = value.copyWith(run: pending);
     }
-    _shootingScriptController.updateShot(shot);
+    return true;
   }
 
   void deleteShot(String shotId) {
     _shootingScriptController.deleteShot(shotId);
+  }
+
+  bool reorderShotGroups(int oldIndex, int newIndex) {
+    _upgradeLegacyPromptShotLinks();
+    if (!_shootingScriptController.reorderShotGroups(oldIndex, newIndex)) {
+      return false;
+    }
+    _syncGeneratedItemsToShotOrder();
+    value = value.copyWith(message: '已调整镜头组顺序', errorMessage: '');
+    return true;
+  }
+
+  bool removeShotGroup(String shotId) {
+    _upgradeLegacyPromptShotLinks();
+    final groups = ScriptShotGroup.group(value.shots);
+    final groupIndex = groups.indexWhere(
+      (group) => group.shots.any((shot) => shot.id == shotId),
+    );
+    if (groupIndex < 0) return false;
+    final group = groups[groupIndex];
+    final removedIds = {for (final shot in group.shots) shot.id};
+    final run = value.run;
+    if (run != null) {
+      _repository.deletePromptsForShotIds(run.id, removedIds);
+    }
+    if (_pendingManualShotGroupStartId != null &&
+        removedIds.contains(_pendingManualShotGroupStartId)) {
+      _pendingManualShotGroupStartId = null;
+    }
+    if (!_shootingScriptController.deleteShotGroup(group.shots.first.id)) {
+      return false;
+    }
+    _syncGeneratedItemsToShotOrder();
+    value = value.copyWith(
+      message: group.shots.length == 1
+          ? '已移除镜头条目'
+          : '已移除包含 ${group.shots.length} 帧的镜头组',
+      errorMessage: '',
+    );
+    return true;
+  }
+
+  void _syncGeneratedItemsToShotOrder() {
+    final run = value.run;
+    if (run == null) return;
+    final shotNumberById = {
+      for (final shot in value.shots) shot.id: shot.shotNumber,
+    };
+    final now = DateTime.now().toUtc();
+    final prompts = [
+      for (final prompt in value.prompts)
+        if (shotNumberById[prompt.scriptShotId] case final shotNumber?)
+          prompt.copyWith(shotNumber: shotNumber, updatedAt: now),
+    ];
+    _repository.replacePrompts(run.id, prompts);
+    for (final image in value.replicatedImages) {
+      final shotNumber = shotNumberById[image.scriptShotId];
+      if (shotNumber == null) continue;
+      _repository.upsertReplicatedShotImage(
+        image.copyWith(shotNumber: shotNumber, updatedAt: now),
+      );
+    }
+    _restoreFromShootingScript();
+  }
+
+  void _upgradeLegacyPromptShotLinks() {
+    final run = value.run;
+    if (run == null ||
+        !value.prompts.any((prompt) => prompt.scriptShotId == null)) {
+      return;
+    }
+    final shotIdByNumber = {
+      for (final shot in value.shots) shot.shotNumber: shot.id,
+    };
+    final prompts = value.prompts
+        .map((prompt) {
+          if (prompt.scriptShotId != null) return prompt;
+          final shotId = shotIdByNumber[prompt.shotNumber];
+          return shotId == null
+              ? prompt
+              : prompt.copyWith(scriptShotId: shotId);
+        })
+        .toList(growable: false);
+    _repository.replacePrompts(run.id, prompts);
+    value = value.copyWith(prompts: prompts);
   }
 
   String? get pendingManualShotGroupStartId => _pendingManualShotGroupStartId;
@@ -1325,18 +1457,25 @@ $automaticPrompt
     Set<String>? onlyShotIds,
     bool overwriteUserEdited = false,
   }) async {
+    final scriptId = value.selectedScriptId;
     final run = value.run;
-    final groups = ScriptShotGroup.group(value.shots);
+    final shots = List<ScriptShot>.unmodifiable(value.shots);
+    final replicatedImages = List<ReplicatedShotImage>.unmodifiable(
+      value.replicatedImages,
+    );
+    final groups = ScriptShotGroup.group(shots);
     if (run == null || !run.freeCreationEnabled || groups.isEmpty) {
       value = value.copyWith(errorMessage: '当前没有可构建的自由创作镜头', message: '');
       return false;
     }
-    if (!validateFreeCreationDescriptions()) return false;
-
+    if (isBuildActiveFor(scriptId)) {
+      value = value.copyWith(errorMessage: '当前脚本已在构建中', message: '');
+      return false;
+    }
     final inputs = <String, _FreeCreationPromptInput>{};
     final overLimitLabels = <String>[];
     for (final group in groups) {
-      final input = _freeCreationPromptInput(group);
+      final input = _freeCreationPromptInput(group, replicatedImages);
       inputs[group.shots.first.id] = input;
       if (input.references.length > 9) {
         overLimitLabels.add(
@@ -1347,30 +1486,13 @@ $automaticPrompt
     if (overLimitLabels.isNotEmpty) {
       value = value.copyWith(
         message: '',
-        errorMessage:
-            '以下镜头的分镜图和资产图超过 9 张：${overLimitLabels.join('、')}。请拆分镜头范围或减少资产。',
+        errorMessage: '以下镜头的参考图超过 9 张：${overLimitLabels.join('、')}。请拆分镜头范围。',
       );
       return false;
     }
 
-    String fullStyleSkillContext = '';
-    final style = selectedH3PromptStyle;
-    if (!style.isGeneral) {
-      try {
-        fullStyleSkillContext = (await _h3SkillLibrary.loadForStyle(
-          style,
-        )).toVisionModelContext();
-      } catch (error) {
-        value = value.copyWith(
-          message: '',
-          errorMessage: '读取 ${style.label} 完整 H3 Skill 失败：$error',
-        );
-        return false;
-      }
-    }
-
     final existingByShotId = <String, ShotPrompt>{
-      for (final prompt in value.prompts)
+      for (final prompt in List<ShotPrompt>.unmodifiable(value.prompts))
         if ((prompt.scriptShotId ?? '').isNotEmpty)
           prompt.scriptShotId!: prompt,
     };
@@ -1393,127 +1515,147 @@ $automaticPrompt
       updatedAt: DateTime.now().toUtc(),
     );
     _repository.upsertRun(running);
-    value = value.copyWith(
-      run: running,
-      isBusy: true,
+    _beginBuild(scriptId);
+    _setBuildStatus(
+      scriptId,
       message: '正在整体理解 0/${targetGroups.length} 个自由创作镜头…',
       errorMessage: '',
     );
+    if (value.selectedScriptId == scriptId) {
+      value = value.copyWith(run: running);
+    }
 
-    final generatedByShotId = <String, ShotPrompt>{};
-    final durationByTailShotId = <String, int>{};
-    var nextIndex = 0;
-    var completed = 0;
-    var succeeded = 0;
-    final concurrency = (maxConcurrent ?? defaultComposePromptConcurrency)
-        .clamp(1, targetGroups.length)
-        .toInt();
+    var finalMessage = '';
+    var finalError = '';
+    try {
+      final generatedByShotId = <String, ShotPrompt>{};
+      final durationByTailShotId = <String, int>{};
+      var nextIndex = 0;
+      var completed = 0;
+      var succeeded = 0;
+      final concurrency = (maxConcurrent ?? defaultComposePromptConcurrency)
+          .clamp(1, targetGroups.length)
+          .toInt();
 
-    Future<void> worker() async {
-      while (true) {
-        final index = nextIndex++;
-        if (index >= targetGroups.length) return;
-        final group = targetGroups[index];
-        final head = group.shots.first;
-        final globalIndex = groups.indexWhere(
-          (candidate) => candidate.shots.first.id == head.id,
-        );
-        final existing = existingByShotId[head.id];
-        if (existing?.isUserEdited == true && !overwriteUserEdited) {
-          generatedByShotId[head.id] = existing!;
+      Future<void> worker() async {
+        while (true) {
+          final index = nextIndex++;
+          if (index >= targetGroups.length) return;
+          final group = targetGroups[index];
+          final head = group.shots.first;
+          final existing = existingByShotId[head.id];
+          if (existing?.isUserEdited == true &&
+              !overwriteUserEdited &&
+              _freeCreationPromptMatchesInput(
+                prompt: existing!,
+                group: group,
+                input: inputs[head.id]!,
+              )) {
+            generatedByShotId[head.id] = existing;
+            completed++;
+            succeeded++;
+            continue;
+          }
+          final result = await _generateFreeCreationPrompt(
+            run: running,
+            group: group,
+            input: inputs[head.id]!,
+            existing: existing,
+          );
+          generatedByShotId[head.id] = result.prompt;
+          if (result.durationSeconds != null) {
+            durationByTailShotId[group.shots.last.id] = result.durationSeconds!;
+          }
           completed++;
-          succeeded++;
-          continue;
-        }
-        final result = await _generateFreeCreationPrompt(
-          run: running,
-          group: group,
-          input: inputs[head.id]!,
-          previousDescription: globalIndex > 0
-              ? groups[globalIndex - 1].shots.first.freeCreationDescription
-              : '',
-          nextDescription: globalIndex >= 0 && globalIndex + 1 < groups.length
-              ? groups[globalIndex + 1].shots.first.freeCreationDescription
-              : '',
-          existing: existing,
-          fullStyleSkillContext: fullStyleSkillContext,
-        );
-        generatedByShotId[head.id] = result.prompt;
-        if (result.durationSeconds != null) {
-          durationByTailShotId[group.shots.last.id] = result.durationSeconds!;
-        }
-        completed++;
-        if (result.prompt.status == ProcessingStatus.completed) succeeded++;
-        if (!_disposed) {
-          value = value.copyWith(
+          if (result.prompt.status == ProcessingStatus.completed) succeeded++;
+          _setBuildStatus(
+            scriptId,
             message:
                 '正在整体理解自由创作镜头 $completed/${targetGroups.length}，成功 $succeeded 个…',
           );
         }
       }
-    }
 
-    await Future.wait(List.generate(concurrency, (_) => worker()));
-    final finalPrompts = <ShotPrompt>[];
-    for (final group in groups) {
-      final shotId = group.shots.first.id;
-      final generated = generatedByShotId[shotId];
-      final existing = existingByShotId[shotId];
-      if (generated != null) {
-        finalPrompts.add(generated);
-      } else if (existing != null) {
-        finalPrompts.add(existing);
+      await Future.wait(List.generate(concurrency, (_) => worker()));
+      final finalPrompts = <ShotPrompt>[];
+      for (final group in groups) {
+        final shotId = group.shots.first.id;
+        final generated = generatedByShotId[shotId];
+        final existing = existingByShotId[shotId];
+        if (generated != null) {
+          finalPrompts.add(generated);
+        } else if (existing != null) {
+          finalPrompts.add(existing);
+        }
       }
-    }
-    _repository.replacePrompts(run.id, finalPrompts);
+      _repository.replacePrompts(run.id, finalPrompts);
 
-    for (final entry in durationByTailShotId.entries) {
-      final tail = _shotById(entry.key);
-      if (tail != null && tail.durationSeconds != entry.value.toDouble()) {
-        _shootingScriptController.updateShot(
-          tail.copyWith(durationSeconds: entry.value.toDouble()),
+      final failed = finalPrompts
+          .where((prompt) => prompt.status == ProcessingStatus.failed)
+          .length;
+      final finished = running.copyWith(
+        status: failed == 0
+            ? ProcessingStatus.completed
+            : ProcessingStatus.partial,
+        composePromptsStatus: failed == 0
+            ? ProcessingStatus.completed
+            : ProcessingStatus.partial,
+        completedCount: finalPrompts.length - failed,
+        totalCount: groups.length,
+        errorMessage: failed == 0 ? '' : '$failed 个镜头提示词生成失败',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertRun(finished);
+      _shootingScriptController.updateGeneratedFieldsForScript(
+        scriptId: scriptId,
+        promptsByShotId: {
+          for (final prompt in finalPrompts)
+            if ((prompt.scriptShotId ?? '').isNotEmpty &&
+                prompt.status == ProcessingStatus.completed &&
+                prompt.prompt.trim().isNotEmpty)
+              prompt.scriptShotId!: prompt.prompt,
+        },
+        durationSecondsByShotId: {
+          for (final entry in durationByTailShotId.entries)
+            entry.key: entry.value.toDouble(),
+        },
+      );
+      finalMessage = failed == 0
+          ? '已完成 ${finalPrompts.length} 个自由创作 H3 提示词'
+          : '';
+      finalError = finished.errorMessage;
+      return failed == 0;
+    } catch (error) {
+      finalError = '构建脚本失败：$error';
+      _repository.upsertRun(
+        running.copyWith(
+          status: ProcessingStatus.failed,
+          composePromptsStatus: ProcessingStatus.failed,
+          errorMessage: finalError,
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return false;
+    } finally {
+      _finishBuild(scriptId);
+      _buildMessagesByScriptId[scriptId] = finalMessage;
+      _buildErrorsByScriptId[scriptId] = finalError;
+      if (!_disposed && value.selectedScriptId == scriptId) {
+        _restoreFromShootingScript(selectScriptId: scriptId);
+        _setBuildStatus(
+          scriptId,
+          message: finalMessage,
+          errorMessage: finalError,
         );
       }
     }
-
-    final failed = finalPrompts
-        .where((prompt) => prompt.status == ProcessingStatus.failed)
-        .length;
-    final finished = running.copyWith(
-      status: failed == 0
-          ? ProcessingStatus.completed
-          : ProcessingStatus.partial,
-      composePromptsStatus: failed == 0
-          ? ProcessingStatus.completed
-          : ProcessingStatus.partial,
-      completedCount: finalPrompts.length - failed,
-      totalCount: groups.length,
-      errorMessage: failed == 0 ? '' : '$failed 个镜头提示词生成失败',
-      updatedAt: DateTime.now().toUtc(),
-    );
-    _repository.upsertRun(finished);
-    _syncScriptPromptFields(finalPrompts);
-    if (!_disposed) {
-      value = value.copyWith(
-        run: finished,
-        shots: _shootingScriptController.value.shots,
-        prompts: finalPrompts,
-        isBusy: false,
-        message: failed == 0 ? '已完成 ${finalPrompts.length} 个自由创作 H3 提示词' : '',
-        errorMessage: finished.errorMessage,
-      );
-    }
-    return failed == 0;
   }
 
   Future<_FreeCreationPromptResult> _generateFreeCreationPrompt({
     required ReplicateRun run,
     required ScriptShotGroup group,
     required _FreeCreationPromptInput input,
-    required String previousDescription,
-    required String nextDescription,
     required ShotPrompt? existing,
-    required String fullStyleSkillContext,
   }) async {
     final head = group.shots.first;
     if (input.references.isEmpty) {
@@ -1522,31 +1664,25 @@ $automaticPrompt
           run: run,
           shot: head,
           existing: existing,
-          assetIds: input.assetIds,
+          assetIds: const [],
           error: '镜头组没有可用的复刻分镜或原始帧',
         ),
       );
     }
-    final draft = _freeCreationIntentDraft(
-      run: run,
-      group: group,
-      input: input,
-      previousDescription: previousDescription,
-      nextDescription: nextDescription,
-    );
+    final draft = _freeCreationIntentDraft(group: group, input: input);
     final references = [
       for (var index = 0; index < input.references.length; index++)
         H3PromptReference(
           pictureNumber: index + 1,
           role: input.references[index].role,
           name: input.references[index].name,
-          description: input.references[index].description,
         ),
     ];
     String normalized = '';
     List<String> validationErrors = const [];
     var attempts = 0;
     try {
+      final fullStyleSkillContext = await _videoSkillContextForInput(input);
       for (var attempt = 0; attempt < 2; attempt++) {
         attempts = attempt + 1;
         final instruction = _h3PromptWritingService.buildRewriteInstruction(
@@ -1554,7 +1690,7 @@ $automaticPrompt
           durationSeconds: group.durationSeconds,
           storyboardImageCount: input.storyboardImageCount,
           references: references,
-          style: selectedH3PromptStyle,
+          style: input.skillRoute.promptStyle,
           chooseDurationFromIntent: true,
           fullStyleSkillContext: fullStyleSkillContext,
           repairErrors: attempt == 0 ? const [] : validationErrors,
@@ -1568,6 +1704,8 @@ $automaticPrompt
           ],
           maxTokens: 6500,
           allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
+          responseTimeout: freeCreationVisionRequestTimeout,
+          compressOversizedImages: true,
         );
         normalized = _h3PromptWritingService.normalize(response);
         validationErrors = _h3PromptWritingService.validationErrors(
@@ -1583,7 +1721,7 @@ $automaticPrompt
             run: run,
             shot: head,
             existing: existing,
-            assetIds: input.assetIds,
+            assetIds: const [],
             error: '格式自动修复后仍未通过：${validationErrors.join('；')}',
           ),
         );
@@ -1591,29 +1729,43 @@ $automaticPrompt
       final duration = _h3PromptWritingService.extractDurationSeconds(
         normalized,
       );
+      final variants = _freeCreationPromptVariants(
+        normalized,
+        referenceImageCount: input.references.length,
+      );
+      final selectedFormat = _composePromptModelRule.format;
+      final selectedPrompt = variants[selectedFormat]!;
       final raw = <String, Object?>{
-        'promptRulesVersion': _promptRulesVersion,
-        'promptSource': 'freeCreationHolisticVision',
+        'promptRulesVersion': _freeCreationPromptRulesVersion,
+        'promptSource': 'freeCreationReferenceVision',
         'assemblyMode': 'modelWrittenRef2VA',
         'visionModelCalls': attempts,
         'formatRepairCount': attempts - 1,
-        'h3PromptStyleId': selectedH3PromptStyle.id,
+        'h3PromptStyleId': input.skillRoute.promptStyle.id,
+        'videoSkillBackend': input.skillRoute.backendKind?.name ?? 'none',
+        'videoSkillAutomaticallySelected':
+            input.skillRoute.automaticallySelected,
         'referenceImagePaths': [
           for (final reference in input.references) reference.file.path,
         ],
         'referenceImageCount': input.references.length,
-        'storyboardCaptions': input.storyboardCaptions,
         'freeCreationDescription': head.freeCreationDescription,
-        'storyContext': effectiveFreeCreationStory,
-        'h3Prompt': normalized,
-        'selectedPromptFormat': ShotPromptFormat.h3.name,
+        'freeCreationContextMode':
+            'referenceImagesOptionalUserDescriptionAndSkill',
+        'storyContextIncluded': false,
+        'linkedAssetImagesIncluded': false,
+        'sd2Prompt': variants[ShotPromptFormat.sd2],
+        'klingPrompt': variants[ShotPromptFormat.kling],
+        'h3Prompt': variants[ShotPromptFormat.h3],
+        'selectedPromptFormat': selectedFormat.name,
+        'videoModelPromptRule': {
+          'format': selectedFormat.name,
+          'label': _promptFormatLabel(selectedFormat),
+        },
         'aiDurationSeconds': duration,
         'freeCreationInputFingerprint': _freeCreationInputFingerprint(
-          run: run,
           group: group,
           input: input,
-          previousDescription: previousDescription,
-          nextDescription: nextDescription,
         ),
       };
       return _FreeCreationPromptResult(
@@ -1622,9 +1774,9 @@ $automaticPrompt
           runId: run.id,
           shotNumber: head.shotNumber,
           scriptShotId: head.id,
-          assetIds: input.assetIds,
-          prompt: normalized,
-          model: 'MiniMax H3 Ref2VA',
+          assetIds: const [],
+          prompt: selectedPrompt,
+          model: _promptFormatLabel(selectedFormat),
           rawResponse: jsonEncode(raw),
           isUserEdited: false,
           status: ProcessingStatus.completed,
@@ -1639,7 +1791,7 @@ $automaticPrompt
           run: run,
           shot: head,
           existing: existing,
-          assetIds: input.assetIds,
+          assetIds: const [],
           error: '整体多模态理解失败：$error',
         ),
       );
@@ -1674,19 +1826,18 @@ $automaticPrompt
             updatedAt: DateTime.now().toUtc(),
           );
 
-  _FreeCreationPromptInput _freeCreationPromptInput(ScriptShotGroup group) {
-    final assetIds = [
-      for (final shot in group.shots)
-        if ((shot.sourceStoryboardAssetId ?? '').trim().isNotEmpty)
-          shot.sourceStoryboardAssetId!.trim(),
-    ];
-    final captions = _repository.storyboardCaptionsForAssetIds(assetIds);
+  _FreeCreationPromptInput _freeCreationPromptInput(
+    ScriptShotGroup group,
+    List<ReplicatedShotImage> replicatedImages,
+  ) {
     final references = <_FreeCreationImageReference>[];
     final usedPaths = <String>{};
     var storyboardImageCount = 0;
     for (var index = 0; index < group.shots.length; index++) {
       final shot = group.shots[index];
-      final replica = _replicatedImageForShot(shot.id);
+      final replica = replicatedImages
+          .where((image) => image.scriptShotId == shot.id)
+          .firstOrNull;
       final replicaPath = replica?.status == ProcessingStatus.completed
           ? replica?.generatedFramePath.trim() ?? ''
           : '';
@@ -1698,121 +1849,208 @@ $automaticPrompt
       if (selectedPath.isEmpty || !file.existsSync()) continue;
       final normalized = p.normalize(file.absolute.path);
       if (!usedPaths.add(normalized)) continue;
-      final assetId = shot.sourceStoryboardAssetId?.trim() ?? '';
-      final caption = captions[assetId] ?? '';
       references.add(
         _FreeCreationImageReference(
           file: file,
-          role: '镜头组内第 ${index + 1} 张分镜规划与视觉事实，用于定义构图、主体位置、动作阶段、风格和镜头顺序',
+          role: '镜头组内第 ${index + 1} 张参考图，用于定义可见主体、构图、动作阶段和镜头顺序',
           name: replicaPath.isNotEmpty ? '复刻分镜' : '原始故事板/视频帧',
-          description: caption,
         ),
       );
       storyboardImageCount++;
     }
-    final linkedAssets = _confirmedScriptAssetsForShots(group.shots);
-    final includedAssetIds = <String>[];
-    for (final asset in linkedAssets) {
-      if (asset.type == ReplicateAssetType.video ||
-          asset.type == ReplicateAssetType.audio ||
-          asset.status != ProcessingStatus.completed) {
-        continue;
-      }
-      final file = File(asset.path);
-      if (!file.existsSync() ||
-          !usedPaths.add(p.normalize(file.absolute.path))) {
-        continue;
-      }
-      references.add(
-        _FreeCreationImageReference(
-          file: file,
-          role: '已确认的${asset.type.name}资产视觉参考',
-          name: asset.name,
-          description: asset.description,
-        ),
-      );
-      includedAssetIds.add(asset.id);
-    }
     return _FreeCreationPromptInput(
       references: references,
       storyboardImageCount: storyboardImageCount,
-      storyboardCaptions: captions,
-      assetIds: includedAssetIds,
+      videoConfig: _settingsController.value.activeVideoGenerationApiConfig,
+      skillRoute: const VideoSkillRouter().resolve(
+        config: _settingsController.value.activeVideoGenerationApiConfig,
+        narrativeText: _skillRoutingText(group.shots),
+        preferredStyle: selectedH3PromptStyle,
+      ),
     );
   }
 
+  Future<String> _videoSkillContextForInput(
+    _FreeCreationPromptInput input,
+  ) async {
+    final contexts = <String>[];
+    final backendDocument = await _videoSkillLibrary.loadForConfig(
+      input.videoConfig,
+    );
+    if (backendDocument != null) {
+      contexts.add(backendDocument.toVisionModelContext());
+    }
+    final style = input.skillRoute.promptStyle;
+    if (input.skillRoute.supportsH3NarrativeSkill && !style.isGeneral) {
+      contexts.add(
+        (await _h3SkillLibrary.loadForStyle(style)).toVisionModelContext(),
+      );
+    }
+    if (input.skillRoute.automaticallySelected) {
+      contexts.add('Skill 路由结果：已按当前镜头剧情自动选择“${style.label}”，不得套用其他专项 Skill。');
+    }
+    return contexts.join('\n\n');
+  }
+
+  static String _skillRoutingText(Iterable<ScriptShot> shots) => shots
+      .expand(
+        (shot) => [
+          shot.freeCreationDescription,
+          shot.content,
+          shot.replicationInstructions,
+          shot.generationFeedback,
+          shot.cameraNotes,
+        ],
+      )
+      .where((part) => part.trim().isNotEmpty)
+      .join('\n');
+
   String _freeCreationIntentDraft({
-    required ReplicateRun run,
     required ScriptShotGroup group,
     required _FreeCreationPromptInput input,
-    required String previousDescription,
-    required String nextDescription,
   }) {
     final head = group.shots.first;
+    final description = head.freeCreationDescription.trim();
+    final effectiveDescription = description.isEmpty
+        ? '用户未提供文字描述。请仅根据参考图自动分析主体、动作、镜头节奏、运镜、声音与最合适的创作方向。'
+        : description;
     final pictureLines = <String>[];
     for (var index = 0; index < input.references.length; index++) {
       final reference = input.references[index];
       pictureLines.add(
-        '<Picture ${index + 1}>：${reference.role}；名称 ${reference.name.isEmpty ? '未命名' : reference.name}；'
-        '已保存描述 ${reference.description.isEmpty ? '无，以图片本身为视觉事实' : reference.description}。',
+        '<Picture ${index + 1}>：${reference.role}；名称 ${reference.name.isEmpty ? '未命名' : reference.name}。',
       );
     }
     return '''
-【本镜头用户剧情描述·最高优先级】
-${head.freeCreationDescription.trim()}
-
-【全局分镜故事·用于连续性】
-${effectiveFreeCreationStory.isEmpty ? '用户未提供，不得自行扩写剧情' : effectiveFreeCreationStory}
+【当前镜头用户描述·唯一剧情文本】
+$effectiveDescription
 
 【附件顺序与作用·必须与上传顺序一致】
 ${pictureLines.join('\n')}
 
-【相邻镜头简要上下文】
-上一镜：${previousDescription.trim().isEmpty ? '无' : previousDescription.trim()}
-下一镜：${nextDescription.trim().isEmpty ? '无' : nextDescription.trim()}
-
-【全局创作限制】
-全局风格：${run.globalStyle.trim().isEmpty ? '未额外指定' : run.globalStyle.trim()}
-整体约束：${run.constraints.trim().isEmpty ? '无额外约束' : run.constraints.trim()}
-任务补充：${run.replicationInstructions.trim().isEmpty ? '无' : run.replicationInstructions.trim()}
-
-冲突优先级：本镜头用户剧情描述 > 全局分镜故事 > 图片已保存描述 > 图片本身可见事实 > 相邻镜头上下文。
-不得读取或拼接旧画面内容、景别、构图、机位、运镜、摄影备注等字段。请直接综合理解创作意图，写成最终 Ref2VA 六字段提示词。
+输入边界：只使用当前可选用户描述、以上参考图，以及外层提供的所选 Skill 与官方格式规则。
+不得引入全局分镜故事、故事板字幕、相邻镜头描述、人物/产品/场景资产图、全局风格、制作边界、任务补充，或旧画面内容、景别、构图、机位、运镜、摄影备注等字段。
+如果用户描述为空，请主动从参考图判断最合理的创作意图；否则综合用户描述与参考图。按所选 Skill 写成最终 Ref2VA 六字段提示词。
 ''';
   }
 
+  Map<ShotPromptFormat, String> _freeCreationPromptVariants(
+    String h3Prompt, {
+    required int referenceImageCount,
+  }) {
+    final summary = _freeCreationPromptSection(h3Prompt, 'summary');
+    final detailed = _freeCreationPromptSection(
+      h3Prompt,
+      'detailed_description',
+    );
+    final sound = _freeCreationPromptSection(h3Prompt, 'overall_soundscape');
+    final music = _freeCreationPromptSection(h3Prompt, 'non_diegetic_music');
+    final referenceLead = referenceImageCount <= 0
+        ? ''
+        : referenceImageCount == 1
+        ? '<Picture 1>作为主体、构图与起始画面参考。'
+        : '<Picture 1>至<Picture $referenceImageCount>作为同一连续镜头的顺序参考，保持主体、场景、构图与光影连续。';
+    final kling = _compactFreeCreationVariant(
+      [
+        referenceLead,
+        summary,
+        detailed,
+        if (sound.isNotEmpty) '声音：$sound',
+      ].where((part) => part.trim().isNotEmpty).join(' '),
+      maxChars: 500,
+      pictureLabel: '图片',
+    );
+    final jimeng = _compactFreeCreationVariant(
+      [
+        referenceLead,
+        summary,
+        detailed,
+        if (sound.isNotEmpty) '声音：$sound',
+        if (music.isNotEmpty && music.toUpperCase() != 'N/A') '配乐：$music',
+      ].where((part) => part.trim().isNotEmpty).join(' '),
+      maxChars: 1800,
+      pictureLabel: '参考图',
+    );
+    return {
+      ShotPromptFormat.sd2: jimeng.isEmpty ? h3Prompt : jimeng,
+      ShotPromptFormat.kling: kling.isEmpty ? h3Prompt : kling,
+      ShotPromptFormat.h3: h3Prompt,
+    };
+  }
+
+  static String _freeCreationPromptSection(String prompt, String field) {
+    final match = RegExp(
+      '(?:^|\\n)${RegExp.escape(field)}:\\s*([\\s\\S]*?)(?=\\n\\s*\\n[a-z_]+:|\\z)',
+      multiLine: true,
+    ).firstMatch(prompt);
+    return match?.group(1)?.trim() ?? '';
+  }
+
+  static String _compactFreeCreationVariant(
+    String text, {
+    required int maxChars,
+    required String pictureLabel,
+  }) {
+    final normalized = text
+        .replaceAllMapped(
+          RegExp(r'<Picture\s+(\d+)>', caseSensitive: false),
+          (match) => '$pictureLabel${match.group(1)}',
+        )
+        .replaceAll(RegExp(r'\[Shot\s+\d+\]\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (normalized.length <= maxChars) return normalized;
+    return normalized
+        .substring(0, maxChars)
+        .replaceFirst(RegExp(r'[^。！？!?；;，,]*$'), '')
+        .trim();
+  }
+
   String _freeCreationInputFingerprint({
-    required ReplicateRun run,
     required ScriptShotGroup group,
     required _FreeCreationPromptInput input,
-    required String previousDescription,
-    required String nextDescription,
   }) => jsonEncode({
-    'promptRulesVersion': _promptRulesVersion,
+    'promptRulesVersion': _freeCreationPromptRulesVersion,
+    'shotIds': [for (final shot in group.shots) shot.id],
+    'shotNumbers': [for (final shot in group.shots) shot.shotNumber],
     'description': group.shots.first.freeCreationDescription.trim(),
-    'story': effectiveFreeCreationStory,
-    'globalStyle': run.globalStyle,
-    'constraints': run.constraints,
-    'replicationInstructions': run.replicationInstructions,
-    'previousDescription': previousDescription.trim(),
-    'nextDescription': nextDescription.trim(),
-    'h3PromptStyleId': selectedH3PromptStyle.id,
+    'h3PromptStyleId': input.skillRoute.promptStyle.id,
+    'videoSkillBackend': input.skillRoute.backendKind?.name ?? 'none',
+    'videoSkillAutomaticallySelected': input.skillRoute.automaticallySelected,
+    'videoGenerationConfigId': input.videoConfig?.id ?? '',
+    'videoGenerationModel': input.videoConfig?.model ?? '',
     'references': [
       for (final reference in input.references)
         {
           'path': reference.file.path,
           'role': reference.role,
           'name': reference.name,
-          'description': reference.description,
           'modifiedAt': reference.file.lastModifiedSync().toIso8601String(),
           'length': reference.file.lengthSync(),
         },
     ],
   });
 
+  bool _freeCreationPromptMatchesInput({
+    required ShotPrompt prompt,
+    required ScriptShotGroup group,
+    required _FreeCreationPromptInput input,
+  }) {
+    try {
+      final raw = jsonDecode(prompt.rawResponse);
+      return raw is Map &&
+          raw['promptRulesVersion'] == _freeCreationPromptRulesVersion &&
+          raw['promptSource'] == 'freeCreationReferenceVision' &&
+          raw['freeCreationInputFingerprint'] ==
+              _freeCreationInputFingerprint(group: group, input: input);
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> composeAllPrompts({
     int? maxConcurrent,
-    bool navigateToComposeStep = true,
+    bool navigateToComposeStep = false,
   }) async {
     final run = value.run;
     if (run?.freeCreationEnabled == true) {
@@ -1902,7 +2140,7 @@ ${pictureLines.join('\n')}
       updatedAt: DateTime.now().toUtc(),
     );
     _repository.upsertRun(finished);
-    _syncScriptPromptFields(finishedPrompts);
+    _syncScriptPromptFields(_ownerScriptId(run), finishedPrompts);
     if (!_disposed) {
       value = value.copyWith(
         run: finished,
@@ -1957,7 +2195,7 @@ ${pictureLines.join('\n')}
     _repository.upsertPrompt(updated);
     final prompts = [...value.prompts]..[index] = updated;
     _updatePromptProgress(run, prompts, message: '镜头 ${shot.shotNumber} 已重新生成');
-    _syncScriptPromptFields(prompts);
+    _syncScriptPromptFields(_ownerScriptId(run), prompts);
   }
 
   Future<void> composePromptsForShotIds(Iterable<String> shotIds) async {
@@ -2028,7 +2266,7 @@ ${pictureLines.join('\n')}
       updatedAt: DateTime.now().toUtc(),
     );
     _repository.upsertRun(finished);
-    _syncScriptPromptFields(prompts);
+    _syncScriptPromptFields(_ownerScriptId(run), prompts);
     if (_disposed) return;
     value = value.copyWith(
       run: finished,
@@ -2074,7 +2312,7 @@ ${pictureLines.join('\n')}
     _repository.upsertPrompt(updated);
     final prompts = [...value.prompts]..[index] = updated;
     _updatePromptProgress(run, prompts, message: '提示词已保存');
-    _syncScriptPromptFields(prompts);
+    _syncScriptPromptFields(_ownerScriptId(run), prompts);
   }
 
   bool synchronizeFreeCreationPromptDuration(
@@ -2094,12 +2332,35 @@ ${pictureLines.join('\n')}
     final duration = seconds == rounded
         ? '${rounded.toInt()}'
         : seconds.toStringAsFixed(1);
-    final synchronized = prompt.prompt.replaceAll(
-      RegExp(r'\d+(?:\.\d+)?\s*秒视频'),
-      '$duration秒视频',
+    final raw = _promptRaw(prompt);
+    var changed = false;
+    for (final format in ShotPromptFormat.values) {
+      final key = _promptKey(format);
+      final current = '${raw[key] ?? ''}';
+      final synchronized = current.replaceAll(
+        RegExp(r'\d+(?:\.\d+)?\s*秒视频'),
+        '$duration秒视频',
+      );
+      if (synchronized != current) {
+        raw[key] = synchronized;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    final selectedFormat = promptFormatFor(prompt);
+    final updated = prompt.copyWith(
+      prompt: '${raw[_promptKey(selectedFormat)]}',
+      rawResponse: jsonEncode(raw),
+      isUserEdited: true,
+      updatedAt: DateTime.now().toUtc(),
     );
-    if (synchronized == prompt.prompt) return false;
-    updatePromptText(prompt.id, synchronized);
+    _repository.upsertPrompt(updated);
+    final prompts = [
+      for (final item in value.prompts)
+        if (item.id == prompt.id) updated else item,
+    ];
+    _updatePromptProgress(value.run!, prompts, message: '提示词时长已同步');
+    _syncScriptPromptFields(_ownerScriptId(value.run!), prompts);
     return true;
   }
 
@@ -2122,7 +2383,23 @@ ${pictureLines.join('\n')}
     if (run == null || index < 0) return;
     final existing = value.prompts[index];
     final raw = _promptRaw(existing);
-    final selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
+    var selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
+    if (selectedText.isEmpty &&
+        run.freeCreationEnabled &&
+        existing.prompt.trim().isNotEmpty) {
+      final referenceImageCount = raw['referenceImageCount'] is num
+          ? (raw['referenceImageCount'] as num).toInt()
+          : 1;
+      final h3Prompt = '${raw['h3Prompt'] ?? existing.prompt}'.trim();
+      final variants = _freeCreationPromptVariants(
+        h3Prompt,
+        referenceImageCount: referenceImageCount,
+      );
+      for (final entry in variants.entries) {
+        raw[_promptKey(entry.key)] = entry.value;
+      }
+      selectedText = variants[format]!;
+    }
     if (selectedText.isEmpty) return;
     raw['selectedPromptFormat'] = format.name;
     final updated = existing.copyWith(
@@ -2137,7 +2414,38 @@ ${pictureLines.join('\n')}
       prompts,
       message: _promptFormatSelectedMessage(format),
     );
-    _syncScriptPromptFields(prompts);
+    _syncScriptPromptFields(_ownerScriptId(run), prompts);
+  }
+
+  void selectPromptFormatForAll(ShotPromptFormat format) {
+    final run = value.run;
+    if (run == null || value.prompts.isEmpty) return;
+    var changed = false;
+    final prompts = <ShotPrompt>[];
+    for (final prompt in value.prompts) {
+      final raw = _promptRaw(prompt);
+      final selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
+      if (selectedText.isEmpty || promptFormatFor(prompt) == format) {
+        prompts.add(prompt);
+        continue;
+      }
+      raw['selectedPromptFormat'] = format.name;
+      final updated = prompt.copyWith(
+        prompt: selectedText,
+        rawResponse: jsonEncode(raw),
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertPrompt(updated);
+      prompts.add(updated);
+      changed = true;
+    }
+    if (!changed) return;
+    _updatePromptProgress(
+      run,
+      prompts,
+      message: '${_promptFormatSelectedMessage(format)}，已同步全部镜头',
+    );
+    _syncScriptPromptFields(_ownerScriptId(run), prompts);
   }
 
   Future<ReplicateExportResult?> exportPrompts() async {
@@ -2218,7 +2526,7 @@ ${pictureLines.join('\n')}
         missingCount: missing,
       );
       value = value.copyWith(
-        isBusy: _isReplicatingScript(value.selectedScriptId),
+        isBusy: _isScriptBusy(value.selectedScriptId),
         message: missing == 0
             ? '已导出 $copied 张复刻分镜图到 ${directory.path}'
             : '已导出 $copied 张复刻分镜图，另有 $missing 个镜头缺图',
@@ -2227,7 +2535,7 @@ ${pictureLines.join('\n')}
       return result;
     } catch (error) {
       value = value.copyWith(
-        isBusy: _isReplicatingScript(value.selectedScriptId),
+        isBusy: _isScriptBusy(value.selectedScriptId),
         message: '',
         errorMessage: '导出复刻分镜图失败：$error',
       );
@@ -2283,6 +2591,41 @@ ${pictureLines.join('\n')}
 
   bool _isReplicatingScript(String scriptId) =>
       _activeReplicationCount(scriptId) > 0;
+
+  bool isBuildActiveFor(String scriptId) =>
+      (_activeBuildCountsByScriptId[scriptId] ?? 0) > 0;
+
+  bool _isScriptBusy(String scriptId) =>
+      _isReplicatingScript(scriptId) || isBuildActiveFor(scriptId);
+
+  void _beginBuild(String scriptId) {
+    _activeBuildCountsByScriptId[scriptId] =
+        (_activeBuildCountsByScriptId[scriptId] ?? 0) + 1;
+  }
+
+  void _finishBuild(String scriptId) {
+    final remaining = (_activeBuildCountsByScriptId[scriptId] ?? 0) - 1;
+    if (remaining <= 0) {
+      _activeBuildCountsByScriptId.remove(scriptId);
+    } else {
+      _activeBuildCountsByScriptId[scriptId] = remaining;
+    }
+  }
+
+  void _setBuildStatus(
+    String scriptId, {
+    String? message,
+    String? errorMessage,
+  }) {
+    if (message != null) _buildMessagesByScriptId[scriptId] = message;
+    if (errorMessage != null) _buildErrorsByScriptId[scriptId] = errorMessage;
+    if (_disposed || value.selectedScriptId != scriptId) return;
+    value = value.copyWith(
+      isBusy: _isScriptBusy(scriptId),
+      message: message,
+      errorMessage: errorMessage,
+    );
+  }
 
   void _beginReplication(String scriptId) {
     _activeReplicationCountsByScriptId[scriptId] =
@@ -2349,6 +2692,22 @@ ${pictureLines.join('\n')}
       );
       _repository.upsertRun(run);
     }
+    if (run.currentStep == ReplicateStep.composePrompts) {
+      run = run.copyWith(
+        currentStep: ReplicateStep.confirmShots,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertRun(run);
+    }
+    if (_enforceFreeCreationMode && !run.freeCreationEnabled) {
+      run = run.copyWith(
+        freeCreationEnabled: true,
+        composePromptsStatus: ProcessingStatus.pending,
+        status: ProcessingStatus.pending,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertRun(run);
+    }
     final confirmedIds = [for (final shot in shooting.shots) shot.id];
     if (confirmedIds.length != run.confirmedShotIds.length ||
         !confirmedIds.every(run.confirmedShotIds.contains)) {
@@ -2388,12 +2747,15 @@ ${pictureLines.join('\n')}
       _repository.upsertRun(run);
     }
     if (prompts.isNotEmpty &&
+        (run.status != ProcessingStatus.pending ||
+            run.composePromptsStatus != ProcessingStatus.pending) &&
         _promptsAreStale(
           run: run,
           prompts: prompts,
           shots: shooting.shots,
           confirmedShotIds: confirmedIds,
           assets: assets,
+          replicatedImages: replicatedImages,
           workflowAssetIdsByShot: workflowAssetIdsByShot,
         )) {
       run = run.copyWith(
@@ -2404,6 +2766,7 @@ ${pictureLines.join('\n')}
       _repository.upsertRun(run);
     }
     final isReplicating = _isReplicatingScript(scriptId);
+    final isBuilding = isBuildActiveFor(scriptId);
     value = value.copyWith(
       scripts: scripts,
       shots: shooting.shots,
@@ -2412,11 +2775,13 @@ ${pictureLines.join('\n')}
       assets: assets,
       replicatedImages: replicatedImages,
       prompts: prompts,
-      isBusy: isReplicating,
-      message: isReplicating
+      isBusy: isReplicating || isBuilding,
+      message: isBuilding
+          ? (_buildMessagesByScriptId[scriptId] ?? '')
+          : isReplicating
           ? (_replicationMessagesByScriptId[scriptId] ?? '')
-          : '',
-      errorMessage: '',
+          : (_buildMessagesByScriptId[scriptId] ?? ''),
+      errorMessage: _buildErrorsByScriptId[scriptId] ?? '',
     );
   }
 
@@ -2454,7 +2819,7 @@ ${pictureLines.join('\n')}
       run: run,
       message: message,
       errorMessage: errorMessage,
-      isBusy: _isReplicatingScript(value.selectedScriptId),
+      isBusy: _isScriptBusy(value.selectedScriptId),
     );
   }
 
@@ -2696,7 +3061,7 @@ ${pictureLines.join('\n')}
     );
   }
 
-  void _syncScriptPromptFields(List<ShotPrompt> prompts) {
+  void _syncScriptPromptFields(String scriptId, List<ShotPrompt> prompts) {
     final promptsByShotId = <String, String>{
       for (final prompt in prompts)
         if ((prompt.scriptShotId ?? '').isNotEmpty &&
@@ -2704,7 +3069,10 @@ ${pictureLines.join('\n')}
             prompt.prompt.trim().isNotEmpty)
           prompt.scriptShotId!: prompt.prompt,
     };
-    _shootingScriptController.updateShotPrompts(promptsByShotId);
+    _shootingScriptController.updateGeneratedFieldsForScript(
+      scriptId: scriptId,
+      promptsByShotId: promptsByShotId,
+    );
   }
 
   List<ScriptShot> _actionSequenceForPrompt(
@@ -2763,15 +3131,23 @@ ${pictureLines.join('\n')}
 
   List<ReplicatedShotImage> _restoreReplicatedImages(String runId) {
     final images = _repository.listReplicatedShotImages(runId);
+    final missingBasenames = <String>{
+      for (final image in images)
+        if (image.generatedFramePath.trim().isNotEmpty &&
+            !File(image.generatedFramePath.trim()).existsSync())
+          p.basename(image.generatedFramePath.trim()),
+    }..removeWhere((basename) => basename.isEmpty);
+    if (missingBasenames.isEmpty) return images;
     final generatedRoot = _directories.generatedImages;
     if (!generatedRoot.existsSync()) {
       return images;
     }
+    _replicatedImageRecoveryScanCount++;
     final filesByName = <String, File>{};
     for (final entity in generatedRoot.listSync(recursive: true)) {
-      if (entity is File) {
-        filesByName[p.basename(entity.path)] = entity;
-      }
+      if (entity is! File) continue;
+      final basename = p.basename(entity.path);
+      if (missingBasenames.contains(basename)) filesByName[basename] = entity;
     }
     final restored = <ReplicatedShotImage>[];
     for (final image in images) {
@@ -3259,6 +3635,7 @@ ${pictureLines.join('\n')}
     required List<ScriptShot> shots,
     required List<String> confirmedShotIds,
     required List<ReplicateAsset> assets,
+    required List<ReplicatedShotImage> replicatedImages,
     Map<String, Set<String>> workflowAssetIdsByShot = const {},
   }) {
     final shotById = {for (final shot in shots) shot.id: shot};
@@ -3280,33 +3657,17 @@ ${pictureLines.join('\n')}
       final actionSequence = _actionSequenceForPrompt(shot, sequences);
       if (run.freeCreationEnabled) {
         if (prompt.shotNumber != shot.shotNumber) return true;
-        if (prompt.isUserEdited) continue;
         final groupIndex = sequences.indexWhere(
           (sequence) => sequence.head.id == shot.id,
         );
         if (groupIndex < 0) return true;
         final group = ScriptShotGroup(sequences[groupIndex].shots);
-        final input = _freeCreationPromptInput(group);
-        try {
-          final raw = jsonDecode(prompt.rawResponse);
-          final expectedFingerprint = _freeCreationInputFingerprint(
-            run: run,
-            group: group,
-            input: input,
-            previousDescription: groupIndex > 0
-                ? sequences[groupIndex - 1].head.freeCreationDescription
-                : '',
-            nextDescription: groupIndex + 1 < sequences.length
-                ? sequences[groupIndex + 1].head.freeCreationDescription
-                : '',
-          );
-          if (raw is! Map ||
-              raw['promptRulesVersion'] != _promptRulesVersion ||
-              raw['promptSource'] != 'freeCreationHolisticVision' ||
-              raw['freeCreationInputFingerprint'] != expectedFingerprint) {
-            return true;
-          }
-        } catch (_) {
+        final input = _freeCreationPromptInput(group, replicatedImages);
+        if (!_freeCreationPromptMatchesInput(
+          prompt: prompt,
+          group: group,
+          input: input,
+        )) {
           return true;
         }
         continue;
@@ -3385,43 +3746,54 @@ ${pictureLines.join('\n')}
 
   bool _hasWorkflowPromptAssets() {
     final targetShots = value.confirmedShots;
-    return targetShots.any(
-      (shot) => _confirmedScriptAssets(shot.id).isNotEmpty,
-    );
+    return _confirmedScriptAssetsForShots(targetShots).isNotEmpty;
   }
 
   List<ScriptAsset> _confirmedScriptAssets(String shotId, {String? scriptId}) {
+    return _confirmedScriptAssetsForShotIds([shotId], scriptId: scriptId);
+  }
+
+  List<ScriptAsset> _confirmedScriptAssetsForShots(Iterable<ScriptShot> shots) {
+    final items = shots.toList(growable: false);
+    return _confirmedScriptAssetsForShotIds(
+      items.map((shot) => shot.id),
+      scriptId: items.isEmpty ? null : items.first.scriptId,
+    );
+  }
+
+  List<ScriptAsset> _confirmedScriptAssetsForShotIds(
+    Iterable<String> shotIds, {
+    String? scriptId,
+  }) {
     final repository = _workflowRepository;
     final selectedScriptId = scriptId ?? value.selectedScriptId;
-    if (repository == null || selectedScriptId.isEmpty) return const [];
+    final orderedShotIds = shotIds.toList(growable: false);
+    final targetShotIds = orderedShotIds.toSet();
+    if (repository == null ||
+        selectedScriptId.isEmpty ||
+        targetShotIds.isEmpty) {
+      return const [];
+    }
     final assetsById = {
       for (final asset in repository.listScriptAssets(selectedScriptId))
         asset.id: asset,
     };
-    return [
-      for (final link in repository.listLinksForShot(shotId))
-        if (link.confirmed) ..._assetIfPresent(assetsById[link.scriptAssetId]),
-    ];
-  }
-
-  List<ScriptAsset> _confirmedScriptAssetsForShots(
-    Iterable<ScriptShot> shots,
-  ) => _confirmedScriptAssetsForShotIds(shots.map((shot) => shot.id));
-
-  List<ScriptAsset> _confirmedScriptAssetsForShotIds(Iterable<String> shotIds) {
     final assets = <ScriptAsset>[];
     final usedIds = <String>{};
-    for (final shotId in shotIds) {
-      for (final asset in _confirmedScriptAssets(shotId)) {
-        if (usedIds.add(asset.id)) assets.add(asset);
+    final linksByShotId = <String, List<ScriptShotAssetLink>>{};
+    for (final link in repository.listLinksForScript(selectedScriptId)) {
+      if (targetShotIds.contains(link.shotId) && link.confirmed) {
+        (linksByShotId[link.shotId] ??= []).add(link);
+      }
+    }
+    for (final shotId in orderedShotIds) {
+      for (final link in linksByShotId[shotId] ?? const []) {
+        if (!usedIds.add(link.scriptAssetId)) continue;
+        final asset = assetsById[link.scriptAssetId];
+        if (asset != null) assets.add(asset);
       }
     }
     return assets;
-  }
-
-  static Iterable<ScriptAsset> _assetIfPresent(ScriptAsset? asset) {
-    if (asset == null) return const [];
-    return [asset];
   }
 
   Map<String, Set<String>> _confirmedScriptAssetIdsByShot(
@@ -3433,14 +3805,15 @@ ${pictureLines.join('\n')}
     final validAssetIds = {
       for (final asset in repository.listScriptAssets(scriptId)) asset.id,
     };
+    final validShotIds = {for (final shot in shots) shot.id};
     final result = <String, Set<String>>{};
-    for (final shot in shots) {
-      final ids = {
-        for (final link in repository.listLinksForShot(shot.id))
-          if (link.confirmed && validAssetIds.contains(link.scriptAssetId))
-            link.scriptAssetId,
-      };
-      if (ids.isNotEmpty) result[shot.id] = ids;
+    for (final link in repository.listLinksForScript(scriptId)) {
+      if (!validShotIds.contains(link.shotId) ||
+          !link.confirmed ||
+          !validAssetIds.contains(link.scriptAssetId)) {
+        continue;
+      }
+      (result[link.shotId] ??= <String>{}).add(link.scriptAssetId);
     }
     return result;
   }
@@ -3456,6 +3829,15 @@ ${pictureLines.join('\n')}
   static String _runIdForScript(String scriptId) =>
       'replicate-script-$scriptId';
 
+  String _ownerScriptId(ReplicateRun run) {
+    final stored = run.scriptId?.trim() ?? '';
+    if (stored.isNotEmpty) return stored;
+    const prefix = 'replicate-script-';
+    return run.id.startsWith(prefix)
+        ? run.id.substring(prefix.length)
+        : value.selectedScriptId;
+  }
+
   static String _promptId(String runId, String shotId) =>
       '$runId-prompt-$shotId';
 
@@ -3467,18 +3849,39 @@ ${pictureLines.join('\n')}
 
   _ComposePromptModelRule get _composePromptModelRule {
     final config = _settingsController.value.activeVideoGenerationApiConfig;
-    if (config?.isHttpApi == true) {
-      return const _ComposePromptModelRule(
-        format: ShotPromptFormat.h3,
-        label: 'MiniMax H3',
-        maxConcurrent: defaultComposePromptConcurrency,
-      );
-    }
-    return const _ComposePromptModelRule(
-      format: ShotPromptFormat.kling,
-      label: '可灵',
-      maxConcurrent: klingComposePromptConcurrency,
+    final format = _promptFormatForVideoModel(
+      '${config?.name ?? ''} ${config?.model ?? ''}',
+      httpFallback: config?.isHttpApi == true,
     );
+    return _ComposePromptModelRule(
+      format: format,
+      label: _promptFormatLabel(format),
+      maxConcurrent: format == ShotPromptFormat.kling
+          ? klingComposePromptConcurrency
+          : defaultComposePromptConcurrency,
+    );
+  }
+
+  static ShotPromptFormat _promptFormatForVideoModel(
+    String model, {
+    required bool httpFallback,
+  }) {
+    final normalized = model.trim().toLowerCase();
+    if (RegExp(r'即梦|jimeng|seedance|doubao').hasMatch(normalized)) {
+      return ShotPromptFormat.sd2;
+    }
+    if (RegExp(r'\bh3\b|minimax|海螺').hasMatch(normalized)) {
+      return ShotPromptFormat.h3;
+    }
+    if (RegExp(r'可灵|kling').hasMatch(normalized)) {
+      return ShotPromptFormat.kling;
+    }
+    return httpFallback ? ShotPromptFormat.h3 : ShotPromptFormat.kling;
+  }
+
+  void _handleSettingsChanged() {
+    if (_disposed) return;
+    selectPromptFormatForAll(_composePromptModelRule.format);
   }
 
   static Map<String, Object?> _promptRaw(ShotPrompt prompt) {
@@ -3613,27 +4016,25 @@ class _FreeCreationImageReference {
     required this.file,
     required this.role,
     required this.name,
-    required this.description,
   });
 
   final File file;
   final String role;
   final String name;
-  final String description;
 }
 
 class _FreeCreationPromptInput {
   const _FreeCreationPromptInput({
     required this.references,
     required this.storyboardImageCount,
-    required this.storyboardCaptions,
-    required this.assetIds,
+    required this.videoConfig,
+    required this.skillRoute,
   });
 
   final List<_FreeCreationImageReference> references;
   final int storyboardImageCount;
-  final Map<String, String> storyboardCaptions;
-  final List<String> assetIds;
+  final VideoGenerationApiConfig? videoConfig;
+  final VideoSkillRoute skillRoute;
 }
 
 class _FreeCreationPromptResult {

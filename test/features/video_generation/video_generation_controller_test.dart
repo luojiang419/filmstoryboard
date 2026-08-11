@@ -19,11 +19,18 @@ import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repos
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_controller.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_task_service.dart';
+import 'package:filmstoryboard/features/video_generation/data/cli_dependency_installer.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_models.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_resolver.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_service.dart';
+import 'package:filmstoryboard/features/video_generation/data/libtv_cli_models.dart';
+import 'package:filmstoryboard/features/video_generation/data/libtv_cli_resolver.dart';
+import 'package:filmstoryboard/features/video_generation/data/libtv_cli_service.dart';
+import 'package:filmstoryboard/features/video_generation/data/minimax_video_api_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/video_generation_repository.dart';
 import 'package:filmstoryboard/features/video_generation/domain/video_generation_models.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -769,7 +776,7 @@ void main() {
     await generation;
   });
 
-  test('单格连续生成时新任务先显示排队等待且不锁住页面', () async {
+  test('不同镜头单格生成会立即并发提交且不锁住页面', () async {
     final fixture = await _createControllerFixture(
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
     );
@@ -836,13 +843,7 @@ void main() {
     );
 
     final secondGeneration = fixture.controller.generateShot(secondShot);
-    await _waitUntil(
-      () => fixture.controller.value.tasks.any(
-        (task) =>
-            task.shotId == secondShot.id &&
-            task.status == VideoGenerationTaskStatus.draft,
-      ),
-    );
+    await _waitUntil(() => fixture.fakeCli.submittedImagePaths.length == 2);
 
     expect(fixture.controller.value.isBusy, isFalse);
     expect(fixture.controller.value.isGeneratingAll, isFalse);
@@ -852,10 +853,98 @@ void main() {
           .localPath,
       endsWith('.mp4'),
     );
+    expect(
+      fixture.controller.value.tasks
+          .firstWhere((task) => task.shotId == secondShot.id)
+          .status,
+      isIn([
+        VideoGenerationTaskStatus.submitting,
+        VideoGenerationTaskStatus.queued,
+      ]),
+    );
 
     fixture.fakeCli.completeQueryAsFailed();
     await firstGeneration;
     await secondGeneration;
+  });
+
+  test('一键生成遇到已运行镜头时只立即提交其他镜头', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      identity: const KlingIdentity(
+        userId: 'user-1',
+        imageToVideoModels: [
+          KlingModelSpec(
+            model: 'kling-video-v3_0_omni',
+            alias: '可灵 o3',
+            description: '',
+            arguments: [
+              KlingArgumentSpec(
+                name: 'duration',
+                required: false,
+                defaultValue: '5',
+                allowedValues: ['2', '3', '5'],
+                description: '',
+              ),
+            ],
+          ),
+        ],
+      ),
+      account: const KlingAccount(
+        userId: 'user-1',
+        membershipType: 'pro',
+        membershipDescription: '专业版',
+        availableCredits: 88,
+      ),
+    );
+    fixture.controller.selectModel('kling-video-v3_0_omni');
+
+    final firstFrame = await File(
+      p.join(fixture.root.path, 'batch-active-first.png'),
+    ).writeAsBytes([1, 2, 3]);
+    final secondFrame = await File(
+      p.join(fixture.root.path, 'batch-active-second.png'),
+    ).writeAsBytes([4, 5, 6]);
+    final firstShot = fixture.shootingController.addShot()!.copyWith(
+      framePath: firstFrame.path,
+      durationSeconds: 2,
+      prompt: '已经在生成的镜头。',
+    );
+    fixture.shootingController.updateShot(firstShot);
+    final secondShot = fixture.shootingController.addShot()!.copyWith(
+      framePath: secondFrame.path,
+      durationSeconds: 2,
+      prompt: '应由一键生成立即提交的镜头。',
+    );
+    fixture.shootingController.updateShot(secondShot);
+    await Future<void>.delayed(Duration.zero);
+
+    final firstGeneration = fixture.controller.generateShot(firstShot);
+    await _waitUntil(() => fixture.fakeCli.submittedImagePaths.length == 1);
+
+    final batchGeneration = fixture.controller.generateAll();
+    await _waitUntil(() => fixture.fakeCli.submittedImagePaths.length == 2);
+
+    expect(
+      fixture.fakeCli.submittedImagePaths.where(
+        (path) => p.normalize(path) == p.normalize(firstFrame.path),
+      ),
+      hasLength(1),
+      reason: '一键生成不得重复提交已运行镜头',
+    );
+    expect(
+      fixture.fakeCli.submittedImagePaths.where(
+        (path) => p.normalize(path) == p.normalize(secondFrame.path),
+      ),
+      hasLength(1),
+    );
+
+    fixture.fakeCli.completeQueryAsFailed();
+    await firstGeneration;
+    await batchGeneration;
   });
 
   test('取消任务后延迟返回的生成中状态不能覆盖本地取消状态', () async {
@@ -987,6 +1076,125 @@ void main() {
     expect(fixture.controller.value.errorMessage, contains('未检测到可灵授权完成'));
   });
 
+  test('切换 LibTV 预设后自动检测环境并拉起浏览器授权', () async {
+    final libTvCli = _FakeLibTvCliService(succeedAfterAttempts: 2);
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+      libTvCliResolver: const _FakeLibTvCliResolver(),
+      libTvCliService: libTvCli,
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultLibTvCliVideoGenerationConfigId,
+    );
+    await _waitUntil(
+      () =>
+          fixture.controller.value.libTvEnvironment?.isReady == true &&
+          fixture.controller.value.errorMessage.contains('LibTV 未登录'),
+    );
+
+    expect(fixture.controller.usesLibTvCli, isTrue);
+    expect(fixture.controller.shouldRequestActiveCliLogin, isTrue);
+    expect(
+      fixture.controller.value.profile?.promptMode,
+      VideoPromptMode.original,
+    );
+
+    final result = await fixture.controller.startLoginAuthorization();
+
+    expect(result, KlingLoginAuthorizationStatus.completed);
+    expect(libTvCli.startedCount, 1);
+    expect(libTvCli.killedCount, 1);
+    expect(fixture.controller.value.libTvAccount?.userId, 'libtv-user-1');
+    expect(fixture.controller.value.libTvModel?.modelKey, 'star-video2');
+    expect(fixture.controller.shouldRequestActiveCliLogin, isFalse);
+    expect(fixture.controller.libTvParameterSummary, contains('分辨率：720p'));
+
+    fixture.controller.updateLibTvAspectRatio('adaptive');
+    fixture.controller.updateLibTvResolution('480p');
+    fixture.controller.updateLibTvSoundEnabled(false);
+    fixture.controller.updateLibTvSearchEnabled(false);
+
+    expect(fixture.controller.selectedLibTvAspectRatio, 'adaptive');
+    expect(fixture.controller.selectedLibTvResolution, '480p');
+    expect(fixture.controller.selectedLibTvSoundEnabled, isFalse);
+    expect(fixture.controller.selectedLibTvSearchEnabled, isFalse);
+    expect(fixture.controller.libTvParameterSummary, contains('生成比例：adaptive'));
+    expect(fixture.controller.libTvParameterSummary, contains('生成音频：关闭'));
+    expect(fixture.controller.libTvParameterSummary, contains('联网增强：关闭'));
+  });
+
+  test('缺少 Node 和可灵 CLI 时按区域自动安装并重新检测环境', () async {
+    final installer = _FakeCliDependencyInstaller();
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(),
+      cliResolver: _InstallAwareKlingCliResolver(installer),
+      dependencyInstaller: installer,
+    );
+    addTearDown(fixture.dispose);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      environment: const KlingCliEnvironment(
+        nodePath: '',
+        nodeVersion: '',
+        npmPath: '',
+        klingPath: '',
+        klingVersion: '',
+        errorMessage: '未检测到 Node.js',
+      ),
+    );
+
+    final installed = await fixture.controller.installActiveCli(
+      klingRegion: KlingCliInstallRegion.global,
+    );
+
+    expect(installed, isTrue);
+    expect(installer.nodeInstallCount, 1);
+    expect(installer.klingRegions, [KlingCliInstallRegion.global]);
+    expect(installer.klingNpmPaths, [r'C:\tools\npm.cmd']);
+    expect(fixture.controller.activeCliEnvironmentReady, isTrue);
+    expect(
+      fixture.controller.value.cliInstallStatus,
+      CliDependencyInstallStatus.completed,
+    );
+    expect(
+      fixture
+          .settingsController
+          .value
+          .activeVideoGenerationApiConfig
+          ?.klingCliRegion,
+      'global',
+    );
+  });
+
+  test('缺少 LibTV CLI 时调用内置安装器并重新检测环境', () async {
+    final installer = _FakeCliDependencyInstaller();
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(),
+      libTvCliResolver: _InstallAwareLibTvCliResolver(installer),
+      libTvCliService: _FakeLibTvCliService(succeedAfterAttempts: 999),
+      dependencyInstaller: installer,
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultLibTvCliVideoGenerationConfigId,
+    );
+    await _waitUntil(
+      () => fixture.controller.value.isLoadingEnvironment == false,
+    );
+
+    final installed = await fixture.controller.installActiveCli();
+
+    expect(installed, isTrue);
+    expect(installer.libTvInstallCount, 1);
+    expect(fixture.controller.activeCliEnvironmentReady, isTrue);
+    expect(
+      fixture.controller.value.cliInstallStatus,
+      CliDependencyInstallStatus.completed,
+    );
+  });
+
   test('本地 API 与可灵 CLI 来回切换时复用已登录可灵状态', () async {
     final fixture = await _createControllerFixture(
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
@@ -1056,6 +1264,26 @@ void main() {
     expect(
       fixture.controller.value.drafts[shot.id]?.promptMode,
       VideoPromptMode.h3Optimized,
+    );
+
+    const jimengConfig = VideoGenerationApiConfig(
+      id: 'test-jimeng',
+      name: '即梦视频',
+      kind: VideoGenerationApiConfigKind.httpApi,
+      baseUrl: 'https://example.test',
+      apiKey: '',
+      model: 'Seedance 2.0',
+    );
+    await fixture.settingsController.saveVideoGenerationApiConfig(jimengConfig);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      fixture.controller.value.profile?.promptMode,
+      VideoPromptMode.original,
+    );
+    expect(
+      fixture.controller.value.drafts[shot.id]?.promptMode,
+      VideoPromptMode.original,
     );
 
     await fixture.settingsController.setActiveVideoGenerationApiConfig(
@@ -2063,6 +2291,61 @@ non_diegetic_music: Minimal ambient music.''',
     expect(fixture.controller.videoApiParameterSummary, contains('步数：18'));
   });
 
+  test('本地 H3 从配置 API 动态更新分辨率与默认值', () async {
+    final videoApiService = MiniMaxVideoApiService(
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/config');
+        return http.Response(
+          jsonEncode({
+            'resolutions': [
+              '0.2MP 16:9 - 608x352',
+              '0.8MP 16:9 - 1216x704',
+              '0.6MP 2:1 - 1088x544',
+              'Experimental 123x456',
+            ],
+            'defaults': {'resolution': '0.8MP 16:9 - 1216x704', 'steps': 18},
+          }),
+          200,
+        );
+      }),
+    );
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+      videoApiService: videoApiService,
+    );
+    addTearDown(fixture.dispose);
+    const apiConfig = VideoGenerationApiConfig(
+      id: 'test-dynamic-minimax-local',
+      name: 'MiniMax 本地动态配置',
+      kind: VideoGenerationApiConfigKind.httpApi,
+      baseUrl: AppSettings.defaultVideoGenerationApiBaseUrl,
+      apiKey: '',
+      model: AppSettings.defaultVideoGenerationModel,
+    );
+    await fixture.settingsController.saveVideoGenerationApiConfig(apiConfig);
+
+    expect(await fixture.controller.refreshVideoApiConfig(), isTrue);
+    expect(fixture.controller.videoApiAspectRatios, ['16:9', '2:1', '其他']);
+    expect(fixture.controller.videoApiResolutionsForAspect('16:9'), [
+      '0.2MP 16:9 - 608x352',
+      '0.8MP 16:9 - 1216x704',
+    ]);
+    expect(fixture.controller.videoApiResolutionsForAspect('2:1'), [
+      '0.6MP 2:1 - 1088x544',
+    ]);
+    expect(
+      fixture.controller.selectedVideoApiResolution,
+      '0.8MP 16:9 - 1216x704',
+    );
+    expect(fixture.controller.selectedVideoApiSteps, 18);
+
+    fixture.controller.updateVideoApiResolution('0.8MP 16:9 - 1216x704');
+    expect(fixture.controller.selectedVideoApiSubmissionParameters, {
+      'resolution': '0.8MP 16:9 - 1216x704',
+      'steps': '18',
+    });
+  });
+
   test('生成视频可另存为自定义路径并自动补齐 mp4 扩展名', () async {
     final fixture = await _createControllerFixture(
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
@@ -2310,6 +2593,11 @@ N/A''';
 
 Future<_ControllerFixture> _createControllerFixture({
   required _FakeKlingCliService cliService,
+  KlingCliResolver? cliResolver,
+  LibTvCliResolver? libTvCliResolver,
+  _FakeLibTvCliService? libTvCliService,
+  CliDependencyInstaller? dependencyInstaller,
+  MiniMaxVideoApiService? videoApiService,
   Duration loginAuthorizationTimeout = const Duration(seconds: 1),
   Duration loginAuthorizationPollInterval = const Duration(milliseconds: 1),
   void Function(
@@ -2346,7 +2634,15 @@ Future<_ControllerFixture> _createControllerFixture({
     replicateController: replicateController,
     directories: directories,
     settingsController: settingsController,
+    cliResolver: cliResolver ?? const KlingCliResolver(),
     cliService: cliService,
+    libTvCliResolver: libTvCliResolver ?? const LibTvCliResolver(),
+    libTvCliService: libTvCliService ?? const LibTvCliService(),
+    libTvCliServiceFactory: libTvCliService == null
+        ? null
+        : (_) => libTvCliService,
+    dependencyInstaller: dependencyInstaller ?? const CliDependencyInstaller(),
+    videoApiService: videoApiService,
     loginAuthorizationTimeout: loginAuthorizationTimeout,
     loginAuthorizationPollInterval: loginAuthorizationPollInterval,
   );
@@ -2526,4 +2822,147 @@ class _FakeKlingCliService extends KlingCliService {
       );
     }
   }
+}
+
+class _FakeCliDependencyInstaller extends CliDependencyInstaller {
+  int nodeInstallCount = 0;
+  int libTvInstallCount = 0;
+  final List<KlingCliInstallRegion> klingRegions = [];
+  final List<String> klingNpmPaths = [];
+
+  bool get nodeInstalled => nodeInstallCount > 0;
+  bool get klingInstalled => klingRegions.isNotEmpty;
+  bool get libTvInstalled => libTvInstallCount > 0;
+
+  @override
+  Future<void> installNodeJsLts() async => nodeInstallCount++;
+
+  @override
+  Future<void> installKling({
+    required KlingCliInstallRegion region,
+    required String npmPath,
+  }) async {
+    klingRegions.add(region);
+    klingNpmPaths.add(npmPath);
+  }
+
+  @override
+  Future<void> installLibTv() async => libTvInstallCount++;
+}
+
+class _InstallAwareKlingCliResolver extends KlingCliResolver {
+  const _InstallAwareKlingCliResolver(this.installer);
+
+  final _FakeCliDependencyInstaller installer;
+
+  @override
+  Future<KlingCliEnvironment> resolve() async {
+    if (!installer.nodeInstalled) {
+      return const KlingCliEnvironment(
+        nodePath: '',
+        nodeVersion: '',
+        npmPath: '',
+        klingPath: '',
+        klingVersion: '',
+        errorMessage: '未检测到 Node.js',
+      );
+    }
+    if (!installer.klingInstalled) {
+      return const KlingCliEnvironment(
+        nodePath: r'C:\tools\node.exe',
+        nodeVersion: 'v20.0.0',
+        npmPath: r'C:\tools\npm.cmd',
+        klingPath: '',
+        klingVersion: '',
+        errorMessage: '未检测到可灵 CLI',
+      );
+    }
+    return const KlingCliEnvironment(
+      nodePath: r'C:\tools\node.exe',
+      nodeVersion: 'v20.0.0',
+      npmPath: r'C:\tools\npm.cmd',
+      klingPath: r'C:\tools\kling.cmd',
+      klingVersion: 'kling-cli 1.0.0',
+      errorMessage: '',
+    );
+  }
+}
+
+class _InstallAwareLibTvCliResolver extends LibTvCliResolver {
+  const _InstallAwareLibTvCliResolver(this.installer);
+
+  final _FakeCliDependencyInstaller installer;
+
+  @override
+  Future<LibTvCliEnvironment> resolve() async => installer.libTvInstalled
+      ? const LibTvCliEnvironment(
+          executablePath: r'C:\tools\libtv.exe',
+          version: '1.1.3',
+          errorMessage: '',
+        )
+      : const LibTvCliEnvironment(
+          executablePath: '',
+          version: '',
+          errorMessage: '未检测到 LibTV CLI',
+        );
+}
+
+class _FakeLibTvCliResolver extends LibTvCliResolver {
+  const _FakeLibTvCliResolver();
+
+  @override
+  Future<LibTvCliEnvironment> resolve() async => const LibTvCliEnvironment(
+    executablePath: r'C:\tools\libtv.exe',
+    version: '1.1.3',
+    errorMessage: '',
+  );
+}
+
+class _FakeLibTvCliService extends LibTvCliService {
+  _FakeLibTvCliService({required this.succeedAfterAttempts});
+
+  final int succeedAfterAttempts;
+  int accountInfoCount = 0;
+  int startedCount = 0;
+  int killedCount = 0;
+  final List<Completer<int>> _exitCompleters = [];
+
+  @override
+  Future<LibTvRunningProcess> startLogin() async {
+    startedCount++;
+    final completer = Completer<int>();
+    _exitCompleters.add(completer);
+    return LibTvRunningProcess(
+      exitCode: completer.future,
+      kill: ([signal = ProcessSignal.sigterm]) {
+        killedCount++;
+        if (!completer.isCompleted) completer.complete(-1);
+        return true;
+      },
+      stdout: () => '',
+      stderr: () => 'login canceled',
+    );
+  }
+
+  @override
+  Future<LibTvAccountInfo> accountInfo() async {
+    accountInfoCount++;
+    if (accountInfoCount < succeedAfterAttempts) {
+      throw const LibTvCliException('未登录');
+    }
+    return const LibTvAccountInfo(
+      userId: 'libtv-user-1',
+      nickname: 'LibTV测试用户',
+      accountName: '个人空间',
+      teamId: 0,
+    );
+  }
+
+  @override
+  Future<LibTvModelSpec> model(String name) async => const LibTvModelSpec(
+    modelName: 'Seedance 2.0',
+    modelKey: 'star-video2',
+    modality: 'video',
+    schema: {},
+  );
 }

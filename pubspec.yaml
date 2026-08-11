@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+239
+version: 1.0.0+264
 environment:
   sdk: ^3.10.7
 
@@ -83,6 +83,8 @@ flutter:
     - docs/视觉模型api.md
     - docs/拍摄脚本模版.xlsx
     - assets/minimax_h3_skills/SOURCE.md
+    - assets/minimax_h3_skills/skills/h3-prompt-writing/
+    - assets/minimax_h3_skills/skills/h3-prompt-writing/references/
     - assets/minimax_h3_skills/skills/3d-animation-short-generator/
     - assets/minimax_h3_skills/skills/3d-animation-short-generator/references/
     - assets/minimax_h3_skills/skills/brand-promo-video-generator/
@@ -93,6 +95,18 @@ flutter:
     - assets/minimax_h3_skills/skills/music-video-subtitle-generator/
     - assets/minimax_h3_skills/skills/paper-collage-explainer-generator/
     - assets/minimax_h3_skills/skills/papercraft-stop-motion-explainer/
+    - assets/video_cli_skills/SOURCE.md
+    - assets/video_cli_skills/kling-cli/
+    - assets/video_cli_skills/libtv-cli/
+    - assets/video_cli_skills/libtv-cli/commands/
+    - assets/video_cli_skills/libtv-cli/examples/
+    - assets/video_cli_skills/libtv-cli/examples/node-types/
+    - assets/video_cli_skills/libtv-cli/examples/pipes/
+    - assets/video_cli_skills/libtv-cli/examples/workflow/
+    - assets/video_cli_skills/libtv-cli/model-schema/
+    - assets/video_cli_skills/libtv-cli/node-types/
+    - assets/video_cli_skills/libtv-cli/prompt-guides/
+    - assets/video_cli_skills/libtv-cli/scripts/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

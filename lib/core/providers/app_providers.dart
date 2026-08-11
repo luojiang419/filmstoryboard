@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/settings/application/settings_controller.dart';
@@ -6,6 +8,13 @@ import '../../features/projects/application/project_service.dart';
 import '../../features/projects/data/legacy_project_migrator.dart';
 import '../../features/projects/data/project_catalog_repository.dart';
 import '../../features/projects/data/project_operations_service.dart';
+import '../../features/remote_access/application/remote_access_facade.dart';
+import '../../features/remote_access/application/remote_access_controller.dart';
+import '../../features/remote_access/application/remote_media_registry.dart';
+import '../../features/remote_access/application/remote_storyboard_registry.dart';
+import '../../features/remote_access/application/remote_workspace_registry.dart';
+import '../../features/remote_access/data/remote_access_repository.dart';
+import '../../features/remote_access/domain/remote_events.dart';
 import '../../features/updater/application/updater_controller.dart';
 import '../../features/updater/data/updater_service.dart';
 import '../database/app_database.dart';
@@ -35,6 +44,73 @@ final projectDirectoriesProvider = Provider<WorkspaceDirectories>((ref) {
 final currentProjectNameProvider = Provider<String>(
   (ref) => '项目',
   dependencies: [],
+);
+
+final remoteChangeBusProvider = Provider<RemoteChangeBus>((ref) {
+  final bus = RemoteChangeBus();
+  ref.onDispose(() => unawaited(bus.close()));
+  return bus;
+}, dependencies: const []);
+
+final remoteWorkspaceRegistryProvider = Provider<RemoteWorkspaceRegistry>((
+  ref,
+) {
+  return RemoteWorkspaceRegistry(ref.watch(remoteChangeBusProvider));
+}, dependencies: [remoteChangeBusProvider]);
+
+final remoteMediaRegistryProvider = Provider<RemoteMediaRegistry>((ref) {
+  return RemoteMediaRegistry(
+    workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+  );
+}, dependencies: [remoteWorkspaceRegistryProvider]);
+
+final remoteStoryboardRegistryProvider = Provider<RemoteStoryboardRegistry>((
+  ref,
+) {
+  final registry = RemoteStoryboardRegistry(
+    workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+    changeBus: ref.watch(remoteChangeBusProvider),
+  );
+  ref.onDispose(registry.dispose);
+  return registry;
+}, dependencies: [remoteWorkspaceRegistryProvider, remoteChangeBusProvider]);
+
+final remoteAccessFacadeProvider = Provider<RemoteAccessFacade>(
+  (ref) {
+    return RemoteAccessFacade(
+      workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+      changeBus: ref.watch(remoteChangeBusProvider),
+      mediaRegistry: ref.watch(remoteMediaRegistryProvider),
+      storyboardRegistry: ref.watch(remoteStoryboardRegistryProvider),
+    );
+  },
+  dependencies: [
+    remoteWorkspaceRegistryProvider,
+    remoteChangeBusProvider,
+    remoteMediaRegistryProvider,
+    remoteStoryboardRegistryProvider,
+  ],
+);
+
+final remoteAccessControllerProvider = Provider<RemoteAccessController>(
+  (ref) {
+    final controller = RemoteAccessController(
+      repository: RemoteAccessRepository(ref.watch(globalDatabaseProvider)),
+      directories: ref.watch(appDirectoriesProvider),
+      facade: ref.watch(remoteAccessFacadeProvider),
+      changeBus: ref.watch(remoteChangeBusProvider),
+      mediaRegistry: ref.watch(remoteMediaRegistryProvider),
+    );
+    ref.onDispose(controller.dispose);
+    return controller;
+  },
+  dependencies: [
+    globalDatabaseProvider,
+    appDirectoriesProvider,
+    remoteAccessFacadeProvider,
+    remoteChangeBusProvider,
+    remoteMediaRegistryProvider,
+  ],
 );
 
 final projectCatalogRepositoryProvider = Provider<ProjectCatalogRepository>((

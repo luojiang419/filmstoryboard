@@ -137,6 +137,21 @@ void main() {
       controller.value.videoGenerationApiConfigs.map((item) => item.id),
       contains(AppSettings.defaultMiniMaxVideoGenerationConfigId),
     );
+    final libTv = controller.value.videoGenerationApiConfigs.firstWhere(
+      (item) => item.id == AppSettings.defaultLibTvCliVideoGenerationConfigId,
+    );
+    expect(libTv.isLibTvCli, isTrue);
+    expect(libTv.model, AppSettings.defaultLibTvCliVideoGenerationModel);
+
+    await controller.setActiveKlingCliRegion('china');
+    expect(
+      controller.value.activeVideoGenerationApiConfig?.klingCliRegion,
+      'china',
+    );
+    expect(
+      repository.load().activeVideoGenerationApiConfig?.klingCliRegion,
+      'china',
+    );
 
     const config = VideoGenerationApiConfig(
       id: 'test-minimax-h3',
@@ -169,6 +184,13 @@ void main() {
     expect(
       controller.value.videoGenerationApiConfigs.map((item) => item.id),
       contains(AppSettings.defaultKlingCliVideoGenerationConfigId),
+    );
+    await controller.deleteVideoGenerationApiConfig(
+      AppSettings.defaultLibTvCliVideoGenerationConfigId,
+    );
+    expect(
+      controller.value.videoGenerationApiConfigs.map((item) => item.id),
+      contains(AppSettings.defaultLibTvCliVideoGenerationConfigId),
     );
   });
 

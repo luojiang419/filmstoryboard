@@ -115,6 +115,67 @@ void main() {
     expect((await jpg.files.first.readAsBytes()).take(2), [0xFF, 0xD8]);
     expect(jpg.files.first.path, contains('第01页.jpg'));
   });
+
+  test('分析报告不会输出设置中未启用的多维度分析和镜头明细', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'analysis_report_dimensions_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final fixture = _fixture();
+    const service = AnalysisReportExportService();
+
+    final xlsx = await service.export(
+      format: AnalysisReportFormat.xlsx,
+      outputDirectory: root,
+      video: fixture.video,
+      frames: fixture.frames,
+      frameAnalyses: fixture.analyses,
+      summary: fixture.summary,
+      marketingAnalyses: fixture.marketing,
+      includeMultiDimensionAnalysis: false,
+      includeShotDetails: false,
+    );
+    final archive = ZipDecoder().decodeBytes(
+      await xlsx.files.single.readAsBytes(),
+    );
+    final workbook = utf8.decode(
+      archive
+          .firstWhere((entry) => entry.name == 'xl/workbook.xml')
+          .readBytes()!,
+    );
+    expect(workbook, isNot(contains('多维度分析')));
+    expect(workbook, isNot(contains('镜头明细')));
+    expect(workbook, contains('概览'));
+
+    final pdf = await service.export(
+      format: AnalysisReportFormat.pdf,
+      outputDirectory: root,
+      video: fixture.video,
+      frames: fixture.frames,
+      frameAnalyses: fixture.analyses,
+      summary: fixture.summary,
+      marketingAnalyses: fixture.marketing,
+      includeMultiDimensionAnalysis: false,
+      includeShotDetails: false,
+    );
+    expect(
+      String.fromCharCodes((await pdf.files.single.readAsBytes()).take(4)),
+      '%PDF',
+    );
+
+    final png = await service.export(
+      format: AnalysisReportFormat.png,
+      outputDirectory: root,
+      video: fixture.video,
+      frames: fixture.frames,
+      frameAnalyses: fixture.analyses,
+      summary: fixture.summary,
+      marketingAnalyses: fixture.marketing,
+      includeMultiDimensionAnalysis: false,
+      includeShotDetails: false,
+    );
+    expect(png.files, hasLength(1));
+  });
 }
 
 _ReportFixture _fixture() {

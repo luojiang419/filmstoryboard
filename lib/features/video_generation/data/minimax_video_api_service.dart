@@ -12,6 +12,18 @@ class MiniMaxVideoApiSubmissionResult {
   final String generationId;
 }
 
+class MiniMaxVideoApiConfig {
+  const MiniMaxVideoApiConfig({
+    required this.resolutions,
+    required this.defaultResolution,
+    required this.defaultSteps,
+  });
+
+  final List<String> resolutions;
+  final String defaultResolution;
+  final int defaultSteps;
+}
+
 class MiniMaxVideoApiTaskResult {
   const MiniMaxVideoApiTaskResult({
     required this.status,
@@ -35,6 +47,60 @@ class MiniMaxVideoApiService {
   MiniMaxVideoApiService({http.Client? client}) : _client = client;
 
   final http.Client? _client;
+
+  Future<MiniMaxVideoApiConfig> fetchConfig({
+    required VideoGenerationApiConfig config,
+  }) async {
+    final baseUri = _baseUri(config.baseUrl);
+    final uri = baseUri.replace(path: _joinPath(baseUri.path, '/api/config'));
+    final client = _client ?? http.Client();
+    try {
+      final response = await client
+          .get(uri, headers: _authorizationHeaders(config.apiKey))
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw KlingCliException(
+          'MiniMax 视频配置读取失败：HTTP ${response.statusCode} ${response.body}',
+        );
+      }
+      final json = _decodeObject(response.body);
+      final rawResolutions = json['resolutions'];
+      if (rawResolutions is! List) {
+        throw KlingCliException(
+          'MiniMax 视频配置缺少分辨率列表。',
+          rawOutput: response.body,
+        );
+      }
+      final resolutions = <String>[];
+      for (final rawResolution in rawResolutions) {
+        final resolution = _text(rawResolution);
+        if (resolution.isNotEmpty && !resolutions.contains(resolution)) {
+          resolutions.add(resolution);
+        }
+      }
+      if (resolutions.isEmpty) {
+        throw KlingCliException(
+          'MiniMax 视频配置的分辨率列表为空。',
+          rawOutput: response.body,
+        );
+      }
+      final rawDefaults = json['defaults'];
+      final defaults = rawDefaults is Map
+          ? rawDefaults.map((key, value) => MapEntry('$key', value))
+          : const <String, Object?>{};
+      final configuredDefault = _text(defaults['resolution']);
+      final defaultResolution = resolutions.contains(configuredDefault)
+          ? configuredDefault
+          : resolutions.first;
+      return MiniMaxVideoApiConfig(
+        resolutions: List.unmodifiable(resolutions),
+        defaultResolution: defaultResolution,
+        defaultSteps: (_int(defaults['steps']) ?? 12).clamp(4, 30).toInt(),
+      );
+    } finally {
+      if (_client == null) client.close();
+    }
+  }
 
   Future<MiniMaxVideoApiSubmissionResult> submitImageToVideo({
     required VideoGenerationApiConfig config,

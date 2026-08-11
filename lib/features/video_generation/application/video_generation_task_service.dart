@@ -4,6 +4,8 @@ import 'dart:io';
 import '../../settings/domain/video_generation_api_config.dart';
 import '../data/kling_cli_models.dart';
 import '../data/kling_cli_service.dart';
+import '../data/libtv_cli_models.dart';
+import '../data/libtv_cli_service.dart';
 import '../data/minimax_video_api_service.dart';
 import '../data/video_generation_repository.dart';
 import '../domain/video_generation_models.dart';
@@ -16,12 +18,14 @@ class VideoGenerationSubmission {
     required this.task,
     required this.sourceImagePath,
     this.referenceImagePaths = const [],
+    this.scriptName = '',
     required this.outputFile,
   });
 
   final VideoGenerationTask task;
   final String sourceImagePath;
   final List<String> referenceImagePaths;
+  final String scriptName;
   final File outputFile;
 }
 
@@ -36,6 +40,7 @@ class VideoGenerationTaskService {
     Duration? pollTimeout,
     VideoGenerationApiConfig? videoApiConfig,
     MiniMaxVideoApiService? videoApiService,
+    LibTvCliService? libTvCliService,
   }) : _repository = repository,
        _cliService = cliService,
        _download = download ?? const KlingResultDownloader().download,
@@ -43,6 +48,7 @@ class VideoGenerationTaskService {
        _onTaskChanged = onTaskChanged,
        _videoApiConfig = videoApiConfig,
        _videoApiService = videoApiService ?? MiniMaxVideoApiService(),
+       _libTvCliService = libTvCliService ?? const LibTvCliService(),
        pollTimeout =
            pollTimeout ??
            (videoApiConfig?.isHttpApi == true
@@ -56,6 +62,7 @@ class VideoGenerationTaskService {
   final void Function(VideoGenerationTask task)? _onTaskChanged;
   final VideoGenerationApiConfig? _videoApiConfig;
   final MiniMaxVideoApiService _videoApiService;
+  final LibTvCliService _libTvCliService;
   final Duration pollInterval;
   final Duration pollTimeout;
 
@@ -78,6 +85,13 @@ class VideoGenerationTaskService {
       throw const KlingCliException('缺少生成首帧图，当前镜头不可生成视频。');
     }
     final videoApiConfig = _videoApiConfig;
+    if (videoApiConfig?.isLibTvCli == true) {
+      return _submitAndTrackLibTv(
+        submission,
+        videoApiConfig!,
+        isCanceled: isCanceled,
+      );
+    }
     if (videoApiConfig != null &&
         videoApiConfig.isHttpApi &&
         videoApiConfig.baseUrl.trim().isNotEmpty) {
@@ -141,6 +155,76 @@ class VideoGenerationTaskService {
       _upsertTask(current);
       return current;
     }
+  }
+
+  Future<VideoGenerationTask> _submitAndTrackLibTv(
+    VideoGenerationSubmission submission,
+    VideoGenerationApiConfig config, {
+    bool Function()? isCanceled,
+  }) async {
+    var current = submission.task.copyWith(
+      status: VideoGenerationTaskStatus.submitting,
+      localPath: submission.outputFile.path,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _upsertTask(current);
+    if (isCanceled?.call() == true) {
+      current = _canceledTask(current);
+      _upsertTask(current);
+      return current;
+    }
+    try {
+      final result = await _libTvCliService.generateImageToVideo(
+        scriptId: current.scriptId,
+        scriptName: submission.scriptName,
+        taskId: current.id,
+        prompt: current.prompt,
+        sourceImagePath: submission.sourceImagePath,
+        referenceImagePaths: submission.referenceImagePaths,
+        modelName: config.model.trim().isEmpty
+            ? LibTvCliService.seedance20ModelName
+            : config.model.trim(),
+        ratio: current.parameters['ratio'] ?? '16:9',
+        resolution: current.parameters['resolution'] ?? '720p',
+        durationSeconds: current.durationSeconds,
+        enableSound: current.parameters['enableSound'] != 'off',
+        searchEnabled: current.parameters['search_enabled'] != '0',
+        isCanceled: isCanceled,
+      );
+      if (isCanceled?.call() == true) {
+        current = _canceledTask(current);
+        _upsertTask(current);
+        return current;
+      }
+      final file = await _download(result.videoUrl, submission.outputFile);
+      current = current.copyWith(
+        generationId: result.taskId.isNotEmpty ? result.taskId : result.nodeKey,
+        parameters: {
+          ...current.parameters,
+          libTvProjectUuidParameter: result.projectUuid,
+          libTvNodeKeyParameter: result.nodeKey,
+        },
+        status: VideoGenerationTaskStatus.completed,
+        resultUrl: result.videoUrl,
+        resultWithoutWatermarkUrl: result.videoUrl,
+        localPath: file.path,
+        usedWatermarkedFallback: false,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+        completedAt: DateTime.now().toUtc(),
+      );
+    } on LibTvGenerationCanceledException {
+      current = _canceledTask(current);
+    } catch (error) {
+      current = current.copyWith(
+        status: VideoGenerationTaskStatus.failed,
+        errorMessage: '$error',
+        updatedAt: DateTime.now().toUtc(),
+        completedAt: DateTime.now().toUtc(),
+      );
+    }
+    _upsertTask(current);
+    return current;
   }
 
   Future<VideoGenerationTask> _submitAndTrackVideoApi(
@@ -326,6 +410,9 @@ class VideoGenerationTaskService {
       throw const KlingCliException('缺少 generationId，不能恢复查询。');
     }
     final videoApiConfig = _videoApiConfig;
+    if (videoApiConfig?.isLibTvCli == true) {
+      return _resumeInterruptedLibTvTask(task, outputFile);
+    }
     if (videoApiConfig != null &&
         videoApiConfig.isHttpApi &&
         videoApiConfig.baseUrl.trim().isNotEmpty) {
@@ -374,6 +461,44 @@ class VideoGenerationTaskService {
     return current;
   }
 
+  Future<VideoGenerationTask> _resumeInterruptedLibTvTask(
+    VideoGenerationTask task,
+    File outputFile,
+  ) async {
+    final resultUrl = task.resultWithoutWatermarkUrl.trim().isNotEmpty
+        ? task.resultWithoutWatermarkUrl.trim()
+        : task.resultUrl.trim();
+    VideoGenerationTask current;
+    if (resultUrl.isNotEmpty) {
+      try {
+        final file = await _download(resultUrl, outputFile);
+        current = task.copyWith(
+          status: VideoGenerationTaskStatus.completed,
+          localPath: file.path,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+          completedAt: DateTime.now().toUtc(),
+        );
+      } catch (error) {
+        current = task.copyWith(
+          status: VideoGenerationTaskStatus.failed,
+          errorMessage: 'LibTV 视频结果恢复下载失败：$error',
+          updatedAt: DateTime.now().toUtc(),
+          completedAt: DateTime.now().toUtc(),
+        );
+      }
+    } else {
+      current = task.copyWith(
+        status: VideoGenerationTaskStatus.failed,
+        errorMessage: 'LibTV CLI 同步生成因应用退出而中断；请在对应 LibTV 画布检查节点后手动重试。',
+        updatedAt: DateTime.now().toUtc(),
+        completedAt: DateTime.now().toUtc(),
+      );
+    }
+    _upsertTask(current);
+    return current;
+  }
+
   Future<List<VideoGenerationTask>> submitBatch(
     List<VideoGenerationSubmission> submissions, {
     bool Function()? isCanceled,
@@ -381,6 +506,18 @@ class VideoGenerationTaskService {
     int? concurrency,
   }) {
     final videoApiConfig = _videoApiConfig;
+    if (videoApiConfig?.isLibTvCli == true) {
+      return _runWithConcurrency(
+        submissions,
+        concurrency ?? libTvCliBatchConcurrency,
+        (submission) => submitAndTrack(
+          submission,
+          isCanceled: () =>
+              isCanceled?.call() == true ||
+              isTaskCanceled?.call(submission.task.id) == true,
+        ),
+      );
+    }
     if (videoApiConfig != null &&
         videoApiConfig.isHttpApi &&
         videoApiConfig.baseUrl.trim().isNotEmpty) {
@@ -566,7 +703,10 @@ class VideoGenerationTaskService {
 }
 
 const localVideoApiBatchConcurrency = 1;
+const libTvCliBatchConcurrency = 1;
 const klingCliBatchConcurrency = 2;
+const libTvProjectUuidParameter = '_libtvProjectUuid';
+const libTvNodeKeyParameter = '_libtvNodeKey';
 const defaultVideoGenerationBatchConcurrency = klingCliBatchConcurrency;
 const defaultVideoGenerationPollTimeout = Duration(minutes: 15);
 const localVideoApiPollTimeout = Duration(hours: 2);

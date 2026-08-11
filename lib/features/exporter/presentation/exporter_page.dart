@@ -491,6 +491,9 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
         frameAnalyses: repository.listVideoFrameAnalyses(video.id),
         summary: summary,
         marketingAnalyses: repository.listMarketingAnalyses(video.id),
+        includeMultiDimensionAnalysis:
+            settings.videoAnalysisMultiDimensionEnabled,
+        includeShotDetails: settings.videoAnalysisShotDetailsEnabled,
         resolveFrame: _resolveReportFrame,
       );
       if (mounted) {

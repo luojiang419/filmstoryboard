@@ -640,7 +640,9 @@ class StoryboardState {
     required this.reorderAnimationToken,
     this.activeVisionBoardId,
     this.activeVisionTaskKind,
+    this.activeVisionTasks = const [],
     this.queuedVisionTasks = const [],
+    this.generatingImageBoardIds = const [],
   });
 
   const StoryboardState.initial()
@@ -663,7 +665,9 @@ class StoryboardState {
       reorderAnimationToken = 0,
       activeVisionBoardId = null,
       activeVisionTaskKind = null,
-      queuedVisionTasks = const [];
+      activeVisionTasks = const [],
+      queuedVisionTasks = const [],
+      generatingImageBoardIds = const [];
 
   final List<StoryboardCutAsset> assets;
   final List<StoryboardFolder> folders;
@@ -684,7 +688,9 @@ class StoryboardState {
   final int reorderAnimationToken;
   final String? activeVisionBoardId;
   final StoryboardVisionTaskKind? activeVisionTaskKind;
+  final List<StoryboardVisionTask> activeVisionTasks;
   final List<StoryboardVisionTask> queuedVisionTasks;
+  final List<String> generatingImageBoardIds;
 
   List<StoryboardBoard> get openBoards {
     final byId = {for (final board in boards) board.id: board};
@@ -713,8 +719,13 @@ class StoryboardState {
   }
 
   bool isVisionTaskActiveFor(String boardId, [StoryboardVisionTaskKind? kind]) {
-    return activeVisionBoardId == boardId &&
-        (kind == null || activeVisionTaskKind == kind);
+    return activeVisionTasks.any(
+      (task) => task.boardId == boardId && (kind == null || task.kind == kind),
+    );
+  }
+
+  bool isGeneratingImageFor(String boardId) {
+    return generatingImageBoardIds.contains(boardId);
   }
 
   bool isVisionTaskQueuedFor(String boardId, [StoryboardVisionTaskKind? kind]) {
@@ -743,7 +754,9 @@ class StoryboardState {
     int? reorderAnimationToken,
     Object? activeVisionBoardId = _copyWithSentinel,
     Object? activeVisionTaskKind = _copyWithSentinel,
+    List<StoryboardVisionTask>? activeVisionTasks,
     List<StoryboardVisionTask>? queuedVisionTasks,
+    List<String>? generatingImageBoardIds,
   }) {
     return StoryboardState(
       assets: assets ?? this.assets,
@@ -776,7 +789,10 @@ class StoryboardState {
       activeVisionTaskKind: identical(activeVisionTaskKind, _copyWithSentinel)
           ? this.activeVisionTaskKind
           : activeVisionTaskKind as StoryboardVisionTaskKind?,
+      activeVisionTasks: activeVisionTasks ?? this.activeVisionTasks,
       queuedVisionTasks: queuedVisionTasks ?? this.queuedVisionTasks,
+      generatingImageBoardIds:
+          generatingImageBoardIds ?? this.generatingImageBoardIds,
     );
   }
 }

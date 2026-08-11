@@ -368,6 +368,87 @@ void main() {
     );
   });
 
+  test('仅启用多维度分析时使用单次多图请求且不生成镜头明细', () async {
+    final repository = VideoAnalysisRepository(database);
+    final fixture = await _storeAnalysisFixture(root, repository, 'multi-only');
+    final visionService = _DimensionSelectionVisionService();
+    final service = VideoAnalysisService(
+      repository: repository,
+      visionService: visionService,
+    );
+
+    final result = await service.analyzeFrames(
+      settings: _testSettings().copyWith(
+        videoAnalysisMultiDimensionEnabled: true,
+        videoAnalysisShotDetailsEnabled: false,
+      ),
+      video: fixture.$1,
+      frames: [fixture.$2],
+      resolveFrame: (_) => fixture.$3,
+    );
+
+    expect(result.completedCount, 1);
+    expect(visionService.imageRequests, 0);
+    expect(visionService.imageDimensionRequests, 1);
+    expect(repository.listVideoFrameAnalyses(fixture.$1.id), isEmpty);
+    expect(repository.listVideoShots(fixture.$1.id), isEmpty);
+    expect(repository.listMarketingAnalyses(fixture.$1.id), hasLength(1));
+    expect(repository.getVideoSummary(fixture.$1.id), isNotNull);
+  });
+
+  test('仅启用镜头明细时执行逐帧解析但不生成多维度分析', () async {
+    final repository = VideoAnalysisRepository(database);
+    final fixture = await _storeAnalysisFixture(root, repository, 'shot-only');
+    final visionService = _DimensionSelectionVisionService();
+    final service = VideoAnalysisService(
+      repository: repository,
+      visionService: visionService,
+    );
+
+    final result = await service.analyzeFrames(
+      settings: _testSettings().copyWith(
+        videoAnalysisMultiDimensionEnabled: false,
+        videoAnalysisShotDetailsEnabled: true,
+      ),
+      video: fixture.$1,
+      frames: [fixture.$2],
+      resolveFrame: (_) => fixture.$3,
+    );
+
+    expect(result.completedCount, 1);
+    expect(visionService.imageRequests, 1);
+    expect(visionService.textDimensionRequests, 0);
+    expect(visionService.imageDimensionRequests, 0);
+    expect(repository.listVideoFrameAnalyses(fixture.$1.id), hasLength(1));
+    expect(repository.listMarketingAnalyses(fixture.$1.id), isEmpty);
+  });
+
+  test('两个解析维度都关闭时不发送视觉请求', () async {
+    final repository = VideoAnalysisRepository(database);
+    final fixture = await _storeAnalysisFixture(root, repository, 'none');
+    final visionService = _DimensionSelectionVisionService();
+    final service = VideoAnalysisService(
+      repository: repository,
+      visionService: visionService,
+    );
+
+    final result = await service.analyzeFrames(
+      settings: _testSettings().copyWith(
+        videoAnalysisMultiDimensionEnabled: false,
+        videoAnalysisShotDetailsEnabled: false,
+      ),
+      video: fixture.$1,
+      frames: [fixture.$2],
+      resolveFrame: (_) => fixture.$3,
+    );
+
+    expect(result.completedCount, 0);
+    expect(visionService.totalRequests, 0);
+    expect(repository.listVideoFrameAnalyses(fixture.$1.id), isEmpty);
+    expect(repository.listMarketingAnalyses(fixture.$1.id), isEmpty);
+    expect(repository.getVideoSummary(fixture.$1.id), isNull);
+  });
+
   test('MiniMax-M3 会并行处理视频帧', () async {
     final repository = VideoAnalysisRepository(database);
     final now = DateTime.utc(2026, 8, 2);
@@ -544,6 +625,147 @@ AppSettings _testSettings() {
     updateDownloadMode: UpdateDownloadMode.automatic,
     updateManualProxyUrl: '',
   );
+}
+
+Future<(SourceVideo, VideoFrame, File)> _storeAnalysisFixture(
+  Directory root,
+  VideoAnalysisRepository repository,
+  String id,
+) async {
+  final now = DateTime.utc(2026, 8, 11);
+  final file = File('${root.path}/$id.png');
+  await file.writeAsBytes([1, 2, 3]);
+  final video = SourceVideo(
+    id: 'video-$id',
+    originalPath: '$id.mp4',
+    fileName: '$id.mp4',
+    storedPath: 'videos/$id.mp4',
+    durationMs: 1000,
+    frameRate: 24,
+    width: 1920,
+    height: 1080,
+    hasAudio: true,
+    frameCount: 1,
+    successfulFrames: 0,
+    failedFrames: 0,
+    status: ProcessingStatus.pending,
+    errorMessage: '',
+    createdAt: now,
+    updatedAt: now,
+  );
+  final frame = VideoFrame(
+    id: 'frame-$id',
+    videoId: video.id,
+    index: 0,
+    timestampMs: 0,
+    path: file.path,
+    width: 1920,
+    height: 1080,
+    sharpness: 0.9,
+    brightness: 0.5,
+    motionScore: 0,
+    perceptualHash: 'hash-$id',
+    isFocus: true,
+    isSelected: true,
+    status: ProcessingStatus.pending,
+    errorMessage: '',
+    createdAt: now,
+  );
+  repository
+    ..upsertSourceVideo(video)
+    ..upsertVideoFrame(frame);
+  return (video, frame, file);
+}
+
+class _DimensionSelectionVisionService extends VisionStoryboardService {
+  var imageRequests = 0;
+  var summaryRequests = 0;
+  var textDimensionRequests = 0;
+  var imageDimensionRequests = 0;
+
+  int get totalRequests =>
+      imageRequests +
+      summaryRequests +
+      textDimensionRequests +
+      imageDimensionRequests;
+
+  @override
+  Future<VisionImageAnalysis> analyzeImage({
+    required AppSettings settings,
+    required File imageFile,
+    required int sequenceNo,
+    required int rowIndex,
+    required int columnIndex,
+    bool allowThinking = false,
+    File? previousImageFile,
+    File? nextImageFile,
+    String creativeBrief = '',
+    String storyContext = '',
+    void Function(VisionImageRecoveryMode mode)? onRecovery,
+  }) async {
+    imageRequests++;
+    return const VisionImageAnalysis(
+      caption: '测试镜头',
+      detail: '测试详情',
+      scene: '测试场景',
+      props: '',
+      people: '',
+      expression: '',
+      bodyAction: '',
+      movementTrend: '',
+      shotSize: '中景',
+      composition: '',
+      subjectDirection: '',
+      gazeDirection: '',
+      actionStage: '',
+      spatialRelation: '',
+      chronologyCue: '',
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionStoryboardSummaryResult> summarizeStoryboard({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    bool allowThinking = false,
+  }) async {
+    summaryRequests++;
+    return const VisionStoryboardSummaryResult(
+      outline: '测试大纲',
+      content: '测试内容',
+      scenes: '测试场景',
+      props: '',
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionVideoDimensionResult> analyzeVideoDimensions({
+    required AppSettings settings,
+    required List<VisionImageAnalysis> analyses,
+    required Map<String, String> summary,
+    bool allowThinking = false,
+  }) async {
+    textDimensionRequests++;
+    return const VisionVideoDimensionResult(
+      dimensions: {'视频结构': '测试结构', '叙事推进': '测试叙事'},
+      rawResponse: '{}',
+    );
+  }
+
+  @override
+  Future<VisionVideoDimensionResult> analyzeVideoDimensionsFromImages({
+    required AppSettings settings,
+    required List<File> imageFiles,
+    bool allowThinking = false,
+  }) async {
+    imageDimensionRequests++;
+    return const VisionVideoDimensionResult(
+      dimensions: {'视频结构': '测试结构', '叙事推进': '测试叙事'},
+      rawResponse: '{}',
+    );
+  }
 }
 
 class _BlockingVisionStoryboardService extends VisionStoryboardService {

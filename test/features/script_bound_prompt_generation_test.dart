@@ -95,6 +95,7 @@ void main() {
     controller.confirmAllShots();
     expect(controller.moveToStep(ReplicateStep.prepareAssets), isTrue);
     expect(controller.moveToStep(ReplicateStep.composePrompts), isTrue);
+    expect(controller.value.run?.currentStep, ReplicateStep.confirmShots);
     await controller.composeAllPrompts();
 
     final prompt = controller.value.prompts.single;

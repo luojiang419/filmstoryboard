@@ -103,6 +103,8 @@ class AppSettings {
     this.videoMinimumSharpness = 0.08,
     this.videoPreviewPaddingSeconds = 1.5,
     this.videoAnalysisThinkingEnabled = false,
+    this.videoAnalysisMultiDimensionEnabled = true,
+    this.videoAnalysisShotDetailsEnabled = true,
     this.fullAutomationEnabled = false,
     this.replicateDefaultGlobalStyle = defaultReplicateGlobalStyle,
     this.replicateDefaultConstraints = defaultReplicateConstraints,
@@ -144,11 +146,13 @@ class AppSettings {
   static const defaultImageGenerationGeminiApiBaseUrl =
       'https://www.shiying-api.com';
   static const defaultKlingCliVideoGenerationConfigId = 'default-kling-cli';
+  static const defaultLibTvCliVideoGenerationConfigId = 'default-libtv-cli';
   static const defaultMiniMaxVideoGenerationConfigId =
       'default-minimax-h3-local';
   static const defaultVideoGenerationApiBaseUrl = 'http://127.0.0.1:7860';
   static const defaultVideoGenerationModel = 'minimax-h3-local';
   static const defaultKlingCliVideoGenerationModel = 'kling-cli';
+  static const defaultLibTvCliVideoGenerationModel = 'Seedance 2.0';
   static const defaultReplicateGlobalStyle = '高清电影广告质感，细节丰富，色彩自然，光影层次清晰';
   static const defaultReplicateConstraints =
       '保持主体外观、服装、产品结构与场景连续稳定；人物面部和身体比例自然，动作连续，无卡顿、无闪烁、无穿模；保持无字幕，避免生成任何文字或字幕，不要生成 Logo，不要生成水印，不出现重复人物或同款分身';
@@ -165,6 +169,8 @@ class AppSettings {
   final double videoMinimumSharpness;
   final double videoPreviewPaddingSeconds;
   final bool videoAnalysisThinkingEnabled;
+  final bool videoAnalysisMultiDimensionEnabled;
+  final bool videoAnalysisShotDetailsEnabled;
   final bool fullAutomationEnabled;
   final String replicateDefaultGlobalStyle;
   final String replicateDefaultConstraints;
@@ -238,6 +244,8 @@ class AppSettings {
     double? videoMinimumSharpness,
     double? videoPreviewPaddingSeconds,
     bool? videoAnalysisThinkingEnabled,
+    bool? videoAnalysisMultiDimensionEnabled,
+    bool? videoAnalysisShotDetailsEnabled,
     bool? fullAutomationEnabled,
     String? replicateDefaultGlobalStyle,
     String? replicateDefaultConstraints,
@@ -286,6 +294,12 @@ class AppSettings {
           videoPreviewPaddingSeconds ?? this.videoPreviewPaddingSeconds,
       videoAnalysisThinkingEnabled:
           videoAnalysisThinkingEnabled ?? this.videoAnalysisThinkingEnabled,
+      videoAnalysisMultiDimensionEnabled:
+          videoAnalysisMultiDimensionEnabled ??
+          this.videoAnalysisMultiDimensionEnabled,
+      videoAnalysisShotDetailsEnabled:
+          videoAnalysisShotDetailsEnabled ??
+          this.videoAnalysisShotDetailsEnabled,
       fullAutomationEnabled:
           fullAutomationEnabled ?? this.fullAutomationEnabled,
       replicateDefaultGlobalStyle:

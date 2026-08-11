@@ -138,14 +138,13 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   bool _pendingAssetCacheEviction = false;
   var _assetFileSignatures = <String, _AssetFileSignature>{};
   bool _disposed = false;
-  var _visionOperationToken = 0;
-  var _visionCancelRequested = false;
-  final _visionTaskQueue = <_QueuedVisionTask>[];
+  final _visionChannelsByBoardId = <String, _BoardVisionTaskChannel>{};
+  final _visionOperationGenerationByBoardId = <String, int>{};
+  final _visionCancelRequestedBoardIds = <String>{};
+  final _boardTaskMessages = <String, String>{};
   final _undoHistoryByBoardId = <String, List<StoryboardBoard>>{};
   final _redoHistoryByBoardId = <String, List<StoryboardBoard>>{};
-  _QueuedVisionTask? _activeVisionTask;
-  var _visionQueueRunning = false;
-  var _activeImageGenerationCount = 0;
+  final _activeImageGenerationCountByBoardId = <String, int>{};
   Future<void> _imageResultCommitTail = Future<void>.value();
 
   @override
@@ -153,6 +152,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     _disposed = true;
     _workspaceSaveQueue.dispose();
     _selectionSaveQueue.dispose();
+    _visionService.cancelActiveRequests();
     if (_ownsVisionService) {
       _visionService.close();
     }
@@ -163,45 +163,54 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   }
 
   void cancelVisionAnalysis() {
-    if (!value.isAnalyzing || value.isCancellingAnalysis) {
+    final boardId = value.selectedBoardId;
+    final channel = boardId == null ? null : _visionChannelsByBoardId[boardId];
+    if (boardId == null ||
+        channel?.activeTask == null ||
+        channel!.isCancelling) {
       return;
     }
-    _visionCancelRequested = true;
-    _visionOperationToken++;
-    _visionService.cancelActiveRequests();
-    value = value.copyWith(
-      isCancellingAnalysis: true,
-      message: '正在取消当前视觉任务...',
-    );
-    unawaited(_logVisionEvent('cancel_requested', const {}));
+    channel.isCancelling = true;
+    _visionCancelRequestedBoardIds.add(boardId);
+    _visionOperationGenerationByBoardId[boardId] =
+        (_visionOperationGenerationByBoardId[boardId] ?? 0) + 1;
+    _syncVisionTaskState(boardId: boardId, message: '正在取消当前视觉任务...');
+    unawaited(_logVisionEvent('cancel_requested', {'boardId': boardId}));
   }
 
-  int _beginVisionOperation() {
-    _visionCancelRequested = false;
-    _visionOperationToken++;
-    return _visionOperationToken;
+  _VisionOperationToken _beginVisionOperation(String boardId) {
+    _visionCancelRequestedBoardIds.remove(boardId);
+    final generation = (_visionOperationGenerationByBoardId[boardId] ?? 0) + 1;
+    _visionOperationGenerationByBoardId[boardId] = generation;
+    return _VisionOperationToken(boardId: boardId, generation: generation);
   }
 
-  bool _isVisionOperationCancelled(int token) {
-    return _visionCancelRequested || token != _visionOperationToken;
+  bool _isVisionOperationCancelled(_VisionOperationToken token) {
+    return _visionCancelRequestedBoardIds.contains(token.boardId) ||
+        token.generation !=
+            (_visionOperationGenerationByBoardId[token.boardId] ?? 0);
   }
 
   Future<void> _finishCancelledVisionOperation(
-    int token, {
+    _VisionOperationToken token, {
     required String message,
     String? runId,
   }) async {
-    _visionCancelRequested = false;
-    final details = <String, Object?>{'token': token, 'message': message};
+    _visionCancelRequestedBoardIds.remove(token.boardId);
+    final channel = _visionChannelsByBoardId[token.boardId];
+    if (channel != null) {
+      channel.isCancelling = false;
+    }
+    final details = <String, Object?>{
+      'boardId': token.boardId,
+      'generation': token.generation,
+      'message': message,
+    };
     if (runId != null) {
       details['runId'] = runId;
     }
     await _logVisionEvent('cancelled', details);
-    value = value.copyWith(
-      isAnalyzing: false,
-      isCancellingAnalysis: false,
-      message: message,
-    );
+    _syncVisionTaskState(boardId: token.boardId, message: message);
   }
 
   Future<void> _logVisionEvent(
@@ -224,77 +233,89 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   }
 
   Future<void> _enqueueVisionTask(StoryboardVisionTask task) {
-    final activeTask = _activeVisionTask;
+    final channel = _visionChannelsByBoardId.putIfAbsent(
+      task.boardId,
+      _BoardVisionTaskChannel.new,
+    );
+    final activeTask = channel.activeTask;
     if (activeTask != null && activeTask.task.sameTarget(task)) {
-      value = value.copyWith(message: _visionTaskAlreadyRunningMessage(task));
+      _syncVisionTaskState(
+        boardId: task.boardId,
+        message: _visionTaskAlreadyRunningMessage(task),
+      );
       return activeTask.completer.future;
     }
-    for (final queuedTask in _visionTaskQueue) {
+    for (final queuedTask in channel.queue) {
       if (queuedTask.task.sameTarget(task)) {
-        value = value.copyWith(message: _visionTaskAlreadyQueuedMessage(task));
+        _syncVisionTaskState(
+          boardId: task.boardId,
+          message: _visionTaskAlreadyQueuedMessage(task),
+        );
         return queuedTask.completer.future;
       }
     }
 
     final queuedTask = _QueuedVisionTask(task);
-    _visionTaskQueue.add(queuedTask);
+    channel.queue.add(queuedTask);
     _syncVisionTaskState(
-      isAnalyzing: true,
-      isCancellingAnalysis: false,
-      message: _activeVisionTask == null
+      boardId: task.boardId,
+      message: channel.activeTask == null
           ? _visionTaskStartingMessage(task)
           : _visionTaskQueuedMessage(task),
     );
-    unawaited(_runVisionTaskQueue());
+    unawaited(_runVisionTaskQueue(task.boardId, channel));
     return queuedTask.completer.future;
   }
 
-  Future<void> _runVisionTaskQueue() async {
-    if (_visionQueueRunning) {
+  Future<void> _runVisionTaskQueue(
+    String boardId,
+    _BoardVisionTaskChannel channel,
+  ) async {
+    if (channel.isRunning) {
       return;
     }
-    _visionQueueRunning = true;
+    channel.isRunning = true;
     try {
-      while (_visionTaskQueue.isNotEmpty) {
-        final queuedTask = _visionTaskQueue.removeAt(0);
-        _activeVisionTask = queuedTask;
+      while (channel.queue.isNotEmpty) {
+        final queuedTask = channel.queue.removeAt(0);
+        channel
+          ..activeTask = queuedTask
+          ..isCancelling = false;
         _syncVisionTaskState(
-          isAnalyzing: true,
-          isCancellingAnalysis: false,
+          boardId: boardId,
           message: _visionTaskStartingMessage(queuedTask.task),
         );
-        final operationToken = _beginVisionOperation();
+        final operationToken = _beginVisionOperation(boardId);
         try {
           await _runVisionTask(queuedTask.task, operationToken);
         } catch (error) {
-          value = value.copyWith(
-            isAnalyzing: false,
-            isCancellingAnalysis: false,
-            message: '视觉任务失败：$error',
-          );
+          _syncVisionTaskState(boardId: boardId, message: '视觉任务失败：$error');
         } finally {
           if (!queuedTask.completer.isCompleted) {
             queuedTask.completer.complete();
           }
-          if (identical(_activeVisionTask, queuedTask)) {
-            _activeVisionTask = null;
+          if (identical(channel.activeTask, queuedTask)) {
+            channel.activeTask = null;
           }
-          _syncVisionTaskState(
-            isAnalyzing: _visionTaskQueue.isNotEmpty,
-            isCancellingAnalysis: false,
-          );
+          channel.isCancelling = false;
+          _syncVisionTaskState();
         }
       }
     } finally {
-      _visionQueueRunning = false;
-      _activeVisionTask = null;
-      _syncVisionTaskState(isAnalyzing: false, isCancellingAnalysis: false);
+      channel
+        ..isRunning = false
+        ..activeTask = null
+        ..isCancelling = false;
+      if (channel.queue.isEmpty) {
+        _visionChannelsByBoardId.remove(boardId);
+      }
+      _syncVisionTaskState();
     }
   }
 
   Future<void> _runVisionTask(
     StoryboardVisionTask task,
-    int operationToken,
+    _VisionOperationToken operationToken,
   ) async {
     switch (task.kind) {
       case StoryboardVisionTaskKind.analyze:
@@ -313,21 +334,78 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     }
   }
 
-  void _syncVisionTaskState({
-    bool? isAnalyzing,
-    bool? isCancellingAnalysis,
-    String? message,
-  }) {
-    final activeTask = _activeVisionTask?.task;
+  void _syncVisionTaskState({String? boardId, String? message}) {
+    if (boardId != null && message != null) {
+      _boardTaskMessages[boardId] = message;
+    }
+    final selectedBoardId = value.selectedBoardId;
+    final selectedChannel = selectedBoardId == null
+        ? null
+        : _visionChannelsByBoardId[selectedBoardId];
+    final selectedActiveTask = selectedChannel?.activeTask?.task;
+    final activeTasks = [
+      for (final channel in _visionChannelsByBoardId.values)
+        if (channel.activeTask case final activeTask?) activeTask.task,
+    ];
+    final queuedTasks = [
+      for (final channel in _visionChannelsByBoardId.values)
+        for (final queuedTask in channel.queue) queuedTask.task,
+    ];
     value = value.copyWith(
-      isAnalyzing: isAnalyzing ?? (activeTask != null),
-      isCancellingAnalysis: isCancellingAnalysis,
-      activeVisionBoardId: activeTask?.boardId,
-      activeVisionTaskKind: activeTask?.kind,
-      queuedVisionTasks: [
-        for (final queuedTask in _visionTaskQueue) queuedTask.task,
+      isAnalyzing: selectedActiveTask != null,
+      isCancellingAnalysis: selectedChannel?.isCancelling ?? false,
+      activeVisionBoardId: selectedActiveTask?.boardId,
+      activeVisionTaskKind: selectedActiveTask?.kind,
+      activeVisionTasks: activeTasks,
+      queuedVisionTasks: queuedTasks,
+      generatingImageBoardIds: _generatingImageBoardIds(),
+      isGeneratingImage:
+          selectedBoardId != null &&
+          (_activeImageGenerationCountByBoardId[selectedBoardId] ?? 0) > 0,
+      message: boardId != null && boardId == selectedBoardId ? message : null,
+    );
+  }
+
+  void _setBoardTaskMessage(String boardId, String message) {
+    if (_disposed) {
+      return;
+    }
+    _syncVisionTaskState(boardId: boardId, message: message);
+  }
+
+  List<String> _generatingImageBoardIds() {
+    return [
+      for (final entry in _activeImageGenerationCountByBoardId.entries)
+        if (entry.value > 0) entry.key,
+    ];
+  }
+
+  StoryboardState _withSelectedBoardTaskStatus(StoryboardState state) {
+    final selectedBoardId = state.selectedBoardId;
+    final selectedChannel = selectedBoardId == null
+        ? null
+        : _visionChannelsByBoardId[selectedBoardId];
+    final selectedActiveTask = selectedChannel?.activeTask?.task;
+    return state.copyWith(
+      isAnalyzing: selectedActiveTask != null,
+      isCancellingAnalysis: selectedChannel?.isCancelling ?? false,
+      isGeneratingImage:
+          selectedBoardId != null &&
+          (_activeImageGenerationCountByBoardId[selectedBoardId] ?? 0) > 0,
+      activeVisionBoardId: selectedActiveTask?.boardId,
+      activeVisionTaskKind: selectedActiveTask?.kind,
+      activeVisionTasks: [
+        for (final channel in _visionChannelsByBoardId.values)
+          if (channel.activeTask case final activeTask?) activeTask.task,
       ],
-      message: message,
+      queuedVisionTasks: [
+        for (final channel in _visionChannelsByBoardId.values)
+          for (final queuedTask in channel.queue) queuedTask.task,
+      ],
+      generatingImageBoardIds: _generatingImageBoardIds(),
+      message: selectedBoardId == null
+          ? state.message
+          : _boardTaskMessages[selectedBoardId] ?? state.message,
     );
   }
 
@@ -1628,6 +1706,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     required String boardName,
     required List<StoryboardExternalImage> images,
     StoryboardSummary? summary,
+    bool selectBoard = true,
+    bool preserveExistingCaptions = false,
   }) async {
     final normalizedSourceId = sourceId.trim();
     final normalizedBoardName = boardName.trim().replaceAll(
@@ -1726,6 +1806,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       ensureLatest: true,
     );
     final assetsById = {for (final asset in value.assets) asset.id: asset};
+    final existingCaptionsByAssetId = {
+      for (final item in existingBoard?.items ?? const <StoryboardItem>[])
+        item.asset.id: item.caption,
+    };
     final items = <StoryboardItem>[];
     for (var index = 0; index < validImages.length; index++) {
       final image = validImages[index];
@@ -1737,7 +1821,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       items.add(
         StoryboardItem(
           asset: asset,
-          caption: image.caption.trim(),
+          caption: _mergedExternalCaption(
+            incoming: image.caption,
+            existing: existingCaptionsByAssetId[asset.id],
+            preserveExisting: preserveExistingCaptions,
+          ),
           slotIndex: index,
         ),
       );
@@ -1786,7 +1874,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       value.copyWith(
         boards: nextBoards,
         openBoardIds: nextOpenBoardIds,
-        selectedBoardId: boardId,
+        selectedBoardId: selectBoard ? boardId : value.selectedBoardId,
         message: alreadyExists
             ? '已更新 $normalizedBoardName，共 ${items.length} 个镜头'
             : '已生成 $normalizedBoardName，共 ${items.length} 个镜头',
@@ -1794,6 +1882,18 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     );
     flushWorkspaceSnapshot();
     return boardId;
+  }
+
+  static String _mergedExternalCaption({
+    required String incoming,
+    required String? existing,
+    required bool preserveExisting,
+  }) {
+    final current = existing?.trim() ?? '';
+    if (preserveExisting && current.isNotEmpty && current != '视频解析镜头') {
+      return current;
+    }
+    return incoming.trim();
   }
 
   void closeBoard(String boardId) {
@@ -2537,6 +2637,53 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     _replaceBoard(board.copyWith(items: items), message: '已按行应用描述文本');
   }
 
+  /// 应用外部审阅入口提交的文字修改，不改变桌面端当前选中的画板。
+  bool updateBoardReviewFields({
+    required String boardId,
+    String? name,
+    Map<String, String> itemCaptionsByAssetId = const {},
+    List<String>? rowCaptions,
+    StoryboardSummary? summary,
+    bool clearSummary = false,
+  }) {
+    final board = value.boards.cast<StoryboardBoard?>().firstWhere(
+      (item) => item?.id == boardId,
+      orElse: () => null,
+    );
+    if (board == null || board.locked) {
+      return false;
+    }
+    final normalizedName = name?.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (normalizedName != null && normalizedName.isEmpty) {
+      return false;
+    }
+    final nextItems = [
+      for (final item in board.items)
+        itemCaptionsByAssetId.containsKey(item.asset.id)
+            ? item.copyWith(caption: itemCaptionsByAssetId[item.asset.id])
+            : item,
+    ];
+    final nextRowCaptions = rowCaptions == null
+        ? board.rowCaptions
+        : [
+            for (var rowIndex = 0; rowIndex < board.rows; rowIndex++)
+              rowIndex < rowCaptions.length ? rowCaptions[rowIndex] : '',
+          ];
+    final nextBoard = board.copyWith(
+      name: normalizedName,
+      items: nextItems,
+      rowCaptions: nextRowCaptions,
+      summary: summary,
+      clearSummary: clearSummary,
+    );
+    if (_sameBoardSnapshot(board, nextBoard)) {
+      return false;
+    }
+    _replaceBoard(nextBoard, message: '已同步远程故事板审阅修改', selectBoard: false);
+    flushWorkspaceSnapshot();
+    return true;
+  }
+
   Future<VisionImageEditSuggestion> suggestImageEditPromptForItem(
     StoryboardItem item,
   ) async {
@@ -2553,7 +2700,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     }
     if (board.locked) {
       final message = '${board.name} 已锁定，请先解锁后再生成自动提示词';
-      value = value.copyWith(message: message);
+      _setBoardTaskMessage(board.id, message);
       throw StateError(message);
     }
     final orderedItems = _orderedVisibleItems(board);
@@ -2571,7 +2718,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       throw const FileSystemException('当前图片文件不存在');
     }
 
-    final operationToken = _beginVisionOperation();
+    final operationToken = _beginVisionOperation(board.id);
     final batch = await _visionPromptBatchForCurrentBoard(
       board: board,
       orderedItems: orderedItems,
@@ -2609,7 +2756,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     final summary = _summaryForPrompt(currentBoard, analyses);
     final storyboardSummary = _storyboardSummaryText(summary);
 
-    value = value.copyWith(message: '正在综合故事板解析生成自动提示词...');
+    _setBoardTaskMessage(board.id, '正在综合故事板解析生成自动提示词...');
     try {
       final suggestion = await _visionService.suggestImageEditPrompt(
         settings: settingsController.value,
@@ -2635,10 +2782,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
             : null,
         storyboardAnalyses: analyses,
       );
-      value = value.copyWith(message: '已生成当前分镜修改建议');
+      _setBoardTaskMessage(board.id, '已生成当前分镜修改建议');
       return suggestion;
     } catch (error) {
-      value = value.copyWith(message: '自动提示词失败：$error');
+      _setBoardTaskMessage(board.id, '自动提示词失败：$error');
       rethrow;
     }
   }
@@ -2757,12 +2904,14 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       ]),
       status: 'running',
     );
-    _activeImageGenerationCount++;
-    value = value.copyWith(
-      isGeneratingImage: true,
-      message: _activeImageGenerationCount == 1
+    final activeCount =
+        (_activeImageGenerationCountByBoardId[board.id] ?? 0) + 1;
+    _activeImageGenerationCountByBoardId[board.id] = activeCount;
+    _syncVisionTaskState(
+      boardId: board.id,
+      message: activeCount == 1
           ? '已提交后台图片修改任务'
-          : '已提交后台图片修改任务（$_activeImageGenerationCount 个进行中）',
+          : '已提交后台图片修改任务（$activeCount 个进行中）',
     );
     return _PreparedImageReplacementTask(
       generationId: generationId,
@@ -2846,8 +2995,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     for (final task in tasks) {
       unawaited(_runImageReplacementTask(task));
     }
-    value = value.copyWith(
-      isGeneratingImage: true,
+    _syncVisionTaskState(
+      boardId: board.id,
       message:
           '已并发提交 ${tasks.length} 张高清重绘任务'
           '${missingCount > 0 ? '，跳过 $missingCount 张缺失图片' : ''}',
@@ -2947,11 +3096,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         errorMessage: error.toString(),
       );
       if (!_disposed) {
-        value = value.copyWith(message: '图片修改失败：$error');
+        _setBoardTaskMessage(task.boardId, '图片修改失败：$error');
       }
       return false;
     } finally {
-      _finishImageGenerationTask();
+      _finishImageGenerationTask(task.boardId);
     }
   }
 
@@ -2967,15 +3116,22 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     }
   }
 
-  void _finishImageGenerationTask() {
-    _activeImageGenerationCount = math.max(0, _activeImageGenerationCount - 1);
+  void _finishImageGenerationTask(String boardId) {
+    final remaining = math.max(
+      0,
+      (_activeImageGenerationCountByBoardId[boardId] ?? 0) - 1,
+    );
+    if (remaining == 0) {
+      _activeImageGenerationCountByBoardId.remove(boardId);
+    } else {
+      _activeImageGenerationCountByBoardId[boardId] = remaining;
+    }
     if (_disposed) {
       return;
     }
-    final remaining = _activeImageGenerationCount;
-    final currentMessage = value.message.trim();
-    value = value.copyWith(
-      isGeneratingImage: remaining > 0,
+    final currentMessage = (_boardTaskMessages[boardId] ?? '').trim();
+    _syncVisionTaskState(
+      boardId: boardId,
       message: remaining > 0 && currentMessage.isNotEmpty
           ? '$currentMessage（另有 $remaining 个后台任务进行中）'
           : currentMessage,
@@ -3005,21 +3161,22 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
   Future<void> _analyzeBoardWithVision({
     required String boardId,
-    required int operationToken,
+    required _VisionOperationToken operationToken,
     bool triggeredByReorder = false,
     bool triggeredByPrompt = false,
   }) async {
     final settingsController = _settingsController;
     if (settingsController == null) {
-      value = value.copyWith(message: '视觉模型设置尚未初始化');
+      _setBoardTaskMessage(boardId, '视觉模型设置尚未初始化');
       return;
     }
     final board = _boardById(boardId);
     if (board == null) {
-      value = value.copyWith(message: '目标画板已不存在');
+      _setBoardTaskMessage(boardId, '目标画板已不存在');
       return;
     }
-    if (_guardLockedBoard(board, '自动解析')) {
+    if (board.locked) {
+      _setBoardTaskMessage(boardId, '${board.name} 已锁定，请先解锁后再自动解析');
       return;
     }
     final orderedItems =
@@ -3030,7 +3187,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
             .toList()
           ..sort((a, b) => a.slotIndex.compareTo(b.slotIndex));
     if (orderedItems.isEmpty) {
-      value = value.copyWith(message: '当前画板没有可解析的图片');
+      _setBoardTaskMessage(boardId, '当前画板没有可解析的图片');
       return;
     }
 
@@ -3052,9 +3209,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       totalImages: orderedItems.length,
     );
 
-    value = value.copyWith(
-      isAnalyzing: true,
-      isCancellingAnalysis: false,
+    _syncVisionTaskState(
+      boardId: boardId,
       message: '正在解析故事板图片 0/${orderedItems.length}',
     );
 
@@ -3087,8 +3243,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       final item = orderedItems[i];
       final rowIndex = item.slotIndex ~/ board.columns;
       final columnIndex = item.slotIndex % board.columns;
-      value = value.copyWith(
-        message: '正在解析第 ${i + 1}/${orderedItems.length} 张图片',
+      _setBoardTaskMessage(
+        boardId,
+        '正在解析第 ${i + 1}/${orderedItems.length} 张图片',
       );
       await _logVisionEvent('analysis_image_start', {
         'runId': runId,
@@ -3116,7 +3273,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
               VisionImageRecoveryMode.none =>
                 '正在解析第 ${i + 1}/${orderedItems.length} 张图片',
             };
-            value = value.copyWith(message: recoveryMessage);
+            _setBoardTaskMessage(boardId, recoveryMessage);
           },
         );
         if (_isVisionOperationCancelled(operationToken)) {
@@ -3258,7 +3415,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         await finishCancelled();
         return;
       }
-      value = value.copyWith(message: '正在连贯化故事板文本...');
+      _setBoardTaskMessage(boardId, '正在连贯化故事板文本...');
       await _logVisionEvent('caption_rewrite_start', {
         'runId': runId,
         'count': analyzedItems.length,
@@ -3269,7 +3426,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           analyses: analyzedItems.map((item) => item.analysis).toList(),
           onProgress: (completed, total) {
             if (!_isVisionOperationCancelled(operationToken)) {
-              value = value.copyWith(message: '正在连贯化故事板文本 $completed/$total');
+              _setBoardTaskMessage(boardId, '正在连贯化故事板文本 $completed/$total');
             }
           },
         );
@@ -3316,7 +3473,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         await finishCancelled();
         return;
       }
-      value = value.copyWith(message: '正在归纳故事板内容...');
+      _setBoardTaskMessage(boardId, '正在归纳故事板内容...');
       await _logVisionEvent('summary_start', {
         'runId': runId,
         'count': displayAnalyzedItems.length,
@@ -3425,24 +3582,25 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
   Future<void> _reorderBoardByVisionAnalysis({
     required String boardId,
-    required int operationToken,
+    required _VisionOperationToken operationToken,
   }) async {
     final settingsController = _settingsController;
     if (settingsController == null) {
-      value = value.copyWith(message: '视觉模型设置尚未初始化');
+      _setBoardTaskMessage(boardId, '视觉模型设置尚未初始化');
       return;
     }
     var board = _boardById(boardId);
     if (board == null) {
-      value = value.copyWith(message: '目标画板已不存在');
+      _setBoardTaskMessage(boardId, '目标画板已不存在');
       return;
     }
-    if (_guardLockedBoard(board, '自动重排序')) {
+    if (board.locked) {
+      _setBoardTaskMessage(boardId, '${board.name} 已锁定，请先解锁后再自动重排序');
       return;
     }
     var orderedItems = _orderedVisibleItems(board);
     if (orderedItems.length < 2) {
-      value = value.copyWith(message: '至少需要 2 张图片才能自动重排序');
+      _setBoardTaskMessage(boardId, '至少需要 2 张图片才能自动重排序');
       return;
     }
 
@@ -3471,16 +3629,12 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     }
     board = _boardById(batch.run.boardId);
     if (board == null || board.id != batch.run.boardId) {
-      value = value.copyWith(message: '目标画板已不存在，请重新自动重排序');
+      _setBoardTaskMessage(boardId, '目标画板已不存在，请重新自动重排序');
       return;
     }
     orderedItems = _orderedVisibleItems(board);
 
-    value = value.copyWith(
-      isAnalyzing: true,
-      isCancellingAnalysis: false,
-      message: '正在根据解析内容自动重排序...',
-    );
+    _syncVisionTaskState(boardId: boardId, message: '正在根据解析内容自动重排序...');
 
     final settings = settingsController.value;
     final currentItemByAssetId = {
@@ -3491,11 +3645,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       batch.items,
     );
     if (recordItems.length != orderedItems.length) {
-      value = value.copyWith(
-        isAnalyzing: false,
-        isCancellingAnalysis: false,
-        message: '当前画板图片与最近解析结果不一致，请重新自动解析后再重排序',
-      );
+      _setBoardTaskMessage(boardId, '当前画板图片与最近解析结果不一致，请重新自动解析后再重排序');
       return;
     }
 
@@ -3538,7 +3688,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           analyses: reorderedRecordItems.map((item) => item.analysis).toList(),
           onProgress: (completed, total) {
             if (!_isVisionOperationCancelled(operationToken)) {
-              value = value.copyWith(message: '正在连贯化重排序文本 $completed/$total');
+              _setBoardTaskMessage(boardId, '正在连贯化重排序文本 $completed/$total');
             }
           },
         );
@@ -3646,11 +3796,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         final recordItem = displayRecordItems[i];
         final currentItem = currentItemByAssetId[recordItem.record.cutResultId];
         if (currentItem == null) {
-          value = value.copyWith(
-            isAnalyzing: false,
-            isCancellingAnalysis: false,
-            message: '当前画板图片与最近解析结果不一致，请重新自动解析后再重排序',
-          );
+          _setBoardTaskMessage(boardId, '当前画板图片与最近解析结果不一致，请重新自动解析后再重排序');
           return;
         }
         final analyzedCaption = recordItem.analysis.caption.trim();
@@ -3679,7 +3825,6 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       }
 
       final moved = !_sameItemOrder(orderedItems, nextItems);
-      _visionCancelRequested = false;
       await _logVisionEvent('reorder_complete', {
         'runId': reorderRunId,
         'moved': moved,
@@ -3691,35 +3836,30 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       });
       final latestBoard = _boardById(board.id);
       if (latestBoard == null) {
-        value = value.copyWith(
-          isAnalyzing: false,
-          isCancellingAnalysis: false,
-          message: '自动重排序完成，但目标画板已不存在',
-        );
+        _setBoardTaskMessage(boardId, '自动重排序完成，但目标画板已不存在');
         return;
       }
       if (latestBoard.locked) {
-        value = value.copyWith(
-          isAnalyzing: false,
-          isCancellingAnalysis: false,
-          message: '${latestBoard.name} 已锁定，未写回自动重排序',
-        );
+        _setBoardTaskMessage(boardId, '${latestBoard.name} 已锁定，未写回自动重排序');
         return;
       }
+      final completionMessage = _visionReorderCompletionMessage(
+        moved: moved,
+        captionRewriteError: captionRewriteError,
+        captionRewriteFallbackCount: captionRewriteFallbackCount,
+        summaryError: summaryError,
+      );
+      _setBoardTaskMessage(boardId, completionMessage);
       _replaceBoard(
         latestBoard.copyWith(
           items: nextItems,
           rowCaptions: rowCaptions,
           summary: summary,
         ),
-        message: _visionReorderCompletionMessage(
-          moved: moved,
-          captionRewriteError: captionRewriteError,
-          captionRewriteFallbackCount: captionRewriteFallbackCount,
-          summaryError: summaryError,
-        ),
-        isAnalyzing: false,
-        reorderAnimationToken: moved ? value.reorderAnimationToken + 1 : null,
+        message: value.selectedBoardId == boardId ? completionMessage : null,
+        reorderAnimationToken: moved && value.selectedBoardId == boardId
+            ? value.reorderAnimationToken + 1
+            : null,
         selectBoard: value.selectedBoardId == latestBoard.id,
       );
     } catch (error) {
@@ -3735,11 +3875,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         'runId': reorderRunId,
         'error': error.toString(),
       });
-      value = value.copyWith(
-        isAnalyzing: false,
-        isCancellingAnalysis: false,
-        message: '自动重排序失败：$error',
-      );
+      _setBoardTaskMessage(boardId, '自动重排序失败：$error');
     }
   }
 
@@ -4327,18 +4463,18 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       }
     }
     if (currentBoard == null) {
-      value = value.copyWith(message: '图片已生成，但当前画板已不存在');
+      _setBoardTaskMessage(boardId, '图片已生成，但当前画板已不存在');
       return false;
     }
     if (currentBoard.locked) {
-      value = value.copyWith(message: '${currentBoard.name} 已锁定，未自动替换');
+      _setBoardTaskMessage(boardId, '${currentBoard.name} 已锁定，未自动替换');
       return false;
     }
     final itemIndex = currentBoard.items.indexWhere(
       (item) => item.slotIndex == slotIndex && item.asset.id == oldAssetId,
     );
     if (itemIndex < 0) {
-      value = value.copyWith(message: changedMessage);
+      _setBoardTaskMessage(boardId, changedMessage);
       return false;
     }
 
@@ -4348,6 +4484,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       currentBoard.copyWith(items: nextItems),
     );
     _recordBoardHistory(currentBoard);
+    _setBoardTaskMessage(boardId, successMessage);
     _setState(
       value.copyWith(
         assets: [
@@ -4359,7 +4496,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           for (final board in value.boards)
             if (board.id == boardId) nextBoard else board,
         ],
-        message: successMessage,
+        message: value.selectedBoardId == boardId ? successMessage : null,
       ),
     );
     return true;
@@ -4785,7 +4922,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   Future<VisionAnalysisBatchRecord?> _visionOrderingBatchForBoard({
     required StoryboardBoard board,
     required List<StoryboardItem> orderedItems,
-    required int operationToken,
+    required _VisionOperationToken operationToken,
   }) async {
     final existingBatch = _database.getLatestVisionAnalysisBatchForBoard(
       board.id,
@@ -4794,7 +4931,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return existingBatch;
     }
 
-    value = value.copyWith(message: '正在补全专业视觉解析后自动重排序...');
+    _setBoardTaskMessage(board.id, '正在补全专业视觉解析后自动重排序...');
     _database.deleteVisionAnalysisForBoard(board.id);
     await _analyzeBoardWithVision(
       boardId: board.id,
@@ -4807,12 +4944,12 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
     final currentBoard = _boardById(board.id);
     if (currentBoard == null) {
-      value = value.copyWith(message: '目标画板已不存在，请重新自动重排序');
+      _setBoardTaskMessage(board.id, '目标画板已不存在，请重新自动重排序');
       return null;
     }
     final currentItems = _orderedVisibleItems(currentBoard);
     if (currentItems.length < 2) {
-      value = value.copyWith(message: '至少需要 2 张图片才能自动重排序');
+      _setBoardTaskMessage(board.id, '至少需要 2 张图片才能自动重排序');
       return null;
     }
 
@@ -4823,21 +4960,21 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return refreshedBatch;
     }
     if (refreshedBatch == null || refreshedBatch.items.isEmpty) {
-      value = value.copyWith(message: '自动重排序前解析失败，请检查视觉模型配置后重试');
+      _setBoardTaskMessage(board.id, '自动重排序前解析失败，请检查视觉模型配置后重试');
       return null;
     }
     if (!_visionBatchMatchesCurrentItems(currentItems, refreshedBatch.items)) {
-      value = value.copyWith(message: '自动解析未完整覆盖当前画板图片，请重试自动重排序');
+      _setBoardTaskMessage(board.id, '自动解析未完整覆盖当前画板图片，请重试自动重排序');
       return null;
     }
-    value = value.copyWith(message: '解析结果仍缺少专业排序维度，请重新自动解析后再重排序');
+    _setBoardTaskMessage(board.id, '解析结果仍缺少专业排序维度，请重新自动解析后再重排序');
     return null;
   }
 
   Future<VisionAnalysisBatchRecord?> _visionPromptBatchForCurrentBoard({
     required StoryboardBoard board,
     required List<StoryboardItem> orderedItems,
-    required int operationToken,
+    required _VisionOperationToken operationToken,
   }) async {
     final existingBatch = _database.getLatestVisionAnalysisBatchForBoard(
       board.id,
@@ -4846,7 +4983,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return existingBatch;
     }
 
-    value = value.copyWith(message: '正在补全故事板视觉解析后生成自动提示词...');
+    _setBoardTaskMessage(board.id, '正在补全故事板视觉解析后生成自动提示词...');
     await _analyzeBoardWithVision(
       boardId: board.id,
       operationToken: operationToken,
@@ -4858,12 +4995,12 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
     final currentBoard = _boardById(board.id);
     if (currentBoard == null) {
-      value = value.copyWith(message: '目标画板已不存在，请重新生成自动提示词');
+      _setBoardTaskMessage(board.id, '目标画板已不存在，请重新生成自动提示词');
       return null;
     }
     final currentItems = _orderedVisibleItems(currentBoard);
     if (currentItems.isEmpty) {
-      value = value.copyWith(message: '当前画板没有可解析的图片');
+      _setBoardTaskMessage(board.id, '当前画板没有可解析的图片');
       return null;
     }
 
@@ -4874,14 +5011,14 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return refreshedBatch;
     }
     if (refreshedBatch == null || refreshedBatch.items.isEmpty) {
-      value = value.copyWith(message: '自动提示词前解析失败，请检查视觉模型配置后重试');
+      _setBoardTaskMessage(board.id, '自动提示词前解析失败，请检查视觉模型配置后重试');
       return null;
     }
     if (!_visionBatchMatchesCurrentItems(currentItems, refreshedBatch.items)) {
-      value = value.copyWith(message: '自动解析未完整覆盖当前画板图片，请重新生成自动提示词');
+      _setBoardTaskMessage(board.id, '自动解析未完整覆盖当前画板图片，请重新生成自动提示词');
       return null;
     }
-    value = value.copyWith(message: '解析结果缺少多维度内容，请重新自动解析后再生成提示词');
+    _setBoardTaskMessage(board.id, '解析结果缺少多维度内容，请重新自动解析后再生成提示词');
     return null;
   }
 
@@ -5033,19 +5170,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       }
     }
     if (currentBoard == null) {
-      value = value.copyWith(
-        isAnalyzing: false,
-        isCancellingAnalysis: false,
-        message: message,
-      );
+      _setBoardTaskMessage(boardId, message);
       return;
     }
     if (currentBoard.locked) {
-      value = value.copyWith(
-        isAnalyzing: false,
-        isCancellingAnalysis: false,
-        message: '${currentBoard.name} 已锁定，未写回解析文本',
-      );
+      _setBoardTaskMessage(boardId, '${currentBoard.name} 已锁定，未写回解析文本');
       return;
     }
     final bySlot = {
@@ -5066,14 +5195,14 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         );
       }
     }
+    _setBoardTaskMessage(boardId, message);
     _replaceBoard(
       currentBoard.copyWith(
         items: nextItems,
         rowCaptions: rowCaptions,
         summary: summary,
       ),
-      message: message,
-      isAnalyzing: false,
+      message: value.selectedBoardId == boardId ? message : null,
       selectBoard: value.selectedBoardId == currentBoard.id,
     );
   }
@@ -5517,6 +5646,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     bool saveSelection = true,
   }) {
     final selectionChanged = next.selectedBoardId != value.selectedBoardId;
+    if (selectionChanged) {
+      next = _withSelectedBoardTaskStatus(next);
+    }
     value = next;
     if (saveWorkspace) {
       _workspaceSaveQueue.markDirty();
@@ -6276,4 +6408,21 @@ class _QueuedVisionTask {
 
   final StoryboardVisionTask task;
   final Completer<void> completer = Completer<void>();
+}
+
+class _BoardVisionTaskChannel {
+  final queue = <_QueuedVisionTask>[];
+  _QueuedVisionTask? activeTask;
+  bool isRunning = false;
+  bool isCancelling = false;
+}
+
+class _VisionOperationToken {
+  const _VisionOperationToken({
+    required this.boardId,
+    required this.generation,
+  });
+
+  final String boardId;
+  final int generation;
 }

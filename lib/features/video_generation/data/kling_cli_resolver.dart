@@ -101,7 +101,7 @@ class KlingCliResolver {
     final klingPath = await _findKlingCli(npmPath);
     if (klingPath.isEmpty) {
       return _error(
-        '未检测到可灵 CLI。请先按官方说明安装可灵 Skill：npx skills add klingai-tech/skills；如果需要本软件直接调用命令行，请安装 @klingai/cli-cn。',
+        '未检测到可灵 CLI。可在软件中选择账号区域后自动安装。',
         nodePath: nodePath,
         nodeVersion: nodeVersion,
         npmPath: npmPath,
@@ -152,12 +152,31 @@ class KlingCliResolver {
     final result = await processRunner(locator, [
       command,
     ], runInShell: Platform.isWindows);
-    if (result.exitCode != 0) return '';
-    final candidates = '${result.stdout}'
-        .split(RegExp(r'[\r\n]+'))
-        .map((value) => value.trim())
-        .where((value) => value.isNotEmpty);
-    return candidates.isEmpty ? '' : candidates.first;
+    if (result.exitCode == 0) {
+      final candidates = '${result.stdout}'
+          .split(RegExp(r'[\r\n]+'))
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty);
+      if (candidates.isNotEmpty) return candidates.first;
+    }
+    for (final candidate in _defaultCommandCandidates(command)) {
+      if (File(candidate).existsSync()) return p.normalize(candidate);
+    }
+    return '';
+  }
+
+  List<String> _defaultCommandCandidates(String command) {
+    if (!Platform.isWindows) return const [];
+    final normalized = command.toLowerCase();
+    if (normalized != 'node' && normalized != 'npm.cmd') return const [];
+    final fileName = normalized == 'node' ? 'node.exe' : 'npm.cmd';
+    final programFiles = Platform.environment['ProgramFiles']?.trim() ?? '';
+    final localAppData = Platform.environment['LOCALAPPDATA']?.trim() ?? '';
+    return [
+      if (programFiles.isNotEmpty) p.join(programFiles, 'nodejs', fileName),
+      if (localAppData.isNotEmpty)
+        p.join(localAppData, 'Programs', 'nodejs', fileName),
+    ];
   }
 
   Future<String> _findKlingCli(String npmPath) async {

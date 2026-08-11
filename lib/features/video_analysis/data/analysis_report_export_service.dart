@@ -41,6 +41,8 @@ class AnalysisReportExportService {
     required List<VideoFrameAnalysis> frameAnalyses,
     required VideoSummary summary,
     required List<MarketingAnalysis> marketingAnalyses,
+    bool includeMultiDimensionAnalysis = true,
+    bool includeShotDetails = true,
     File Function(VideoFrame frame)? resolveFrame,
   }) async {
     await outputDirectory.create(recursive: true);
@@ -52,7 +54,15 @@ class AnalysisReportExportService {
       if (format == AnalysisReportFormat.xlsx) {
         final file = File(p.join(outputDirectory.path, '$baseName.xlsx'));
         await file.writeAsBytes(
-          _xlsxBytes(video, frames, frameAnalyses, summary, marketingAnalyses),
+          _xlsxBytes(
+            video,
+            frames,
+            frameAnalyses,
+            summary,
+            marketingAnalyses,
+            includeMultiDimensionAnalysis: includeMultiDimensionAnalysis,
+            includeShotDetails: includeShotDetails,
+          ),
           flush: true,
         );
         created.add(file);
@@ -63,6 +73,8 @@ class AnalysisReportExportService {
           frameAnalyses,
           summary,
           marketingAnalyses,
+          includeMultiDimensionAnalysis: includeMultiDimensionAnalysis,
+          includeShotDetails: includeShotDetails,
           resolveFrame: resolveFrame,
         );
         if (format == AnalysisReportFormat.pdf) {
@@ -113,8 +125,10 @@ class AnalysisReportExportService {
     List<VideoFrame> frames,
     List<VideoFrameAnalysis> analyses,
     VideoSummary summary,
-    List<MarketingAnalysis> marketing,
-  ) {
+    List<MarketingAnalysis> marketing, {
+    required bool includeMultiDimensionAnalysis,
+    required bool includeShotDetails,
+  }) {
     final dimensions = marketing.isEmpty
         ? const <String, String>{}
         : marketing.first.dimensions;
@@ -122,18 +136,19 @@ class AnalysisReportExportService {
       for (final analysis in analyses) analysis.frameId: analysis,
     };
     final sheets = <String, List<List<String>>>{
-      '多维度分析': [
-        ['分组', '字段', '分析结果'],
-        for (final group in videoAnalysisDimensionGroups.entries)
-          for (final field in group.value)
-            [
-              group.key,
-              field,
-              dimensions[field]?.trim().isNotEmpty == true
-                  ? _displayDimensionValue(dimensions[field]!)
-                  : '暂无（未在可见画面中确认）',
-            ],
-      ],
+      if (includeMultiDimensionAnalysis)
+        '多维度分析': [
+          ['分组', '字段', '分析结果'],
+          for (final group in videoAnalysisDimensionGroups.entries)
+            for (final field in group.value)
+              [
+                group.key,
+                field,
+                dimensions[field]?.trim().isNotEmpty == true
+                    ? _displayDimensionValue(dimensions[field]!)
+                    : '暂无（未在可见画面中确认）',
+              ],
+        ],
       '概览': [
         ['字段', '内容'],
         ['视频文件', video.fileName],
@@ -149,39 +164,40 @@ class AnalysisReportExportService {
         ['内容大纲', summary.fields['outline'] ?? ''],
         ['内容总结', summary.fields['content'] ?? ''],
       ],
-      '镜头明细': [
-        [
-          '帧缩略图路径',
-          '序号',
-          '时间戳',
-          '状态',
-          '画面描述',
-          '场景',
-          '人物',
-          '动作',
-          '景别',
-          '运镜',
-          '构图',
-          '光影',
-          '色彩',
-        ],
-        for (final frame in frames)
+      if (includeShotDetails)
+        '镜头明细': [
           [
-            frame.path,
-            '${frame.index + 1}',
-            _duration(frame.timestampMs),
-            (analysisByFrame[frame.id]?.status ?? frame.status).name,
-            analysisByFrame[frame.id]?.dimensions['caption'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['scene'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['people'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['bodyAction'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['shotSize'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['cameraMovement'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['composition'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['lightingMood'] ?? '',
-            analysisByFrame[frame.id]?.dimensions['colorPalette'] ?? '',
+            '帧缩略图路径',
+            '序号',
+            '时间戳',
+            '状态',
+            '画面描述',
+            '场景',
+            '人物',
+            '动作',
+            '景别',
+            '运镜',
+            '构图',
+            '光影',
+            '色彩',
           ],
-      ],
+          for (final frame in frames)
+            [
+              frame.path,
+              '${frame.index + 1}',
+              _duration(frame.timestampMs),
+              (analysisByFrame[frame.id]?.status ?? frame.status).name,
+              analysisByFrame[frame.id]?.dimensions['caption'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['scene'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['people'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['bodyAction'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['shotSize'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['cameraMovement'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['composition'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['lightingMood'] ?? '',
+              analysisByFrame[frame.id]?.dimensions['colorPalette'] ?? '',
+            ],
+        ],
       '模型原始结果': [
         ['序号', '帧 ID', '状态', '错误', '原始结果'],
         for (final analysis in analyses)
@@ -228,6 +244,8 @@ class AnalysisReportExportService {
     List<VideoFrameAnalysis> analyses,
     VideoSummary summary,
     List<MarketingAnalysis> marketing, {
+    required bool includeMultiDimensionAnalysis,
+    required bool includeShotDetails,
     File Function(VideoFrame frame)? resolveFrame,
   }) async {
     final dimensions = marketing.isEmpty
@@ -236,28 +254,30 @@ class AnalysisReportExportService {
     final reportTitle =
         '${p.basenameWithoutExtension(video.fileName)} 视频多维度分析报告';
     final renderedPages = <Uint8List>[];
-    renderedPages.addAll(
-      await _renderTablePages(
-        title: reportTitle,
-        continuationTitle: '多维度分析',
-        subtitle:
-            '视频：${video.fileName}    时长：${_duration(video.durationMs)}    分辨率：${video.width} × ${video.height}    帧率：${video.frameRate.toStringAsFixed(2)}',
-        columns: const ['分组', '分析维度', '分析结果'],
-        columnWidths: const [220, 255, 621],
-        rows: [
-          for (final group in videoAnalysisDimensionGroups.entries)
-            for (final field in group.value)
-              _ReportTableRow([
-                group.key,
-                field,
-                dimensions[field]?.trim().isNotEmpty == true
-                    ? _displayDimensionValue(dimensions[field]!)
-                    : '暂无（未在可见画面中确认）',
-              ]),
-        ],
-        mergeFirstColumn: true,
-      ),
-    );
+    if (includeMultiDimensionAnalysis) {
+      renderedPages.addAll(
+        await _renderTablePages(
+          title: reportTitle,
+          continuationTitle: '多维度分析',
+          subtitle:
+              '视频：${video.fileName}    时长：${_duration(video.durationMs)}    分辨率：${video.width} × ${video.height}    帧率：${video.frameRate.toStringAsFixed(2)}',
+          columns: const ['分组', '分析维度', '分析结果'],
+          columnWidths: const [220, 255, 621],
+          rows: [
+            for (final group in videoAnalysisDimensionGroups.entries)
+              for (final field in group.value)
+                _ReportTableRow([
+                  group.key,
+                  field,
+                  dimensions[field]?.trim().isNotEmpty == true
+                      ? _displayDimensionValue(dimensions[field]!)
+                      : '暂无（未在可见画面中确认）',
+                ]),
+          ],
+          mergeFirstColumn: true,
+        ),
+      );
+    }
 
     renderedPages.addAll(
       await _renderPage([
@@ -279,6 +299,9 @@ class AnalysisReportExportService {
     final analysisByFrame = {
       for (final analysis in analyses) analysis.frameId: analysis,
     };
+    if (!includeShotDetails) {
+      return _addPageNumbers(renderedPages);
+    }
     if (frames.isEmpty) {
       renderedPages.addAll(
         await _renderTablePages(

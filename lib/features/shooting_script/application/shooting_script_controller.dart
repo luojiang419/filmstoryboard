@@ -11,21 +11,43 @@ import '../../exporter/data/shooting_script_export_service.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
+import '../../remote_access/domain/remote_events.dart';
 import '../data/script_multimodal_analysis_service.dart';
 import '../data/shooting_script_repository.dart';
+import '../domain/script_shot_group.dart';
 import '../domain/shooting_script_models.dart';
 
-final shootingScriptControllerProvider = Provider<ShootingScriptController>((
-  ref,
-) {
-  final controller = ShootingScriptController(
-    repository: ShootingScriptRepository(ref.watch(appDatabaseProvider)),
-    videoRepository: VideoAnalysisRepository(ref.watch(appDatabaseProvider)),
-    directories: ref.watch(projectDirectoriesProvider),
-  );
-  ref.onDispose(controller.dispose);
-  return controller;
-}, dependencies: [appDatabaseProvider, projectDirectoriesProvider]);
+final shootingScriptControllerProvider = Provider<ShootingScriptController>(
+  (ref) {
+    final controller = ShootingScriptController(
+      repository: ShootingScriptRepository(ref.watch(appDatabaseProvider)),
+      videoRepository: VideoAnalysisRepository(ref.watch(appDatabaseProvider)),
+      directories: ref.watch(projectDirectoriesProvider),
+      remoteChangeBus: ref.watch(remoteChangeBusProvider),
+    );
+    final subscription = ref.watch(remoteChangeBusProvider).events.listen((
+      event,
+    ) {
+      if (event.type == 'shootingScript.changed' &&
+          event.data['source'] != 'desktop') {
+        controller.refresh(
+          selectScriptId: controller.value.selectedScriptId,
+          selectShotId: controller.value.selectedShotId,
+        );
+      }
+    });
+    ref.onDispose(() {
+      subscription.cancel();
+      controller.dispose();
+    });
+    return controller;
+  },
+  dependencies: [
+    appDatabaseProvider,
+    projectDirectoriesProvider,
+    remoteChangeBusProvider,
+  ],
+);
 
 class ShootingScriptState {
   const ShootingScriptState({
@@ -103,11 +125,13 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     ShootingScriptExportService exportService =
         const ShootingScriptExportService(),
     Uuid uuid = const Uuid(),
+    RemoteChangeBus? remoteChangeBus,
   }) : _repository = repository,
        _videoRepository = videoRepository,
        _directories = directories,
        _exportService = exportService,
        _uuid = uuid,
+       _remoteChangeBus = remoteChangeBus,
        super(const ShootingScriptState()) {
     refresh();
   }
@@ -117,6 +141,7 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
   final WorkspaceDirectories _directories;
   final ShootingScriptExportService _exportService;
   final Uuid _uuid;
+  final RemoteChangeBus? _remoteChangeBus;
 
   void refresh({String? selectScriptId, String? selectShotId}) {
     final scripts = _repository.listScripts();
@@ -211,23 +236,35 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     required List<VideoShot> videoShots,
     required List<VideoFrameAnalysis> analyses,
     String? sourceStoryboardId,
+    bool selectScript = true,
   }) {
-    final completedFrames =
+    final availableFrames =
         frames
-            .where((frame) => frame.status == ProcessingStatus.completed)
+            .where(
+              (frame) =>
+                  frame.path.trim().isNotEmpty &&
+                  frame.width > 0 &&
+                  frame.height > 0,
+            )
             .toList()
           ..sort((first, second) => first.index.compareTo(second.index));
-    final focusFrames = completedFrames
+    final focusFrames = availableFrames
         .where((frame) => frame.isFocus)
         .toList(growable: false);
-    final sourceFrames = focusFrames.isEmpty ? completedFrames : focusFrames;
+    final sourceFrames = focusFrames.isEmpty ? availableFrames : focusFrames;
     if (sourceFrames.isEmpty) {
-      value = value.copyWith(message: '', errorMessage: '当前视频没有已完成解析的帧');
+      value = value.copyWith(message: '', errorMessage: '当前视频没有可用的候选帧');
       return null;
     }
     final now = DateTime.now().toUtc();
     final existing = sourceStoryboardId == null
-        ? null
+        ? value.scripts
+              .where(
+                (script) =>
+                    script.sourceStoryboardId == null &&
+                    script.sourceVideoId == video.id,
+              )
+              .firstOrNull
         : _primaryScriptForStoryboard(sourceStoryboardId);
     final script = existing == null
         ? ShootingScript(
@@ -252,72 +289,132 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     final analysisByFrameId = {
       for (final analysis in analyses) analysis.frameId: analysis,
     };
+    final existingShotsByFrameId = existing == null
+        ? const <String, ScriptShot>{}
+        : {
+            for (final shot in _repository.listShots(existing.id))
+              if (shot.sourceVideoFrameId?.trim().isNotEmpty == true)
+                shot.sourceVideoFrameId!: shot,
+          };
     final shots = <ScriptShot>[];
     for (var index = 0; index < sourceFrames.length; index++) {
       final frame = sourceFrames[index];
       final sourceShot = shotByFrameId[frame.id];
       final analysis = analysisByFrameId[frame.id];
       final dimensions = analysis?.dimensions ?? const <String, String>{};
-      shots.add(
-        ScriptShot(
-          id: _uuid.v4(),
-          scriptId: script.id,
-          sourceStoryboardAssetId: sourceStoryboardId == null
-              ? null
-              : 'external-cut:video-frame:${frame.id}',
-          sourceVideoFrameId: frame.id,
-          shotNumber: index + 1,
-          durationSeconds: sourceShot == null
-              ? 0
-              : ((sourceShot.endMs - sourceShot.startMs).clamp(0, 3600000) /
-                    1000),
-          framePath: _runtimePath(frame.path),
-          visual: '',
-          content: _firstNotEmpty([
-            dimensions['caption'],
-            sourceShot?.description,
-            dimensions['detail'],
-          ]),
-          shotSize: dimensions['shotSize'] ?? '',
-          cameraMovement: dimensions['cameraMovement'] ?? '',
-          cameraNotes: '',
-          composition: dimensions['composition'] ?? '',
-          cameraAngle: dimensions['cameraAngle'] ?? '',
-          lightingMood: dimensions['lightingMood'] ?? '',
-          colorPalette:
-              ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
-                dimensions['colorPalette'] ?? '',
-              ),
-          visualFocus: dimensions['visualFocus'] ?? '',
-          transitionHint: dimensions['transitionHint'] ?? '',
-          movementTrend: dimensions['movementTrend'] ?? '',
-          actionStage: dimensions['actionStage'] ?? '',
-          continuesFromPrevious: false,
-          continuesToNext: false,
-          scene: dimensions['scene'] ?? '',
-          productCode: '',
-          productStyling: _firstNotEmpty([
-            dimensions['productStyling'],
-            ScriptMultimodalAnalysisService.wardrobeSlotsFromText(
-              dimensions.values.join(' '),
-            ),
-          ]),
-          dialogue: '',
-          sound: '',
-          prompt: '',
-          status: ProcessingStatus.completed,
-          updatedAt: now,
+      final generated = ScriptShot(
+        id: _uuid.v4(),
+        scriptId: script.id,
+        sourceStoryboardAssetId: sourceStoryboardId == null
+            ? null
+            : 'external-cut:video-frame:${frame.id}',
+        sourceVideoFrameId: frame.id,
+        shotNumber: index + 1,
+        durationSeconds: sourceShot == null
+            ? 0
+            : ((sourceShot.endMs - sourceShot.startMs).clamp(0, 3600000) /
+                  1000),
+        framePath: _runtimePath(frame.path),
+        visual: '',
+        content: _firstNotEmpty([
+          dimensions['caption'],
+          sourceShot?.description,
+          dimensions['detail'],
+        ]),
+        shotSize: dimensions['shotSize'] ?? '',
+        cameraMovement: dimensions['cameraMovement'] ?? '',
+        cameraNotes: '',
+        composition: dimensions['composition'] ?? '',
+        cameraAngle: dimensions['cameraAngle'] ?? '',
+        lightingMood: dimensions['lightingMood'] ?? '',
+        colorPalette: ScriptMultimodalAnalysisService.colorStyleFromPaletteText(
+          dimensions['colorPalette'] ?? '',
         ),
+        visualFocus: dimensions['visualFocus'] ?? '',
+        transitionHint: dimensions['transitionHint'] ?? '',
+        movementTrend: dimensions['movementTrend'] ?? '',
+        actionStage: dimensions['actionStage'] ?? '',
+        continuesFromPrevious: false,
+        continuesToNext: false,
+        scene: dimensions['scene'] ?? '',
+        productCode: '',
+        productStyling: _firstNotEmpty([
+          dimensions['productStyling'],
+          ScriptMultimodalAnalysisService.wardrobeSlotsFromText(
+            dimensions.values.join(' '),
+          ),
+        ]),
+        dialogue: '',
+        sound: '',
+        prompt: '',
+        status: ProcessingStatus.completed,
+        updatedAt: now,
+      );
+      final previous = existingShotsByFrameId[frame.id];
+      shots.add(
+        previous == null
+            ? generated
+            : _mergeGeneratedVideoShot(previous, generated),
       );
     }
     _repository.upsertScript(script);
     _repository.replaceShots(script.id, shots);
-    refresh(selectScriptId: script.id);
-    value = value.copyWith(
-      message: '已从视频生成 ${shots.length} 个脚本镜头，请手动设置首帧和结束帧范围',
-      errorMessage: '',
+    final previousSelectedScriptId = value.selectedScriptId;
+    refresh(
+      selectScriptId: selectScript ? script.id : previousSelectedScriptId,
     );
+    if (selectScript) {
+      value = value.copyWith(
+        message: '已从视频生成 ${shots.length} 个脚本镜头，请手动设置首帧和结束帧范围',
+        errorMessage: '',
+      );
+    }
     return script;
+  }
+
+  ScriptShot _mergeGeneratedVideoShot(
+    ScriptShot previous,
+    ScriptShot generated,
+  ) {
+    String keepExisting(String current, String fallback) =>
+        current.trim().isEmpty ? fallback : current;
+    return previous.copyWith(
+      sourceStoryboardAssetId: generated.sourceStoryboardAssetId,
+      sourceVideoFrameId: generated.sourceVideoFrameId,
+      shotNumber: generated.shotNumber,
+      durationSeconds: previous.durationSeconds > 0
+          ? previous.durationSeconds
+          : generated.durationSeconds,
+      framePath: generated.framePath,
+      visual: keepExisting(previous.visual, generated.visual),
+      content: keepExisting(previous.content, generated.content),
+      shotSize: keepExisting(previous.shotSize, generated.shotSize),
+      cameraMovement: keepExisting(
+        previous.cameraMovement,
+        generated.cameraMovement,
+      ),
+      cameraNotes: keepExisting(previous.cameraNotes, generated.cameraNotes),
+      composition: keepExisting(previous.composition, generated.composition),
+      cameraAngle: keepExisting(previous.cameraAngle, generated.cameraAngle),
+      lightingMood: keepExisting(previous.lightingMood, generated.lightingMood),
+      colorPalette: keepExisting(previous.colorPalette, generated.colorPalette),
+      visualFocus: keepExisting(previous.visualFocus, generated.visualFocus),
+      transitionHint: keepExisting(
+        previous.transitionHint,
+        generated.transitionHint,
+      ),
+      movementTrend: keepExisting(
+        previous.movementTrend,
+        generated.movementTrend,
+      ),
+      actionStage: keepExisting(previous.actionStage, generated.actionStage),
+      scene: keepExisting(previous.scene, generated.scene),
+      productStyling: keepExisting(
+        previous.productStyling,
+        generated.productStyling,
+      ),
+      updatedAt: generated.updatedAt,
+    );
   }
 
   ShootingScript createForStoryboard(
@@ -674,6 +771,26 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     _saveShots(script, shots, selectShotId: nextSelectedId, message: '已删除镜头');
   }
 
+  bool deleteShotGroup(String shotId) {
+    final script = value.selectedScript;
+    final index = value.shots.indexWhere((shot) => shot.id == shotId);
+    if (script == null || index < 0) return false;
+    final start = _continuousGroupStartIndex(index);
+    final end = _continuousGroupEndIndex(index);
+    final removedCount = end - start + 1;
+    final shots = [...value.shots]..removeRange(start, end + 1);
+    final nextSelectedId = shots.isEmpty
+        ? ''
+        : shots[start.clamp(0, shots.length - 1)].id;
+    _saveShots(
+      script,
+      shots,
+      selectShotId: nextSelectedId,
+      message: removedCount == 1 ? '已移除镜头条目' : '已移除包含 $removedCount 帧的镜头组',
+    );
+    return true;
+  }
+
   bool setContinuousShotRange({
     required String startShotId,
     required String endShotId,
@@ -753,6 +870,28 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     _saveShots(script, shots, selectShotId: moving.id, message: '已调整镜头顺序');
   }
 
+  bool reorderShotGroups(int oldIndex, int newIndex) {
+    final script = value.selectedScript;
+    final groups = ScriptShotGroup.group(value.shots);
+    if (script == null || oldIndex < 0 || oldIndex >= groups.length) {
+      return false;
+    }
+    var target = newIndex;
+    if (target > oldIndex) target--;
+    target = target.clamp(0, groups.length - 1);
+    if (target == oldIndex) return false;
+    final reordered = [...groups];
+    final moving = reordered.removeAt(oldIndex);
+    reordered.insert(target, moving);
+    _saveShots(
+      script,
+      reordered.expand((group) => group.shots).toList(growable: false),
+      selectShotId: moving.shots.first.id,
+      message: '已调整镜头组顺序',
+    );
+    return true;
+  }
+
   int _continuousGroupStartIndex(int index) {
     var start = index;
     while (start > 0 &&
@@ -773,18 +912,48 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
     return end;
   }
 
-  void updateShot(ScriptShot updated) {
+  bool updateShot(ScriptShot updated) {
     final script = value.selectedScript;
     final index = value.shots.indexWhere((shot) => shot.id == updated.id);
     if (script == null || index < 0 || updated.scriptId != script.id) {
-      return;
+      return false;
     }
+    final now = DateTime.now().toUtc();
     final shots = [...value.shots];
-    shots[index] = updated.copyWith(
-      shotNumber: index + 1,
-      updatedAt: DateTime.now().toUtc(),
+    final savedShot = updated.copyWith(shotNumber: index + 1, updatedAt: now);
+    final updatedScript = script.copyWith(
+      version: script.version + 1,
+      updatedAt: now,
     );
-    _saveShots(script, shots, selectShotId: updated.id, message: '脚本镜头已保存');
+    final saved = _repository.updateShotIfScriptVersion(
+      updatedScript: updatedScript,
+      updatedShot: savedShot,
+      expectedVersion: script.version,
+    );
+    if (!saved) {
+      refresh(selectScriptId: script.id, selectShotId: updated.id);
+      value = value.copyWith(message: '', errorMessage: '拍摄脚本已在其他位置更新，请重试本次编辑');
+      return false;
+    }
+    shots[index] = savedShot;
+    final scripts = [
+      for (final item in value.scripts)
+        if (item.id == script.id) updatedScript else item,
+    ]..sort((first, second) => second.updatedAt.compareTo(first.updatedAt));
+    value = value.copyWith(
+      scripts: scripts,
+      shots: shots,
+      selectedShotId: updated.id,
+      message: '脚本镜头已保存',
+      errorMessage: '',
+    );
+    _remoteChangeBus?.publish(
+      type: 'shootingScript.changed',
+      resourceId: script.id,
+      revision: updatedScript.version,
+      data: {'source': 'desktop'},
+    );
+    return true;
   }
 
   void updateShotPrompts(Map<String, String> promptsByShotId) {
@@ -811,6 +980,67 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       shots,
       selectShotId: value.selectedShotId,
       message: '最终提示词已同步到拍摄脚本',
+    );
+  }
+
+  void updateGeneratedFieldsForScript({
+    required String scriptId,
+    Map<String, String> promptsByShotId = const {},
+    Map<String, double> durationSecondsByShotId = const {},
+  }) {
+    if (scriptId.isEmpty ||
+        (promptsByShotId.isEmpty && durationSecondsByShotId.isEmpty)) {
+      return;
+    }
+    final script = _repository
+        .listScripts()
+        .where((item) => item.id == scriptId)
+        .firstOrNull;
+    if (script == null) return;
+    final storedShots = _repository.listShots(scriptId);
+    var changed = false;
+    final updatedShots = <ScriptShot>[];
+    for (final shot in storedShots) {
+      final prompt = promptsByShotId[shot.id];
+      final durationSeconds = durationSecondsByShotId[shot.id];
+      final updated = shot.copyWith(
+        prompt: prompt ?? shot.prompt,
+        durationSeconds: durationSeconds ?? shot.durationSeconds,
+      );
+      changed =
+          changed ||
+          updated.prompt != shot.prompt ||
+          updated.durationSeconds != shot.durationSeconds;
+      updatedShots.add(updated);
+    }
+    if (!changed) return;
+
+    final now = DateTime.now().toUtc();
+    final normalized = [
+      for (var index = 0; index < updatedShots.length; index++)
+        updatedShots[index].copyWith(shotNumber: index + 1, updatedAt: now),
+    ];
+    final updatedScript = script.copyWith(
+      version: script.version + 1,
+      updatedAt: now,
+    );
+    _repository.upsertScript(updatedScript);
+    _repository.replaceShots(scriptId, normalized);
+
+    final selectedScriptId = value.selectedScriptId;
+    final selectedShotId = value.selectedShotId;
+    refresh(
+      selectScriptId: selectedScriptId,
+      selectShotId: selectedScriptId == scriptId ? selectedShotId : null,
+    );
+    if (selectedScriptId == scriptId) {
+      value = value.copyWith(message: '最终提示词已同步到拍摄脚本', errorMessage: '');
+    }
+    _remoteChangeBus?.publish(
+      type: 'shootingScript.changed',
+      resourceId: scriptId,
+      revision: updatedScript.version,
+      data: {'source': 'desktop'},
     );
   }
 
@@ -1004,6 +1234,12 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
       selectShotId: selectScript ? selectShotId : value.selectedShotId,
     );
     value = value.copyWith(message: message, errorMessage: '');
+    _remoteChangeBus?.publish(
+      type: 'shootingScript.changed',
+      resourceId: script.id,
+      revision: updatedScript.version,
+      data: {'source': 'desktop'},
+    );
   }
 
   ScriptShot _blankShot(String scriptId, int shotNumber, DateTime now) =>

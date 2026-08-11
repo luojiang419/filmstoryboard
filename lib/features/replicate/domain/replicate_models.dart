@@ -279,6 +279,7 @@ class ReplicatedShotImage {
   final DateTime updatedAt;
 
   ReplicatedShotImage copyWith({
+    int? shotNumber,
     String? originalFramePath,
     String? generatedFramePath,
     List<String>? assetIds,
@@ -292,7 +293,7 @@ class ReplicatedShotImage {
     id: id,
     runId: runId,
     scriptShotId: scriptShotId,
-    shotNumber: shotNumber,
+    shotNumber: shotNumber ?? this.shotNumber,
     originalFramePath: originalFramePath ?? this.originalFramePath,
     generatedFramePath: generatedFramePath ?? this.generatedFramePath,
     assetIds: assetIds ?? this.assetIds,

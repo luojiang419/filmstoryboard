@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,6 +34,7 @@ class _StoryboardAppState extends ConsumerState<StoryboardApp> {
   void initState() {
     super.initState();
     _middleDragScrollController = MiddleDragAutoScrollController();
+    unawaited(ref.read(remoteAccessControllerProvider).initialize());
   }
 
   @override

@@ -35,6 +35,7 @@ migrate_working_dir/
 # Local release outputs and development history
 /dist/
 /tmp/
+/xml/
 /backup/
 /进度快照/
 /website/demo/build/

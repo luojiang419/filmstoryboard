@@ -11,6 +11,7 @@ import 'package:pasteboard/pasteboard.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
+import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
@@ -117,7 +118,7 @@ class _GridCutPageState extends ConsumerState<GridCutPage> {
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(gridCutControllerProvider);
-    return Focus(
+    final content = Focus(
       autofocus: true,
       onKeyEvent: _handleKeyEvent,
       child: DropTarget(
@@ -144,6 +145,11 @@ class _GridCutPageState extends ConsumerState<GridCutPage> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    CollapsiblePanelRegistration(
+                      expanded: _imageSidebarExpanded,
+                      onExpandedChanged: _setImageSidebarExpanded,
+                      child: const SizedBox.shrink(),
+                    ),
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       curve: Curves.easeOutCubic,
@@ -224,6 +230,11 @@ class _GridCutPageState extends ConsumerState<GridCutPage> {
                           ),
                     ),
                     const SizedBox(width: 12),
+                    CollapsiblePanelRegistration(
+                      expanded: _inspectorPanelExpanded,
+                      onExpandedChanged: _setInspectorPanelExpanded,
+                      child: const SizedBox.shrink(),
+                    ),
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       curve: Curves.easeOutCubic,
@@ -283,6 +294,7 @@ class _GridCutPageState extends ConsumerState<GridCutPage> {
         ),
       ),
     );
+    return CollapsiblePanelShortcutScope(child: content);
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {

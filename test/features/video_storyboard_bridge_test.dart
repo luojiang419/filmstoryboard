@@ -17,7 +17,7 @@ import 'package:path/path.dart' as p;
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('视频解析结果按数据库帧顺序转换为故事板图片和摘要', () {
+  test('候选帧按数据库顺序转换为故事板并用已有解析补充文案', () {
     final now = DateTime.utc(2026, 8, 2);
     final video = SourceVideo(
       id: 'video-1',
@@ -94,10 +94,12 @@ void main() {
     expect(result.boardName, 'demo · 视频解析故事板');
     expect(result.images.map((image) => image.stableId), [
       'video-frame:frame-0',
+      'video-frame:frame-1',
       'video-frame:frame-2',
     ]);
     expect(result.images.map((image) => image.caption), [
       '第一个已解析镜头',
+      '视频解析镜头',
       '第三个已解析镜头',
     ]);
     expect(result.images.first.path, 'resolved/frame-0.jpg');

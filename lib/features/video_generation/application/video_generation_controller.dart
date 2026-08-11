@@ -21,9 +21,13 @@ import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
+import '../data/cli_dependency_installer.dart';
 import '../data/kling_cli_models.dart';
 import '../data/kling_cli_resolver.dart';
 import '../data/kling_cli_service.dart';
+import '../data/libtv_cli_models.dart';
+import '../data/libtv_cli_resolver.dart';
+import '../data/libtv_cli_service.dart';
 import '../data/minimax_video_api_service.dart';
 import '../data/video_generation_directories.dart';
 import '../data/video_generation_repository.dart';
@@ -70,6 +74,18 @@ enum KlingLoginAuthorizationStatus {
   timedOut,
 }
 
+enum CliDependencyInstallStatus {
+  idle,
+  installingNode,
+  installingCli,
+  completed,
+  failed;
+
+  bool get isInstalling =>
+      this == CliDependencyInstallStatus.installingNode ||
+      this == CliDependencyInstallStatus.installingCli;
+}
+
 class VideoGenerationState {
   const VideoGenerationState({
     this.scripts = const [],
@@ -82,11 +98,16 @@ class VideoGenerationState {
     this.environment,
     this.identity,
     this.account,
+    this.libTvEnvironment,
+    this.libTvAccount,
+    this.libTvModel,
     this.isLoadingEnvironment = false,
     this.isBusy = false,
     this.isGeneratingAll = false,
     this.loginAuthorizationStatus = KlingLoginAuthorizationStatus.idle,
     this.loginAuthorizationMessage = '',
+    this.cliInstallStatus = CliDependencyInstallStatus.idle,
+    this.cliInstallMessage = '',
     this.message = '',
     this.errorMessage = '',
   });
@@ -101,11 +122,16 @@ class VideoGenerationState {
   final KlingCliEnvironment? environment;
   final KlingIdentity? identity;
   final KlingAccount? account;
+  final LibTvCliEnvironment? libTvEnvironment;
+  final LibTvAccountInfo? libTvAccount;
+  final LibTvModelSpec? libTvModel;
   final bool isLoadingEnvironment;
   final bool isBusy;
   final bool isGeneratingAll;
   final KlingLoginAuthorizationStatus loginAuthorizationStatus;
   final String loginAuthorizationMessage;
+  final CliDependencyInstallStatus cliInstallStatus;
+  final String cliInstallMessage;
   final String message;
   final String errorMessage;
 
@@ -127,11 +153,16 @@ class VideoGenerationState {
     Object? environment = _sentinel,
     Object? identity = _sentinel,
     Object? account = _sentinel,
+    Object? libTvEnvironment = _sentinel,
+    Object? libTvAccount = _sentinel,
+    Object? libTvModel = _sentinel,
     bool? isLoadingEnvironment,
     bool? isBusy,
     bool? isGeneratingAll,
     KlingLoginAuthorizationStatus? loginAuthorizationStatus,
     String? loginAuthorizationMessage,
+    CliDependencyInstallStatus? cliInstallStatus,
+    String? cliInstallMessage,
     String? message,
     String? errorMessage,
   }) => VideoGenerationState(
@@ -153,6 +184,15 @@ class VideoGenerationState {
     account: identical(account, _sentinel)
         ? this.account
         : account as KlingAccount?,
+    libTvEnvironment: identical(libTvEnvironment, _sentinel)
+        ? this.libTvEnvironment
+        : libTvEnvironment as LibTvCliEnvironment?,
+    libTvAccount: identical(libTvAccount, _sentinel)
+        ? this.libTvAccount
+        : libTvAccount as LibTvAccountInfo?,
+    libTvModel: identical(libTvModel, _sentinel)
+        ? this.libTvModel
+        : libTvModel as LibTvModelSpec?,
     isLoadingEnvironment: isLoadingEnvironment ?? this.isLoadingEnvironment,
     isBusy: isBusy ?? this.isBusy,
     isGeneratingAll: isGeneratingAll ?? this.isGeneratingAll,
@@ -160,6 +200,8 @@ class VideoGenerationState {
         loginAuthorizationStatus ?? this.loginAuthorizationStatus,
     loginAuthorizationMessage:
         loginAuthorizationMessage ?? this.loginAuthorizationMessage,
+    cliInstallStatus: cliInstallStatus ?? this.cliInstallStatus,
+    cliInstallMessage: cliInstallMessage ?? this.cliInstallMessage,
     message: message ?? this.message,
     errorMessage: errorMessage ?? this.errorMessage,
   );
@@ -176,6 +218,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     required SettingsController settingsController,
     KlingCliResolver cliResolver = const KlingCliResolver(),
     KlingCliService cliService = const KlingCliService(),
+    LibTvCliResolver libTvCliResolver = const LibTvCliResolver(),
+    LibTvCliService libTvCliService = const LibTvCliService(),
+    CliDependencyInstaller dependencyInstaller = const CliDependencyInstaller(),
+    LibTvCliService Function(LibTvCliEnvironment environment)?
+    libTvCliServiceFactory,
+    MiniMaxVideoApiService? videoApiService,
     Duration loginAuthorizationTimeout = const Duration(minutes: 5),
     Duration loginAuthorizationPollInterval = const Duration(seconds: 2),
     Uuid uuid = const Uuid(),
@@ -188,6 +236,14 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
        _settingsController = settingsController,
        _cliResolver = cliResolver,
        _cliService = cliService,
+       _libTvCliResolver = libTvCliResolver,
+       _libTvCliService = libTvCliService,
+       _dependencyInstaller = dependencyInstaller,
+       _libTvCliServiceFactory =
+           libTvCliServiceFactory ??
+           ((environment) =>
+               LibTvCliService(executable: environment.executablePath)),
+       _videoApiService = videoApiService ?? MiniMaxVideoApiService(),
        _loginAuthorizationTimeout = loginAuthorizationTimeout,
        _loginAuthorizationPollInterval = loginAuthorizationPollInterval,
        _uuid = uuid,
@@ -211,18 +267,35 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   final SettingsController _settingsController;
   final KlingCliResolver _cliResolver;
   KlingCliService _cliService;
+  final LibTvCliResolver _libTvCliResolver;
+  LibTvCliService _libTvCliService;
+  final CliDependencyInstaller _dependencyInstaller;
+  final LibTvCliService Function(LibTvCliEnvironment environment)
+  _libTvCliServiceFactory;
+  final MiniMaxVideoApiService _videoApiService;
   final Duration _loginAuthorizationTimeout;
   final Duration _loginAuthorizationPollInterval;
   final Uuid _uuid;
   KlingCliEnvironment? _cachedKlingEnvironment;
   KlingIdentity? _cachedKlingIdentity;
   KlingAccount? _cachedKlingAccount;
+  LibTvCliEnvironment? _cachedLibTvEnvironment;
+  LibTvAccountInfo? _cachedLibTvAccount;
+  LibTvModelSpec? _cachedLibTvModel;
   Future<void>? _activeEnvironmentInitialization;
-  KlingLoginProcess? _loginProcess;
+  Future<int>? _loginProcessExitCode;
+  bool Function([ProcessSignal signal])? _killLoginProcessCallback;
+  String Function()? _loginProcessStderr;
   Completer<void>? _loginCancelCompleter;
   Future<KlingLoginAuthorizationStatus>? _activeLoginAuthorization;
-  Future<void> _generationQueue = Future<void>.value();
+  Future<bool>? _activeCliInstallation;
+  final _preparingShotIds = <String>{};
   final _canceledTaskIds = <String>{};
+  var _activeBatchGenerationCount = 0;
+  var _videoApiResolutionPresets = _fallbackMiniMaxApiResolutionPresets;
+  var _videoApiDefaultResolution = _fallbackMiniMaxApiDefaultResolution;
+  var _videoApiDefaultSteps = 12;
+  var _videoApiConfigRequestToken = 0;
   var _disposed = false;
 
   Future<void> initializeEnvironment() async {
@@ -238,17 +311,31 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     if (_disposed) return;
     if (usesConfiguredVideoGenerationApi) {
       _cacheKlingState();
+      _cacheLibTvState();
+      final loadedConfig = await refreshVideoApiConfig();
+      if (_disposed) return;
       value = value.copyWith(
         environment: null,
         identity: null,
         account: null,
+        libTvEnvironment: null,
+        libTvAccount: null,
+        libTvModel: null,
         isLoadingEnvironment: false,
-        message: '视频生成 API 已就绪',
+        message: loadedConfig
+            ? '视频生成 API 已就绪'
+            : '视频生成 API 已就绪（分辨率配置读取失败，已使用内置列表）',
         errorMessage: '',
       );
       unawaited(_resumeStartupTasks());
       return;
     }
+    if (usesLibTvCli) {
+      _cacheKlingState();
+      await _initializeLibTvEnvironment();
+      return;
+    }
+    _cacheLibTvState();
     if (_restoreCachedKlingState()) {
       unawaited(_resumeStartupTasks());
       return;
@@ -289,7 +376,157 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     }
   }
 
+  Future<void> _initializeLibTvEnvironment() async {
+    if (_restoreCachedLibTvState()) {
+      unawaited(_resumeStartupTasks());
+      return;
+    }
+    value = value.copyWith(
+      environment: null,
+      identity: null,
+      account: null,
+      isLoadingEnvironment: true,
+      errorMessage: '',
+    );
+    LibTvCliEnvironment? environment;
+    try {
+      environment = await _libTvCliResolver.resolve();
+      if (_disposed || !usesLibTvCli) return;
+      if (!environment.isReady) {
+        value = value.copyWith(
+          libTvEnvironment: environment,
+          libTvAccount: null,
+          libTvModel: null,
+          isLoadingEnvironment: false,
+          errorMessage: environment.errorMessage,
+        );
+        return;
+      }
+      _libTvCliService = _libTvCliServiceFactory(environment);
+      value = value.copyWith(
+        libTvEnvironment: environment,
+        libTvAccount: null,
+        libTvModel: null,
+        errorMessage: '',
+      );
+      await _refreshLibTvAccount(successMessage: 'LibTV 账号已连接');
+      if (_disposed || !usesLibTvCli) return;
+      unawaited(_resumeStartupTasks());
+    } catch (error) {
+      if (_disposed || !usesLibTvCli) return;
+      value = value.copyWith(
+        libTvEnvironment: environment ?? value.libTvEnvironment,
+        libTvAccount: null,
+        libTvModel: null,
+        isLoadingEnvironment: false,
+        errorMessage: 'LibTV 未登录或连接失败：$error',
+      );
+    }
+  }
+
+  Future<bool> installActiveCli({KlingCliInstallRegion? klingRegion}) {
+    final active = _activeCliInstallation;
+    if (active != null) return active;
+    final future = _installActiveCli(klingRegion: klingRegion);
+    _activeCliInstallation = future;
+    future.whenComplete(() => _activeCliInstallation = null);
+    return future;
+  }
+
+  Future<bool> _installActiveCli({KlingCliInstallRegion? klingRegion}) async {
+    if (!usesCliVideoGeneration) return false;
+    final providerName = activeCliProviderName;
+    try {
+      if (usesLibTvCli) {
+        value = value.copyWith(
+          cliInstallStatus: CliDependencyInstallStatus.installingCli,
+          cliInstallMessage: '正在安装 LibTV CLI…',
+          errorMessage: '',
+        );
+        await _dependencyInstaller.installLibTv();
+        _cachedLibTvEnvironment = null;
+        value = value.copyWith(
+          libTvEnvironment: null,
+          libTvAccount: null,
+          libTvModel: null,
+        );
+      } else {
+        final region =
+            klingRegion ??
+            KlingCliInstallRegion.fromName(
+              activeVideoGenerationApiConfig?.klingCliRegion,
+            );
+        if (region == null) {
+          throw const CliDependencyInstallException('请先选择可灵 CLI 的区域：中国区或海外区。');
+        }
+        var environment = value.environment ?? await _cliResolver.resolve();
+        final needsNode =
+            environment.nodePath.trim().isEmpty ||
+            KlingCliResolver.parseNodeMajor(environment.nodeVersion) < 18 ||
+            environment.npmPath.trim().isEmpty;
+        if (needsNode) {
+          value = value.copyWith(
+            cliInstallStatus: CliDependencyInstallStatus.installingNode,
+            cliInstallMessage: '未检测到 Node.js 18+，正在通过 winget 安装 Node.js LTS…',
+            errorMessage: '',
+          );
+          await _dependencyInstaller.installNodeJsLts();
+          environment = await _cliResolver.resolve();
+        }
+        if (environment.npmPath.trim().isEmpty) {
+          throw const CliDependencyInstallException(
+            'Node.js 安装完成后仍未检测到 npm，请重启软件后再试。',
+          );
+        }
+        value = value.copyWith(
+          cliInstallStatus: CliDependencyInstallStatus.installingCli,
+          cliInstallMessage: '正在安装可灵 CLI（${region.label}）…',
+          errorMessage: '',
+        );
+        await _dependencyInstaller.installKling(
+          region: region,
+          npmPath: environment.npmPath,
+        );
+        _cachedKlingEnvironment = null;
+        value = value.copyWith(
+          environment: null,
+          identity: null,
+          account: null,
+        );
+        await _settingsController.setActiveKlingCliRegion(region.name);
+      }
+
+      await initializeEnvironment();
+      if (!activeCliEnvironmentReady) {
+        throw CliDependencyInstallException(
+          value.errorMessage.trim().isEmpty
+              ? '$providerName CLI 安装后仍未被检测到，请重启软件后再试。'
+              : value.errorMessage,
+        );
+      }
+      value = value.copyWith(
+        cliInstallStatus: CliDependencyInstallStatus.completed,
+        cliInstallMessage: '$providerName CLI 安装完成',
+        message: '$providerName CLI 安装完成，请继续浏览器授权',
+      );
+      return true;
+    } catch (error) {
+      if (_disposed) return false;
+      value = value.copyWith(
+        cliInstallStatus: CliDependencyInstallStatus.failed,
+        cliInstallMessage: '$providerName CLI 安装失败',
+        isLoadingEnvironment: false,
+        errorMessage: error.toString(),
+      );
+      return false;
+    }
+  }
+
   Future<void> login() async {
+    if (usesLibTvCli) {
+      await startLoginAuthorization();
+      return;
+    }
     value = value.copyWith(isLoadingEnvironment: true, errorMessage: '');
     try {
       await _cliService.login();
@@ -316,11 +553,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         KlingLoginAuthorizationStatus.waiting) {
       return;
     }
-    _loginProcess?.kill();
+    _killLoginProcess();
     try {
-      _loginProcess = await _cliService.startLogin();
+      await _startActiveLoginProcess();
       value = value.copyWith(
-        loginAuthorizationMessage: '已重新打开浏览器，请在浏览器中完成可灵授权。',
+        loginAuthorizationMessage: '已重新打开浏览器，请在浏览器中完成$activeCliProviderName授权。',
         errorMessage: '',
       );
     } catch (error) {
@@ -328,7 +565,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         loginAuthorizationStatus: KlingLoginAuthorizationStatus.failed,
         loginAuthorizationMessage: '无法重新打开浏览器：$error',
         isLoadingEnvironment: false,
-        errorMessage: '可灵登录失败：$error',
+        errorMessage: '$activeCliProviderName登录失败：$error',
       );
       _completeLoginCancelSignal();
     }
@@ -340,12 +577,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       return;
     }
     _completeLoginCancelSignal();
-    _loginProcess?.kill();
+    _killLoginProcess();
     value = value.copyWith(
       loginAuthorizationStatus: KlingLoginAuthorizationStatus.canceled,
       loginAuthorizationMessage: '',
       isLoadingEnvironment: false,
-      message: '已取消可灵登录授权',
+      message: '已取消$activeCliProviderName登录授权',
       errorMessage: '',
     );
   }
@@ -355,18 +592,18 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     value = value.copyWith(
       isLoadingEnvironment: true,
       loginAuthorizationStatus: KlingLoginAuthorizationStatus.waiting,
-      loginAuthorizationMessage: '正在打开浏览器，请在浏览器中完成可灵授权。',
+      loginAuthorizationMessage: '正在打开浏览器，请在浏览器中完成$activeCliProviderName授权。',
       message: '',
       errorMessage: '',
     );
     try {
-      _loginProcess = await _cliService.startLogin();
+      await _startActiveLoginProcess();
     } catch (error) {
       value = value.copyWith(
         isLoadingEnvironment: false,
         loginAuthorizationStatus: KlingLoginAuthorizationStatus.failed,
         loginAuthorizationMessage: '无法打开浏览器：$error',
-        errorMessage: '可灵登录失败：$error',
+        errorMessage: '$activeCliProviderName登录失败：$error',
       );
       _clearLoginSession();
       return KlingLoginAuthorizationStatus.failed;
@@ -380,7 +617,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         return KlingLoginAuthorizationStatus.canceled;
       }
       try {
-        await _refreshKlingAccount(successMessage: '可灵账号已连接');
+        await _refreshActiveCliAccount();
         value = value.copyWith(
           isLoadingEnvironment: false,
           loginAuthorizationStatus: KlingLoginAuthorizationStatus.completed,
@@ -394,8 +631,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       }
 
       final waitResult = await Future.any<Object?>([
-        if (_loginProcess != null)
-          _loginProcess!.exitCode.then<Object?>((code) => code),
+        if (_loginProcessExitCode != null)
+          _loginProcessExitCode!.then<Object?>((code) => code),
         Future<Object?>.delayed(_loginAuthorizationPollInterval),
         if (_loginCancelCompleter != null)
           _loginCancelCompleter!.future.then<Object?>(
@@ -408,13 +645,13 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       }
       final exited = waitResult is int ? waitResult : null;
       if (exited != null && exited != 0) {
-        final stderr = _loginProcess?.stderr().trim() ?? '';
+        final stderr = _loginProcessStderr?.call().trim() ?? '';
         final detail = stderr.isEmpty ? '$lastError' : stderr;
         value = value.copyWith(
           isLoadingEnvironment: false,
           loginAuthorizationStatus: KlingLoginAuthorizationStatus.failed,
-          loginAuthorizationMessage: '可灵授权窗口已退出，但登录未完成。',
-          errorMessage: '可灵登录失败：$detail',
+          loginAuthorizationMessage: '$activeCliProviderName授权窗口已退出，但登录未完成。',
+          errorMessage: '$activeCliProviderName登录失败：$detail',
         );
         _clearLoginSession();
         return KlingLoginAuthorizationStatus.failed;
@@ -425,7 +662,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       isLoadingEnvironment: false,
       loginAuthorizationStatus: KlingLoginAuthorizationStatus.timedOut,
       loginAuthorizationMessage: '未检测到授权完成，请重新打开浏览器或稍后再试。',
-      errorMessage: '未检测到可灵授权完成：$lastError',
+      errorMessage: '未检测到$activeCliProviderName授权完成：$lastError',
     );
     _clearLoginSession(killProcess: true);
     return KlingLoginAuthorizationStatus.timedOut;
@@ -450,6 +687,44 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _ensureProfileModel();
   }
 
+  Future<void> _refreshLibTvAccount({required String successMessage}) async {
+    final account = await _libTvCliService.accountInfo();
+    final model = await _libTvCliService.model(
+      AppSettings.defaultLibTvCliVideoGenerationModel,
+    );
+    final environment = value.libTvEnvironment;
+    if (environment != null && environment.isReady) {
+      _cachedLibTvEnvironment = environment;
+    }
+    _cachedLibTvAccount = account;
+    _cachedLibTvModel = model;
+    value = value.copyWith(
+      libTvAccount: account,
+      libTvModel: model,
+      isLoadingEnvironment: false,
+      message: successMessage,
+      errorMessage: '',
+    );
+  }
+
+  Future<void> _refreshActiveCliAccount() => usesLibTvCli
+      ? _refreshLibTvAccount(successMessage: 'LibTV 账号已连接')
+      : _refreshKlingAccount(successMessage: '可灵账号已连接');
+
+  Future<void> _startActiveLoginProcess() async {
+    if (usesLibTvCli) {
+      final process = await _libTvCliService.startLogin();
+      _loginProcessExitCode = process.exitCode;
+      _killLoginProcessCallback = process.kill;
+      _loginProcessStderr = process.stderr;
+      return;
+    }
+    final process = await _cliService.startLogin();
+    _loginProcessExitCode = process.exitCode;
+    _killLoginProcessCallback = process.kill;
+    _loginProcessStderr = process.stderr;
+  }
+
   void _completeLoginCancelSignal() {
     final completer = _loginCancelCompleter;
     if (completer != null && !completer.isCompleted) {
@@ -458,10 +733,14 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   void _clearLoginSession({bool killProcess = false}) {
-    if (killProcess) _loginProcess?.kill();
-    _loginProcess = null;
+    if (killProcess) _killLoginProcess();
+    _loginProcessExitCode = null;
+    _killLoginProcessCallback = null;
+    _loginProcessStderr = null;
     _loginCancelCompleter = null;
   }
+
+  void _killLoginProcess() => _killLoginProcessCallback?.call();
 
   void selectScript(String scriptId) {
     _shootingScriptController.selectScript(scriptId);
@@ -511,6 +790,18 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   VideoPromptMode get _defaultPromptModeForActiveApi {
     final config = _settingsController.value.activeVideoGenerationApiConfig;
+    final model = '${config?.name ?? ''} ${config?.model ?? ''}'
+        .trim()
+        .toLowerCase();
+    if (RegExp(r'即梦|jimeng|seedance|doubao').hasMatch(model)) {
+      return VideoPromptMode.original;
+    }
+    if (RegExp(r'\bh3\b|minimax|海螺').hasMatch(model)) {
+      return VideoPromptMode.h3Optimized;
+    }
+    if (RegExp(r'可灵|kling').hasMatch(model)) {
+      return VideoPromptMode.klingOptimized;
+    }
     return config?.isHttpApi == true
         ? VideoPromptMode.h3Optimized
         : VideoPromptMode.klingOptimized;
@@ -624,6 +915,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     if (usesConfiguredVideoGenerationApi) {
       return seconds.round().clamp(1, 15).toDouble();
     }
+    if (usesLibTvCli) {
+      return seconds.round().clamp(4, 15).toDouble();
+    }
     final profile = value.profile;
     final model = profile == null ? null : _model(profile.model);
     if (model != null) {
@@ -723,6 +1017,52 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
               .isNotEmpty ==
           true;
 
+  bool get usesLibTvCli =>
+      _settingsController.value.activeVideoGenerationApiConfig?.isLibTvCli ==
+      true;
+
+  bool get usesCliVideoGeneration =>
+      usesLibTvCli ||
+      _settingsController.value.activeVideoGenerationApiConfig?.isKlingCli ==
+          true;
+
+  String get activeCliProviderName => usesLibTvCli ? 'LibTV' : '可灵';
+
+  String get activeVideoBackendName {
+    final configName = activeVideoGenerationApiConfig?.name.trim() ?? '';
+    if (configName.isNotEmpty) return configName;
+    return usesCliVideoGeneration ? '$activeCliProviderName CLI' : '视频生成 API';
+  }
+
+  bool get activeCliEnvironmentReady => usesLibTvCli
+      ? value.libTvEnvironment?.isReady == true
+      : value.environment?.isReady == true;
+
+  bool get activeCliAccountConnected =>
+      usesLibTvCli ? value.libTvAccount != null : value.identity != null;
+
+  bool get activeCliInstallInProgress => value.cliInstallStatus.isInstalling;
+
+  KlingCliInstallRegion? get configuredKlingInstallRegion =>
+      KlingCliInstallRegion.fromName(
+        activeVideoGenerationApiConfig?.klingCliRegion,
+      );
+
+  bool get shouldRequestActiveCliInstall =>
+      usesCliVideoGeneration &&
+      !activeCliEnvironmentReady &&
+      !value.isLoadingEnvironment &&
+      !activeCliInstallInProgress;
+
+  bool get shouldRequestActiveCliLogin =>
+      usesCliVideoGeneration &&
+      activeCliEnvironmentReady &&
+      !activeCliAccountConnected;
+
+  String get activeCliVersion => usesLibTvCli
+      ? value.libTvEnvironment?.version ?? ''
+      : value.environment?.klingVersion ?? '';
+
   VideoGenerationApiConfig? get activeVideoGenerationApiConfig =>
       _settingsController.value.activeVideoGenerationApiConfig;
 
@@ -731,7 +1071,13 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return model.isEmpty ? AppSettings.defaultVideoGenerationModel : model;
   }
 
-  List<String> get videoApiAspectRatios => _minimaxApiAspectRatios;
+  List<String> get videoApiAspectRatios {
+    final ratios = <String>[];
+    for (final preset in _videoApiResolutionPresets) {
+      if (!ratios.contains(preset.aspectRatio)) ratios.add(preset.aspectRatio);
+    }
+    return List.unmodifiable(ratios);
+  }
 
   String get selectedVideoApiAspectRatio {
     final parameters = value.profile?.parameters ?? const <String, String>{};
@@ -748,22 +1094,60 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     final stored =
         parameters[_minimaxApiResolutionKey] ?? parameters['resolution'];
     if (_isMiniMaxResolution(stored)) return stored!;
-    return '0.2MP 16:9 - 608x352';
+    return _videoApiDefaultResolution;
   }
 
   int get selectedVideoApiSteps {
     final parameters = value.profile?.parameters ?? const <String, String>{};
     return _normalizeMiniMaxSteps(
       parameters[_minimaxApiStepsKey] ?? parameters['steps'],
+      fallback: _videoApiDefaultSteps,
     );
   }
 
   List<String> videoApiResolutionsForAspect(String aspectRatio) {
     final normalized = _allowedMiniMaxAspectRatio(aspectRatio) ?? '16:9';
     return [
-      for (final preset in _minimaxApiResolutionPresets)
+      for (final preset in _videoApiResolutionPresets)
         if (preset.aspectRatio == normalized) preset.label,
     ];
+  }
+
+  Future<bool> refreshVideoApiConfig() async {
+    final config = activeVideoGenerationApiConfig;
+    final requestToken = ++_videoApiConfigRequestToken;
+    if (config == null || !config.isHttpApi || config.baseUrl.trim().isEmpty) {
+      _resetVideoApiConfig();
+      return false;
+    }
+    try {
+      final apiConfig = await _videoApiService.fetchConfig(config: config);
+      if (_disposed || requestToken != _videoApiConfigRequestToken) {
+        return false;
+      }
+      final activeConfig = activeVideoGenerationApiConfig;
+      if (activeConfig?.id != config.id ||
+          activeConfig?.baseUrl.trim() != config.baseUrl.trim()) {
+        return false;
+      }
+      _videoApiResolutionPresets = List.unmodifiable([
+        for (final resolution in apiConfig.resolutions)
+          _MiniMaxResolutionPreset(
+            resolution,
+            _aspectRatioFromMiniMaxResolutionLabel(resolution) ?? '其他',
+          ),
+      ]);
+      _videoApiDefaultResolution = apiConfig.defaultResolution;
+      _videoApiDefaultSteps = apiConfig.defaultSteps;
+      value = value.copyWith();
+      return true;
+    } catch (_) {
+      if (_disposed || requestToken != _videoApiConfigRequestToken) {
+        return false;
+      }
+      _resetVideoApiConfig(notify: true);
+      return false;
+    }
   }
 
   void updateVideoApiAspectRatio(String aspectRatio) {
@@ -818,6 +1202,53 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       '分辨率：$selectedVideoApiResolution\n'
       '步数：$selectedVideoApiSteps';
 
+  List<String> get libTvAspectRatios => _libTvAspectRatios;
+
+  List<String> get libTvResolutions => _libTvResolutions;
+
+  String get selectedLibTvAspectRatio => _normalizedLibTvParameters()['ratio']!;
+
+  String get selectedLibTvResolution =>
+      _normalizedLibTvParameters()['resolution']!;
+
+  bool get selectedLibTvSoundEnabled =>
+      _normalizedLibTvParameters()['enableSound'] == 'on';
+
+  bool get selectedLibTvSearchEnabled =>
+      _normalizedLibTvParameters()['search_enabled'] == '1';
+
+  void updateLibTvAspectRatio(String ratio) {
+    if (!_libTvAspectRatios.contains(ratio)) return;
+    updateParameter(_libTvRatioKey, ratio);
+  }
+
+  void updateLibTvResolution(String resolution) {
+    if (!_libTvResolutions.contains(resolution)) return;
+    updateParameter(_libTvResolutionKey, resolution);
+  }
+
+  void updateLibTvSoundEnabled(bool enabled) {
+    updateParameter(_libTvEnableSoundKey, enabled ? 'on' : 'off');
+  }
+
+  void updateLibTvSearchEnabled(bool enabled) {
+    updateParameter(_libTvSearchEnabledKey, enabled ? '1' : '0');
+  }
+
+  String get libTvParameterSummary {
+    final parameters = _normalizedLibTvParameters();
+    return '生成比例：${parameters['ratio']}\n'
+        '分辨率：${parameters['resolution']}\n'
+        '生成音频：${parameters['enableSound'] == 'off' ? '关闭' : '开启'}\n'
+        '联网增强：${parameters['search_enabled'] == '0' ? '关闭' : '开启'}\n'
+        '时长范围：4–15 秒';
+  }
+
+  Map<String, String> _normalizedLibTvParameters() =>
+      _libTvParametersForSubmission(
+        value.profile?.parameters ?? const <String, String>{},
+      );
+
   Map<String, String> get selectedVideoApiSubmissionParameters =>
       _miniMaxApiParametersForSubmission(
         value.profile?.parameters ?? const <String, String>{},
@@ -849,6 +1280,14 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return true;
   }
 
+  bool isGenerationActiveFor(ScriptShot shot) {
+    final owner = generationOwnerFor(shot);
+    return _preparingShotIds.contains(owner.id) ||
+        value.tasks.any(
+          (task) => task.shotId == owner.id && !task.status.isTerminal,
+        );
+  }
+
   List<ScriptShot> generationTargets() {
     int compareShotNumber(ScriptShot first, ScriptShot second) {
       final byNumber = first.shotNumber.compareTo(second.shotNumber);
@@ -858,35 +1297,56 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return (const VideoActionSequenceResolver()
         .resolve(value.shots)
         .map((sequence) => sequence.head)
-        .where(canGenerateShot)
+        .where((shot) => canGenerateShot(shot) && !isGenerationActiveFor(shot))
         .toList(growable: false)
       ..sort(compareShotNumber));
   }
 
   Future<void> generateShot(ScriptShot shot) async {
-    final submissions = await _prepareGenerationSubmissions([
-      generationOwnerFor(shot),
-    ]);
-    if (submissions.isEmpty) return;
-    await _enqueueGeneration(
-      submissions,
-      isBatch: false,
-      queuedMessage: '已加入生成队列，等待前序任务完成',
-    );
+    final owner = generationOwnerFor(shot);
+    if (!_reserveGenerationPreparation(owner)) return;
+    try {
+      final submissions = await _prepareGenerationSubmissions([owner]);
+      if (submissions.isEmpty) return;
+      final generation = _enqueueGeneration(
+        submissions,
+        isBatch: false,
+        queuedMessage: '已提交生成任务',
+      );
+      _preparingShotIds.remove(owner.id);
+      await generation;
+    } finally {
+      _preparingShotIds.remove(owner.id);
+    }
   }
 
   Future<void> generateAll() async {
-    final submissions = await _prepareGenerationSubmissions(
-      generationTargets(),
-    );
-    if (submissions.isEmpty) return;
-    await _enqueueGeneration(
-      submissions,
-      isBatch: true,
-      queuedMessage: usesConfiguredVideoGenerationApi
-          ? '已按镜号排队，正在串行生成 ${submissions.length} 个视频…'
-          : '已按镜号排队，正在并发生成 ${submissions.length} 个可灵视频…',
-    );
+    final targets = generationTargets()
+        .where(_reserveGenerationPreparation)
+        .toList(growable: false);
+    if (targets.isEmpty) return;
+    try {
+      final submissions = await _prepareGenerationSubmissions(targets);
+      if (submissions.isEmpty) return;
+      final generation = _enqueueGeneration(
+        submissions,
+        isBatch: true,
+        queuedMessage: usesConfiguredVideoGenerationApi
+            ? '已按镜号提交 ${submissions.length} 个视频任务…'
+            : usesLibTvCli
+            ? '已按镜号顺序提交 ${submissions.length} 个 LibTV 视频…'
+            : '已按镜号并发提交 ${submissions.length} 个可灵视频…',
+      );
+      _preparingShotIds.removeAll(targets.map((shot) => shot.id));
+      await generation;
+    } finally {
+      _preparingShotIds.removeAll(targets.map((shot) => shot.id));
+    }
+  }
+
+  bool _reserveGenerationPreparation(ScriptShot shot) {
+    if (isGenerationActiveFor(shot)) return false;
+    return _preparingShotIds.add(shot.id);
   }
 
   Future<void> openOutputDirectory() async {
@@ -1157,14 +1617,20 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         videoApiConfig != null &&
         videoApiConfig.isHttpApi &&
         videoApiConfig.baseUrl.trim().isNotEmpty;
+    final usesLibTv = videoApiConfig?.isLibTvCli == true;
+    final usesNonKlingBackend = usesVideoApi || usesLibTv;
     final model = profile == null ? null : _model(profile.model);
     if (shots.isEmpty) {
       value = value.copyWith(errorMessage: '没有具备首帧图的可生成镜头');
       return const [];
     }
-    if (!usesVideoApi &&
+    if (!usesNonKlingBackend &&
         (profile == null || model == null || value.identity == null)) {
       value = value.copyWith(errorMessage: '请先登录可灵并选择可用模型');
+      return const [];
+    }
+    if (usesLibTv && (value.libTvAccount == null || value.libTvModel == null)) {
+      value = value.copyWith(errorMessage: '请先登录 LibTV 并确认 Seedance 2.0 模型可用');
       return const [];
     }
     final directories = await _generationDirectories();
@@ -1181,7 +1647,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       }
       final confirmedAssets = _confirmedScriptAssetsForSequence(sequence.shots);
       final errorBeforeImageReferences = value.errorMessage;
-      final imageReferences = usesVideoApi
+      final imageReferences = usesNonKlingBackend
           ? _videoApiImageReferencesForShot(
               sequence: sequence,
               sourceImagePath: imageFile.path,
@@ -1200,7 +1666,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           value.errorMessage != errorBeforeImageReferences) {
         return const [];
       }
-      final prompt = usesVideoApi
+      final prompt = usesNonKlingBackend
           ? _videoApiPromptForSubmission(
               draft.selectedPrompt,
               imageReferences: imageReferences,
@@ -1213,6 +1679,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
             );
       final duration = usesVideoApi
           ? desiredDurationFor(shot).round().clamp(1, 15).toInt()
+          : usesLibTv
+          ? desiredDurationFor(shot).round().clamp(4, 15).toInt()
           : const KlingDurationMatcher().forModel(
               desiredSeconds: desiredDurationFor(shot),
               model: model!,
@@ -1229,11 +1697,15 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
             id: taskId,
             scriptId: shot.scriptId,
             shotId: shot.id,
-            model: usesVideoApi
+            model: usesNonKlingBackend
                 ? activeVideoGenerationApiModel
                 : profile!.model,
             parameters: usesVideoApi
                 ? _miniMaxApiParametersForSubmission(
+                    profile?.parameters ?? const <String, String>{},
+                  )
+                : usesLibTv
+                ? _libTvParametersForSubmission(
                     profile?.parameters ?? const <String, String>{},
                   )
                 : _parametersForSubmission(profile!.parameters, model: model!),
@@ -1248,6 +1720,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           referenceImagePaths: [
             for (final reference in imageReferences) reference.path,
           ],
+          scriptName: value.selectedScript?.name ?? '',
           outputFile: output,
         ),
       );
@@ -1268,8 +1741,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         _settingsController.value.activeVideoGenerationApiConfig;
     final usesVideoApi =
         videoApiConfig != null &&
-        videoApiConfig.isHttpApi &&
-        videoApiConfig.baseUrl.trim().isNotEmpty;
+        (videoApiConfig.isLibTvCli ||
+            (videoApiConfig.isHttpApi &&
+                videoApiConfig.baseUrl.trim().isNotEmpty));
     final activeTasks = [
       for (final submission in submissions)
         submission.task.copyWith(
@@ -1281,6 +1755,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     for (final task in activeTasks) {
       _repository.upsertTask(task);
     }
+    if (isBatch) _activeBatchGenerationCount += 1;
     value = value.copyWith(
       isBusy: isBatch ? true : value.isBusy,
       isGeneratingAll: isBatch ? true : value.isGeneratingAll,
@@ -1293,16 +1768,28 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       errorMessage: '',
     );
     _replicateController.updateVideoGenerationStatus(ProcessingStatus.running);
-    final run = _generationQueue.then(
-      (_) => _runQueuedGeneration(
+    try {
+      await _runQueuedGeneration(
         submissions,
         usesVideoApi: usesVideoApi,
         videoApiConfig: videoApiConfig,
         isBatch: isBatch,
-      ),
-    );
-    _generationQueue = run.catchError((_) {});
-    await run;
+      );
+    } finally {
+      if (isBatch) {
+        _activeBatchGenerationCount = (_activeBatchGenerationCount - 1).clamp(
+          0,
+          1 << 30,
+        );
+        if (!_disposed) {
+          final hasActiveBatch = _activeBatchGenerationCount > 0;
+          value = value.copyWith(
+            isBusy: hasActiveBatch,
+            isGeneratingAll: hasActiveBatch,
+          );
+        }
+      }
+    }
   }
 
   Future<void> _runQueuedGeneration(
@@ -1321,6 +1808,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           await VideoGenerationTaskService(
             repository: _repository,
             cliService: _cliService,
+            libTvCliService: _libTvCliService,
             onTaskChanged: _handleTaskChanged,
             videoApiConfig: usesVideoApi ? videoApiConfig : null,
           ).submitBatch(
@@ -1354,8 +1842,6 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
       _refreshData();
       value = value.copyWith(
-        isBusy: isBatch ? false : value.isBusy,
-        isGeneratingAll: isBatch ? false : value.isGeneratingAll,
         message: resultMessage,
         errorMessage: status == ProcessingStatus.failed && canceled == 0
             ? '本批任务均未完成'
@@ -1363,15 +1849,31 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
     } catch (error) {
       if (_disposed) return;
+      _failUnfinishedSubmissions(submissions, error);
       _replicateController.updateVideoGenerationStatus(
         ProcessingStatus.failed,
         message: '$error',
       );
-      value = value.copyWith(
-        isBusy: isBatch ? false : value.isBusy,
-        isGeneratingAll: isBatch ? false : value.isGeneratingAll,
-        errorMessage: '视频生成失败：$error',
+      value = value.copyWith(errorMessage: '视频生成失败：$error');
+    }
+  }
+
+  void _failUnfinishedSubmissions(
+    List<VideoGenerationSubmission> submissions,
+    Object error,
+  ) {
+    final now = DateTime.now().toUtc();
+    for (final submission in submissions) {
+      final current = _repository.getTask(submission.task.id);
+      if (current == null || current.status.isTerminal) continue;
+      final failed = current.copyWith(
+        status: VideoGenerationTaskStatus.failed,
+        errorMessage: '$error',
+        updatedAt: now,
+        completedAt: now,
       );
+      _repository.upsertTask(failed);
+      _handleTaskChanged(failed);
     }
   }
 
@@ -1387,24 +1889,24 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     if (pending.isEmpty) return;
     final videoApiConfig =
         _settingsController.value.activeVideoGenerationApiConfig;
+    final usesNonKlingBackend =
+        usesConfiguredVideoGenerationApi || usesLibTvCli;
     value = value.copyWith(
       isBusy: true,
-      message: usesConfiguredVideoGenerationApi
-          ? '正在恢复查询 ${pending.length} 个视频 API 任务…'
+      message: usesNonKlingBackend
+          ? '正在恢复 ${pending.length} 个$activeVideoBackendName视频任务…'
           : '正在恢复查询 ${pending.length} 个可灵任务…',
     );
     try {
       final recovered =
           await _videoTaskService(
             onTaskChanged: _handleTaskChanged,
-            videoApiConfig: usesConfiguredVideoGenerationApi
-                ? videoApiConfig
-                : null,
+            videoApiConfig: usesNonKlingBackend ? videoApiConfig : null,
           ).resumePending(
             outputForTask: generatedVideoFileFor,
             isTaskCanceled: _canceledTaskIds.contains,
             includeTimedOut: false,
-            concurrency: usesConfiguredVideoGenerationApi
+            concurrency: usesNonKlingBackend
                 ? localVideoApiBatchConcurrency
                 : klingCliBatchConcurrency,
           );
@@ -1427,16 +1929,16 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       }
       value = value.copyWith(
         isBusy: false,
-        message: usesConfiguredVideoGenerationApi
-            ? '已恢复查询 ${pending.length} 个视频 API 任务'
+        message: usesNonKlingBackend
+            ? '已恢复 ${pending.length} 个$activeVideoBackendName视频任务'
             : '已恢复查询 ${pending.length} 个可灵任务',
       );
     } catch (error) {
       if (_disposed) return;
       value = value.copyWith(
         isBusy: false,
-        errorMessage: usesConfiguredVideoGenerationApi
-            ? '恢复视频 API 任务查询失败：$error'
+        errorMessage: usesNonKlingBackend
+            ? '恢复$activeVideoBackendName视频任务失败：$error'
             : '恢复可灵任务查询失败：$error',
       );
     }
@@ -1484,10 +1986,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }) => VideoGenerationTaskService(
     repository: _repository,
     cliService: _cliService,
+    libTvCliService: _libTvCliService,
     onTaskChanged: onTaskChanged,
     videoApiConfig:
         videoApiConfig ??
-        (usesConfiguredVideoGenerationApi
+        (usesConfiguredVideoGenerationApi || usesLibTvCli
             ? _settingsController.value.activeVideoGenerationApiConfig
             : null),
   );
@@ -1548,16 +2051,35 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _syncPromptModeWithActiveApi();
     if (usesConfiguredVideoGenerationApi) {
       _cacheKlingState();
+      _cacheLibTvState();
+      _resetVideoApiConfig();
       value = value.copyWith(
         environment: null,
         identity: null,
         account: null,
+        libTvEnvironment: null,
+        libTvAccount: null,
+        libTvModel: null,
         isLoadingEnvironment: false,
         message: '视频生成 API 已就绪',
         errorMessage: '',
       );
+      unawaited(refreshVideoApiConfig());
       return;
     }
+    if (usesLibTvCli) {
+      _cacheKlingState();
+      value = value.copyWith(environment: null, identity: null, account: null);
+      if (_restoreCachedLibTvState()) return;
+      unawaited(initializeEnvironment());
+      return;
+    }
+    _cacheLibTvState();
+    value = value.copyWith(
+      libTvEnvironment: null,
+      libTvAccount: null,
+      libTvModel: null,
+    );
     unawaited(initializeEnvironment());
     if (_restoreCachedKlingState()) return;
     value = value.copyWith();
@@ -1572,6 +2094,57 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     if (identity != null) _cachedKlingIdentity = identity;
     final account = value.account;
     if (account != null) _cachedKlingAccount = account;
+  }
+
+  void _cacheLibTvState() {
+    final environment = value.libTvEnvironment;
+    if (environment != null && environment.isReady) {
+      _cachedLibTvEnvironment = environment;
+    }
+    final account = value.libTvAccount;
+    if (account != null) _cachedLibTvAccount = account;
+    final model = value.libTvModel;
+    if (model != null) _cachedLibTvModel = model;
+  }
+
+  void _resetVideoApiConfig({bool notify = false}) {
+    _videoApiResolutionPresets = _fallbackMiniMaxApiResolutionPresets;
+    _videoApiDefaultResolution = _fallbackMiniMaxApiDefaultResolution;
+    _videoApiDefaultSteps = 12;
+    if (notify && !_disposed) value = value.copyWith();
+  }
+
+  String? _allowedMiniMaxAspectRatio(String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) return null;
+    return videoApiAspectRatios.contains(normalized) ? normalized : null;
+  }
+
+  bool _isMiniMaxResolution(String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) return false;
+    return _videoApiResolutionPresets.any(
+      (preset) => preset.label == normalized,
+    );
+  }
+
+  String? _aspectRatioForMiniMaxResolution(String resolution) {
+    final normalized = resolution.trim();
+    for (final preset in _videoApiResolutionPresets) {
+      if (preset.label == normalized) return preset.aspectRatio;
+    }
+    return null;
+  }
+
+  String _defaultMiniMaxResolutionForAspect(String aspectRatio) {
+    if (_aspectRatioForMiniMaxResolution(_videoApiDefaultResolution) ==
+        aspectRatio) {
+      return _videoApiDefaultResolution;
+    }
+    for (final preset in _videoApiResolutionPresets) {
+      if (preset.aspectRatio == aspectRatio) return preset.label;
+    }
+    return _videoApiDefaultResolution;
   }
 
   bool _restoreCachedKlingState() {
@@ -1598,6 +2171,28 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       errorMessage: '',
     );
     _ensureProfileModel();
+    return true;
+  }
+
+  bool _restoreCachedLibTvState() {
+    final environment = _cachedLibTvEnvironment;
+    final account = _cachedLibTvAccount;
+    final model = _cachedLibTvModel;
+    if (environment == null ||
+        !environment.isReady ||
+        account == null ||
+        model == null) {
+      return false;
+    }
+    _libTvCliService = _libTvCliServiceFactory(environment);
+    value = value.copyWith(
+      libTvEnvironment: environment,
+      libTvAccount: account,
+      libTvModel: model,
+      isLoadingEnvironment: false,
+      message: 'LibTV 账号已连接',
+      errorMessage: '',
+    );
     return true;
   }
 
@@ -2019,9 +2614,29 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return {
       'resolution': _isMiniMaxResolution(resolution)
           ? resolution!
-          : '0.2MP 16:9 - 608x352',
+          : _videoApiDefaultResolution,
       'steps':
-          '${_normalizeMiniMaxSteps(parameters[_minimaxApiStepsKey] ?? parameters['steps'])}',
+          '${_normalizeMiniMaxSteps(parameters[_minimaxApiStepsKey] ?? parameters['steps'], fallback: _videoApiDefaultSteps)}',
+    };
+  }
+
+  Map<String, String> _libTvParametersForSubmission(
+    Map<String, String> parameters,
+  ) {
+    final ratio = parameters[_libTvRatioKey] ?? parameters['ratio'];
+    final resolution =
+        parameters[_libTvResolutionKey] ?? parameters['resolution'];
+    final enableSound =
+        parameters[_libTvEnableSoundKey] ?? parameters['enableSound'];
+    final searchEnabled =
+        parameters[_libTvSearchEnabledKey] ?? parameters['search_enabled'];
+    return {
+      'ratio': _libTvAspectRatios.contains(ratio) ? ratio! : '16:9',
+      'resolution': _libTvResolutions.contains(resolution)
+          ? resolution!
+          : '720p',
+      'enableSound': enableSound == 'off' ? 'off' : 'on',
+      'search_enabled': searchEnabled == '0' ? '0' : '1',
     };
   }
 
@@ -2104,7 +2719,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   @override
   void dispose() {
     _disposed = true;
-    _loginProcess?.kill();
+    _videoApiConfigRequestToken++;
+    _killLoginProcess();
     _completeLoginCancelSignal();
     _shootingScriptController.removeListener(_handleSourcesChanged);
     _replicateController.removeListener(_handleSourcesChanged);
@@ -2182,9 +2798,23 @@ class _GenerationImageReference {
 const _minimaxApiAspectRatioKey = 'minimax_api_aspect_ratio';
 const _minimaxApiResolutionKey = 'minimax_api_resolution';
 const _minimaxApiStepsKey = 'minimax_api_steps';
+const _libTvRatioKey = 'libtv_ratio';
+const _libTvResolutionKey = 'libtv_resolution';
+const _libTvEnableSoundKey = 'libtv_enable_sound';
+const _libTvSearchEnabledKey = 'libtv_search_enabled';
+const _libTvAspectRatios = [
+  'adaptive',
+  '16:9',
+  '4:3',
+  '1:1',
+  '3:4',
+  '9:16',
+  '21:9',
+];
+const _libTvResolutions = ['480p', '720p'];
 
-const _minimaxApiAspectRatios = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
-const _minimaxApiResolutionPresets = [
+const _fallbackMiniMaxApiDefaultResolution = '0.2MP 16:9 - 608x352';
+const _fallbackMiniMaxApiResolutionPresets = [
   _MiniMaxResolutionPreset('0.2MP 21:9 - 672x288', '21:9'),
   _MiniMaxResolutionPreset('0.3MP 21:9 - 896x384', '21:9'),
   _MiniMaxResolutionPreset('0.5MP 21:9 - 1120x480', '21:9'),
@@ -2205,39 +2835,20 @@ const _minimaxApiResolutionPresets = [
   _MiniMaxResolutionPreset('0.4MP 9:16 - 480x864', '9:16'),
 ];
 
-String? _allowedMiniMaxAspectRatio(String? value) {
-  final normalized = value?.trim();
-  if (normalized == null || normalized.isEmpty) return null;
-  for (final aspectRatio in _minimaxApiAspectRatios) {
-    if (aspectRatio == normalized) return aspectRatio;
+String? _aspectRatioFromMiniMaxResolutionLabel(String resolution) {
+  final normalized = resolution.trim();
+  final ratioMatch = RegExp(
+    r'(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)',
+  ).firstMatch(normalized);
+  if (ratioMatch != null) {
+    return '${ratioMatch.group(1)}:${ratioMatch.group(2)}';
   }
+  if (normalized.toLowerCase().contains('square')) return '1:1';
   return null;
 }
 
-bool _isMiniMaxResolution(String? value) {
-  if (value == null || value.trim().isEmpty) return false;
-  for (final preset in _minimaxApiResolutionPresets) {
-    if (preset.label == value.trim()) return true;
-  }
-  return false;
-}
-
-String? _aspectRatioForMiniMaxResolution(String resolution) {
-  for (final preset in _minimaxApiResolutionPresets) {
-    if (preset.label == resolution.trim()) return preset.aspectRatio;
-  }
-  return null;
-}
-
-String _defaultMiniMaxResolutionForAspect(String aspectRatio) {
-  for (final preset in _minimaxApiResolutionPresets) {
-    if (preset.aspectRatio == aspectRatio) return preset.label;
-  }
-  return '0.2MP 16:9 - 608x352';
-}
-
-int _normalizeMiniMaxSteps(String? value) {
-  final parsed = int.tryParse(value?.trim() ?? '') ?? 12;
+int _normalizeMiniMaxSteps(String? value, {int fallback = 12}) {
+  final parsed = int.tryParse(value?.trim() ?? '') ?? fallback;
   return parsed.clamp(4, 30).toInt();
 }
 

@@ -14,6 +14,7 @@ import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
+import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/image_file_context_menu.dart';
 import '../../../core/widgets/preview_file_image.dart';
@@ -137,6 +138,116 @@ class StoryboardPage extends ConsumerStatefulWidget {
   ConsumerState<StoryboardPage> createState() => _StoryboardPageState();
 }
 
+class _StoryboardFolderDropScope
+    extends InheritedNotifier<_StoryboardFolderDropCoordinator> {
+  const _StoryboardFolderDropScope({
+    required _StoryboardFolderDropCoordinator coordinator,
+    required super.child,
+  }) : super(notifier: coordinator);
+
+  static _StoryboardFolderDropCoordinator? maybeOf(BuildContext context) =>
+      context
+          .getInheritedWidgetOfExactType<_StoryboardFolderDropScope>()
+          ?.notifier;
+}
+
+class _StoryboardFolderDropCoordinator extends ChangeNotifier {
+  final _targets = <String, _StoryboardFolderDropTarget>{};
+  List<StoryboardCutAsset> _assets = const [];
+  Offset? _globalPosition;
+  String? _hoveredFolderId;
+
+  String? get hoveredFolderId => _hoveredFolderId;
+
+  void registerTarget({
+    required String folderId,
+    required bool Function(Offset globalPosition) contains,
+    required void Function(List<StoryboardCutAsset> assets) onDrop,
+  }) {
+    _targets[folderId] = _StoryboardFolderDropTarget(
+      contains: contains,
+      onDrop: onDrop,
+    );
+    final position = _globalPosition;
+    if (position != null) {
+      _resolveHoveredFolder(position);
+    }
+  }
+
+  void unregisterTarget(String folderId) {
+    _targets.remove(folderId);
+    if (_hoveredFolderId == folderId) {
+      _setHoveredFolder(null);
+    }
+  }
+
+  void begin({
+    required Iterable<StoryboardCutAsset> assets,
+    required Offset globalPosition,
+  }) {
+    _assets = List<StoryboardCutAsset>.unmodifiable(assets);
+    _globalPosition = globalPosition;
+    _resolveHoveredFolder(globalPosition);
+  }
+
+  void update(Offset globalPosition) {
+    if (_assets.isEmpty) return;
+    _globalPosition = globalPosition;
+    _resolveHoveredFolder(globalPosition);
+  }
+
+  bool complete() {
+    final folderId = _hoveredFolderId;
+    final target = folderId == null ? null : _targets[folderId];
+    final assets = _assets;
+    _reset();
+    if (target == null || assets.isEmpty) {
+      return false;
+    }
+    target.onDrop(assets);
+    return true;
+  }
+
+  void cancel() => _reset();
+
+  void _resolveHoveredFolder(Offset globalPosition) {
+    String? nextFolderId;
+    for (final entry in _targets.entries) {
+      if (entry.value.contains(globalPosition)) {
+        nextFolderId = entry.key;
+        break;
+      }
+    }
+    _setHoveredFolder(nextFolderId);
+  }
+
+  void _setHoveredFolder(String? folderId) {
+    if (_hoveredFolderId == folderId) return;
+    _hoveredFolderId = folderId;
+    notifyListeners();
+  }
+
+  void _reset() {
+    final hadHover = _hoveredFolderId != null;
+    _assets = const [];
+    _globalPosition = null;
+    _hoveredFolderId = null;
+    if (hadHover) {
+      notifyListeners();
+    }
+  }
+}
+
+class _StoryboardFolderDropTarget {
+  const _StoryboardFolderDropTarget({
+    required this.contains,
+    required this.onDrop,
+  });
+
+  final bool Function(Offset globalPosition) contains;
+  final void Function(List<StoryboardCutAsset> assets) onDrop;
+}
+
 class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   static const _minAssetSidebarWidth = 220.0;
   static const _maxAssetSidebarWidth = 720.0;
@@ -147,12 +258,19 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   bool _assetSidebarExpanded = true;
   bool _inspectorExpanded = false;
   final _assetSidebarKey = GlobalKey<_AssetSidebarState>();
+  final _folderDropCoordinator = _StoryboardFolderDropCoordinator();
   final _expandedInspectorSections = <_StoryboardInspectorSection>{};
 
   @override
   void initState() {
     super.initState();
     _restoreUiState();
+  }
+
+  @override
+  void dispose() {
+    _folderDropCoordinator.dispose();
+    super.dispose();
   }
 
   @override
@@ -200,6 +318,11 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                 return Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    CollapsiblePanelRegistration(
+                      expanded: _assetSidebarExpanded,
+                      onExpandedChanged: _setAssetSidebarExpanded,
+                      child: const SizedBox.shrink(),
+                    ),
                     SizedBox(
                       key: const ValueKey('storyboard-asset-sidebar-container'),
                       width: sidebarWidth,
@@ -320,6 +443,11 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                           ),
                     ),
                     const SizedBox(width: 12),
+                    CollapsiblePanelRegistration(
+                      expanded: _inspectorExpanded,
+                      onExpandedChanged: _setInspectorExpanded,
+                      child: const SizedBox.shrink(),
+                    ),
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       curve: Curves.easeOutCubic,
@@ -368,7 +496,10 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         const SingleActivator(LogicalKeyboardKey.tab, control: true):
             controller.selectNextOpenBoard,
       },
-      child: Focus(autofocus: true, child: content),
+      child: _StoryboardFolderDropScope(
+        coordinator: _folderDropCoordinator,
+        child: Focus(autofocus: true, child: content),
+      ),
     );
   }
 
@@ -3107,89 +3238,161 @@ class _AssetFolderGroup extends StatefulWidget {
 }
 
 class _AssetFolderGroupState extends State<_AssetFolderGroup> {
+  final _canvasDropTargetKey = GlobalKey();
+  _StoryboardFolderDropCoordinator? _folderDropCoordinator;
   bool _externalDragging = false;
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final coordinator = _StoryboardFolderDropScope.maybeOf(context);
+    if (identical(_folderDropCoordinator, coordinator)) return;
+    _unregisterCanvasDropTarget();
+    _folderDropCoordinator = coordinator;
+    _folderDropCoordinator?.addListener(_handleFolderDropChanged);
+    _registerCanvasDropTarget();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AssetFolderGroup oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.folder.id != widget.folder.id) {
+      _folderDropCoordinator?.unregisterTarget(oldWidget.folder.id);
+    }
+    _registerCanvasDropTarget();
+  }
+
+  @override
+  void dispose() {
+    _unregisterCanvasDropTarget();
+    super.dispose();
+  }
+
+  void _registerCanvasDropTarget() {
+    _folderDropCoordinator?.registerTarget(
+      folderId: widget.folder.id,
+      contains: _containsCanvasDragPosition,
+      onDrop: (assets) => widget.onDropPaths(
+        assets.map((asset) => asset.path).toList(growable: false),
+      ),
+    );
+  }
+
+  void _unregisterCanvasDropTarget() {
+    final coordinator = _folderDropCoordinator;
+    if (coordinator == null) return;
+    coordinator
+      ..removeListener(_handleFolderDropChanged)
+      ..unregisterTarget(widget.folder.id);
+    _folderDropCoordinator = null;
+  }
+
+  bool _containsCanvasDragPosition(Offset globalPosition) {
+    final renderObject = _canvasDropTargetKey.currentContext
+        ?.findRenderObject();
+    if (renderObject is! RenderBox ||
+        !renderObject.attached ||
+        !renderObject.hasSize) {
+      return false;
+    }
+    final localPosition = renderObject.globalToLocal(globalPosition);
+    return (Offset.zero & renderObject.size).contains(localPosition);
+  }
+
+  void _handleFolderDropChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final canvasDragging =
+        _folderDropCoordinator?.hoveredFolderId == widget.folder.id;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: DropTarget(
-        onDragEntered: (_) => setState(() => _externalDragging = true),
-        onDragExited: (_) => setState(() => _externalDragging = false),
-        onDragDone: (details) {
-          setState(() => _externalDragging = false);
-          widget.onDropPaths(details.files.map((file) => file.path));
-        },
-        child: DragTarget<StoryboardCutAsset>(
-          onWillAcceptWithDetails: (_) => true,
-          onAcceptWithDetails: (details) => widget.onDropAsset(details.data),
-          builder: (context, candidateData, _) {
-            final highlighted = _externalDragging || candidateData.isNotEmpty;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _ResourceNodeDropTarget(
-                  target: _ResourceNodeDragData.folder(widget.folder),
-                  parentGroupId: widget.parentGroupId,
-                  siblingKeys: widget.siblingKeys,
-                  onDrop: widget.onMoveNode,
-                  child: _ResourceNodeDraggable(
-                    data: _ResourceNodeDragData.folder(widget.folder),
-                    child: _FolderHeader(
-                      folder: widget.folder,
-                      sequence: widget.sequence,
-                      pinned: widget.pinned,
-                      expanded: widget.expanded,
-                      highlighted: highlighted,
-                      usedIds: widget.usedIds,
-                      onTap: widget.onToggleExpanded,
-                      onTogglePinned: widget.onTogglePinned,
-                      onOpenDirectory: widget.onOpenDirectory,
+      child: KeyedSubtree(
+        key: _canvasDropTargetKey,
+        child: DropTarget(
+          onDragEntered: (_) => setState(() => _externalDragging = true),
+          onDragExited: (_) => setState(() => _externalDragging = false),
+          onDragDone: (details) {
+            setState(() => _externalDragging = false);
+            widget.onDropPaths(details.files.map((file) => file.path));
+          },
+          child: DragTarget<StoryboardCutAsset>(
+            onWillAcceptWithDetails: (_) => true,
+            onAcceptWithDetails: (details) => widget.onDropAsset(details.data),
+            builder: (context, candidateData, _) {
+              final highlighted =
+                  canvasDragging ||
+                  _externalDragging ||
+                  candidateData.isNotEmpty;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _ResourceNodeDropTarget(
+                    target: _ResourceNodeDragData.folder(widget.folder),
+                    parentGroupId: widget.parentGroupId,
+                    siblingKeys: widget.siblingKeys,
+                    onDrop: widget.onMoveNode,
+                    child: _ResourceNodeDraggable(
+                      data: _ResourceNodeDragData.folder(widget.folder),
+                      child: _FolderHeader(
+                        folder: widget.folder,
+                        sequence: widget.sequence,
+                        pinned: widget.pinned,
+                        expanded: widget.expanded,
+                        highlighted: highlighted,
+                        usedIds: widget.usedIds,
+                        onTap: widget.onToggleExpanded,
+                        onTogglePinned: widget.onTogglePinned,
+                        onOpenDirectory: widget.onOpenDirectory,
+                      ),
                     ),
                   ),
-                ),
-                AnimatedCrossFade(
-                  duration: const Duration(milliseconds: 180),
-                  crossFadeState: widget.expanded
-                      ? CrossFadeState.showSecond
-                      : CrossFadeState.showFirst,
-                  firstChild: const SizedBox.shrink(),
-                  secondChild: Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: widget.folder.assets.isEmpty
-                        ? _EmptyFolderHint(highlighted: highlighted)
-                        : ViewportLazyGrid(
-                            key: widget.assetGridKey,
-                            itemCount: widget.folder.assets.length,
-                            itemExtent: widget.thumbnailSize,
-                            crossAxisSpacing: 8,
-                            mainAxisSpacing: 8,
-                            itemBuilder: (context, index) {
-                              final asset = widget.folder.assets[index];
-                              return _AssetThumb(
-                                asset: asset,
-                                used: widget.usedIds.contains(asset.id),
-                                rangePreviewed: widget.previewIds.contains(
-                                  asset.id,
-                                ),
-                                rangeAdding: widget.previewAdding,
-                                focused: asset.id == widget.focusedAssetId,
-                                size: widget.thumbnailSize,
-                                onTap: () => widget.onToggleAsset(asset),
-                                onSecondaryTap: () =>
-                                    widget.onRemoveAsset(asset),
-                                onDelete: () => widget.onDeleteAsset(asset),
-                                onCreateResourceGroup: () =>
-                                    widget.onCreateAssetResourceGroup(asset),
-                                onRangeHover: () => widget.onRangeHover(asset),
-                              );
-                            },
-                          ),
+                  AnimatedCrossFade(
+                    duration: const Duration(milliseconds: 180),
+                    crossFadeState: widget.expanded
+                        ? CrossFadeState.showSecond
+                        : CrossFadeState.showFirst,
+                    firstChild: const SizedBox.shrink(),
+                    secondChild: Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: widget.folder.assets.isEmpty
+                          ? _EmptyFolderHint(highlighted: highlighted)
+                          : ViewportLazyGrid(
+                              key: widget.assetGridKey,
+                              itemCount: widget.folder.assets.length,
+                              itemExtent: widget.thumbnailSize,
+                              crossAxisSpacing: 8,
+                              mainAxisSpacing: 8,
+                              itemBuilder: (context, index) {
+                                final asset = widget.folder.assets[index];
+                                return _AssetThumb(
+                                  asset: asset,
+                                  used: widget.usedIds.contains(asset.id),
+                                  rangePreviewed: widget.previewIds.contains(
+                                    asset.id,
+                                  ),
+                                  rangeAdding: widget.previewAdding,
+                                  focused: asset.id == widget.focusedAssetId,
+                                  size: widget.thumbnailSize,
+                                  onTap: () => widget.onToggleAsset(asset),
+                                  onSecondaryTap: () =>
+                                      widget.onRemoveAsset(asset),
+                                  onDelete: () => widget.onDeleteAsset(asset),
+                                  onCreateResourceGroup: () =>
+                                      widget.onCreateAssetResourceGroup(asset),
+                                  onRangeHover: () =>
+                                      widget.onRangeHover(asset),
+                                );
+                              },
+                            ),
+                    ),
                   ),
-                ),
-              ],
-            );
-          },
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -3242,6 +3445,7 @@ class _FolderHeader extends StatelessWidget {
             _showContextMenu(context, details.globalPosition),
         borderRadius: BorderRadius.circular(8),
         child: AnimatedContainer(
+          key: ValueKey('storyboard-folder-drop-highlight-${folder.id}'),
           duration: const Duration(milliseconds: 180),
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
@@ -3252,6 +3456,15 @@ class _FolderHeader extends StatelessWidget {
                 : scheme.surfaceContainerHighest.withValues(alpha: 0.38),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(color: borderColor, width: highlighted ? 2 : 1),
+            boxShadow: highlighted
+                ? [
+                    BoxShadow(
+                      color: scheme.primary.withValues(alpha: 0.38),
+                      blurRadius: 16,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : const [],
           ),
           child: Row(
             children: [
@@ -5095,6 +5308,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
   int _reorderAnimationGeneration = 0;
   Timer? _quickActionHideTimer;
   String? _quickActionAssetId;
+  _StoryboardFolderDropCoordinator? _folderDropCoordinator;
 
   @override
   void initState() {
@@ -5103,7 +5317,14 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _folderDropCoordinator = _StoryboardFolderDropScope.maybeOf(context);
+  }
+
+  @override
   void dispose() {
+    _folderDropCoordinator?.cancel();
     _cancelQuickActionHide();
     _dragTopLeft.dispose();
     super.dispose();
@@ -5113,6 +5334,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
   void didUpdateWidget(covariant _CanvasGrid oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.board.id != widget.board.id) {
+      _folderDropCoordinator?.cancel();
       _cancelQuickActionHide();
       _quickActionAssetId = null;
       _restoreSelectionState();
@@ -5124,6 +5346,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       _startReorderAnimation(oldWidget.board, widget.board);
     }
     if (!oldWidget.board.locked && widget.board.locked) {
+      _folderDropCoordinator?.cancel();
       _resetDragState();
       _externalHoverSlot = null;
       _cancelQuickActionHide();
@@ -5131,6 +5354,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
     }
     final draggingSlot = _dragFromSlot;
     if (draggingSlot != null && widget.board.itemAtSlot(draggingSlot) == null) {
+      _folderDropCoordinator?.cancel();
       _resetDragState();
     }
     final validAssetIds = widget.board.items
@@ -5592,7 +5816,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
     required Widget child,
   }) {
     return Tooltip(
-      message: '拖拽排序',
+      message: '拖拽排序，或拖入左侧裁切资源文件夹',
       child: MouseRegion(
         cursor: SystemMouseCursors.move,
         onEnter: (_) {
@@ -5698,6 +5922,13 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       dragOffsets[candidate.asset.id] =
           slotRects[candidate.slotIndex].topLeft - currentRect.topLeft;
     }
+    _folderDropCoordinator?.begin(
+      assets: [
+        for (final candidate in widget.board.items)
+          if (dragAssetIds.contains(candidate.asset.id)) candidate.asset,
+      ],
+      globalPosition: details.globalPosition,
+    );
     _dragTopLeft.value = pointer - pointerDelta;
     setState(() {
       _dragFromSlot = item.slotIndex;
@@ -5724,6 +5955,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
     }
     final pointer = box.globalToLocal(details.globalPosition);
     final targetSlot = _slotIndexAt(pointer, slotRects);
+    _folderDropCoordinator?.update(details.globalPosition);
     _dragTopLeft.value = pointer - pointerDelta;
     if (targetSlot != null && targetSlot != _hoverSlot) {
       setState(() => _hoverSlot = targetSlot);
@@ -5733,6 +5965,12 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
   void _finishDrag() {
     final fromSlot = _dragFromSlot;
     final targetSlot = _hoverSlot;
+    final copiedToFolder = _folderDropCoordinator?.complete() ?? false;
+    if (copiedToFolder) {
+      _clearDrag();
+      _saveSelectionState();
+      return;
+    }
     if (fromSlot == null || targetSlot == null || fromSlot == targetSlot) {
       _clearDrag();
       _saveSelectionState();
@@ -5933,6 +6171,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
   }
 
   void _cancelDrag() {
+    _folderDropCoordinator?.cancel();
     _clearDrag();
     _saveSelectionState();
   }

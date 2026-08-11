@@ -86,6 +86,9 @@ void main() {
       repository: settingsRepository,
       initialSettings: settingsRepository.load(),
     );
+    await settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultMiniMaxVideoGenerationConfigId,
+    );
     await settingsController.setH3PromptStyleId('brand-promo');
     final shootingController = ShootingScriptController(
       repository: ShootingScriptRepository(database),
@@ -113,8 +116,8 @@ void main() {
     expect(analysisService.groupCalls, 0);
     expect(analysisService.singleShotCalls, 0);
     expect(
-      analysisController.value.errorMessage,
-      allOf(contains('读取所选叙事风格的完整官方 Skill 失败'), contains('测试资源缺失')),
+      analysisController.value.analyses.single.errorMessage,
+      contains('测试资源缺失'),
     );
   });
 
@@ -195,7 +198,7 @@ void main() {
       record?.sourceImageFingerprint,
       'sha256:${sha256.convert([4, 5, 6])}',
     );
-    expect(record?.analysisRuleVersion, 5);
+    expect(record?.analysisRuleVersion, 6);
   });
 
   test('解析分镜缺少复刻图时不回退原视频帧', () async {
@@ -297,7 +300,7 @@ void main() {
       first.copyWith(
         framePath: firstFrame.path,
         durationSeconds: 8,
-        content: '单帧旧内容',
+        content: '品牌宣传短片：单帧旧内容',
         continuesToNext: true,
       ),
     );
@@ -328,7 +331,9 @@ void main() {
         rawResponse: '{}',
       ),
     );
-    await settingsController.setH3PromptStyleId('brand-promo');
+    await settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultMiniMaxVideoGenerationConfigId,
+    );
     final workflowRepository = ShootingScriptWorkflowRepository(database);
     final analysisController = ShootingScriptAnalysisController(
       shootingScriptController: shootingController,
@@ -353,8 +358,13 @@ void main() {
       everyElement(
         allOf(
           allOf(
-            contains('内容类型：品牌宣传短片'),
-            contains('【MiniMax-H3 完整官方 Skill（强制执行）】'),
+            allOf(
+              contains('内容类型：品牌宣传短片'),
+              contains('【MiniMax-H3 完整官方 Skill（强制执行）】'),
+              contains('【软件内置视频后端 Skill（强制读取）】'),
+              contains('目标后端：MiniMax H3'),
+              contains('已按当前剧情自动匹配'),
+            ),
             contains('本次完整加载文件数：1'),
             contains(
               '<official_skill_file path="skills/brand-promo-video-generator/SKILL.cn.md">',

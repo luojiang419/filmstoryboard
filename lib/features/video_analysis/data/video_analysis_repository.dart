@@ -247,6 +247,13 @@ class VideoAnalysisRepository {
       .map(_marketingAnalysis)
       .toList();
 
+  void deleteMarketingAnalyses(String videoId) {
+    _database.executeStatement(
+      'DELETE FROM marketing_analyses WHERE video_id = ?;',
+      [videoId],
+    );
+  }
+
   void upsertVideoFrameAnalysis(VideoFrameAnalysis analysis) {
     _database.executeStatement(
       '''
@@ -284,6 +291,13 @@ class VideoAnalysisRepository {
       )
       .map(_videoFrameAnalysis)
       .toList();
+
+  void deleteVideoFrameAnalyses(String videoId) {
+    _database.executeStatement(
+      'DELETE FROM video_frame_analyses WHERE video_id = ?;',
+      [videoId],
+    );
+  }
 
   Map<String, VideoFrameAnalysis> completedFrameAnalysesByFrameIds(
     Iterable<String> frameIds,
@@ -358,6 +372,13 @@ class VideoAnalysisRepository {
       [videoId],
     );
     return rows.isEmpty ? null : _videoSummary(rows.first);
+  }
+
+  void deleteVideoSummary(String videoId) {
+    _database.executeStatement(
+      'DELETE FROM video_summaries WHERE video_id = ?;',
+      [videoId],
+    );
   }
 
   void upsertShootingScript(ShootingScript script) {

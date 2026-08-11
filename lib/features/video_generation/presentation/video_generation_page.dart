@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -9,10 +10,13 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../application/video_generation_controller.dart';
+import '../data/cli_dependency_installer.dart';
 import '../data/kling_cli_models.dart';
 import '../domain/kling_duration_matcher.dart';
 import '../domain/source_video_preview_range.dart';
@@ -22,9 +26,11 @@ class VideoGenerationPage extends StatelessWidget {
   const VideoGenerationPage({super.key});
 
   @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
-    child: VideoGenerationWorkspace(showScriptSelector: true),
+  Widget build(BuildContext context) => const CollapsiblePanelShortcutScope(
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: VideoGenerationWorkspace(showScriptSelector: true),
+    ),
   );
 }
 
@@ -34,11 +40,13 @@ class VideoGenerationWorkspace extends ConsumerStatefulWidget {
     this.scriptId,
     this.showScriptSelector = false,
     this.externalizeWorkPanel = false,
+    this.uiStateKey = 'videoGenerationPageUiState',
   });
 
   final String? scriptId;
   final bool showScriptSelector;
   final bool externalizeWorkPanel;
+  final String uiStateKey;
 
   @override
   ConsumerState<VideoGenerationWorkspace> createState() =>
@@ -54,11 +62,23 @@ class _VideoGenerationWorkspaceState
   static const _resizeHandleWidth = 10.0;
 
   String _taskFilter = 'all';
+  bool _installPromptShown = false;
+  bool _installPromptOpen = false;
+  bool _installWaitDialogOpen = false;
+  bool _installFlowOpen = false;
+  String _installPromptProvider = '';
   bool _loginPromptShown = false;
   bool _loginPromptOpen = false;
   bool _loginWaitDialogOpen = false;
+  String _loginPromptProvider = '';
   var _workPanelWidth = _workPanelDefaultWidth;
   var _workPanelCollapsed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreUiState();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -67,6 +87,7 @@ class _VideoGenerationWorkspaceState
     return ValueListenableBuilder<VideoGenerationState>(
       valueListenable: controller,
       builder: (context, state, _) {
+        _scheduleCliInstallPrompt(state, controller);
         _scheduleLoginPrompt(state, controller);
         if (state.scripts.isEmpty) {
           return const Center(child: Text('还没有可生成视频的拍摄脚本'));
@@ -95,7 +116,8 @@ class _VideoGenerationWorkspaceState
               onTaskFilterChanged: (filter) {
                 if (filter != null) setState(() => _taskFilter = filter);
               },
-              onLogin: () => _runKlingLoginAuthorization(controller),
+              onInstall: () => _promptCliInstall(controller),
+              onLogin: () => _runCliLoginAuthorization(controller),
               onGenerateAll: () => _confirmBatch(context, state, controller),
             ),
             if (state.isLoadingEnvironment || state.isBusy) ...[
@@ -130,16 +152,19 @@ class _VideoGenerationWorkspaceState
                     state: state,
                     controller: controller,
                     collapsed: _workPanelCollapsed,
-                    onToggleCollapsed: () => setState(
-                      () => _workPanelCollapsed = !_workPanelCollapsed,
-                    ),
+                    onToggleCollapsed: _toggleWorkPanel,
+                  );
+                  final registeredPanel = CollapsiblePanelRegistration(
+                    expanded: !_workPanelCollapsed,
+                    onExpandedChanged: _setWorkPanelExpanded,
+                    child: panel,
                   );
                   if (constraints.maxWidth < 1040) {
                     return Column(
                       children: [
                         Expanded(child: table),
                         const Divider(height: 1),
-                        SizedBox(height: 300, child: panel),
+                        SizedBox(height: 300, child: registeredPanel),
                       ],
                     );
                   }
@@ -160,6 +185,7 @@ class _VideoGenerationWorkspaceState
                           'video-generation-work-panel-resize-handle',
                         ),
                         enabled: !_workPanelCollapsed,
+                        onDragEnd: _saveUiState,
                         onDrag: (delta) => setState(() {
                           _workPanelWidth = (panelWidth - delta)
                               .clamp(_workPanelMinWidth, maximumWidth)
@@ -170,7 +196,7 @@ class _VideoGenerationWorkspaceState
                         width: _workPanelCollapsed
                             ? _workPanelCollapsedWidth
                             : panelWidth,
-                        child: panel,
+                        child: registeredPanel,
                       ),
                     ],
                   );
@@ -181,6 +207,62 @@ class _VideoGenerationWorkspaceState
         );
       },
     );
+  }
+
+  void _toggleWorkPanel() {
+    _setWorkPanelExpanded(_workPanelCollapsed);
+  }
+
+  void _setWorkPanelExpanded(bool expanded) {
+    if (_workPanelCollapsed == !expanded) {
+      return;
+    }
+    setState(() => _workPanelCollapsed = !expanded);
+    _saveUiState();
+  }
+
+  void _restoreUiState() {
+    try {
+      final raw = ref.read(appDatabaseProvider).getSetting(widget.uiStateKey);
+      if (raw == null || raw.trim().isEmpty) {
+        return;
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, Object?>) {
+        return;
+      }
+      _workPanelWidth = _jsonDouble(
+        decoded['workPanelWidth'],
+        _workPanelDefaultWidth,
+      ).clamp(_workPanelMinWidth, 720).toDouble();
+      _workPanelCollapsed = _jsonBool(decoded['workPanelCollapsed'], false);
+    } catch (_) {
+      return;
+    }
+  }
+
+  void _saveUiState() {
+    try {
+      ref
+          .read(appDatabaseProvider)
+          .setSetting(
+            widget.uiStateKey,
+            jsonEncode({
+              'workPanelWidth': _workPanelWidth,
+              'workPanelCollapsed': _workPanelCollapsed,
+            }),
+          );
+    } catch (_) {
+      // 测试或预览环境可能没有注入数据库，生产环境会正常保存。
+    }
+  }
+
+  double _jsonDouble(Object? value, double fallback) {
+    return value is num ? value.toDouble() : fallback;
+  }
+
+  bool _jsonBool(Object? value, bool fallback) {
+    return value is bool ? value : fallback;
   }
 
   void _syncRequestedScript(VideoGenerationController controller) {
@@ -199,37 +281,230 @@ class _VideoGenerationWorkspaceState
     VideoGenerationState state,
     VideoGenerationController controller,
   ) {
-    if (controller.usesConfiguredVideoGenerationApi) return;
+    if (!controller.usesCliVideoGeneration) return;
+    final provider = controller.activeCliProviderName;
+    if (_loginPromptProvider != provider) {
+      _loginPromptProvider = provider;
+      _loginPromptShown = false;
+    }
     if (_loginPromptShown ||
         _loginPromptOpen ||
+        _installFlowOpen ||
         state.isLoadingEnvironment ||
-        state.environment?.isReady != true ||
-        state.identity != null ||
+        !controller.shouldRequestActiveCliLogin ||
         state.loginAuthorizationStatus ==
             KlingLoginAuthorizationStatus.waiting) {
       return;
     }
     _loginPromptShown = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_promptKlingLogin(controller));
+      if (mounted) unawaited(_promptCliLogin(controller));
     });
   }
 
-  Future<void> _promptKlingLogin(VideoGenerationController controller) async {
-    if (_loginPromptOpen) return;
-    _loginPromptOpen = true;
+  void _scheduleCliInstallPrompt(
+    VideoGenerationState state,
+    VideoGenerationController controller,
+  ) {
+    if (!controller.usesCliVideoGeneration) return;
+    final provider = controller.activeCliProviderName;
+    if (_installPromptProvider != provider) {
+      _installPromptProvider = provider;
+      _installPromptShown = false;
+    }
+    if (_installPromptShown ||
+        _installPromptOpen ||
+        _installFlowOpen ||
+        state.isLoadingEnvironment ||
+        !controller.shouldRequestActiveCliInstall) {
+      return;
+    }
+    _installPromptShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_promptCliInstall(controller));
+    });
+  }
+
+  Future<void> _promptCliInstall(VideoGenerationController controller) async {
+    if (_installPromptOpen || _installFlowOpen) return;
+    _installPromptOpen = true;
+    var selectedRegion = controller.configuredKlingInstallRegion;
+    final usesLibTv = controller.usesLibTvCli;
     final confirmed = await showDialog<bool>(
       context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('安装${controller.activeCliProviderName} CLI'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  usesLibTv
+                      ? '未检测到 LibTV CLI。软件将运行安装包内置的 LibTV 官方安装脚本；LibTV 不需要 npm。'
+                      : '未检测到可灵 CLI。软件会检查 Node.js 18+ 和 npm；缺失时先通过 winget 安装 Node.js LTS，再安装所选区域的可灵官方 CLI 包。',
+                ),
+                if (!usesLibTv) ...[
+                  const SizedBox(height: 16),
+                  const Text('选择账号所在区域（两个版本不会同时安装）：'),
+                  const SizedBox(height: 8),
+                  SegmentedButton<KlingCliInstallRegion>(
+                    segments: const [
+                      ButtonSegment(
+                        value: KlingCliInstallRegion.china,
+                        label: Text('中国区'),
+                      ),
+                      ButtonSegment(
+                        value: KlingCliInstallRegion.global,
+                        label: Text('海外区'),
+                      ),
+                    ],
+                    selected: selectedRegion == null
+                        ? const <KlingCliInstallRegion>{}
+                        : {selectedRegion!},
+                    emptySelectionAllowed: true,
+                    onSelectionChanged: (selection) => setDialogState(() {
+                      selectedRegion = selection.isEmpty
+                          ? null
+                          : selection.first;
+                    }),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                const Text('安装完成后会自动打开浏览器，授权仍需由你本人在浏览器中确认。'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('稍后再说'),
+            ),
+            FilledButton(
+              key: ValueKey(
+                usesLibTv ? 'confirm-libtv-install' : 'confirm-kling-install',
+              ),
+              onPressed: !usesLibTv && selectedRegion == null
+                  ? null
+                  : () => Navigator.pop(context, true),
+              child: const Text('自动安装并登录'),
+            ),
+          ],
+        ),
+      ),
+    );
+    _installPromptOpen = false;
+    if (confirmed == true && mounted) {
+      await _runCliInstall(controller, selectedRegion);
+    }
+  }
+
+  Future<void> _runCliInstall(
+    VideoGenerationController controller,
+    KlingCliInstallRegion? region,
+  ) async {
+    if (_installFlowOpen) return;
+    _installFlowOpen = true;
+    final installation = controller.installActiveCli(klingRegion: region);
+    unawaited(_showCliInstallWaitDialog(controller));
+    final installed = await installation;
+    if (!mounted) return;
+    if (_installWaitDialogOpen) {
+      Navigator.of(context, rootNavigator: true).pop();
+      _installWaitDialogOpen = false;
+    }
+    _installFlowOpen = false;
+    if (installed) {
+      await _runCliLoginAuthorization(controller);
+    } else {
+      await _showCliInstallResultDialog(controller);
+    }
+  }
+
+  Future<void> _showCliInstallWaitDialog(
+    VideoGenerationController controller,
+  ) async {
+    _installWaitDialogOpen = true;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => ValueListenableBuilder<VideoGenerationState>(
+        valueListenable: controller,
+        builder: (context, state, _) => AlertDialog(
+          title: Text('正在安装${controller.activeCliProviderName} CLI'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const LinearProgressIndicator(minHeight: 3),
+                const SizedBox(height: 16),
+                Text(
+                  state.cliInstallMessage.isEmpty
+                      ? '正在准备安装命令…'
+                      : state.cliInstallMessage,
+                ),
+                const SizedBox(height: 8),
+                const Text('请勿关闭软件；系统安装程序可能会短暂弹出。'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    _installWaitDialogOpen = false;
+  }
+
+  Future<void> _showCliInstallResultDialog(
+    VideoGenerationController controller,
+  ) async {
+    final retry = await showDialog<bool>(
+      context: context,
       builder: (context) => AlertDialog(
-        title: const Text('需要登录可灵账号'),
-        content: const Text('视频生成功能需要连接可灵账号。点击“确定登录”后将打开浏览器，请在浏览器中完成授权登录。'),
+        title: Text('${controller.activeCliProviderName} CLI 安装失败'),
+        content: Text(
+          controller.value.errorMessage.isEmpty
+              ? '没有检测到安装完成，可以重试。'
+              : controller.value.errorMessage,
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('稍后再说'),
           ),
           FilledButton(
-            key: const ValueKey('confirm-kling-login'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('重新安装'),
+          ),
+        ],
+      ),
+    );
+    if (retry == true && mounted) await _promptCliInstall(controller);
+  }
+
+  Future<void> _promptCliLogin(VideoGenerationController controller) async {
+    if (_loginPromptOpen) return;
+    _loginPromptOpen = true;
+    final provider = controller.activeCliProviderName;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('需要登录$provider账号'),
+        content: Text('视频生成功能需要连接$provider账号。点击“确定登录”后将打开浏览器，请在浏览器中完成授权登录。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('稍后再说'),
+          ),
+          FilledButton(
+            key: ValueKey(
+              controller.usesLibTvCli
+                  ? 'confirm-libtv-login'
+                  : 'confirm-kling-login',
+            ),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('确定登录'),
           ),
@@ -238,15 +513,15 @@ class _VideoGenerationWorkspaceState
     );
     _loginPromptOpen = false;
     if (confirmed == true && mounted) {
-      await _runKlingLoginAuthorization(controller);
+      await _runCliLoginAuthorization(controller);
     }
   }
 
-  Future<void> _runKlingLoginAuthorization(
+  Future<void> _runCliLoginAuthorization(
     VideoGenerationController controller,
   ) async {
     final authorization = controller.startLoginAuthorization();
-    unawaited(_showKlingLoginWaitDialog(controller));
+    unawaited(_showCliLoginWaitDialog(controller));
     final result = await authorization;
     if (!mounted) return;
     if (_loginWaitDialogOpen) {
@@ -255,11 +530,11 @@ class _VideoGenerationWorkspaceState
     }
     if (result == KlingLoginAuthorizationStatus.failed ||
         result == KlingLoginAuthorizationStatus.timedOut) {
-      await _showKlingLoginResultDialog(controller);
+      await _showCliLoginResultDialog(controller);
     }
   }
 
-  Future<void> _showKlingLoginWaitDialog(
+  Future<void> _showCliLoginWaitDialog(
     VideoGenerationController controller,
   ) async {
     _loginWaitDialogOpen = true;
@@ -269,7 +544,7 @@ class _VideoGenerationWorkspaceState
       builder: (dialogContext) => ValueListenableBuilder<VideoGenerationState>(
         valueListenable: controller,
         builder: (context, state, _) => AlertDialog(
-          title: const Text('等待可灵授权完成'),
+          title: Text('等待${controller.activeCliProviderName}授权完成'),
           content: SizedBox(
             width: 420,
             child: Column(
@@ -305,15 +580,16 @@ class _VideoGenerationWorkspaceState
     _loginWaitDialogOpen = false;
   }
 
-  Future<void> _showKlingLoginResultDialog(
+  Future<void> _showCliLoginResultDialog(
     VideoGenerationController controller,
   ) async {
+    final provider = controller.activeCliProviderName;
     final retry = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('未检测到授权完成'),
-        content: const Text(
-          '如果浏览器授权页已关闭或没有完成登录，可以重新打开浏览器继续授权；也可以稍后在视频生成页点击“登录可灵”。',
+        content: Text(
+          '如果浏览器授权页已关闭或没有完成登录，可以重新打开浏览器继续授权；也可以稍后在视频生成页点击“登录$provider”。',
         ),
         actions: [
           TextButton(
@@ -328,7 +604,7 @@ class _VideoGenerationWorkspaceState
       ),
     );
     if (retry == true && mounted) {
-      await _runKlingLoginAuthorization(controller);
+      await _runCliLoginAuthorization(controller);
     }
   }
 
@@ -339,18 +615,20 @@ class _VideoGenerationWorkspaceState
   ) async {
     final shots = controller.generationTargets();
     if (shots.isEmpty) return;
-    if (controller.usesConfiguredVideoGenerationApi) {
+    if (controller.usesConfiguredVideoGenerationApi ||
+        controller.usesLibTvCli) {
       final config = controller.activeVideoGenerationApiConfig;
+      final usesLibTv = controller.usesLibTvCli;
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('确认批量生成'),
           content: Text(
             '镜头数：${shots.length}\n'
-            'API：${config?.name ?? '视频生成 API'}\n'
+            '${usesLibTv ? 'CLI' : 'API'}：${config?.name ?? controller.activeVideoBackendName}\n'
             '模型：${controller.activeVideoGenerationApiModel}\n\n'
-            '${controller.videoApiParameterSummary}\n\n'
-            '任务会提交到当前默认视频生成 API。',
+            '${usesLibTv ? controller.libTvParameterSummary : controller.videoApiParameterSummary}\n\n'
+            '${usesLibTv ? '任务会写入当前脚本专属的 LibTV 画布，并按镜号顺序执行。' : '任务会提交到当前默认视频生成 API。'}',
           ),
           actions: [
             TextButton(
@@ -358,7 +636,9 @@ class _VideoGenerationWorkspaceState
               child: const Text('取消'),
             ),
             FilledButton(
-              key: const ValueKey('confirm-video-api-batch'),
+              key: ValueKey(
+                usesLibTv ? 'confirm-libtv-batch' : 'confirm-video-api-batch',
+              ),
               onPressed: () => Navigator.pop(context, true),
               child: const Text('确认生成'),
             ),
@@ -416,8 +696,10 @@ class _VideoGenerationWorkspaceState
     VideoGenerationController controller,
     ScriptShot shot,
   ) async {
-    if (controller.usesConfiguredVideoGenerationApi) {
+    if (controller.usesConfiguredVideoGenerationApi ||
+        controller.usesLibTvCli) {
       final config = controller.activeVideoGenerationApiConfig;
+      final usesLibTv = controller.usesLibTvCli;
       final sequence = controller.actionSequenceFor(shot);
       final confirmed = await showDialog<bool>(
         context: context,
@@ -428,12 +710,12 @@ class _VideoGenerationWorkspaceState
                 : '确认生成镜头 ${shot.shotNumber}',
           ),
           content: Text(
-            'API：${config?.name ?? '视频生成 API'}\n'
+            '${usesLibTv ? 'CLI' : 'API'}：${config?.name ?? controller.activeVideoBackendName}\n'
             '模型：${controller.activeVideoGenerationApiModel}\n'
             '时长：${controller.desiredDurationFor(shot).toStringAsFixed(1)}s\n'
             '${sequence.hasDistinctTail ? '参考范围：镜头 ${sequence.head.shotNumber}–${sequence.tail.shotNumber}\n' : ''}\n'
-            '${controller.videoApiParameterSummary}\n\n'
-            '任务会提交到当前默认视频生成 API。',
+            '${usesLibTv ? controller.libTvParameterSummary : controller.videoApiParameterSummary}\n\n'
+            '${usesLibTv ? '任务会写入当前脚本专属的 LibTV 画布并同步等待终态。' : '任务会提交到当前默认视频生成 API。'}',
           ),
           actions: [
             TextButton(
@@ -441,7 +723,11 @@ class _VideoGenerationWorkspaceState
               child: const Text('取消'),
             ),
             FilledButton(
-              key: ValueKey('confirm-video-api-shot-${shot.id}'),
+              key: ValueKey(
+                usesLibTv
+                    ? 'confirm-libtv-shot-${shot.id}'
+                    : 'confirm-video-api-shot-${shot.id}',
+              ),
               onPressed: () => Navigator.pop(context, true),
               child: const Text('确认生成'),
             ),
@@ -504,6 +790,7 @@ class _Toolbar extends StatelessWidget {
     required this.showScriptSelector,
     required this.taskFilter,
     required this.onTaskFilterChanged,
+    required this.onInstall,
     required this.onLogin,
     required this.onGenerateAll,
   });
@@ -513,6 +800,7 @@ class _Toolbar extends StatelessWidget {
   final bool showScriptSelector;
   final String taskFilter;
   final ValueChanged<String?> onTaskFilterChanged;
+  final VoidCallback onInstall;
   final VoidCallback onLogin;
   final VoidCallback onGenerateAll;
 
@@ -529,6 +817,19 @@ class _Toolbar extends StatelessWidget {
       selectedVideoApiAspectRatio,
     );
     final selectedVideoApiSteps = controller.selectedVideoApiSteps;
+    final selectedLibTvAspectRatio = controller.selectedLibTvAspectRatio;
+    final selectedLibTvResolution = controller.selectedLibTvResolution;
+    final selectedLibTvSoundEnabled = controller.selectedLibTvSoundEnabled;
+    final selectedLibTvSearchEnabled = controller.selectedLibTvSearchEnabled;
+    final canGenerateAny = controller.generationTargets().isNotEmpty;
+    final hasBlockingNonGenerationWork = state.isBusy && !state.isGeneratingAll;
+    final usesCli = controller.usesCliVideoGeneration;
+    final cliConnected = controller.activeCliAccountConnected;
+    final libTvAccountLabel = state.libTvAccount == null
+        ? '未登录'
+        : (state.libTvAccount!.nickname.trim().isNotEmpty
+              ? state.libTvAccount!.nickname
+              : state.libTvAccount!.accountName);
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -586,32 +887,39 @@ class _Toolbar extends StatelessWidget {
             _StatusChip(
               icon:
                   controller.usesConfiguredVideoGenerationApi ||
-                      state.environment?.isReady == true
+                      controller.activeCliEnvironmentReady
                   ? Icons.check_circle_outline
                   : Icons.warning_amber_rounded,
               label: controller.usesConfiguredVideoGenerationApi
                   ? '视频 API'
-                  : state.environment?.isReady == true
-                  ? 'CLI ${state.environment!.klingVersion}'
+                  : controller.activeCliEnvironmentReady
+                  ? '${controller.activeCliProviderName} CLI ${controller.activeCliVersion}'
                   : '环境未就绪',
             ),
-            if (!controller.usesConfiguredVideoGenerationApi)
+            if (usesCli)
               _StatusChip(
-                icon: state.identity == null
+                icon: !cliConnected
                     ? Icons.login_rounded
                     : Icons.account_circle_outlined,
-                label: state.identity == null
+                label: !cliConnected
                     ? '未登录'
+                    : controller.usesLibTvCli
+                    ? libTvAccountLabel
                     : '${state.account?.membershipDescription ?? '已登录'} · ${state.account?.availableCredits ?? 0} 灵感值',
               ),
-            if (!controller.usesConfiguredVideoGenerationApi &&
-                state.identity == null)
+            if (usesCli && !controller.activeCliEnvironmentReady)
+              OutlinedButton.icon(
+                onPressed: state.isLoadingEnvironment ? null : onInstall,
+                icon: const Icon(Icons.download_rounded),
+                label: Text('安装${controller.activeCliProviderName} CLI'),
+              )
+            else if (usesCli && !cliConnected)
               OutlinedButton.icon(
                 onPressed: state.isLoadingEnvironment ? null : onLogin,
                 icon: const Icon(Icons.login_rounded),
-                label: const Text('登录可灵'),
+                label: Text('登录${controller.activeCliProviderName}'),
               ),
-            if (models.isNotEmpty)
+            if (!controller.usesLibTvCli && models.isNotEmpty)
               SizedBox(
                 width: 250,
                 child: DropdownButtonFormField<String>(
@@ -643,6 +951,114 @@ class _Toolbar extends StatelessWidget {
               _StatusChip(
                 icon: Icons.smart_display_outlined,
                 label: controller.activeVideoGenerationApiModel,
+              ),
+            if (controller.usesLibTvCli)
+              _StatusChip(
+                icon: Icons.smart_display_outlined,
+                label:
+                    '${state.libTvModel?.modelName ?? controller.activeVideoGenerationApiModel} · 即梦提示词',
+              ),
+            if (controller.usesLibTvCli)
+              SizedBox(
+                width: 130,
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey('libtv-aspect-ratio-$selectedLibTvAspectRatio'),
+                  initialValue: selectedLibTvAspectRatio,
+                  decoration: const InputDecoration(
+                    labelText: '生成比例',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (final ratio in controller.libTvAspectRatios)
+                      DropdownMenuItem(
+                        value: ratio,
+                        child: Text(ratio == 'adaptive' ? '自动' : ratio),
+                      ),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (ratio) {
+                          if (ratio != null) {
+                            controller.updateLibTvAspectRatio(ratio);
+                          }
+                        },
+                ),
+              ),
+            if (controller.usesLibTvCli)
+              SizedBox(
+                width: 115,
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey('libtv-resolution-$selectedLibTvResolution'),
+                  initialValue: selectedLibTvResolution,
+                  decoration: const InputDecoration(
+                    labelText: '清晰度',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (final resolution in controller.libTvResolutions)
+                      DropdownMenuItem(
+                        value: resolution,
+                        child: Text(resolution),
+                      ),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (resolution) {
+                          if (resolution != null) {
+                            controller.updateLibTvResolution(resolution);
+                          }
+                        },
+                ),
+              ),
+            if (controller.usesLibTvCli)
+              SizedBox(
+                width: 125,
+                child: DropdownButtonFormField<bool>(
+                  key: ValueKey(
+                    'libtv-enable-sound-$selectedLibTvSoundEnabled',
+                  ),
+                  initialValue: selectedLibTvSoundEnabled,
+                  decoration: const InputDecoration(
+                    labelText: '生成音频',
+                    isDense: true,
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: true, child: Text('开启')),
+                    DropdownMenuItem(value: false, child: Text('关闭')),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (enabled) {
+                          if (enabled != null) {
+                            controller.updateLibTvSoundEnabled(enabled);
+                          }
+                        },
+                ),
+              ),
+            if (controller.usesLibTvCli)
+              SizedBox(
+                width: 130,
+                child: DropdownButtonFormField<bool>(
+                  key: ValueKey(
+                    'libtv-search-enabled-$selectedLibTvSearchEnabled',
+                  ),
+                  initialValue: selectedLibTvSearchEnabled,
+                  decoration: const InputDecoration(
+                    labelText: '联网增强',
+                    isDense: true,
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: true, child: Text('开启')),
+                    DropdownMenuItem(value: false, child: Text('关闭')),
+                  ],
+                  onChanged: state.isBusy
+                      ? null
+                      : (enabled) {
+                          if (enabled != null) {
+                            controller.updateLibTvSearchEnabled(enabled);
+                          }
+                        },
+                ),
               ),
             if (controller.usesConfiguredVideoGenerationApi)
               SizedBox(
@@ -772,9 +1188,9 @@ class _Toolbar extends StatelessWidget {
             FilledButton.icon(
               key: const ValueKey('generate-all-videos'),
               onPressed:
-                  state.isBusy ||
-                      (!controller.usesConfiguredVideoGenerationApi &&
-                          state.identity == null)
+                  hasBlockingNonGenerationWork ||
+                      !canGenerateAny ||
+                      (usesCli && !cliConnected)
                   ? null
                   : onGenerateAll,
               icon: const Icon(Icons.movie_creation_outlined),
@@ -852,10 +1268,12 @@ class _VideoGenerationRightPanelResizeHandle extends StatelessWidget {
     super.key,
     required this.enabled,
     required this.onDrag,
+    this.onDragEnd,
   });
 
   final bool enabled;
   final ValueChanged<double> onDrag;
+  final VoidCallback? onDragEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -869,6 +1287,7 @@ class _VideoGenerationRightPanelResizeHandle extends StatelessWidget {
         onHorizontalDragUpdate: enabled
             ? (details) => onDrag(details.delta.dx)
             : null,
+        onHorizontalDragEnd: enabled ? (_) => onDragEnd?.call() : null,
         child: SizedBox(
           width: _VideoGenerationWorkspaceState._resizeHandleWidth,
           child: Center(
@@ -1399,7 +1818,7 @@ class _GenerationTable extends StatelessWidget {
                       _GeneratedVideoCell(
                         shot: group.shots.first,
                         controller: controller,
-                        enabled: !state.isGeneratingAll,
+                        enabled: true,
                         onGenerate: () => onGenerateShot(group.shots.first),
                       ),
                       _PromptCell(
@@ -1819,8 +2238,10 @@ class _GeneratedVideoCell extends StatelessWidget {
         ? null
         : controller.generatedVideoFileFor(latest);
     final hasLocalVideo = localFile?.existsSync() == true;
-    final canGenerate = controller.canGenerateShot(owner);
     final isGenerating = latest != null && _isActiveVideoTask(latest);
+    final canGenerate =
+        controller.canGenerateShot(owner) &&
+        !controller.isGenerationActiveFor(owner);
     return _Cell(
       child: _VideoShotCellLayout(
         shot: shot,

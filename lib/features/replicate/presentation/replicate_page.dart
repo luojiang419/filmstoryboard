@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
@@ -26,6 +27,18 @@ import '../data/seedance_prompt_generation_service.dart';
 import '../domain/h3_prompt_style.dart';
 import '../domain/replicate_models.dart';
 import 'replicate_shot_navigation_controller.dart';
+
+bool _hasActiveComposing(TextEditingController controller) {
+  final composing = controller.value.composing;
+  return composing.isValid && !composing.isCollapsed;
+}
+
+void _replaceControllerText(TextEditingController controller, String text) {
+  controller.value = TextEditingValue(
+    text: text,
+    selection: TextSelection.collapsed(offset: text.length),
+  );
+}
 
 class ReplicatePage extends ConsumerStatefulWidget {
   const ReplicatePage({
@@ -142,26 +155,28 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
         if (widget.embedded) {
           return workflow;
         }
-        return Padding(
-          key: const ValueKey('replicate-page'),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _PageHeader(
-                state: state,
-                controller: controller,
-                useBuiltInTemplate: _useBuiltInTemplate,
-                onBackToShootingScript: widget.onBackToShootingScript,
-                onToggleTemplate: () {
-                  setState(() {
-                    _useBuiltInTemplate = !_useBuiltInTemplate;
-                  });
-                },
-              ),
-              const SizedBox(height: 12),
-              Expanded(child: workflow),
-            ],
+        return CollapsiblePanelShortcutScope(
+          child: Padding(
+            key: const ValueKey('replicate-page'),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _PageHeader(
+                  state: state,
+                  controller: controller,
+                  useBuiltInTemplate: _useBuiltInTemplate,
+                  onBackToShootingScript: widget.onBackToShootingScript,
+                  onToggleTemplate: () {
+                    setState(() {
+                      _useBuiltInTemplate = !_useBuiltInTemplate;
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                Expanded(child: workflow),
+              ],
+            ),
           ),
         );
       },
@@ -217,6 +232,9 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
                     ReplicateStep.generateVideos => VideoGenerationWorkspace(
                       key: ValueKey('replicate-generate-videos-step'),
                       scriptId: run.scriptId,
+                      uiStateKey: widget.embedded
+                          ? 'shootingScriptVideoGenerationPageUiState'
+                          : 'replicateVideoGenerationPageUiState',
                     ),
                   }
                 : switch (run.currentStep) {
@@ -251,6 +269,9 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
                       key: ValueKey('replicate-new-generate-videos-step'),
                       scriptId: run.scriptId,
                       externalizeWorkPanel: externalizeStepRightPanel,
+                      uiStateKey: widget.embedded
+                          ? 'shootingScriptVideoGenerationPageUiState'
+                          : 'replicateVideoGenerationPageUiState',
                     ),
                   },
           ),
@@ -860,17 +881,6 @@ class _StepBar extends StatelessWidget {
               const _StepConnector(),
               _StepCard(
                 number: 3,
-                title: '合成提示词',
-                summary:
-                    '${run.completedCount}/${ScriptShotGroup.group(state.shots).length} 已合成',
-                status: run.composePromptsStatus,
-                selected: run.currentStep == ReplicateStep.composePrompts,
-                onTap: () =>
-                    controller.moveToStep(ReplicateStep.composePrompts),
-              ),
-              const _StepConnector(),
-              _StepCard(
-                number: 4,
                 title: '生成视频',
                 summary: '可灵图生视频',
                 status: run.generateVideosStatus,
@@ -891,7 +901,7 @@ class _StepBar extends StatelessWidget {
               if (constraints.maxWidth >= 980) ...[
                 const SizedBox(width: 12),
                 Text(
-                  '步骤 3 完成后可批量生成视频',
+                  '提示词已在确认镜头页生成',
                   style: Theme.of(context).textTheme.labelSmall,
                 ),
               ],
@@ -1000,36 +1010,6 @@ class _StepConnector extends StatelessWidget {
   );
 }
 
-class _FreeCreationModeSwitch extends StatelessWidget {
-  const _FreeCreationModeSwitch({required this.controller});
-
-  final ReplicateController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = controller.value.run?.freeCreationEnabled ?? false;
-    return Tooltip(
-      message: '按用户剧情描述、故事板说明和分镜故事整体理解创作意图，并生成 H3 Ref2VA 提示词',
-      child: Semantics(
-        container: true,
-        label: '自由创作模式',
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('自由创作', style: Theme.of(context).textTheme.labelMedium),
-            const SizedBox(width: 4),
-            Switch(
-              key: const ValueKey('free-creation-mode-switch'),
-              value: enabled,
-              onChanged: controller.setFreeCreationEnabled,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _BuildCameraStyleSelector extends StatelessWidget {
   const _BuildCameraStyleSelector({
     required this.selectedStyle,
@@ -1050,7 +1030,7 @@ class _BuildCameraStyleSelector extends StatelessWidget {
       isExpanded: true,
       isDense: true,
       decoration: const InputDecoration(
-        labelText: '镜头叙事风格',
+        labelText: 'H3 Skill 路由偏好',
         prefixIcon: Icon(Icons.movie_filter_outlined),
         border: OutlineInputBorder(),
       ),
@@ -1093,7 +1073,6 @@ class _NewConfirmShotsStep extends StatefulWidget {
 
 class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
   bool _showBuiltScript = false;
-  Set<String> _missingFreeCreationDescriptionIds = const {};
 
   @override
   void initState() {
@@ -1155,7 +1134,6 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
             state: widget.state,
             controller: widget.controller,
             showPrompt: _showBuiltScript && widget.state.prompts.isNotEmpty,
-            missingDescriptionIds: _missingFreeCreationDescriptionIds,
             shotNavigationController: widget.shotNavigationController,
             onOpenFrame: (group, showOriginal) => _showScriptFrameGallery(
               context,
@@ -1208,12 +1186,13 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
             subtitle: freeCreationEnabled
                 ? _showBuiltScript && widget.state.prompts.isNotEmpty
                       ? '自由创作已生成 ${builtShots.length} 个 H3 Ref2VA 提示词，可直接编辑保存。'
-                      : '设置镜头范围后，为每组填写必填的剧情描述；构建时不解析旧摄影字段。'
+                      : '设置镜头范围后可按需填写剧情描述；留空时将自动分析参考图并生成最合适的提示词。'
                 : _showBuiltScript
-                ? '已按“${widget.controller.selectedH3PromptStyle.label}”构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 检查。'
+                ? widget.controller.selectedH3PromptStyle.isGeneral
+                      ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 检查。'
+                      : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 检查。'
                 : '先手动设置每个镜头的首帧和结束帧范围；范围内全部图片按顺序合并为一次多图视觉请求，未设置范围的帧各自独立。构建进度 ${analysis.completedCount}/${analysis.totalCount}。',
             actions: [
-              _FreeCreationModeSwitch(controller: widget.controller),
               _BuildCameraStyleSelector(
                 selectedStyle: widget.controller.selectedH3PromptStyle,
                 enabled: !analysis.isBusy && !widget.state.isBusy,
@@ -1231,34 +1210,8 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
                     ? null
                     : () async {
                         if (freeCreationEnabled) {
-                          final missing = widget
-                              .controller
-                              .missingFreeCreationDescriptionShotIds
-                              .toSet();
-                          if (missing.isNotEmpty) {
-                            setState(
-                              () =>
-                                  _missingFreeCreationDescriptionIds = missing,
-                            );
-                            widget.shotNavigationController.navigateTo(
-                              missing.first,
-                            );
-                            widget.controller
-                                .validateFreeCreationDescriptions();
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    '请先填写 ${missing.length} 个镜头组的剧情描述',
-                                  ),
-                                ),
-                              );
-                            }
-                            return;
-                          }
-                          setState(
-                            () => _missingFreeCreationDescriptionIds = const {},
-                          );
+                          setState(() => _showBuiltScript = false);
+                          widget.controller.clearPromptsBeforeBuild();
                           await widget.controller.composeAllPrompts(
                             navigateToComposeStep: false,
                           );
@@ -1273,6 +1226,8 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
                           setState(() => _showBuiltScript = false);
                           return;
                         }
+                        setState(() => _showBuiltScript = false);
+                        widget.controller.clearPromptsBeforeBuild();
                         final analysisController = widget.analysisController;
                         final replicateController = widget.controller;
                         final buildCompleted = await analysisController
@@ -1339,6 +1294,7 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
             child: widget.externalizeRightPanel
                 ? content
                 : _ResizableStepRightPanel(
+                    uiStateKey: 'shootingScriptStepPanelCollapsed',
                     resizeHandleKey: const ValueKey(
                       'confirm-story-panel-resize-handle',
                     ),
@@ -1479,33 +1435,113 @@ class _FreeCreationStoryPanel extends StatefulWidget {
 }
 
 class _FreeCreationStoryPanelState extends State<_FreeCreationStoryPanel> {
+  static const _saveDelay = Duration(milliseconds: 450);
+
   late final TextEditingController _textController;
+  late final FocusNode _focusNode;
+  late String _lastSavedText;
+  late String _lastObservedText;
+  Timer? _saveTimer;
+  bool _wasComposing = false;
+  bool _synchronizing = false;
 
   @override
   void initState() {
     super.initState();
-    _textController = TextEditingController(
-      text: widget.controller.value.run?.freeCreationStoryOverride ?? '',
-    );
+    _lastSavedText =
+        widget.controller.value.run?.freeCreationStoryOverride ?? '';
+    _lastObservedText = _lastSavedText;
+    _textController = TextEditingController(text: _lastSavedText)
+      ..addListener(_handleEditingValueChanged);
+    _focusNode = FocusNode()..addListener(_handleFocusChanged);
   }
 
   @override
   void didUpdateWidget(covariant _FreeCreationStoryPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     final stored = widget.controller.value.run?.freeCreationStoryOverride ?? '';
-    if (!_textController.value.composing.isValid &&
-        _textController.text != stored) {
-      _textController.value = TextEditingValue(
-        text: stored,
-        selection: TextSelection.collapsed(offset: stored.length),
-      );
+    if (stored == _textController.text) {
+      _lastSavedText = stored;
+      return;
+    }
+    if (_focusNode.hasFocus || _isComposing) return;
+    if (_textController.text == _lastSavedText) {
+      _lastSavedText = stored;
+      _replaceLocalText(stored);
     }
   }
 
   @override
   void dispose() {
-    _textController.dispose();
+    _saveTimer?.cancel();
+    _textController
+      ..removeListener(_handleEditingValueChanged)
+      ..dispose();
+    _focusNode
+      ..removeListener(_handleFocusChanged)
+      ..dispose();
     super.dispose();
+  }
+
+  bool get _isComposing {
+    final composing = _textController.value.composing;
+    return composing.isValid && !composing.isCollapsed;
+  }
+
+  void _handleEditingValueChanged() {
+    if (_synchronizing) return;
+    final text = _textController.text;
+    final composing = _isComposing;
+    final compositionEnded = _wasComposing && !composing;
+    final textChanged = text != _lastObservedText;
+    _lastObservedText = text;
+    _wasComposing = composing;
+    if (composing) {
+      _saveTimer?.cancel();
+      _saveTimer = null;
+      return;
+    }
+    if (text == _lastSavedText) {
+      _saveTimer?.cancel();
+      _saveTimer = null;
+      return;
+    }
+    if (textChanged || compositionEnded) _scheduleCommit();
+  }
+
+  void _handleFocusChanged() {
+    if (_focusNode.hasFocus) return;
+    final stored = widget.controller.value.run?.freeCreationStoryOverride ?? '';
+    _commit(force: _textController.text != stored);
+  }
+
+  void _scheduleCommit() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(_saveDelay, _commit);
+  }
+
+  void _commit({bool force = false}) {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    if (_isComposing) {
+      _scheduleCommit();
+      return;
+    }
+    final text = _textController.text;
+    if (!force && text == _lastSavedText) return;
+    _lastSavedText = text;
+    widget.controller.updateFreeCreationStoryOverride(text);
+  }
+
+  void _replaceLocalText(String text) {
+    _synchronizing = true;
+    _textController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _lastObservedText = text;
+    _wasComposing = false;
+    _synchronizing = false;
   }
 
   @override
@@ -1557,9 +1593,13 @@ class _FreeCreationStoryPanelState extends State<_FreeCreationStoryPanel> {
                 TextField(
                   key: const ValueKey('free-creation-story-override-field'),
                   controller: _textController,
+                  focusNode: _focusNode,
                   minLines: 8,
                   maxLines: 18,
-                  onChanged: widget.controller.updateFreeCreationStoryOverride,
+                  onTapOutside: (_) {
+                    _commit();
+                    _focusNode.unfocus();
+                  },
                   decoration: InputDecoration(
                     border: const OutlineInputBorder(),
                     alignLabelWithHint: true,
@@ -1935,12 +1975,13 @@ class _GenerationFeedbackFieldState extends State<_GenerationFeedbackField> {
       _lastSavedFeedback = widget.feedback;
       return;
     }
+    if ((_focusNode.hasFocus || _hasActiveComposing(_controller)) &&
+        _controller.text != _lastSavedFeedback) {
+      return;
+    }
     _saveTimer?.cancel();
     _lastSavedFeedback = widget.feedback;
-    _controller.value = TextEditingValue(
-      text: widget.feedback,
-      selection: TextSelection.collapsed(offset: widget.feedback.length),
-    );
+    _replaceControllerText(_controller, widget.feedback);
   }
 
   @override
@@ -1954,7 +1995,8 @@ class _GenerationFeedbackFieldState extends State<_GenerationFeedbackField> {
   }
 
   void _handleFocusChange() {
-    if (!_focusNode.hasFocus) _commit();
+    if (_focusNode.hasFocus) return;
+    _commit(force: _controller.text != widget.feedback);
   }
 
   void _scheduleCommit(String _) {
@@ -1962,11 +2004,11 @@ class _GenerationFeedbackFieldState extends State<_GenerationFeedbackField> {
     _saveTimer = Timer(_saveDelay, _commit);
   }
 
-  void _commit() {
+  void _commit({bool force = false}) {
     _saveTimer?.cancel();
     _saveTimer = null;
     final feedback = _controller.text;
-    if (feedback == _lastSavedFeedback) return;
+    if (!force && feedback == _lastSavedFeedback) return;
     _lastSavedFeedback = feedback;
     widget.onChanged(feedback);
   }
@@ -2232,6 +2274,7 @@ class _NewComposePromptsStep extends StatelessWidget {
             child: externalizeRightPanel
                 ? content
                 : _ResizableStepRightPanel(
+                    uiStateKey: 'shootingScriptStepPanelCollapsed',
                     resizeHandleKey: const ValueKey(
                       'compose-prompts-right-panel-resize-handle',
                     ),
@@ -2571,8 +2614,8 @@ class _H3PromptStyleSelector extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               selectedStyle.isGeneral
-                  ? '通用 H3 使用软件内置中文规则，不读取英文 Skill；选择中文叙事风格后需返回确认镜头重新构建。'
-                  : '中文官方 Skill 已随软件内置；“构建脚本”时视觉模型会读取完整 SKILL.cn.md 与全部必要引用文档，最终 H3 提示词继续叠加成片风格锁。如需更换，请返回确认镜头并重新构建。',
+                  ? '仅当设置页选中 MiniMax H3 时，系统才会按每个镜头的剧情描述自动加载至多一个中文专项 Skill；未命中时只使用通用 H3。可灵和 LibTV 不会叠加 H3 Skill。'
+                  : '这是 MiniMax H3 的手动覆盖项：构建时固定读取该中文专项 Skill，不再按剧情自动判断。设置页选中可灵或 LibTV 时不会注入此 H3 Skill。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.tertiary,
               ),
@@ -2989,7 +3032,6 @@ class _FreeCreationShotTable extends StatefulWidget {
     required this.state,
     required this.controller,
     required this.showPrompt,
-    required this.missingDescriptionIds,
     required this.shotNavigationController,
     required this.onOpenFrame,
   });
@@ -2997,7 +3039,6 @@ class _FreeCreationShotTable extends StatefulWidget {
   final ReplicateState state;
   final ReplicateController controller;
   final bool showPrompt;
-  final Set<String> missingDescriptionIds;
   final ReplicateShotNavigationController shotNavigationController;
   final void Function(ScriptShotGroup group, bool showOriginal) onOpenFrame;
 
@@ -3010,6 +3051,7 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
   static const _replicaWidth = 250.0;
   static const _descriptionWidth = 430.0;
   static const _promptWidth = 620.0;
+  static const _actionWidth = 112.0;
 
   final _horizontalController = ScrollController();
   final _verticalController = ScrollController();
@@ -3077,7 +3119,8 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
         _originalWidth +
         _replicaWidth +
         _descriptionWidth +
-        (widget.showPrompt ? _promptWidth : 0);
+        (widget.showPrompt ? _promptWidth : 0) +
+        _actionWidth;
     final table = SizedBox(
       width: totalWidth,
       child: DecoratedBox(
@@ -3108,6 +3151,10 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
                     label: '提示词',
                     width: _promptWidth,
                   ),
+                const _FreeCreationHeaderCell(
+                  label: '功能菜单',
+                  width: _actionWidth,
+                ),
               ],
             ),
             Expanded(
@@ -3116,27 +3163,31 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
                   : Scrollbar(
                       controller: _verticalController,
                       thumbVisibility: true,
-                      child: ListView.builder(
-                        controller: _verticalController,
+                      child: ReorderableListView.builder(
+                        scrollController: _verticalController,
+                        buildDefaultDragHandles: false,
                         itemCount: groups.length,
+                        onReorder: widget.controller.reorderShotGroups,
                         itemBuilder: (context, index) {
                           final group = groups[index];
                           final head = group.shots.first;
                           return _FreeCreationShotRow(
                             key: ValueKey('free-creation-row-${head.id}'),
+                            index: index,
                             group: group,
                             head: head,
                             controller: widget.controller,
                             replicatedByShotId: replicatedByShotId,
                             prompt: promptByShotId[head.id],
                             showPrompt: widget.showPrompt,
-                            descriptionMissing: widget.missingDescriptionIds
-                                .contains(head.id),
                             originalWidth: _originalWidth,
                             replicaWidth: _replicaWidth,
                             descriptionWidth: _descriptionWidth,
                             promptWidth: _promptWidth,
+                            actionWidth: _actionWidth,
+                            actionsEnabled: !widget.state.isBusy,
                             onOpenFrame: widget.onOpenFrame,
+                            onRemove: () => _confirmRemoveGroup(group),
                           );
                         },
                       ),
@@ -3155,6 +3206,35 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
         child: table,
       ),
     );
+  }
+
+  Future<void> _confirmRemoveGroup(ScriptShotGroup group) async {
+    final frameCount = group.shots.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('移除镜头条目？'),
+        content: Text(
+          frameCount == 1
+              ? '将从当前拍摄脚本中移除该镜头，关联提示词和复刻记录也会移除。已生成的本地文件不会删除。'
+              : '将从当前拍摄脚本中移除该镜头组的 $frameCount 帧，关联提示词和复刻记录也会移除。已生成的本地文件不会删除。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-remove-free-creation-shot-group'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      widget.controller.removeShotGroup(group.shots.first.id);
+    }
   }
 }
 
@@ -3195,32 +3275,38 @@ class _FreeCreationHeaderCell extends StatelessWidget {
 class _FreeCreationShotRow extends StatelessWidget {
   const _FreeCreationShotRow({
     super.key,
+    required this.index,
     required this.group,
     required this.head,
     required this.controller,
     required this.replicatedByShotId,
     required this.prompt,
     required this.showPrompt,
-    required this.descriptionMissing,
     required this.originalWidth,
     required this.replicaWidth,
     required this.descriptionWidth,
     required this.promptWidth,
+    required this.actionWidth,
+    required this.actionsEnabled,
     required this.onOpenFrame,
+    required this.onRemove,
   });
 
+  final int index;
   final ScriptShotGroup group;
   final ScriptShot head;
   final ReplicateController controller;
   final Map<String, ReplicatedShotImage> replicatedByShotId;
   final ShotPrompt? prompt;
   final bool showPrompt;
-  final bool descriptionMissing;
   final double originalWidth;
   final double replicaWidth;
   final double descriptionWidth;
   final double promptWidth;
+  final double actionWidth;
+  final bool actionsEnabled;
   final void Function(ScriptShotGroup group, bool showOriginal) onOpenFrame;
+  final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -3251,17 +3337,25 @@ class _FreeCreationShotRow extends StatelessWidget {
             onOpen: () => onOpenFrame(group, false),
           ),
           _FreeCreationDescriptionCell(
+            key: ValueKey('free-creation-description-cell-${head.id}'),
             shot: head,
             controller: controller,
             width: descriptionWidth,
-            showError: descriptionMissing,
           ),
           if (showPrompt)
             _FreeCreationPromptCell(
+              key: ValueKey('free-creation-prompt-cell-${head.id}'),
               prompt: prompt,
               controller: controller,
               width: promptWidth,
             ),
+          _FreeCreationActionCell(
+            index: index,
+            shotId: head.id,
+            width: actionWidth,
+            enabled: actionsEnabled,
+            onRemove: onRemove,
+          ),
         ],
       ),
     );
@@ -3309,58 +3403,253 @@ class _FreeCreationShotRow extends StatelessWidget {
   }
 }
 
-class _FreeCreationDescriptionCell extends StatelessWidget {
-  const _FreeCreationDescriptionCell({
-    required this.shot,
-    required this.controller,
+class _FreeCreationActionCell extends StatelessWidget {
+  const _FreeCreationActionCell({
+    required this.index,
+    required this.shotId,
     required this.width,
-    required this.showError,
+    required this.enabled,
+    required this.onRemove,
   });
 
-  final ScriptShot shot;
-  final ReplicateController controller;
+  final int index;
+  final String shotId;
   final double width;
-  final bool showError;
+  final bool enabled;
+  final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
-    final missing = showError && shot.freeCreationDescription.trim().isEmpty;
     return SizedBox(
       width: width,
       height: _NewShotTable.rowHeight,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: missing
-              ? Theme.of(
-                  context,
-                ).colorScheme.errorContainer.withValues(alpha: 0.35)
-              : null,
           border: Border(
             right: BorderSide(
-              color: missing
-                  ? Theme.of(context).colorScheme.error
-                  : Theme.of(context).colorScheme.outlineVariant,
+              color: Theme.of(context).colorScheme.outlineVariant,
             ),
             bottom: BorderSide(
-              color: missing
-                  ? Theme.of(context).colorScheme.error
-                  : Theme.of(context).colorScheme.outlineVariant,
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            ReorderableDragStartListener(
+              index: index,
+              enabled: enabled,
+              child: KeyedSubtree(
+                key: ValueKey('free-creation-reorder-$shotId'),
+                child: Tooltip(
+                  message: '拖拽排序',
+                  child: Semantics(
+                    button: true,
+                    enabled: enabled,
+                    label: '拖拽排序',
+                    child: MouseRegion(
+                      cursor: enabled
+                          ? SystemMouseCursors.grab
+                          : SystemMouseCursors.basic,
+                      child: SizedBox.square(
+                        dimension: 40,
+                        child: Icon(
+                          Icons.drag_indicator_rounded,
+                          color: enabled
+                              ? Theme.of(context).colorScheme.onSurfaceVariant
+                              : Theme.of(context).disabledColor,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              key: ValueKey('free-creation-remove-$shotId'),
+              tooltip: '移除',
+              onPressed: enabled ? onRemove : null,
+              icon: const Icon(Icons.remove_circle_outline_rounded),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FreeCreationDescriptionCell extends StatefulWidget {
+  const _FreeCreationDescriptionCell({
+    super.key,
+    required this.shot,
+    required this.controller,
+    required this.width,
+  });
+
+  final ScriptShot shot;
+  final ReplicateController controller;
+  final double width;
+
+  @override
+  State<_FreeCreationDescriptionCell> createState() =>
+      _FreeCreationDescriptionCellState();
+}
+
+class _FreeCreationDescriptionCellState
+    extends State<_FreeCreationDescriptionCell> {
+  static const _saveDelay = Duration(milliseconds: 450);
+
+  late final TextEditingController _textController;
+  late final FocusNode _focusNode;
+  late String _lastSavedText;
+  late String _lastObservedText;
+  Timer? _saveTimer;
+  bool _wasComposing = false;
+  bool _synchronizing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastSavedText = widget.shot.freeCreationDescription;
+    _lastObservedText = _lastSavedText;
+    _textController = TextEditingController(text: _lastSavedText)
+      ..addListener(_handleEditingValueChanged);
+    _focusNode = FocusNode()..addListener(_handleFocusChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _FreeCreationDescriptionCell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final stored = widget.shot.freeCreationDescription;
+    if (oldWidget.shot.id != widget.shot.id) {
+      _saveTimer?.cancel();
+      _lastSavedText = stored;
+      _replaceLocalText(stored);
+      return;
+    }
+    if (stored == _textController.text) {
+      _lastSavedText = stored;
+      return;
+    }
+    if (_focusNode.hasFocus || _isComposing) return;
+    if (_textController.text == _lastSavedText) {
+      _lastSavedText = stored;
+      _replaceLocalText(stored);
+    }
+  }
+
+  @override
+  void dispose() {
+    _saveTimer?.cancel();
+    _textController
+      ..removeListener(_handleEditingValueChanged)
+      ..dispose();
+    _focusNode
+      ..removeListener(_handleFocusChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  bool get _isComposing {
+    final composing = _textController.value.composing;
+    return composing.isValid && !composing.isCollapsed;
+  }
+
+  void _handleEditingValueChanged() {
+    if (_synchronizing) return;
+    final text = _textController.text;
+    final composing = _isComposing;
+    final compositionEnded = _wasComposing && !composing;
+    final textChanged = text != _lastObservedText;
+    _lastObservedText = text;
+    _wasComposing = composing;
+    if (composing) {
+      _saveTimer?.cancel();
+      _saveTimer = null;
+      return;
+    }
+    if (text == _lastSavedText) {
+      _saveTimer?.cancel();
+      _saveTimer = null;
+      return;
+    }
+    if (textChanged || compositionEnded) _scheduleCommit();
+  }
+
+  void _handleFocusChanged() {
+    if (_focusNode.hasFocus) return;
+    _commit(force: _textController.text != widget.shot.freeCreationDescription);
+  }
+
+  void _scheduleCommit() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(_saveDelay, _commit);
+  }
+
+  void _commit({bool force = false}) {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    if (_isComposing) {
+      _scheduleCommit();
+      return;
+    }
+    final text = _textController.text;
+    if (!force && text == _lastSavedText) return;
+    final saved = widget.controller.updateFreeCreationDescription(
+      widget.shot.id,
+      text,
+    );
+    if (saved) {
+      _lastSavedText = text;
+    } else if (mounted) {
+      _scheduleCommit();
+    }
+  }
+
+  void _replaceLocalText(String text) {
+    _synchronizing = true;
+    _textController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _lastObservedText = text;
+    _wasComposing = false;
+    _synchronizing = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: widget.width,
+      height: _NewShotTable.rowHeight,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            right: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+            bottom: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
             ),
           ),
         ),
         child: Padding(
           padding: const EdgeInsets.all(7),
           child: TextFormField(
-            key: ValueKey('free-creation-description-${shot.id}'),
-            initialValue: shot.freeCreationDescription,
+            key: ValueKey('free-creation-description-${widget.shot.id}'),
+            controller: _textController,
+            focusNode: _focusNode,
             minLines: 3,
             maxLines: 4,
-            onChanged: (text) =>
-                controller.updateFreeCreationDescription(shot.id, text),
+            onTapOutside: (_) {
+              _commit();
+              _focusNode.unfocus();
+            },
             decoration: InputDecoration(
               isDense: true,
               border: const OutlineInputBorder(),
-              hintText: '必填：描述这个镜头的创作意图、节奏、风格或声音',
+              hintText: '选填：描述创作意图、节奏、风格或声音；留空则自动分析',
             ),
           ),
         ),
@@ -3371,6 +3660,7 @@ class _FreeCreationDescriptionCell extends StatelessWidget {
 
 class _FreeCreationPromptCell extends StatefulWidget {
   const _FreeCreationPromptCell({
+    super.key,
     required this.prompt,
     required this.controller,
     required this.width,
@@ -3387,28 +3677,39 @@ class _FreeCreationPromptCell extends StatefulWidget {
 
 class _FreeCreationPromptCellState extends State<_FreeCreationPromptCell> {
   late final TextEditingController _textController;
+  late final FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
-    _textController = TextEditingController(text: widget.prompt?.prompt ?? '');
+    _textController = TextEditingController(text: _selectedText());
+    _focusNode = FocusNode();
   }
 
   @override
   void didUpdateWidget(covariant _FreeCreationPromptCell oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final next = widget.prompt?.prompt ?? '';
-    if (oldWidget.prompt?.id != widget.prompt?.id ||
-        (oldWidget.prompt?.prompt != next && _textController.text != next)) {
-      _textController.value = TextEditingValue(
-        text: next,
-        selection: TextSelection.collapsed(offset: next.length),
-      );
+    final next = _selectedText();
+    if (_textController.text == next) return;
+    if (oldWidget.prompt?.id == widget.prompt?.id &&
+        (_focusNode.hasFocus || _hasActiveComposing(_textController))) {
+      return;
     }
+    _replaceControllerText(_textController, next);
+  }
+
+  String _selectedText() {
+    final prompt = widget.prompt;
+    if (prompt == null) return '';
+    return widget.controller.promptTextFor(
+      prompt,
+      widget.controller.promptFormatFor(prompt),
+    );
   }
 
   @override
   void dispose() {
+    _focusNode.dispose();
     _textController.dispose();
     super.dispose();
   }
@@ -3433,82 +3734,135 @@ class _FreeCreationPromptCellState extends State<_FreeCreationPromptCell> {
         child: prompt == null
             ? const Center(child: Text('待构建'))
             : Padding(
-                padding: const EdgeInsets.fromLTRB(7, 5, 5, 5),
-                child: Row(
+                padding: const EdgeInsets.fromLTRB(7, 4, 5, 4),
+                child: Column(
                   children: [
-                    Expanded(
-                      child: TextField(
-                        key: ValueKey('free-creation-prompt-${prompt.id}'),
-                        controller: _textController,
-                        minLines: 3,
-                        maxLines: 4,
-                        decoration: InputDecoration(
-                          isDense: true,
-                          border: const OutlineInputBorder(),
-                          labelText: prompt.isUserEdited
-                              ? '已手动修改'
-                              : prompt.status == ProcessingStatus.failed
-                              ? '生成失败'
-                              : 'H3 Ref2VA',
-                          errorText: prompt.status == ProcessingStatus.failed
-                              ? prompt.errorMessage
-                              : null,
+                    SizedBox(
+                      height: 36,
+                      child: SegmentedButton<ShotPromptFormat>(
+                        key: ValueKey(
+                          'free-creation-prompt-format-${prompt.id}',
                         ),
+                        segments: const [
+                          ButtonSegment(
+                            value: ShotPromptFormat.kling,
+                            label: Text('可灵'),
+                          ),
+                          ButtonSegment(
+                            value: ShotPromptFormat.h3,
+                            label: Text('H3'),
+                          ),
+                          ButtonSegment(
+                            value: ShotPromptFormat.sd2,
+                            label: Text('即梦'),
+                          ),
+                        ],
+                        selected: {widget.controller.promptFormatFor(prompt)},
+                        onSelectionChanged: (selection) => widget.controller
+                            .selectPromptFormat(prompt.id, selection.first),
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    SizedBox(
-                      width: 36,
-                      height: 96,
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: '保存提示词',
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints.tightFor(
-                                width: 32,
-                                height: 32,
+                    const SizedBox(height: 4),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              key: ValueKey(
+                                'free-creation-prompt-${prompt.id}',
                               ),
-                              onPressed: _textController.text.trim().isEmpty
-                                  ? null
-                                  : () => widget.controller.updatePromptText(
-                                      prompt.id,
-                                      _textController.text,
+                              controller: _textController,
+                              focusNode: _focusNode,
+                              minLines: 2,
+                              maxLines: 3,
+                              decoration: InputDecoration(
+                                isDense: true,
+                                border: const OutlineInputBorder(),
+                                labelText: prompt.isUserEdited
+                                    ? '已手动修改'
+                                    : prompt.status == ProcessingStatus.failed
+                                    ? '生成失败'
+                                    : _promptFormatLabel(
+                                        widget.controller.promptFormatFor(
+                                          prompt,
+                                        ),
+                                      ),
+                                errorText:
+                                    prompt.status == ProcessingStatus.failed
+                                    ? prompt.errorMessage
+                                    : null,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          SizedBox(
+                            width: 36,
+                            height: 92,
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: '保存提示词',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints.tightFor(
+                                      width: 32,
+                                      height: 32,
                                     ),
-                              icon: const Icon(Icons.save_rounded, size: 18),
-                            ),
-                            IconButton(
-                              tooltip: '复制提示词',
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints.tightFor(
-                                width: 32,
-                                height: 32,
+                                    onPressed:
+                                        _textController.text.trim().isEmpty
+                                        ? null
+                                        : () => widget.controller
+                                              .updatePromptText(
+                                                prompt.id,
+                                                _textController.text,
+                                              ),
+                                    icon: const Icon(
+                                      Icons.save_rounded,
+                                      size: 18,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: '复制提示词',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints.tightFor(
+                                      width: 32,
+                                      height: 32,
+                                    ),
+                                    onPressed: () => Clipboard.setData(
+                                      ClipboardData(text: _textController.text),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.copy_rounded,
+                                      size: 18,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip:
+                                        prompt.status == ProcessingStatus.failed
+                                        ? '重试生成'
+                                        : '单镜头重新生成',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints.tightFor(
+                                      width: 32,
+                                      height: 32,
+                                    ),
+                                    onPressed: () =>
+                                        _regenerate(context, prompt),
+                                    icon: const Icon(
+                                      Icons.refresh_rounded,
+                                      size: 18,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              onPressed: () => Clipboard.setData(
-                                ClipboardData(text: _textController.text),
-                              ),
-                              icon: const Icon(Icons.copy_rounded, size: 18),
                             ),
-                            IconButton(
-                              tooltip: prompt.status == ProcessingStatus.failed
-                                  ? '重试生成'
-                                  : '单镜头重新生成',
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints.tightFor(
-                                width: 32,
-                                height: 32,
-                              ),
-                              onPressed: () => _regenerate(context, prompt),
-                              icon: const Icon(Icons.refresh_rounded, size: 18),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -3517,6 +3871,12 @@ class _FreeCreationPromptCellState extends State<_FreeCreationPromptCell> {
       ),
     );
   }
+
+  static String _promptFormatLabel(ShotPromptFormat format) => switch (format) {
+    ShotPromptFormat.kling => '可灵提示词',
+    ShotPromptFormat.h3 => 'H3 Ref2VA',
+    ShotPromptFormat.sd2 => '即梦提示词',
+  };
 
   Future<void> _regenerate(BuildContext context, ShotPrompt prompt) async {
     if (prompt.isUserEdited) {
@@ -4978,7 +5338,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
               FilledButton.icon(
                 key: const ValueKey('replicate-new-next-prompts'),
                 onPressed: (canContinue || hasConfirmedBinding)
-                    ? () => controller.moveToStep(ReplicateStep.composePrompts)
+                    ? () => controller.moveToStep(ReplicateStep.generateVideos)
                     : null,
                 icon: const Icon(Icons.arrow_forward_rounded),
                 label: const Text('下一步'),
@@ -4990,6 +5350,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
             child: externalizeRightPanel
                 ? content
                 : _ResizableStepRightPanel(
+                    uiStateKey: 'shootingScriptStepPanelCollapsed',
                     resizeHandleKey: const ValueKey(
                       'prepare-assets-right-panel-resize-handle',
                     ),
@@ -6402,7 +6763,6 @@ class _ConfirmShotsStep extends StatelessWidget {
             title: '步骤 1 · 查阅脚本镜头',
             subtitle: '请自行查阅并编辑镜头内容，修改会同步回拍摄脚本。',
             actions: [
-              _FreeCreationModeSwitch(controller: controller),
               FilledButton.icon(
                 key: const ValueKey('replicate-next-assets'),
                 onPressed: state.shots.isEmpty
@@ -6668,7 +7028,7 @@ class _PrepareAssetsStep extends StatelessWidget {
                           item.path.isNotEmpty &&
                           File(item.path).existsSync(),
                     )
-                    ? () => controller.moveToStep(ReplicateStep.composePrompts)
+                    ? () => controller.moveToStep(ReplicateStep.generateVideos)
                     : null,
                 icon: const Icon(Icons.arrow_forward_rounded),
                 label: const Text('下一步'),
@@ -7408,8 +7768,9 @@ class _WorkspacePanel extends StatelessWidget {
   );
 }
 
-class _ResizableStepRightPanel extends StatefulWidget {
+class _ResizableStepRightPanel extends ConsumerStatefulWidget {
   const _ResizableStepRightPanel({
+    required this.uiStateKey,
     required this.content,
     required this.panelBuilder,
     required this.resizeHandleKey,
@@ -7421,6 +7782,7 @@ class _ResizableStepRightPanel extends StatefulWidget {
     this.minPanelWidth = 280,
   });
 
+  final String uiStateKey;
   final Widget content;
   final Widget Function(BuildContext context, VoidCallback onToggleCollapsed)
   panelBuilder;
@@ -7433,11 +7795,12 @@ class _ResizableStepRightPanel extends StatefulWidget {
   final double minPanelWidth;
 
   @override
-  State<_ResizableStepRightPanel> createState() =>
+  ConsumerState<_ResizableStepRightPanel> createState() =>
       _ResizableStepRightPanelState();
 }
 
-class _ResizableStepRightPanelState extends State<_ResizableStepRightPanel> {
+class _ResizableStepRightPanelState
+    extends ConsumerState<_ResizableStepRightPanel> {
   static const _collapsedWidth = 52.0;
   static const _handleWidth = 10.0;
   static const _gap = 0.0;
@@ -7446,53 +7809,104 @@ class _ResizableStepRightPanelState extends State<_ResizableStepRightPanel> {
   bool _collapsed = false;
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final panel = widget.panelBuilder(
-        context,
-        () => setState(() => _collapsed = !_collapsed),
-      );
-      if (constraints.maxWidth < widget.compactBreakpoint) {
-        return Column(
+  void initState() {
+    super.initState();
+    try {
+      _collapsed =
+          ref.read(appDatabaseProvider).getSetting(widget.uiStateKey) == 'true';
+    } catch (_) {
+      // 测试或预览环境可能没有注入数据库，生产环境会正常恢复。
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => CollapsiblePanelRegistration(
+    expanded: !_collapsed,
+    onExpandedChanged: _setExpanded,
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final panel = widget.panelBuilder(context, _toggleCollapsed);
+        if (constraints.maxWidth < widget.compactBreakpoint) {
+          return Column(
+            children: [
+              Expanded(child: widget.content),
+              const Divider(height: 1),
+              if (_collapsed)
+                SizedBox(
+                  height: _collapsedWidth,
+                  child: Row(
+                    children: [
+                      IconButton(
+                        key: widget.expandButtonKey,
+                        tooltip: '展开${widget.collapsedLabel}',
+                        onPressed: () => _setExpanded(true),
+                        icon: const Icon(
+                          Icons.keyboard_double_arrow_up_rounded,
+                        ),
+                      ),
+                      Text(
+                        widget.collapsedLabel,
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                    ],
+                  ),
+                )
+              else
+                SizedBox(height: widget.compactHeight, child: panel),
+            ],
+          );
+        }
+
+        final maximumWidth = math.max(
+          widget.minPanelWidth,
+          constraints.maxWidth - 520 - _handleWidth - _gap,
+        );
+        final panelWidth = _panelWidth
+            .clamp(widget.minPanelWidth, maximumWidth)
+            .toDouble();
+        final rightPanel = _collapsed
+            ? _CollapsedStepRightPanel(
+                label: widget.collapsedLabel,
+                expandButtonKey: widget.expandButtonKey,
+                onExpand: () => _setExpanded(true),
+              )
+            : SizedBox(width: panelWidth, child: panel);
+        return Row(
           children: [
             Expanded(child: widget.content),
-            const Divider(height: 1),
-            SizedBox(height: widget.compactHeight, child: panel),
+            _StepRightPanelResizeHandle(
+              key: widget.resizeHandleKey,
+              enabled: !_collapsed,
+              onDrag: (delta) => setState(() {
+                _panelWidth = (panelWidth - delta)
+                    .clamp(widget.minPanelWidth, maximumWidth)
+                    .toDouble();
+              }),
+            ),
+            rightPanel,
           ],
         );
-      }
-
-      final maximumWidth = math.max(
-        widget.minPanelWidth,
-        constraints.maxWidth - 520 - _handleWidth - _gap,
-      );
-      final panelWidth = _panelWidth
-          .clamp(widget.minPanelWidth, maximumWidth)
-          .toDouble();
-      final rightPanel = _collapsed
-          ? _CollapsedStepRightPanel(
-              label: widget.collapsedLabel,
-              expandButtonKey: widget.expandButtonKey,
-              onExpand: () => setState(() => _collapsed = false),
-            )
-          : SizedBox(width: panelWidth, child: panel);
-      return Row(
-        children: [
-          Expanded(child: widget.content),
-          _StepRightPanelResizeHandle(
-            key: widget.resizeHandleKey,
-            enabled: !_collapsed,
-            onDrag: (delta) => setState(() {
-              _panelWidth = (panelWidth - delta)
-                  .clamp(widget.minPanelWidth, maximumWidth)
-                  .toDouble();
-            }),
-          ),
-          rightPanel,
-        ],
-      );
-    },
+      },
+    ),
   );
+
+  void _toggleCollapsed() {
+    _setExpanded(_collapsed);
+  }
+
+  void _setExpanded(bool expanded) {
+    if (_collapsed == !expanded) {
+      return;
+    }
+    setState(() => _collapsed = !expanded);
+    try {
+      ref
+          .read(appDatabaseProvider)
+          .setSetting(widget.uiStateKey, _collapsed.toString());
+    } catch (_) {
+      // 测试或预览环境可能没有注入数据库，生产环境会正常保存。
+    }
+  }
 }
 
 class _StepRightPanelResizeHandle extends StatelessWidget {
@@ -7634,23 +8048,29 @@ class _CommitCell extends StatefulWidget {
 
 class _CommitCellState extends State<_CommitCell> {
   late final TextEditingController _text;
+  late final FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
     _text = TextEditingController(text: widget.value);
+    _focusNode = FocusNode();
   }
 
   @override
   void didUpdateWidget(covariant _CommitCell oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.value != widget.value && _text.text != widget.value) {
-      _text.text = widget.value;
+    if (oldWidget.value != widget.value &&
+        _text.text != widget.value &&
+        !_focusNode.hasFocus &&
+        !_hasActiveComposing(_text)) {
+      _replaceControllerText(_text, widget.value);
     }
   }
 
   @override
   void dispose() {
+    _focusNode.dispose();
     _text.dispose();
     super.dispose();
   }
@@ -7662,6 +8082,7 @@ class _CommitCellState extends State<_CommitCell> {
       padding: const EdgeInsets.symmetric(horizontal: 5),
       child: TextField(
         controller: _text,
+        focusNode: _focusNode,
         minLines: 1,
         maxLines: widget.maxLines,
         textInputAction: TextInputAction.done,

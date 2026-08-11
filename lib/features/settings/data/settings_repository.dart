@@ -39,6 +39,10 @@ class SettingsRepository {
   static const _videoPreviewPaddingSecondsKey = 'videoPreviewPaddingSeconds';
   static const _videoAnalysisThinkingEnabledKey =
       'videoAnalysisThinkingEnabled';
+  static const _videoAnalysisMultiDimensionEnabledKey =
+      'videoAnalysisMultiDimensionEnabled';
+  static const _videoAnalysisShotDetailsEnabledKey =
+      'videoAnalysisShotDetailsEnabled';
   static const _fullAutomationEnabledKey = 'fullAutomationEnabled';
   static const _replicateDefaultGlobalStyleKey = 'replicateDefaultGlobalStyle';
   static const _replicateDefaultConstraintsKey = 'replicateDefaultConstraints';
@@ -191,6 +195,11 @@ class SettingsRepository {
       ),
       videoAnalysisThinkingEnabled:
           _database.getSetting(_videoAnalysisThinkingEnabledKey) == 'true',
+      videoAnalysisMultiDimensionEnabled:
+          _database.getSetting(_videoAnalysisMultiDimensionEnabledKey) !=
+          'false',
+      videoAnalysisShotDetailsEnabled:
+          _database.getSetting(_videoAnalysisShotDetailsEnabledKey) != 'false',
       fullAutomationEnabled:
           _database.getSetting(_fullAutomationEnabledKey) == 'true',
       replicateDefaultGlobalStyle:
@@ -281,6 +290,14 @@ class SettingsRepository {
       ..setSetting(
         _videoAnalysisThinkingEnabledKey,
         settings.videoAnalysisThinkingEnabled.toString(),
+      )
+      ..setSetting(
+        _videoAnalysisMultiDimensionEnabledKey,
+        settings.videoAnalysisMultiDimensionEnabled.toString(),
+      )
+      ..setSetting(
+        _videoAnalysisShotDetailsEnabledKey,
+        settings.videoAnalysisShotDetailsEnabled.toString(),
       )
       ..setSetting(
         _fullAutomationEnabledKey,
@@ -417,6 +434,8 @@ class SettingsRepository {
       videoMinimumSharpness: 0.08,
       videoPreviewPaddingSeconds: 1.5,
       videoAnalysisThinkingEnabled: false,
+      videoAnalysisMultiDimensionEnabled: true,
+      videoAnalysisShotDetailsEnabled: true,
       fullAutomationEnabled: false,
       replicateDefaultGlobalStyle: AppSettings.defaultReplicateGlobalStyle,
       replicateDefaultConstraints: AppSettings.defaultReplicateConstraints,
@@ -474,6 +493,14 @@ class SettingsRepository {
           baseUrl: '',
           apiKey: '',
           model: AppSettings.defaultKlingCliVideoGenerationModel,
+        ),
+        VideoGenerationApiConfig(
+          id: AppSettings.defaultLibTvCliVideoGenerationConfigId,
+          name: 'LibTV CLI · 即梦 2.0',
+          kind: VideoGenerationApiConfigKind.libTvCli,
+          baseUrl: '',
+          apiKey: '',
+          model: AppSettings.defaultLibTvCliVideoGenerationModel,
         ),
         VideoGenerationApiConfig(
           id: AppSettings.defaultMiniMaxVideoGenerationConfigId,
@@ -723,9 +750,18 @@ class SettingsRepository {
       apiKey: '',
       model: AppSettings.defaultVideoGenerationModel,
     );
+    const libTvCli = VideoGenerationApiConfig(
+      id: AppSettings.defaultLibTvCliVideoGenerationConfigId,
+      name: 'LibTV CLI · 即梦 2.0',
+      kind: VideoGenerationApiConfigKind.libTvCli,
+      baseUrl: '',
+      apiKey: '',
+      model: AppSettings.defaultLibTvCliVideoGenerationModel,
+    );
     final normalized = [
       if (!configs.any((config) => config.id == klingCli.id)) klingCli,
       for (final config in configs) config,
+      if (!configs.any((config) => config.id == libTvCli.id)) libTvCli,
       if (!configs.any((config) => config.id == miniMax.id)) miniMax,
     ];
     return normalized;

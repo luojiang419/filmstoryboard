@@ -361,6 +361,8 @@ class _FakeGroupVisionService extends VisionStoryboardService {
     List<File> imageFiles = const [],
     int maxTokens = 1200,
     bool allowThinking = false,
+    Duration responseTimeout = VisionStoryboardService.requestTimeout,
+    bool compressOversizedImages = false,
   }) async {
     completeCalls++;
     submittedImagePaths = imageFiles.map((file) => file.path).toList();

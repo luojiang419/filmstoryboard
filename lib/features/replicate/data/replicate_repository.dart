@@ -42,6 +42,17 @@ class ReplicateRepository {
     ]);
   }
 
+  void deletePromptsForShotIds(String runId, Iterable<String> shotIds) {
+    final ids = shotIds.toSet().toList(growable: false);
+    if (ids.isEmpty) return;
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    _database.executeStatement(
+      'DELETE FROM shot_prompts '
+      'WHERE run_id = ? AND script_shot_id IN ($placeholders);',
+      [runId, ...ids],
+    );
+  }
+
   void replacePrompts(String runId, List<ShotPrompt> prompts) {
     _database.executeStatement('BEGIN IMMEDIATE;');
     try {

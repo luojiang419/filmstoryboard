@@ -6,6 +6,7 @@ import 'package:filmstoryboard/features/replicate/data/h3_skill_library.dart';
 import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:image/image.dart' as img;
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_service.dart';
@@ -31,6 +32,62 @@ void main() {
       ).toString(),
       'https://api.example.com/v1/chat/completions',
     );
+  });
+
+  test('完整视觉请求支持按调用覆盖响应超时', () async {
+    final pendingResponse = Completer<http.Response>();
+    final service = VisionStoryboardService(
+      client: MockClient((request) => pendingResponse.future),
+    );
+    addTearDown(service.close);
+
+    await expectLater(
+      service.complete(
+        settings: _settings(),
+        prompt: '生成完整 H3 提示词',
+        responseTimeout: const Duration(milliseconds: 100),
+      ),
+      throwsA(isA<TimeoutException>()),
+    );
+  });
+
+  test('完整视觉请求只压缩超限上传副本且不改原图', () async {
+    Map<String, dynamic>? requestBody;
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return _chatResponse('压缩请求已接收');
+      }),
+    );
+    addTearDown(service.close);
+    final root = await Directory.systemTemp.createTemp(
+      'vision_oversized_payload_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final source = File('${root.path}${Platform.pathSeparator}oversized.bmp');
+    final originalBytes = img.encodeBmp(img.Image(width: 1100, height: 1100));
+    expect(originalBytes.length, greaterThan(3 * 1024 * 1024));
+    await source.writeAsBytes(originalBytes);
+
+    final result = await service.complete(
+      settings: _settings(),
+      prompt: '分析超限图片',
+      imageFiles: [source],
+      compressOversizedImages: true,
+    );
+
+    expect(result, '压缩请求已接收');
+    final messages = requestBody!['messages'] as List<dynamic>;
+    final content =
+        (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+    final imagePart = content[1] as Map<String, dynamic>;
+    final imageUrl =
+        (imagePart['image_url'] as Map<String, dynamic>)['url'] as String;
+    expect(imageUrl, startsWith('data:image/jpeg;base64,'));
+    final payload = base64Decode(imageUrl.substring(imageUrl.indexOf(',') + 1));
+    expect(payload.length, lessThanOrEqualTo(2 * 1024 * 1024));
+    expect(img.decodeJpg(payload), isNotNull);
+    expect(await source.readAsBytes(), orderedEquals(originalBytes));
   });
 
   test('视觉服务以 Base64 图片调用 chat completions 并解析 JSON 文本', () async {

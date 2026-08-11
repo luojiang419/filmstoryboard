@@ -24,6 +24,8 @@ import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_m
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_controller.dart';
+import 'package:filmstoryboard/features/video_generation/data/kling_cli_models.dart';
+import 'package:filmstoryboard/features/video_generation/data/kling_cli_resolver.dart';
 import 'package:filmstoryboard/features/video_generation/data/video_generation_repository.dart';
 import 'package:filmstoryboard/features/video_generation/presentation/video_generation_page.dart';
 import 'package:flutter/material.dart';
@@ -34,7 +36,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('一键复刻页展示四步流并复用严格四列视频工作区', (tester) async {
+  testWidgets('一键复刻页展示三步流并在确认镜头显示三类提示词', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -77,6 +79,7 @@ void main() {
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
+      enforceFreeCreationMode: true,
     );
     final videoGenerationController = VideoGenerationController(
       repository: VideoGenerationRepository(database),
@@ -85,6 +88,20 @@ void main() {
       replicateController: replicateController,
       directories: directories,
       settingsController: settingsController,
+    );
+    videoGenerationController.value = videoGenerationController.value.copyWith(
+      environment: const KlingCliEnvironment(
+        nodePath: r'C:\tools\node.exe',
+        nodeVersion: 'v20.0.0',
+        npmPath: r'C:\tools\npm.cmd',
+        klingPath: r'C:\tools\kling.cmd',
+        klingVersion: 'kling-cli test',
+        errorMessage: '',
+      ),
+      identity: const KlingIdentity(
+        userId: 'test-user',
+        imageToVideoModels: [],
+      ),
     );
     final now = DateTime.now().toUtc();
     replicateRepository.upsertReplicatedShotImage(
@@ -173,10 +190,10 @@ void main() {
     expect(find.byKey(const ValueKey('replicate-page')), findsOneWidget);
     expect(find.text('确认镜头'), findsOneWidget);
     expect(find.text('准备资产'), findsOneWidget);
-    expect(find.text('合成提示词'), findsOneWidget);
+    expect(find.text('合成提示词'), findsNothing);
     expect(find.text('生成视频'), findsOneWidget);
-    expect(find.text('原图'), findsAtLeastNWidgets(2));
-    expect(find.text('复刻分镜'), findsOneWidget);
+    expect(find.text('原视频帧范围'), findsOneWidget);
+    expect(find.text('复刻分镜范围'), findsOneWidget);
     expect(find.text('切换脚本模版'), findsOneWidget);
     expect(find.text('全部确认'), findsNothing);
     expect(find.text('清除确认'), findsNothing);
@@ -185,22 +202,10 @@ void main() {
       find.byKey(const ValueKey('replicate-new-confirm-shots-step')),
       findsOneWidget,
     );
-    final durationField = find.descendant(
-      of: find.byKey(ValueKey('shot-duration-${shot.id}')),
-      matching: find.byType(TextField),
-    );
-    expect(durationField, findsOneWidget);
-    await tester.enterText(durationField, '4.5s');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
-    await tester.pump();
-    expect(shootingController.value.shots.single.durationSeconds, 4.5);
     final freeCreationSwitch = find.byKey(
       const ValueKey('free-creation-mode-switch'),
     );
-    expect(freeCreationSwitch, findsOneWidget);
-    expect(replicateController.value.run!.freeCreationEnabled, isFalse);
-    await tester.tap(freeCreationSwitch);
-    await tester.pump();
+    expect(freeCreationSwitch, findsNothing);
     expect(replicateController.value.run!.freeCreationEnabled, isTrue);
     expect(
       ReplicateRepository(
@@ -208,9 +213,11 @@ void main() {
       ).getRun(replicateController.value.run!.id)?.freeCreationEnabled,
       isTrue,
     );
+    replicateController.setFreeCreationEnabled(false);
+    expect(replicateController.value.run!.freeCreationEnabled, isTrue);
     final freeHeader = find.byKey(const ValueKey('free-creation-table-header'));
     expect(freeHeader, findsOneWidget);
-    for (final label in const ['原视频帧范围', '复刻分镜范围', '剧情描述']) {
+    for (final label in const ['原视频帧范围', '复刻分镜范围', '剧情描述', '功能菜单']) {
       expect(
         find.descendant(of: freeHeader, matching: find.text(label)),
         findsOneWidget,
@@ -224,27 +231,137 @@ void main() {
       ValueKey('free-creation-description-${shot.id}'),
     );
     expect(descriptionField, findsOneWidget);
-    await tester.tap(
-      find.byKey(const ValueKey('script-build-continuous-shots')),
+    expect(find.textContaining('必填：描述这个镜头'), findsNothing);
+    expect(find.textContaining('留空则自动分析'), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('free-creation-reorder-${shot.id}')),
+      findsOneWidget,
     );
-    await tester.pump();
-    expect(find.textContaining('请先填写 1 个镜头组'), findsOneWidget);
-    expect(replicateController.value.prompts, isEmpty);
-    await tester.enterText(descriptionField, '节奏紧凑地展示人物拿起产品');
-    await tester.pump();
+    expect(
+      find.byKey(ValueKey('free-creation-remove-${shot.id}')),
+      findsOneWidget,
+    );
+    final versionBeforeDescription =
+        shootingController.value.selectedScript!.version;
+    await tester.showKeyboard(descriptionField);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '人',
+        selection: TextSelection.collapsed(offset: 1),
+        composing: TextRange(start: 0, end: 1),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
     expect(
       shootingController.value.shots.single.freeCreationDescription,
-      '节奏紧凑地展示人物拿起产品',
+      isEmpty,
+    );
+    expect(
+      shootingController.value.selectedScript!.version,
+      versionBeforeDescription,
+    );
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '人',
+        selection: TextSelection.collapsed(offset: 1),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 450));
+    expect(shootingController.value.shots.single.freeCreationDescription, '人');
+    expect(
+      shootingController.value.selectedScript!.version,
+      versionBeforeDescription + 1,
+    );
+
+    const description = '节奏紧凑地展示人物拿起产品';
+    final versionBeforeRapidInput =
+        shootingController.value.selectedScript!.version;
+    for (var length = 1; length <= description.length; length++) {
+      await tester.enterText(
+        descriptionField,
+        description.substring(0, length),
+      );
+      if (length < description.length) {
+        await tester.pump(const Duration(milliseconds: 30));
+      }
+    }
+    expect(shootingController.value.shots.single.freeCreationDescription, '人');
+    expect(
+      shootingController.value.selectedScript!.version,
+      versionBeforeRapidInput,
+    );
+    await tester.pump(const Duration(milliseconds: 449));
+    expect(shootingController.value.shots.single.freeCreationDescription, '人');
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(
+      shootingController.value.shots.single.freeCreationDescription,
+      description,
+    );
+    expect(
+      shootingController.value.selectedScript!.version,
+      versionBeforeRapidInput + 1,
+    );
+    const descriptionInserted = '节奏紧凑地【中间插入】展示人物拿起产品';
+    const descriptionCursor = 12;
+    await tester.showKeyboard(descriptionField);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: descriptionInserted,
+        selection: TextSelection.collapsed(offset: descriptionCursor),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 450));
+    var activeEditable = tester.widget<EditableText>(
+      find.descendant(
+        of: descriptionField,
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(activeEditable.controller.text, descriptionInserted);
+    expect(
+      activeEditable.controller.selection,
+      const TextSelection.collapsed(offset: descriptionCursor),
+      reason: '剧情描述保存回写后不能把中间光标重置到开头或结尾',
     );
     final storyField = find.byKey(
       const ValueKey('free-creation-story-override-field'),
     );
     expect(storyField, findsOneWidget);
-    await tester.enterText(storyField, '人物在室内完成产品展示。');
+    final versionBeforeBlur = shootingController.value.selectedScript!.version;
+    await tester.enterText(descriptionField, '失焦时应立即保存');
+    await tester.tap(storyField);
     await tester.pump();
+    expect(
+      shootingController.value.shots.single.freeCreationDescription,
+      '失焦时应立即保存',
+    );
+    expect(
+      shootingController.value.selectedScript!.version,
+      versionBeforeBlur + 1,
+    );
+    await tester.enterText(storyField, '人物在室内完成产品展示。');
+    await tester.pump(const Duration(milliseconds: 450));
     expect(
       replicateController.value.run!.freeCreationStoryOverride,
       '人物在室内完成产品展示。',
+    );
+    const storyInserted = '人物在室内【中间插入】完成产品展示。';
+    const storyCursor = 12;
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: storyInserted,
+        selection: TextSelection.collapsed(offset: storyCursor),
+      ),
+    );
+    await tester.pump();
+    activeEditable = tester.widget<EditableText>(
+      find.descendant(of: storyField, matching: find.byType(EditableText)),
+    );
+    expect(activeEditable.controller.text, storyInserted);
+    expect(
+      activeEditable.controller.selection,
+      const TextSelection.collapsed(offset: storyCursor),
+      reason: '分镜故事持久化回写后不能覆盖当前光标',
     );
     await tester.tap(
       find.byKey(const ValueKey('script-build-continuous-shots')),
@@ -263,10 +380,87 @@ void main() {
       ),
       findsOneWidget,
     );
-
-    await tester.tap(
-      find.byKey(ValueKey('replicate-shot-replica-thumbnail-${shot.id}')),
+    final promptFormatSelector = find.byKey(
+      ValueKey(
+        'free-creation-prompt-format-${replicateController.value.prompts.single.id}',
+      ),
     );
+    expect(promptFormatSelector, findsOneWidget);
+    for (final label in const ['可灵', 'H3', '即梦']) {
+      expect(
+        find.descendant(of: promptFormatSelector, matching: find.text(label)),
+        findsOneWidget,
+      );
+    }
+    final promptField = find.byKey(
+      ValueKey(
+        'free-creation-prompt-${replicateController.value.prompts.single.id}',
+      ),
+    );
+    final originalPrompt = replicateController.value.prompts.single.prompt;
+    final promptCursor = originalPrompt.length ~/ 2;
+    final promptInserted = originalPrompt.replaceRange(
+      promptCursor,
+      promptCursor,
+      '【中间插入】',
+    );
+    await tester.showKeyboard(promptField);
+    tester.testTextInput.updateEditingValue(
+      TextEditingValue(
+        text: promptInserted,
+        selection: TextSelection.collapsed(
+          offset: promptCursor + '【中间插入】'.length,
+        ),
+      ),
+    );
+    replicateController.updatePromptText(
+      replicateController.value.prompts.single.id,
+      promptInserted,
+    );
+    await tester.pump();
+    activeEditable = tester.widget<EditableText>(
+      find.descendant(of: promptField, matching: find.byType(EditableText)),
+    );
+    expect(activeEditable.controller.text, promptInserted);
+    expect(
+      activeEditable.controller.selection.baseOffset,
+      promptCursor + '【中间插入】'.length,
+      reason: '提示词保存回写后不能覆盖当前光标',
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+
+    final promptHeader = find.descendant(
+      of: freeHeader,
+      matching: find.text('提示词'),
+    );
+    final actionsHeader = find.descendant(
+      of: freeHeader,
+      matching: find.text('功能菜单'),
+    );
+    expect(
+      tester.getCenter(actionsHeader).dx,
+      greaterThan(tester.getCenter(promptHeader).dx),
+      reason: '功能菜单列必须位于提示词列右侧',
+    );
+    final removeButton = find.byKey(
+      ValueKey('free-creation-remove-${shot.id}'),
+    );
+    await tester.ensureVisible(removeButton);
+    await tester.pump();
+    await tester.tap(removeButton);
+    await tester.pump();
+    expect(find.text('移除镜头条目？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+    expect(shootingController.value.shots, hasLength(1));
+
+    final replicaThumbnail = find.byKey(
+      ValueKey('replicate-shot-replica-thumbnail-${shot.id}'),
+    );
+    await tester.ensureVisible(replicaThumbnail);
+    await tester.pump();
+    await tester.tap(replicaThumbnail);
     await tester.pump(const Duration(milliseconds: 300));
     expect(
       find.byKey(const ValueKey('script-frame-gallery-image-1-复刻分镜')),
@@ -274,9 +468,6 @@ void main() {
     );
     await tester.tap(find.byTooltip('关闭预览'));
     await tester.pump(const Duration(milliseconds: 300));
-    replicateController.setFreeCreationEnabled(false);
-    await tester.pump();
-
     await tester.tap(find.byKey(const ValueKey('replicate-new-next-assets')));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -472,93 +663,23 @@ void main() {
       );
     });
     await tester.pump(const Duration(milliseconds: 220));
-    await tester.tap(find.byKey(const ValueKey('replicate-new-next-prompts')));
-    await tester.pump(const Duration(seconds: 1));
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
-      findsOneWidget,
-    );
-    final promptTable = find.byKey(
-      const ValueKey('compose-prompt-three-column-table'),
-    );
-    expect(promptTable, findsOneWidget);
-    final promptTableWidget = tester.widget<Table>(promptTable);
-    expect(promptTableWidget.children.first.children, hasLength(3));
-    for (final header in const ['原视频帧', '复刻分镜图', '生成提示词']) {
-      expect(
-        find.descendant(of: promptTable, matching: find.text(header)),
-        findsAtLeastNWidgets(1),
-      );
-    }
-    expect(find.text('导出 XLSX'), findsOneWidget);
-    expect(find.text('导出 TXT/JSON'), findsNothing);
-    expect(
-      find.descendant(of: promptTable, matching: find.text('人物拿起产品并看向镜头')),
-      findsNothing,
-    );
-
-    await tester.tap(
-      find.byKey(const ValueKey('toggle-shooting-script-template')),
-    );
-    await tester.pump(const Duration(milliseconds: 220));
-    expect(
-      find.byKey(const ValueKey('replicate-compose-prompts-step')),
-      findsOneWidget,
-    );
-    await tester.tap(
-      find.byKey(const ValueKey('toggle-shooting-script-template')),
-    );
-    await tester.pump(const Duration(milliseconds: 220));
-    expect(
-      find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
-      findsOneWidget,
-    );
-
-    await replicateController.composeAllPrompts();
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
-        matching: find.text('人物拿起产品并看向镜头'),
-      ),
-      findsNothing,
-    );
-    await tester.tap(
-      find.byKey(const ValueKey('toggle-shooting-script-template')),
-    );
-    await tester.pump(const Duration(milliseconds: 220));
-    expect(
-      find.byKey(const ValueKey('replicate-compose-prompts-step')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('replicate-compose-prompts-step')),
-        matching: find.text('人物拿起产品并看向镜头'),
-      ),
-      findsNothing,
-    );
-    await tester.tap(
-      find.byKey(const ValueKey('toggle-shooting-script-template')),
-    );
-    await tester.pump(const Duration(milliseconds: 220));
-    expect(
-      find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
-      findsOneWidget,
-    );
     database.executeStatement(
       'DELETE FROM replicated_shot_images WHERE script_shot_id = ?;',
       [shot.id],
     );
     replicateController.refresh();
     await tester.pump(const Duration(milliseconds: 100));
-
-    await tester.ensureVisible(
-      find.byKey(const ValueKey('new-go-video-generation')),
+    await tester.tap(find.byKey(const ValueKey('replicate-new-next-prompts')));
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
+      findsNothing,
     );
-    await tester.tap(find.byKey(const ValueKey('new-go-video-generation')));
-    await tester.pump(const Duration(milliseconds: 220));
+    expect(
+      find.byKey(const ValueKey('replicate-compose-prompts-step')),
+      findsNothing,
+    );
     final videoTable = find.byKey(
       const ValueKey('video-generation-five-column-table'),
     );
@@ -669,7 +790,138 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   });
 
-  testWidgets('镜头风格在构建前选择并持久化且合成步骤只读显示', (tester) async {
+  testWidgets('确认镜头功能菜单可拖拽调整镜头组顺序', (tester) async {
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    late final Directory root;
+    late final AppDirectories directories;
+    late final AppDatabase database;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('replicate-reorder-menu-');
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+    });
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '拖拽排序页面测试');
+    final first = shootingController.addShot()!;
+    shootingController.updateShot(first.copyWith(content: '第一条'));
+    final second = shootingController.addShot()!;
+    shootingController.updateShot(second.copyWith(content: '第二条'));
+    final replicateController = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      enforceFreeCreationMode: true,
+    );
+    final videoGenerationController = VideoGenerationController(
+      repository: VideoGenerationRepository(database),
+      videoRepository: VideoAnalysisRepository(database),
+      shootingScriptController: shootingController,
+      replicateController: replicateController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final analysisController = ShootingScriptAnalysisController(
+      shootingScriptController: shootingController,
+      repository: workflowRepository,
+      settingsController: settingsController,
+    );
+    final libraryController = ShootingAssetLibraryController(
+      repository: ShootingAssetLibraryRepository(
+        database: database,
+        directories: directories,
+      ),
+      directories: directories,
+    );
+    final bindingController = ShootingScriptAssetBindingController(
+      shootingScriptController: shootingController,
+      libraryController: libraryController,
+      repository: workflowRepository,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      bindingController.dispose();
+      libraryController.dispose();
+      analysisController.dispose();
+      videoGenerationController.dispose();
+      replicateController.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(database),
+          settingsControllerProvider.overrideWithValue(settingsController),
+          replicateControllerProvider.overrideWithValue(replicateController),
+          videoGenerationControllerProvider.overrideWithValue(
+            videoGenerationController,
+          ),
+          scriptAnalysisControllerProvider.overrideWithValue(
+            analysisController,
+          ),
+          shootingAssetLibraryControllerProvider.overrideWithValue(
+            libraryController,
+          ),
+          scriptAssetBindingControllerProvider.overrideWithValue(
+            bindingController,
+          ),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.dark(),
+          home: const Scaffold(body: ReplicatePage()),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 220));
+
+    final firstHandle = find.byKey(
+      ValueKey('free-creation-reorder-${first.id}'),
+    );
+    expect(firstHandle, findsOneWidget);
+    expect(
+      find.byKey(ValueKey('free-creation-reorder-${second.id}')),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: firstHandle,
+        matching: find.byType(ReorderableDragStartListener),
+      ),
+      findsOneWidget,
+    );
+    final reorderable = tester.widget<ReorderableListView>(
+      find.byType(ReorderableListView),
+    );
+    reorderable.onReorder(0, 2);
+    await tester.pump();
+
+    expect(replicateController.value.shots.map((shot) => shot.id), [
+      second.id,
+      first.id,
+    ]);
+    expect(replicateController.value.shots.map((shot) => shot.shotNumber), [
+      1,
+      2,
+    ]);
+  });
+
+  testWidgets('镜头风格在构建前选择持久化且旧合成步骤自动回到确认页', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -775,7 +1027,7 @@ void main() {
       find.byKey(const ValueKey('build-camera-style-dropdown-general')),
       findsOneWidget,
     );
-    expect(find.text('通用 H3'), findsOneWidget);
+    expect(find.text('自动匹配（通用 H3）'), findsOneWidget);
 
     await tester.tap(
       find.byKey(const ValueKey('build-camera-style-dropdown-general')),
@@ -800,49 +1052,21 @@ void main() {
     replicateController.refresh();
     await tester.pump();
 
-    final statusPanel = find.byKey(
-      const ValueKey('compose-prompts-right-status-panel'),
-    );
-    expect(statusPanel, findsOneWidget);
-    final statusScroll = find.descendant(
-      of: statusPanel,
-      matching: find.byType(Scrollable),
-    );
-    await tester.drag(statusScroll, const Offset(0, -420));
-    await tester.pump();
-
     expect(
-      find.byKey(const ValueKey('selected-build-camera-style-summary')),
+      replicateController.value.run?.currentStep,
+      ReplicateStep.confirmShots,
+    );
+    expect(
+      find.byKey(const ValueKey('replicate-new-confirm-shots-step')),
       findsOneWidget,
     );
     expect(
-      find.descendant(
-        of: statusPanel,
-        matching: find.byKey(
-          const ValueKey('build-camera-style-dropdown-brand-promo'),
-        ),
-      ),
+      find.byKey(const ValueKey('compose-prompts-right-status-panel')),
       findsNothing,
     );
-    expect(find.textContaining('产品功能、使用场景与行动引导'), findsOneWidget);
     expect(
-      find.textContaining('MiniMax-H3 / skills/brand-promo-video-generator'),
+      find.byKey(const ValueKey('build-camera-style-dropdown-brand-promo')),
       findsOneWidget,
-    );
-    expect(find.textContaining('中文官方 Skill 已随软件内置'), findsOneWidget);
-    expect(find.textContaining('完整 SKILL.cn.md 与全部必要引用文档'), findsOneWidget);
-    expect(find.textContaining('最终 H3 提示词继续叠加成片风格锁'), findsOneWidget);
-    expect(find.textContaining('返回确认镜头并重新构建'), findsOneWidget);
-
-    await settingsController.setActiveVideoGenerationApiConfig(
-      AppSettings.defaultKlingCliVideoGenerationConfigId,
-    );
-    replicateController.refresh();
-    await tester.pump();
-
-    expect(
-      find.byKey(const ValueKey('selected-build-camera-style-summary')),
-      findsNothing,
     );
   });
 
@@ -1073,79 +1297,14 @@ void main() {
     );
 
     replicateController.moveToStep(ReplicateStep.composePrompts);
-    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(
+      replicateController.value.run?.currentStep,
+      ReplicateStep.confirmShots,
+    );
     expect(
       find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('compose-prompt-three-column-table')),
-      findsOneWidget,
-    );
-    expect(find.textContaining('本地结构化拼接'), findsAtLeastNWidgets(1));
-    expect(
-      find.byKey(const ValueKey('local-prompt-compiler-summary')),
-      findsOneWidget,
-    );
-    expect(find.text('执行方式：本地结构化拼接'), findsOneWidget);
-    expect(find.text('合成阶段视觉模型调用：0 次'), findsOneWidget);
-    expect(find.textContaining('合成阶段视觉模型 0 次'), findsOneWidget);
-    expect(find.text('结构化解析：0/1'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('structured-prompt-context-fallback-notice')),
-      findsOneWidget,
-      reason: '旧项目缺少结构化上下文时应明确提示本地回退，不应隐藏触发网络调用',
-    );
-    final composeStep = find.byKey(
-      const ValueKey('replicate-new-compose-prompts-step'),
-    );
-    expect(
-      find.descendant(
-        of: composeStep,
-        matching: find.byKey(
-          const ValueKey('prepare-assets-right-asset-library-panel'),
-        ),
-      ),
       findsNothing,
-    );
-    expect(
-      find.descendant(
-        of: composeStep,
-        matching: find.byKey(
-          const ValueKey('compose-prompts-right-status-panel'),
-        ),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('compose-prompts-right-panel-resize-handle')),
-      findsOneWidget,
-    );
-    final composePanelWidthBefore = tester
-        .getSize(
-          find.byKey(const ValueKey('compose-prompts-right-status-panel')),
-        )
-        .width;
-    await tester.drag(
-      find.byKey(const ValueKey('compose-prompts-right-panel-resize-handle')),
-      const Offset(-52, 0),
-    );
-    await tester.pump();
-    expect(
-      tester
-          .getSize(
-            find.byKey(const ValueKey('compose-prompts-right-status-panel')),
-          )
-          .width,
-      greaterThan(composePanelWidthBefore + 20),
-    );
-    await tester.tap(
-      find.byKey(const ValueKey('collapse-compose-prompts-right-panel')),
-    );
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('expand-compose-prompts-right-panel')),
-      findsOneWidget,
     );
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -1732,8 +1891,15 @@ void main() {
       (prompt) => prompt.scriptShotId == fourth.id,
     );
     expect(untouchedPromptAfter.prompt, untouchedPromptBefore.prompt);
-    expect(untouchedPromptAfter.rawResponse, untouchedPromptBefore.rawResponse);
-    expect(untouchedPromptAfter.updatedAt, untouchedPromptBefore.updatedAt);
+    expect(
+      untouchedPromptAfter.rawResponse,
+      isNot(untouchedPromptBefore.rawResponse),
+      reason: '每次点击构建都会先清空旧提示词，因此非反馈镜头也应从当前字段重新拼接',
+    );
+    expect(
+      untouchedPromptAfter.updatedAt.isAfter(untouchedPromptBefore.updatedAt),
+      isTrue,
+    );
     expect(find.text('返回编辑'), findsOneWidget);
     final builtGroup = find.byKey(const ValueKey('built-shot-group-row-1-3'));
     expect(
@@ -1788,23 +1954,17 @@ void main() {
     await tester.pump();
     expect(
       find.byKey(const ValueKey('replicate-new-compose-prompts-step')),
-      findsOneWidget,
+      findsNothing,
     );
     expect(
-      find.byKey(const ValueKey('compose-prompt-three-column-table')),
+      find.byKey(const ValueKey('replicate-new-confirm-shots-step')),
       findsOneWidget,
     );
-    expect(find.text('尚未合成提示词'), findsNothing);
     expect(replicateController.value.prompts, hasLength(2));
-    expect(find.text('2/2 已合成'), findsOneWidget);
-    expect(find.text('结构化解析：0/2'), findsOneWidget);
-    final promptEditors = find.descendant(
-      of: find.byKey(const ValueKey('compose-prompt-three-column-table')),
-      matching: find.byType(TextField),
-    );
-    expect(promptEditors, findsNWidgets(2));
-    for (final element in promptEditors.evaluate()) {
-      expect((element.widget as TextField).controller?.text, isNotEmpty);
+    for (final prompt in replicateController.value.prompts) {
+      for (final format in ShotPromptFormat.values) {
+        expect(replicateController.promptTextFor(prompt, format), isNotEmpty);
+      }
     }
 
     expect(replicateController.moveToStep(ReplicateStep.confirmShots), isTrue);
