@@ -204,7 +204,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-设置')));
     await tester.pumpAndSettle();
 
-    expect(find.text('外观'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('settings-operation-area')),
+        matching: find.text('外观'),
+      ),
+      findsOneWidget,
+    );
     expect(database.getSetting('appShellSelectedTabIndex'), '6');
 
     await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));

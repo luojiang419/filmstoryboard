@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:filmstoryboard/app/app_theme.dart';
@@ -15,7 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
-  testWidgets('设置页插件区可展开并从 data 内置包执行安装', (tester) async {
+  testWidgets('设置页插件菜单可从 data 内置包执行安装', (tester) async {
     late final Directory root;
     late final AppDirectories directories;
     late final AppDatabase database;
@@ -65,21 +64,15 @@ void main() {
       ),
     );
 
-    await tester.scrollUntilVisible(
-      find.text('插件'),
-      500,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(find.text('插件'));
+    final menu = find.byKey(const ValueKey('settings-function-menu'));
+    final pluginsItem = find.byKey(const ValueKey('settings-menu-plugins'));
+    await tester.drag(menu, const Offset(0, -260));
+    await tester.pumpAndSettle();
+    await tester.tap(pluginsItem);
     await tester.pumpAndSettle();
 
     final button = find.byKey(const ValueKey('install-resolve-plugin-button'));
     expect(button, findsOneWidget);
-    expect(
-      jsonDecode(database.getSetting('settingsPageExpandedSections')!)
-          as List<dynamic>,
-      contains('plugins'),
-    );
 
     await tester.tap(button);
     await tester.pumpAndSettle();

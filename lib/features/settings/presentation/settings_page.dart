@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -28,6 +27,7 @@ class SettingsPage extends ConsumerStatefulWidget {
 }
 
 enum _SettingsSection {
+  appearance,
   projects,
   remoteAccess,
   exportDirectory,
@@ -44,8 +44,6 @@ enum _SettingsSection {
 }
 
 class _SettingsPageState extends ConsumerState<SettingsPage> {
-  static const _expandedSectionsKey = 'settingsPageExpandedSections';
-
   late final SettingsController _settingsController;
   late final TextEditingController _exportPathController;
   late final TextEditingController _ffmpegExecutableController;
@@ -58,7 +56,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   late final TextEditingController _replicateConstraintsController;
   late final TextEditingController _updateManualProxyUrlController;
   late VideoFrameExtractionStrategy _videoExtractionStrategy;
-  final _expandedSections = <_SettingsSection>{};
+  _SettingsSection _selectedSection = _SettingsSection.appearance;
   bool _isInstallingResolvePlugin = false;
   bool? _resolvePluginInstallSucceeded;
   String? _resolvePluginInstallMessage;
@@ -99,7 +97,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _updateManualProxyUrlController = TextEditingController(
       text: controller.value.updateManualProxyUrl,
     );
-    _expandedSections.addAll(_loadExpandedSections());
     controller.addListener(_syncFromSettings);
   }
 
@@ -283,53 +280,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     setState(() {});
   }
 
-  bool _sectionExpanded(_SettingsSection section) {
-    return _expandedSections.contains(section);
+  bool _sectionSelected(_SettingsSection section) {
+    return _selectedSection == section;
   }
 
-  void _toggleSection(_SettingsSection section) {
-    setState(() {
-      if (!_expandedSections.add(section)) {
-        _expandedSections.remove(section);
-      }
-    });
-    _saveExpandedSections();
-  }
-
-  Set<_SettingsSection> _loadExpandedSections() {
-    try {
-      final raw = ref
-          .read(appDatabaseProvider)
-          .getSetting(_expandedSectionsKey);
-      if (raw == null || raw.trim().isEmpty) {
-        return {};
-      }
-      final decoded = jsonDecode(raw);
-      if (decoded is! List) {
-        return {};
-      }
-      final names = decoded.whereType<String>().toSet();
-      return {
-        for (final section in _SettingsSection.values)
-          if (names.contains(section.name)) section,
-      };
-    } catch (_) {
-      return {};
-    }
-  }
-
-  void _saveExpandedSections() {
-    try {
-      final names = [
-        for (final section in _SettingsSection.values)
-          if (_expandedSections.contains(section)) section.name,
-      ];
-      ref
-          .read(appDatabaseProvider)
-          .setSetting(_expandedSectionsKey, jsonEncode(names));
-    } catch (_) {
-      // 测试或预览环境可能没有注入数据库，生产环境会正常保存。
-    }
+  void _selectSection(_SettingsSection section) {
+    if (_selectedSection == section) return;
+    setState(() => _selectedSection = section);
   }
 
   @override
@@ -342,698 +299,764 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     return ValueListenableBuilder(
       valueListenable: settingsController,
       builder: (context, settings, _) {
-        return ListView(
-          padding: const EdgeInsets.all(20),
+        return Row(
           children: [
-            _Section(
-              title: '外观',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('主题', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 8),
-                  SegmentedButton<AppThemePreference>(
-                    segments: [
-                      for (final preference in AppThemePreference.values)
-                        ButtonSegment(
-                          value: preference,
-                          label: Text(preference.label),
-                          icon: Icon(switch (preference) {
-                            AppThemePreference.system =>
-                              Icons.brightness_auto_rounded,
-                            AppThemePreference.light =>
-                              Icons.light_mode_rounded,
-                            AppThemePreference.dark => Icons.dark_mode_rounded,
-                          }),
-                        ),
-                    ],
-                    selected: {settings.themePreference},
-                    onSelectionChanged: (selection) {
-                      settingsController.setThemePreference(selection.first);
-                    },
-                  ),
-                  const SizedBox(height: 18),
-                  Text('功能菜单位置', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 4),
-                  Text(
-                    '切换后立即生效，下次启动会继续使用当前布局。',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<AppNavigationPosition>(
-                    key: const ValueKey('navigation-position-selector'),
-                    segments: const [
-                      ButtonSegment(
-                        value: AppNavigationPosition.bottom,
-                        label: Text('底部'),
-                        icon: Icon(Icons.vertical_align_bottom_rounded),
-                      ),
-                      ButtonSegment(
-                        value: AppNavigationPosition.left,
-                        label: Text('左侧'),
-                        icon: Icon(Icons.vertical_align_center_rounded),
-                      ),
-                    ],
-                    selected: {settings.navigationPosition},
-                    onSelectionChanged: (selection) {
-                      settingsController.setNavigationPosition(selection.first);
-                    },
-                  ),
-                ],
+            SizedBox(
+              width: 224,
+              child: _SettingsNavigation(
+                selectedSection: _selectedSection,
+                onSelected: _selectSection,
               ),
             ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '工程与启动',
-              expanded: _sectionExpanded(_SettingsSection.projects),
-              onToggle: () => _toggleSection(_SettingsSection.projects),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('启动时显示欢迎页'),
-                    subtitle: const Text('关闭后，软件下次启动将直接进入工程首页。'),
-                    value: _showWelcomeOnStartup,
-                    onChanged: _setShowWelcomeOnStartup,
-                  ),
-                  const SizedBox(height: 8),
-                  Text('默认工程目录', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          _defaultProjectRoot(directories.projects.path),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: _pickDefaultProjectRoot,
-                        icon: const Icon(Icons.folder_open_rounded),
-                        label: const Text('更改'),
-                      ),
-                      TextButton(
-                        onPressed: _resetDefaultProjectRoot,
-                        child: const Text('恢复默认'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  const Text('默认位置为软件 data/project；不可写时请改用拥有写权限的目录。'),
-                ],
-              ),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: scheme.outlineVariant.withValues(alpha: 0.48),
             ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '导演远程访问',
-              expanded: _sectionExpanded(_SettingsSection.remoteAccess),
-              onToggle: () => _toggleSection(_SettingsSection.remoteAccess),
-              child: _sectionExpanded(_SettingsSection.remoteAccess)
-                  ? const _RemoteAccessSettingsPanel()
-                  : const SizedBox.shrink(),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '导出文件夹',
-              expanded: _sectionExpanded(_SettingsSection.exportDirectory),
-              onToggle: () => _toggleSection(_SettingsSection.exportDirectory),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  TextField(
-                    controller: _exportPathController,
-                    decoration: const InputDecoration(
-                      labelText: '默认导出路径',
-                      prefixIcon: Icon(Icons.folder_open_rounded),
-                    ),
-                    onSubmitted: settingsController.setExportDirectory,
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      FilledButton.icon(
-                        onPressed: () async {
-                          final path = await getDirectoryPath(
-                            initialDirectory: settings.exportDirectory,
-                          );
-                          if (path != null) {
-                            await settingsController.setExportDirectory(path);
-                          }
-                        },
-                        icon: const Icon(Icons.folder_rounded),
-                        label: const Text('选择文件夹'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: () => settingsController.setExportDirectory(
-                          _exportPathController.text,
-                        ),
-                        icon: const Icon(Icons.save_rounded),
-                        label: const Text('保存路径'),
-                      ),
-                      TextButton.icon(
-                        onPressed: settingsController.resetToDefaults,
-                        icon: const Icon(Icons.settings_backup_restore_rounded),
-                        label: const Text('恢复默认'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '故事板导出',
-              expanded: _sectionExpanded(_SettingsSection.storyboardExport),
-              onToggle: () => _toggleSection(_SettingsSection.storyboardExport),
-              child: SwitchListTile(
-                value: settings.storyboardSummaryPageEnabled,
-                contentPadding: EdgeInsets.zero,
-                title: const Text('故事板内容页'),
-                subtitle: const Text('开启后导出时附带自动归纳的大纲、内容、场景和道具页'),
-                onChanged: settingsController.setStoryboardSummaryPageEnabled,
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '视觉模型 API',
-              expanded: _sectionExpanded(_SettingsSection.visionApi),
-              onToggle: () => _toggleSection(_SettingsSection.visionApi),
-              child: Column(
-                children: [
-                  _VisionApiConfigSection(
-                    configs: settings.visionApiConfigs,
-                    activeId: settings.activeVisionApiConfigId,
-                    onSelect: settingsController.setActiveVisionApiConfig,
-                    onSave: settingsController.saveVisionApiConfig,
-                    onDelete: settingsController.deleteVisionApiConfig,
-                    onMaxRequestsPerMinuteChanged: settingsController
-                        .setVisionApiConfigMaxRequestsPerMinute,
-                  ),
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    key: const ValueKey('video-analysis-thinking-switch'),
-                    value: settings.videoAnalysisThinkingEnabled,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('视频解析 thinking 模式'),
-                    subtitle: const Text('高级开关；开启后复杂视频会允许视觉模型思考，可能增加耗时和格式波动'),
-                    onChanged:
-                        settingsController.setVideoAnalysisThinkingEnabled,
-                  ),
-                  const Divider(height: 20),
-                  SwitchListTile(
-                    key: const ValueKey('full-automation-switch'),
-                    value: settings.fullAutomationEnabled,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('全自动模式'),
-                    subtitle: const Text(
-                      '添加视频后自动完成视频解析、故事板、拍摄脚本和分镜脚本解析；失败任务将在一分钟后自动重试一次。',
-                    ),
-                    onChanged: settingsController.setFullAutomationEnabled,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '解析维度',
-              expanded: _sectionExpanded(_SettingsSection.analysisDimensions),
-              onToggle: () =>
-                  _toggleSection(_SettingsSection.analysisDimensions),
-              child: Column(
-                children: [
-                  CheckboxListTile(
-                    key: const ValueKey(
-                      'video-analysis-multi-dimension-checkbox',
-                    ),
-                    value: settings.videoAnalysisMultiDimensionEnabled,
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text('多维度分析'),
-                    subtitle: const Text('分析视频结构、留存、转化、画面风格与平台适配等视频级维度'),
-                    onChanged: (enabled) => settingsController
-                        .setVideoAnalysisMultiDimensionEnabled(
-                          enabled ?? false,
-                        ),
-                  ),
-                  CheckboxListTile(
-                    key: const ValueKey('video-analysis-shot-details-checkbox'),
-                    value: settings.videoAnalysisShotDetailsEnabled,
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text('镜头明细'),
-                    subtitle: const Text('逐帧分析画面、人物、动作、景别、运镜、构图、光影与色彩'),
-                    onChanged: (enabled) => settingsController
-                        .setVideoAnalysisShotDetailsEnabled(enabled ?? false),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: 'FFmpeg 与视频抽帧',
-              expanded: _sectionExpanded(_SettingsSection.videoAnalysis),
-              onToggle: () => _toggleSection(_SettingsSection.videoAnalysis),
-              child: Column(
-                children: [
-                  TextField(
-                    key: const ValueKey('ffmpeg-executable-field'),
-                    controller: _ffmpegExecutableController,
-                    decoration: const InputDecoration(
-                      labelText: 'FFmpeg 可执行文件',
-                      helperText: '可填写命令名或本机完整路径',
-                      prefixIcon: Icon(Icons.movie_filter_rounded),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    key: const ValueKey('ffprobe-executable-field'),
-                    controller: _ffprobeExecutableController,
-                    decoration: const InputDecoration(
-                      labelText: 'FFprobe 可执行文件',
-                      helperText: '通常与 FFmpeg 位于同一目录',
-                      prefixIcon: Icon(Icons.info_outline_rounded),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<VideoFrameExtractionStrategy>(
-                    key: const ValueKey('video-extraction-strategy-field'),
-                    initialValue: _videoExtractionStrategy,
-                    decoration: const InputDecoration(
-                      labelText: '抽帧策略',
-                      prefixIcon: Icon(Icons.filter_frames_rounded),
-                    ),
-                    items: [
-                      for (final strategy
-                          in VideoFrameExtractionStrategy.values)
-                        DropdownMenuItem(
-                          value: strategy,
-                          child: Text(strategy.label),
-                        ),
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() => _videoExtractionStrategy = value);
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          key: const ValueKey('video-frame-interval-field'),
-                          controller: _videoFrameIntervalController,
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
+            Expanded(
+              child: ListView(
+                key: const ValueKey('settings-operation-area'),
+                padding: const EdgeInsets.all(20),
+                children: <Widget>[
+                  if (_sectionSelected(_SettingsSection.appearance))
+                    _Section(
+                      title: '外观',
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '主题',
+                            style: Theme.of(context).textTheme.titleSmall,
                           ),
-                          decoration: const InputDecoration(
-                            labelText: '抽帧间隔（秒）',
-                            helperText: '逐帧模式会忽略此项',
+                          const SizedBox(height: 8),
+                          SegmentedButton<AppThemePreference>(
+                            segments: [
+                              for (final preference
+                                  in AppThemePreference.values)
+                                ButtonSegment(
+                                  value: preference,
+                                  label: Text(preference.label),
+                                  icon: Icon(switch (preference) {
+                                    AppThemePreference.system =>
+                                      Icons.brightness_auto_rounded,
+                                    AppThemePreference.light =>
+                                      Icons.light_mode_rounded,
+                                    AppThemePreference.dark =>
+                                      Icons.dark_mode_rounded,
+                                  }),
+                                ),
+                            ],
+                            selected: {settings.themePreference},
+                            onSelectionChanged: (selection) {
+                              settingsController.setThemePreference(
+                                selection.first,
+                              );
+                            },
                           ),
-                        ),
+                          const SizedBox(height: 18),
+                          Text(
+                            '功能菜单位置',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '切换后立即生效，下次启动会继续使用当前布局。',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 8),
+                          SegmentedButton<AppNavigationPosition>(
+                            key: const ValueKey('navigation-position-selector'),
+                            segments: const [
+                              ButtonSegment(
+                                value: AppNavigationPosition.bottom,
+                                label: Text('底部'),
+                                icon: Icon(Icons.vertical_align_bottom_rounded),
+                              ),
+                              ButtonSegment(
+                                value: AppNavigationPosition.left,
+                                label: Text('左侧'),
+                                icon: Icon(Icons.vertical_align_center_rounded),
+                              ),
+                            ],
+                            selected: {settings.navigationPosition},
+                            onSelectionChanged: (selection) {
+                              settingsController.setNavigationPosition(
+                                selection.first,
+                              );
+                            },
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextField(
-                          key: const ValueKey('video-scene-threshold-field'),
-                          controller: _videoSceneThresholdController,
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
-                          ),
-                          decoration: const InputDecoration(
-                            labelText: '场景阈值（0.05–0.95）',
-                          ),
+                    ),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '工程与启动',
+                    visible: _sectionSelected(_SettingsSection.projects),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('启动时显示欢迎页'),
+                          subtitle: const Text('关闭后，软件下次启动将直接进入工程首页。'),
+                          value: _showWelcomeOnStartup,
+                          onChanged: _setShowWelcomeOnStartup,
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextField(
-                          key: const ValueKey(
-                            'video-sharpness-threshold-field',
-                          ),
-                          controller: _videoMinimumSharpnessController,
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
-                          ),
-                          decoration: const InputDecoration(
-                            labelText: '清晰度阈值（0–1）',
-                          ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '默认工程目录',
+                          style: Theme.of(context).textTheme.titleSmall,
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    key: const ValueKey('video-preview-padding-field'),
-                    controller: _videoPreviewPaddingController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration: const InputDecoration(
-                      labelText: '播放视频帧前后（秒）',
-                      helperText: '控制原视频缩略图弹窗的 I/O 点；范围 0.1–30 秒',
-                      prefixIcon: Icon(Icons.play_circle_outline_rounded),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: FilledButton.icon(
-                      key: const ValueKey('save-video-analysis-settings'),
-                      onPressed: () =>
-                          _saveVideoAnalysisSettings(settingsController),
-                      icon: const Icon(Icons.save_rounded),
-                      label: const Text('保存视频解析配置'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '即梦提示词默认规则',
-              expanded: _sectionExpanded(_SettingsSection.promptDefaults),
-              onToggle: () => _toggleSection(_SettingsSection.promptDefaults),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '新建复刻任务会复制这里的规则；已创建任务保留自己的版本，不会被静默覆盖。',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    key: const ValueKey('replicate-global-style-field'),
-                    controller: _replicateGlobalStyleController,
-                    minLines: 2,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                      labelText: '默认全局风格',
-                      prefixIcon: Icon(Icons.palette_outlined),
-                      alignLabelWithHint: true,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    key: const ValueKey('replicate-constraints-field'),
-                    controller: _replicateConstraintsController,
-                    minLines: 3,
-                    maxLines: 6,
-                    decoration: const InputDecoration(
-                      labelText: '默认整体约束',
-                      helperText: '建议保留无字幕、无 Logo、无水印等成片约束',
-                      prefixIcon: Icon(Icons.rule_rounded),
-                      alignLabelWithHint: true,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    key: const ValueKey('save-replicate-prompt-defaults'),
-                    onPressed: () =>
-                        settingsController.setReplicatePromptDefaults(
-                          globalStyle: _replicateGlobalStyleController.text,
-                          constraints: _replicateConstraintsController.text,
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _defaultProjectRoot(directories.projects.path),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: _pickDefaultProjectRoot,
+                              icon: const Icon(Icons.folder_open_rounded),
+                              label: const Text('更改'),
+                            ),
+                            TextButton(
+                              onPressed: _resetDefaultProjectRoot,
+                              child: const Text('恢复默认'),
+                            ),
+                          ],
                         ),
-                    icon: const Icon(Icons.save_rounded),
-                    label: const Text('保存提示词默认规则'),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '图片生成 API',
-              expanded: _sectionExpanded(_SettingsSection.imageGenerationApi),
-              onToggle: () =>
-                  _toggleSection(_SettingsSection.imageGenerationApi),
-              child: _ImageGenerationApiConfigSection(
-                configs: settings.imageGenerationApiConfigs,
-                activeId: settings.activeImageGenerationApiConfigId,
-                onSelect: settingsController.setActiveImageGenerationApiConfig,
-                onSave: settingsController.saveImageGenerationApiConfig,
-                onDelete: settingsController.deleteImageGenerationApiConfig,
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '视频生成 API',
-              expanded: _sectionExpanded(_SettingsSection.videoGenerationApi),
-              onToggle: () =>
-                  _toggleSection(_SettingsSection.videoGenerationApi),
-              child: _VideoGenerationApiConfigSection(
-                configs: settings.videoGenerationApiConfigs,
-                activeId: settings.activeVideoGenerationApiConfigId,
-                onSelect: settingsController.setActiveVideoGenerationApiConfig,
-                onSave: settingsController.saveVideoGenerationApiConfig,
-                onDelete: settingsController.deleteVideoGenerationApiConfig,
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '插件',
-              expanded: _sectionExpanded(_SettingsSection.plugins),
-              onToggle: () => _toggleSection(_SettingsSection.plugins),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'DaVinci Resolve 流程整合',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '从软件 data 文件夹中的内置插件包自动安装到 Resolve“流程整合”插件目录。'
-                    '安装时会请求 Windows 管理员权限；是否能够加载由目标机 Resolve 环境决定。',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
+                        const SizedBox(height: 6),
+                        const Text('默认位置为软件 data/project；不可写时请改用拥有写权限的目录。'),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 14),
-                  FilledButton.icon(
-                    key: const ValueKey('install-resolve-plugin-button'),
-                    onPressed: _isInstallingResolvePlugin
-                        ? null
-                        : _installResolvePlugin,
-                    icon: _isInstallingResolvePlugin
-                        ? const SizedBox.square(
-                            dimension: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.extension_rounded),
-                    label: Text(
-                      _isInstallingResolvePlugin ? '正在安装…' : '安装达芬奇插件',
-                    ),
+                  _SettingsContentSection(
+                    title: '导演远程访问',
+                    visible: _sectionSelected(_SettingsSection.remoteAccess),
+                    child: _sectionSelected(_SettingsSection.remoteAccess)
+                        ? const _RemoteAccessSettingsPanel()
+                        : const SizedBox.shrink(),
                   ),
-                  if (_resolvePluginInstallMessage != null) ...[
-                    const SizedBox(height: 12),
-                    Row(
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '导出文件夹',
+                    visible: _sectionSelected(_SettingsSection.exportDirectory),
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          _resolvePluginInstallSucceeded == false
-                              ? Icons.error_outline_rounded
-                              : _resolvePluginInstallSucceeded == true
-                              ? Icons.check_circle_outline_rounded
-                              : Icons.hourglass_top_rounded,
-                          size: 18,
-                          color: _resolvePluginInstallSucceeded == false
-                              ? scheme.error
-                              : _resolvePluginInstallSucceeded == true
-                              ? scheme.primary
-                              : scheme.onSurfaceVariant,
+                        TextField(
+                          controller: _exportPathController,
+                          decoration: const InputDecoration(
+                            labelText: '默认导出路径',
+                            prefixIcon: Icon(Icons.folder_open_rounded),
+                          ),
+                          onSubmitted: settingsController.setExportDirectory,
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _resolvePluginInstallMessage!,
-                            style: Theme.of(context).textTheme.bodySmall,
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            FilledButton.icon(
+                              onPressed: () async {
+                                final path = await getDirectoryPath(
+                                  initialDirectory: settings.exportDirectory,
+                                );
+                                if (path != null) {
+                                  await settingsController.setExportDirectory(
+                                    path,
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.folder_rounded),
+                              label: const Text('选择文件夹'),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  settingsController.setExportDirectory(
+                                    _exportPathController.text,
+                                  ),
+                              icon: const Icon(Icons.save_rounded),
+                              label: const Text('保存路径'),
+                            ),
+                            TextButton.icon(
+                              onPressed: settingsController.resetToDefaults,
+                              icon: const Icon(
+                                Icons.settings_backup_restore_rounded,
+                              ),
+                              label: const Text('恢复默认'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '故事板导出',
+                    visible: _sectionSelected(
+                      _SettingsSection.storyboardExport,
+                    ),
+                    child: SwitchListTile(
+                      value: settings.storyboardSummaryPageEnabled,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('故事板内容页'),
+                      subtitle: const Text('开启后导出时附带自动归纳的大纲、内容、场景和道具页'),
+                      onChanged:
+                          settingsController.setStoryboardSummaryPageEnabled,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '视觉模型 API',
+                    visible: _sectionSelected(_SettingsSection.visionApi),
+                    child: Column(
+                      children: [
+                        _VisionApiConfigSection(
+                          configs: settings.visionApiConfigs,
+                          activeId: settings.activeVisionApiConfigId,
+                          onSelect: settingsController.setActiveVisionApiConfig,
+                          onSave: settingsController.saveVisionApiConfig,
+                          onDelete: settingsController.deleteVisionApiConfig,
+                          onMaxRequestsPerMinuteChanged: settingsController
+                              .setVisionApiConfigMaxRequestsPerMinute,
+                        ),
+                        const SizedBox(height: 12),
+                        SwitchListTile(
+                          key: const ValueKey('video-analysis-thinking-switch'),
+                          value: settings.videoAnalysisThinkingEnabled,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('视频解析 thinking 模式'),
+                          subtitle: const Text(
+                            '高级开关；开启后复杂视频会允许视觉模型思考，可能增加耗时和格式波动',
+                          ),
+                          onChanged: settingsController
+                              .setVideoAnalysisThinkingEnabled,
+                        ),
+                        const Divider(height: 20),
+                        SwitchListTile(
+                          key: const ValueKey('full-automation-switch'),
+                          value: settings.fullAutomationEnabled,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('全自动模式'),
+                          subtitle: const Text(
+                            '添加视频后自动完成视频解析、故事板、拍摄脚本和分镜脚本解析；失败任务将在一分钟后自动重试一次。',
+                          ),
+                          onChanged:
+                              settingsController.setFullAutomationEnabled,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '解析维度',
+                    visible: _sectionSelected(
+                      _SettingsSection.analysisDimensions,
+                    ),
+                    child: Column(
+                      children: [
+                        CheckboxListTile(
+                          key: const ValueKey(
+                            'video-analysis-multi-dimension-checkbox',
+                          ),
+                          value: settings.videoAnalysisMultiDimensionEnabled,
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: const Text('多维度分析'),
+                          subtitle: const Text('分析视频结构、留存、转化、画面风格与平台适配等视频级维度'),
+                          onChanged: (enabled) => settingsController
+                              .setVideoAnalysisMultiDimensionEnabled(
+                                enabled ?? false,
+                              ),
+                        ),
+                        CheckboxListTile(
+                          key: const ValueKey(
+                            'video-analysis-shot-details-checkbox',
+                          ),
+                          value: settings.videoAnalysisShotDetailsEnabled,
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: const Text('镜头明细'),
+                          subtitle: const Text('逐帧分析画面、人物、动作、景别、运镜、构图、光影与色彩'),
+                          onChanged: (enabled) => settingsController
+                              .setVideoAnalysisShotDetailsEnabled(
+                                enabled ?? false,
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: 'FFmpeg 与视频抽帧',
+                    visible: _sectionSelected(_SettingsSection.videoAnalysis),
+                    child: Column(
+                      children: [
+                        TextField(
+                          key: const ValueKey('ffmpeg-executable-field'),
+                          controller: _ffmpegExecutableController,
+                          decoration: const InputDecoration(
+                            labelText: 'FFmpeg 可执行文件',
+                            helperText: '可填写命令名或本机完整路径',
+                            prefixIcon: Icon(Icons.movie_filter_rounded),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          key: const ValueKey('ffprobe-executable-field'),
+                          controller: _ffprobeExecutableController,
+                          decoration: const InputDecoration(
+                            labelText: 'FFprobe 可执行文件',
+                            helperText: '通常与 FFmpeg 位于同一目录',
+                            prefixIcon: Icon(Icons.info_outline_rounded),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<VideoFrameExtractionStrategy>(
+                          key: const ValueKey(
+                            'video-extraction-strategy-field',
+                          ),
+                          initialValue: _videoExtractionStrategy,
+                          decoration: const InputDecoration(
+                            labelText: '抽帧策略',
+                            prefixIcon: Icon(Icons.filter_frames_rounded),
+                          ),
+                          items: [
+                            for (final strategy
+                                in VideoFrameExtractionStrategy.values)
+                              DropdownMenuItem(
+                                value: strategy,
+                                child: Text(strategy.label),
+                              ),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _videoExtractionStrategy = value);
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                key: const ValueKey(
+                                  'video-frame-interval-field',
+                                ),
+                                controller: _videoFrameIntervalController,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                decoration: const InputDecoration(
+                                  labelText: '抽帧间隔（秒）',
+                                  helperText: '逐帧模式会忽略此项',
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: TextField(
+                                key: const ValueKey(
+                                  'video-scene-threshold-field',
+                                ),
+                                controller: _videoSceneThresholdController,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                decoration: const InputDecoration(
+                                  labelText: '场景阈值（0.05–0.95）',
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: TextField(
+                                key: const ValueKey(
+                                  'video-sharpness-threshold-field',
+                                ),
+                                controller: _videoMinimumSharpnessController,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                decoration: const InputDecoration(
+                                  labelText: '清晰度阈值（0–1）',
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          key: const ValueKey('video-preview-padding-field'),
+                          controller: _videoPreviewPaddingController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: const InputDecoration(
+                            labelText: '播放视频帧前后（秒）',
+                            helperText: '控制原视频缩略图弹窗的 I/O 点；范围 0.1–30 秒',
+                            prefixIcon: Icon(Icons.play_circle_outline_rounded),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: FilledButton.icon(
+                            key: const ValueKey('save-video-analysis-settings'),
+                            onPressed: () =>
+                                _saveVideoAnalysisSettings(settingsController),
+                            icon: const Icon(Icons.save_rounded),
+                            label: const Text('保存视频解析配置'),
                           ),
                         ),
                       ],
                     ),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '软件更新',
-              expanded: _sectionExpanded(_SettingsSection.updater),
-              onToggle: () => _toggleSection(_SettingsSection.updater),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _PathTile(
-                    label: '当前版本',
-                    path: AppUpdateConfig.currentVersionTag,
                   ),
-                  SwitchListTile(
-                    key: const ValueKey('auto-install-updates-switch'),
-                    value: settings.autoInstallUpdates,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('自动更新'),
-                    subtitle: const Text('开启后下载完成会直接升级，关闭时会先弹窗确认'),
-                    onChanged: settingsController.setAutoInstallUpdates,
-                  ),
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: SegmentedButton<UpdateDownloadMode>(
-                      segments: [
-                        for (final mode in UpdateDownloadMode.values)
-                          ButtonSegment(
-                            value: mode,
-                            label: Text(mode.label),
-                            icon: Icon(switch (mode) {
-                              UpdateDownloadMode.automatic =>
-                                Icons.travel_explore_rounded,
-                              UpdateDownloadMode.manual =>
-                                Icons.settings_ethernet_rounded,
-                              UpdateDownloadMode.direct =>
-                                Icons.near_me_rounded,
-                            }),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '即梦提示词默认规则',
+                    visible: _sectionSelected(_SettingsSection.promptDefaults),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '新建复刻任务会复制这里的规则；已创建任务保留自己的版本，不会被静默覆盖。',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          key: const ValueKey('replicate-global-style-field'),
+                          controller: _replicateGlobalStyleController,
+                          minLines: 2,
+                          maxLines: 4,
+                          decoration: const InputDecoration(
+                            labelText: '默认全局风格',
+                            prefixIcon: Icon(Icons.palette_outlined),
+                            alignLabelWithHint: true,
                           ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          key: const ValueKey('replicate-constraints-field'),
+                          controller: _replicateConstraintsController,
+                          minLines: 3,
+                          maxLines: 6,
+                          decoration: const InputDecoration(
+                            labelText: '默认整体约束',
+                            helperText: '建议保留无字幕、无 Logo、无水印等成片约束',
+                            prefixIcon: Icon(Icons.rule_rounded),
+                            alignLabelWithHint: true,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          key: const ValueKey('save-replicate-prompt-defaults'),
+                          onPressed: () =>
+                              settingsController.setReplicatePromptDefaults(
+                                globalStyle:
+                                    _replicateGlobalStyleController.text,
+                                constraints:
+                                    _replicateConstraintsController.text,
+                              ),
+                          icon: const Icon(Icons.save_rounded),
+                          label: const Text('保存提示词默认规则'),
+                        ),
                       ],
-                      selected: {settings.updateDownloadMode},
-                      onSelectionChanged: (selection) {
-                        settingsController.setUpdateDownloadMode(
-                          selection.first,
-                        );
-                      },
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _updateManualProxyUrlController,
-                    decoration: const InputDecoration(
-                      labelText: '手动代理',
-                      prefixIcon: Icon(Icons.hub_rounded),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '图片生成 API',
+                    visible: _sectionSelected(
+                      _SettingsSection.imageGenerationApi,
                     ),
-                    onSubmitted: settingsController.setUpdateManualProxyUrl,
+                    child: _ImageGenerationApiConfigSection(
+                      configs: settings.imageGenerationApiConfigs,
+                      activeId: settings.activeImageGenerationApiConfigId,
+                      onSelect:
+                          settingsController.setActiveImageGenerationApiConfig,
+                      onSave: settingsController.saveImageGenerationApiConfig,
+                      onDelete:
+                          settingsController.deleteImageGenerationApiConfig,
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      FilledButton.icon(
-                        onPressed: () async {
-                          await _saveUpdateSettings(settingsController);
-                          await updaterController.checkForUpdates();
-                        },
-                        icon: const Icon(Icons.system_update_rounded),
-                        label: const Text('检查更新'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: () =>
-                            _saveUpdateSettings(settingsController),
-                        icon: const Icon(Icons.save_rounded),
-                        label: const Text('保存更新设置'),
-                      ),
-                      ValueListenableBuilder(
-                        valueListenable: updaterController,
-                        builder: (context, updateState, _) {
-                          if (!updateState.hasReadyUpdate) {
-                            return const SizedBox.shrink();
-                          }
-                          return FilledButton.tonalIcon(
-                            onPressed: updateState.isBusy
-                                ? null
-                                : () => updaterController
-                                      .installPendingUpdateNow(),
-                            icon: const Icon(Icons.system_update_alt_rounded),
-                            label: const Text('立即更新'),
-                          );
-                        },
-                      ),
-                    ],
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '视频生成 API',
+                    visible: _sectionSelected(
+                      _SettingsSection.videoGenerationApi,
+                    ),
+                    child: _VideoGenerationApiConfigSection(
+                      configs: settings.videoGenerationApiConfigs,
+                      activeId: settings.activeVideoGenerationApiConfigId,
+                      onSelect:
+                          settingsController.setActiveVideoGenerationApiConfig,
+                      onSave: settingsController.saveVideoGenerationApiConfig,
+                      onDelete:
+                          settingsController.deleteVideoGenerationApiConfig,
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  ValueListenableBuilder(
-                    valueListenable: updaterController,
-                    builder: (context, updateState, _) {
-                      return _UpdateStatusPanel(state: updateState);
-                    },
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '插件',
+                    visible: _sectionSelected(_SettingsSection.plugins),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'DaVinci Resolve 流程整合',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '从软件 data 文件夹中的内置插件包自动安装到 Resolve“流程整合”插件目录。'
+                          '安装时会请求 Windows 管理员权限；是否能够加载由目标机 Resolve 环境决定。',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                        const SizedBox(height: 14),
+                        FilledButton.icon(
+                          key: const ValueKey('install-resolve-plugin-button'),
+                          onPressed: _isInstallingResolvePlugin
+                              ? null
+                              : _installResolvePlugin,
+                          icon: _isInstallingResolvePlugin
+                              ? const SizedBox.square(
+                                  dimension: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.extension_rounded),
+                          label: Text(
+                            _isInstallingResolvePlugin ? '正在安装…' : '安装达芬奇插件',
+                          ),
+                        ),
+                        if (_resolvePluginInstallMessage != null) ...[
+                          const SizedBox(height: 12),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                _resolvePluginInstallSucceeded == false
+                                    ? Icons.error_outline_rounded
+                                    : _resolvePluginInstallSucceeded == true
+                                    ? Icons.check_circle_outline_rounded
+                                    : Icons.hourglass_top_rounded,
+                                size: 18,
+                                color: _resolvePluginInstallSucceeded == false
+                                    ? scheme.error
+                                    : _resolvePluginInstallSucceeded == true
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _resolvePluginInstallMessage!,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                ],
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '软件更新',
+                    visible: _sectionSelected(_SettingsSection.updater),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _PathTile(
+                          label: '当前版本',
+                          path: AppUpdateConfig.currentVersionTag,
+                        ),
+                        SwitchListTile(
+                          key: const ValueKey('auto-install-updates-switch'),
+                          value: settings.autoInstallUpdates,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('自动更新'),
+                          subtitle: const Text('开启后下载完成会直接升级，关闭时会先弹窗确认'),
+                          onChanged: settingsController.setAutoInstallUpdates,
+                        ),
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: SegmentedButton<UpdateDownloadMode>(
+                            segments: [
+                              for (final mode in UpdateDownloadMode.values)
+                                ButtonSegment(
+                                  value: mode,
+                                  label: Text(mode.label),
+                                  icon: Icon(switch (mode) {
+                                    UpdateDownloadMode.automatic =>
+                                      Icons.travel_explore_rounded,
+                                    UpdateDownloadMode.manual =>
+                                      Icons.settings_ethernet_rounded,
+                                    UpdateDownloadMode.direct =>
+                                      Icons.near_me_rounded,
+                                  }),
+                                ),
+                            ],
+                            selected: {settings.updateDownloadMode},
+                            onSelectionChanged: (selection) {
+                              settingsController.setUpdateDownloadMode(
+                                selection.first,
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _updateManualProxyUrlController,
+                          decoration: const InputDecoration(
+                            labelText: '手动代理',
+                            prefixIcon: Icon(Icons.hub_rounded),
+                          ),
+                          onSubmitted:
+                              settingsController.setUpdateManualProxyUrl,
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            FilledButton.icon(
+                              onPressed: () async {
+                                await _saveUpdateSettings(settingsController);
+                                await updaterController.checkForUpdates();
+                              },
+                              icon: const Icon(Icons.system_update_rounded),
+                              label: const Text('检查更新'),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  _saveUpdateSettings(settingsController),
+                              icon: const Icon(Icons.save_rounded),
+                              label: const Text('保存更新设置'),
+                            ),
+                            ValueListenableBuilder(
+                              valueListenable: updaterController,
+                              builder: (context, updateState, _) {
+                                if (!updateState.hasReadyUpdate) {
+                                  return const SizedBox.shrink();
+                                }
+                                return FilledButton.tonalIcon(
+                                  onPressed: updateState.isBusy
+                                      ? null
+                                      : () => updaterController
+                                            .installPendingUpdateNow(),
+                                  icon: const Icon(
+                                    Icons.system_update_alt_rounded,
+                                  ),
+                                  label: const Text('立即更新'),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        ValueListenableBuilder(
+                          valueListenable: updaterController,
+                          builder: (context, updateState, _) {
+                            return _UpdateStatusPanel(state: updateState);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _SettingsContentSection(
+                    title: '数据目录',
+                    visible: _sectionSelected(_SettingsSection.dataDirectories),
+                    child: Column(
+                      children: [
+                        _PathTile(
+                          label: '程序同级目录',
+                          path: directories.executableDirectory.path,
+                          onOpen: () => _openDirectory(
+                            directories.executableDirectory.path,
+                          ),
+                        ),
+                        _PathTile(
+                          label: 'data',
+                          path: directories.data.path,
+                          onOpen: () => _openDirectory(directories.data.path),
+                        ),
+                        _PathTile(
+                          label: 'imports',
+                          path: directories.imports.path,
+                          onOpen: () =>
+                              _openDirectory(directories.imports.path),
+                        ),
+                        _PathTile(
+                          label: 'cuts',
+                          path: directories.cuts.path,
+                          onOpen: () => _openDirectory(directories.cuts.path),
+                        ),
+                        _PathTile(
+                          label: 'storyboards',
+                          path: directories.storyboards.path,
+                          onOpen: () =>
+                              _openDirectory(directories.storyboards.path),
+                        ),
+                        _PathTile(
+                          label: 'exports',
+                          path: directories.exports.path,
+                          onOpen: () =>
+                              _openDirectory(directories.exports.path),
+                        ),
+                        _PathTile(
+                          label: 'updates',
+                          path: directories.updates.path,
+                          onOpen: () =>
+                              _openDirectory(directories.updates.path),
+                        ),
+                        _PathTile(
+                          label: 'database',
+                          path: directories.database.path,
+                          onOpen: () =>
+                              _openDirectory(directories.database.path),
+                        ),
+                        _PathTile(
+                          label: 'temp',
+                          path: directories.temp.path,
+                          onOpen: () => _openDirectory(directories.temp.path),
+                        ),
+                        _PathTile(
+                          label: 'logs',
+                          path: directories.logs.path,
+                          onOpen: () => _openDirectory(directories.logs.path),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(
+                      '配置已持久化到 ${directories.databaseFile.path}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ].where((widget) => widget is! SizedBox).toList(),
               ),
-            ),
-            const SizedBox(height: 14),
-            _CollapsibleSection(
-              title: '数据目录',
-              expanded: _sectionExpanded(_SettingsSection.dataDirectories),
-              onToggle: () => _toggleSection(_SettingsSection.dataDirectories),
-              child: Column(
-                children: [
-                  _PathTile(
-                    label: '程序同级目录',
-                    path: directories.executableDirectory.path,
-                    onOpen: () =>
-                        _openDirectory(directories.executableDirectory.path),
-                  ),
-                  _PathTile(
-                    label: 'data',
-                    path: directories.data.path,
-                    onOpen: () => _openDirectory(directories.data.path),
-                  ),
-                  _PathTile(
-                    label: 'imports',
-                    path: directories.imports.path,
-                    onOpen: () => _openDirectory(directories.imports.path),
-                  ),
-                  _PathTile(
-                    label: 'cuts',
-                    path: directories.cuts.path,
-                    onOpen: () => _openDirectory(directories.cuts.path),
-                  ),
-                  _PathTile(
-                    label: 'storyboards',
-                    path: directories.storyboards.path,
-                    onOpen: () => _openDirectory(directories.storyboards.path),
-                  ),
-                  _PathTile(
-                    label: 'exports',
-                    path: directories.exports.path,
-                    onOpen: () => _openDirectory(directories.exports.path),
-                  ),
-                  _PathTile(
-                    label: 'updates',
-                    path: directories.updates.path,
-                    onOpen: () => _openDirectory(directories.updates.path),
-                  ),
-                  _PathTile(
-                    label: 'database',
-                    path: directories.database.path,
-                    onOpen: () => _openDirectory(directories.database.path),
-                  ),
-                  _PathTile(
-                    label: 'temp',
-                    path: directories.temp.path,
-                    onOpen: () => _openDirectory(directories.temp.path),
-                  ),
-                  _PathTile(
-                    label: 'logs',
-                    path: directories.logs.path,
-                    onOpen: () => _openDirectory(directories.logs.path),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              '配置已持久化到 ${directories.databaseFile.path}',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ],
         );
@@ -2355,6 +2378,95 @@ class _RemoteAccessSettingsPanel extends ConsumerWidget {
   }
 }
 
+extension on _SettingsSection {
+  String get label => switch (this) {
+    _SettingsSection.appearance => '外观',
+    _SettingsSection.projects => '工程与启动',
+    _SettingsSection.remoteAccess => '导演远程访问',
+    _SettingsSection.exportDirectory => '导出文件夹',
+    _SettingsSection.storyboardExport => '故事板导出',
+    _SettingsSection.visionApi => '视觉模型 API',
+    _SettingsSection.analysisDimensions => '解析维度',
+    _SettingsSection.videoAnalysis => 'FFmpeg 与视频抽帧',
+    _SettingsSection.promptDefaults => '即梦提示词默认规则',
+    _SettingsSection.imageGenerationApi => '图片生成 API',
+    _SettingsSection.videoGenerationApi => '视频生成 API',
+    _SettingsSection.plugins => '插件',
+    _SettingsSection.updater => '软件更新',
+    _SettingsSection.dataDirectories => '数据目录',
+  };
+
+  IconData get icon => switch (this) {
+    _SettingsSection.appearance => Icons.palette_outlined,
+    _SettingsSection.projects => Icons.folder_special_outlined,
+    _SettingsSection.remoteAccess => Icons.cast_connected_rounded,
+    _SettingsSection.exportDirectory => Icons.drive_folder_upload_outlined,
+    _SettingsSection.storyboardExport => Icons.auto_stories_outlined,
+    _SettingsSection.visionApi => Icons.visibility_outlined,
+    _SettingsSection.analysisDimensions => Icons.analytics_outlined,
+    _SettingsSection.videoAnalysis => Icons.video_settings_outlined,
+    _SettingsSection.promptDefaults => Icons.text_snippet_outlined,
+    _SettingsSection.imageGenerationApi => Icons.image_outlined,
+    _SettingsSection.videoGenerationApi => Icons.movie_creation_outlined,
+    _SettingsSection.plugins => Icons.extension_outlined,
+    _SettingsSection.updater => Icons.system_update_alt_rounded,
+    _SettingsSection.dataDirectories => Icons.storage_rounded,
+  };
+}
+
+class _SettingsNavigation extends StatelessWidget {
+  const _SettingsNavigation({
+    required this.selectedSection,
+    required this.onSelected,
+  });
+
+  final _SettingsSection selectedSection;
+  final ValueChanged<_SettingsSection> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ColoredBox(
+      color: scheme.surfaceContainerLowest.withValues(alpha: 0.72),
+      child: ListView(
+        key: const ValueKey('settings-function-menu'),
+        padding: const EdgeInsets.fromLTRB(12, 18, 12, 18),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+            child: Text(
+              '设置',
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+            ),
+          ),
+          for (final section in _SettingsSection.values)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: ListTile(
+                key: ValueKey('settings-menu-${section.name}'),
+                selected: section == selectedSection,
+                selectedTileColor: scheme.secondaryContainer.withValues(
+                  alpha: 0.72,
+                ),
+                selectedColor: scheme.onSecondaryContainer,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                minTileHeight: 44,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                leading: Icon(section.icon, size: 20),
+                title: Text(section.label, maxLines: 1),
+                onTap: () => onSelected(section),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Section extends StatelessWidget {
   const _Section({required this.title, required this.child});
 
@@ -2390,74 +2502,21 @@ class _Section extends StatelessWidget {
   }
 }
 
-class _CollapsibleSection extends StatelessWidget {
-  const _CollapsibleSection({
+class _SettingsContentSection extends StatelessWidget {
+  const _SettingsContentSection({
     required this.title,
-    required this.expanded,
-    required this.onToggle,
+    required this.visible,
     required this.child,
   });
 
   final String title;
-  final bool expanded;
-  final VoidCallback onToggle;
+  final bool visible;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow.withValues(alpha: 0.84),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.48),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(8),
-            onTap: onToggle,
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  AnimatedRotation(
-                    turns: expanded ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 180),
-                    child: Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedCrossFade(
-            duration: const Duration(milliseconds: 180),
-            crossFadeState: expanded
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
-            firstChild: const SizedBox.shrink(),
-            secondChild: Padding(
-              padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
-              child: child,
-            ),
-          ),
-        ],
-      ),
-    );
+    if (!visible) return const SizedBox.shrink();
+    return _Section(title: title, child: child);
   }
 }
 

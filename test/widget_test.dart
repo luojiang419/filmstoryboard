@@ -3076,7 +3076,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('设置页非外观区块默认折叠并持久记忆展开状态', (tester) async {
+  testWidgets('设置页使用左侧功能菜单并在右侧切换操作区', (tester) async {
     late final Directory root;
     late final AppDirectories directories;
     late final AppDatabase database;
@@ -3092,11 +3092,14 @@ void main() {
       initialSettings: repository.load(),
     );
     addTearDown(() async {
+      await tester.binding.setSurfaceSize(null);
       settingsController.dispose();
       database.dispose();
       await root.delete(recursive: true);
     });
 
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -3113,73 +3116,40 @@ void main() {
       ),
     );
 
-    await tester.scrollUntilVisible(
-      find.text('数据目录'),
-      500,
-      scrollable: find.byType(Scrollable).first,
-    );
     await tester.pumpAndSettle();
 
-    expect(find.text('数据目录'), findsOneWidget);
+    final menu = find.byKey(const ValueKey('settings-function-menu'));
+    final operationArea = find.byKey(const ValueKey('settings-operation-area'));
+    expect(menu, findsOneWidget);
+    expect(operationArea, findsOneWidget);
     expect(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is AnimatedCrossFade &&
-            widget.crossFadeState == CrossFadeState.showFirst,
-      ),
-      findsWidgets,
+      tester.getRect(menu).right,
+      lessThan(tester.getRect(operationArea).left),
     );
-
-    await tester.tap(find.text('数据目录'));
-    await tester.pumpAndSettle();
-
     expect(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is AnimatedCrossFade &&
-            widget.crossFadeState == CrossFadeState.showSecond,
-      ),
+      find.byKey(const ValueKey('navigation-position-selector')),
       findsOneWidget,
     );
+    expect(find.byType(AnimatedCrossFade), findsNothing);
+    expect(find.text('imports'), findsNothing);
+
+    final dataDirectoriesItem = find.byKey(
+      const ValueKey('settings-menu-dataDirectories'),
+    );
+    await tester.scrollUntilVisible(
+      dataDirectoriesItem,
+      300,
+      scrollable: find.descendant(of: menu, matching: find.byType(Scrollable)),
+    );
+    await tester.tap(dataDirectoriesItem);
+    await tester.pumpAndSettle();
+
     expect(find.text('imports'), findsOneWidget);
     expect(find.byTooltip('打开目录'), findsNWidgets(10));
+    expect(tester.widget<ListTile>(dataDirectoriesItem).selected, isTrue);
     expect(
-      jsonDecode(database.getSetting('settingsPageExpandedSections')!)
-          as List<dynamic>,
-      contains('dataDirectories'),
-    );
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pump();
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          appDirectoriesProvider.overrideWithValue(directories),
-          appDatabaseProvider.overrideWithValue(database),
-          settingsRepositoryProvider.overrideWithValue(repository),
-          settingsControllerProvider.overrideWithValue(settingsController),
-        ],
-        child: MaterialApp(
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.dark(),
-          home: const Scaffold(body: SettingsPage()),
-        ),
-      ),
-    );
-    await tester.scrollUntilVisible(
-      find.text('数据目录'),
-      500,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.pumpAndSettle();
-
-    expect(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is AnimatedCrossFade &&
-            widget.crossFadeState == CrossFadeState.showSecond,
-      ),
-      findsOneWidget,
+      find.byKey(const ValueKey('navigation-position-selector')),
+      findsNothing,
     );
 
     await tester.pumpWidget(const SizedBox.shrink());

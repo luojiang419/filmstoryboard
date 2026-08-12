@@ -49,12 +49,16 @@ void main() {
         ),
       ),
     );
-    await tester.scrollUntilVisible(
-      find.text('解析维度'),
-      400,
-      scrollable: find.byType(Scrollable).first,
+    final menu = find.byKey(const ValueKey('settings-function-menu'));
+    final analysisItem = find.byKey(
+      const ValueKey('settings-menu-analysisDimensions'),
     );
-    await tester.tap(find.text('解析维度'));
+    await tester.scrollUntilVisible(
+      analysisItem,
+      300,
+      scrollable: find.descendant(of: menu, matching: find.byType(Scrollable)),
+    );
+    await tester.tap(analysisItem);
     await tester.pumpAndSettle();
 
     final multiFinder = find.byKey(
