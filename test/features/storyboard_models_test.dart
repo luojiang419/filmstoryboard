@@ -62,6 +62,41 @@ void main() {
     );
   });
 
+  test('项目9比16画幅独立于单列布局并参与画板高度计算', () {
+    const board = StoryboardBoard(
+      id: 'portrait-project',
+      name: '竖屏项目',
+      width: 1080,
+      height: 1080,
+      rows: 1,
+      columns: 1,
+      gap: 18,
+      items: [],
+      imageAspectRatio: 9 / 16,
+    );
+
+    expect(board.imageAspectRatio, 9 / 16);
+    expect(board.portraitMode, isFalse);
+    expect(board.copyWith(name: '副本').imageAspectRatio, 9 / 16);
+    expect(
+      StoryboardBoard.heightForLayout(
+        width: 1080,
+        rows: 1,
+        columns: 1,
+        portraitMode: true,
+        imageAspectRatio: 9 / 16,
+      ),
+      greaterThan(
+        StoryboardBoard.heightForLayout(
+          width: 1080,
+          rows: 1,
+          columns: 1,
+          portraitMode: true,
+        ),
+      ),
+    );
+  });
+
   test('故事板默认启用半透明虚线行分割线并支持复制配置', () {
     const board = StoryboardBoard(
       id: 'board-divider',

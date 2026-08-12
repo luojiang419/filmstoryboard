@@ -9,8 +9,12 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
+import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/preview_file_image.dart';
+import '../../projects/application/project_aspect_controller.dart';
+import '../../projects/domain/project_aspect_ratio.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../application/video_analysis_controller.dart';
@@ -46,6 +50,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
   Widget build(BuildContext context) {
     final controller = ref.watch(videoAnalysisControllerProvider);
     final storyboardController = ref.watch(storyboardControllerProvider);
+    final projectAspectController = ref.watch(projectAspectControllerProvider);
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
@@ -85,6 +90,8 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
                             children: [
                               _Toolbar(
                                 controller: controller,
+                                projectAspectController:
+                                    projectAspectController,
                                 state: state,
                                 storyboardBusy: storyboardState.isAnalyzing,
                                 onImport: () => _pickVideo(context, controller),
@@ -369,6 +376,7 @@ enum _AnalysisStartAction { all, current }
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.controller,
+    required this.projectAspectController,
     required this.state,
     required this.storyboardBusy,
     required this.onImport,
@@ -379,6 +387,7 @@ class _Toolbar extends StatelessWidget {
   });
 
   final VideoAnalysisController controller;
+  final ProjectAspectController projectAspectController;
   final VideoAnalysisState state;
   final bool storyboardBusy;
   final VoidCallback onImport;
@@ -422,6 +431,40 @@ class _Toolbar extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
+              ListenableBuilder(
+                listenable: projectAspectController,
+                builder: (context, _) {
+                  final aspectState = projectAspectController.state;
+                  return SizedBox(
+                    width: 158,
+                    child: DropdownButtonFormField<ProjectAspectMode>(
+                      key: ValueKey(
+                        'video-analysis-project-aspect-${aspectState.mode.name}',
+                      ),
+                      initialValue: aspectState.mode,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        labelText: '项目画幅 ${aspectState.effectiveRatio.label}',
+                        isDense: true,
+                      ),
+                      items: [
+                        for (final mode in ProjectAspectMode.values)
+                          DropdownMenuItem(
+                            value: mode,
+                            child: Text(mode.label),
+                          ),
+                      ],
+                      onChanged: state.isBusy
+                          ? null
+                          : (mode) {
+                              if (mode != null) {
+                                projectAspectController.setMode(mode);
+                              }
+                            },
+                    ),
+                  );
+                },
+              ),
               IconButton(
                 key: const ValueKey('video-analysis-undo'),
                 tooltip: '撤销移除视频帧 (Ctrl+Z)',
@@ -764,7 +807,8 @@ class _VideoSidebar extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         '${_formatDuration(video.durationMs)} · '
-                        '${video.width}×${video.height}',
+                        '${video.displayWidth}×${video.displayHeight} · '
+                        '${video.isPortrait ? '竖屏' : '横屏'}',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                       Text(
@@ -876,6 +920,11 @@ class _FrameWorkspace extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final frames = state.visibleFrames;
+    final mediaAspectRatio =
+        state.selectedVideo?.displayAspectRatio ??
+        (frames.isEmpty || frames.first.width <= 0 || frames.first.height <= 0
+            ? defaultVideoAspectRatio
+            : frames.first.width / frames.first.height);
     return _Panel(
       title: '候选帧与镜头时间轴',
       child: Column(
@@ -933,13 +982,14 @@ class _FrameWorkspace extends StatelessWidget {
                 ? const Center(child: Text('当前筛选条件下没有视频帧'))
                 : GridView.builder(
                     key: const ValueKey('video-frame-grid'),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 230,
-                          childAspectRatio: 1.2,
-                          crossAxisSpacing: 10,
-                          mainAxisSpacing: 10,
-                        ),
+                    gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 230,
+                      childAspectRatio: videoFrameCardAspectRatio(
+                        mediaAspectRatio,
+                      ),
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                    ),
                     itemCount: frames.length,
                     itemBuilder: (context, index) => _FrameCard(
                       controller: controller,
@@ -1029,7 +1079,7 @@ class _FrameCard extends StatelessWidget {
                           context,
                         ),
                       ),
-                      fit: BoxFit.cover,
+                      fit: BoxFit.contain,
                       errorBuilder: (_, _, _) => const Center(
                         child: Icon(Icons.broken_image_outlined),
                       ),
@@ -1082,6 +1132,15 @@ class _FrameCard extends StatelessWidget {
   }
 }
 
+double videoFrameCardAspectRatio(double mediaAspectRatio) {
+  final safeRatio = mediaAspectRatio.isFinite && mediaAspectRatio > 0
+      ? mediaAspectRatio
+      : defaultVideoAspectRatio;
+  const referenceWidth = 230.0;
+  const metadataHeight = 42.0;
+  return referenceWidth / (referenceWidth / safeRatio + metadataHeight);
+}
+
 class _AnalysisInspector extends StatelessWidget {
   const _AnalysisInspector({required this.controller, required this.state});
 
@@ -1101,6 +1160,7 @@ class _AnalysisInspector extends StatelessWidget {
               children: [
                 _VideoPreviewPane(
                   videoFile: controller.resolveVideo(video),
+                  initialAspectRatio: video.displayAspectRatio,
                   initialPosition: Duration(
                     milliseconds: frame?.timestampMs ?? 0,
                   ),
@@ -1242,10 +1302,12 @@ class _DashedSeparatorPainter extends CustomPainter {
 class _VideoPreviewPane extends StatefulWidget {
   const _VideoPreviewPane({
     required this.videoFile,
+    required this.initialAspectRatio,
     required this.initialPosition,
   });
 
   final File videoFile;
+  final double initialAspectRatio;
   final Duration initialPosition;
 
   @override
@@ -1323,8 +1385,10 @@ class _VideoPreviewPaneState extends State<_VideoPreviewPane> {
                 initialPosition: widget.initialPosition,
               ),
             ),
-      child: AspectRatio(
-        aspectRatio: 16 / 9,
+      child: AdaptiveVideoViewport(
+        player: _player,
+        initialAspectRatio: widget.initialAspectRatio,
+        maxHeight: 440,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: DecoratedBox(
@@ -1333,7 +1397,7 @@ class _VideoPreviewPaneState extends State<_VideoPreviewPane> {
               fit: StackFit.expand,
               children: [
                 if (_loadError.isEmpty)
-                  Video(controller: _videoController)
+                  Video(controller: _videoController, fit: BoxFit.contain)
                 else
                   Center(
                     child: Padding(
@@ -1463,7 +1527,7 @@ class _FullscreenVideoDialogState extends State<_FullscreenVideoDialog> {
           children: [
             Center(
               child: _loadError.isEmpty
-                  ? Video(controller: _videoController)
+                  ? Video(controller: _videoController, fit: BoxFit.contain)
                   : Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text(

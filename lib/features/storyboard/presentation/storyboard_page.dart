@@ -991,6 +991,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
   bool _shiftPressed = false;
   bool _rangeAdding = true;
   bool _groupModeEnabled = false;
+  bool _externalPanelDragging = false;
   final _groupSourceImageIds = <String>{};
   final _groupFolderIds = <String>{};
   String? _locatedAssetId;
@@ -1349,6 +1350,79 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
                   onCreateFolder: _createFolder,
                   onRefresh: widget.onRefresh,
                   onCollapse: widget.onCollapse,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              child: DropTarget(
+                key: const ValueKey('storyboard-asset-panel-drop-target'),
+                onDragEntered: (_) {
+                  if (!_externalPanelDragging) {
+                    setState(() => _externalPanelDragging = true);
+                  }
+                },
+                onDragExited: (_) {
+                  if (_externalPanelDragging) {
+                    setState(() => _externalPanelDragging = false);
+                  }
+                },
+                onDragDone: (details) {
+                  if (_externalPanelDragging) {
+                    setState(() => _externalPanelDragging = false);
+                  }
+                  unawaited(
+                    ref
+                        .read(storyboardControllerProvider)
+                        .importPathsToManualFolder(
+                          details.files.map((file) => file.path),
+                        ),
+                  );
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _externalPanelDragging
+                        ? scheme.primaryContainer.withValues(alpha: 0.72)
+                        : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(
+                      color: _externalPanelDragging
+                          ? scheme.primary
+                          : scheme.outlineVariant.withValues(alpha: 0.65),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.add_photo_alternate_outlined,
+                        size: 16,
+                        color: _externalPanelDragging
+                            ? scheme.onPrimaryContainer
+                            : scheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 7),
+                      Flexible(
+                        child: Text(
+                          '拖入图片到“手动添加”（仅保存资源）',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: _externalPanelDragging
+                                ? scheme.onPrimaryContainer
+                                : scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -3085,7 +3159,7 @@ class _ResourceGroupPreview extends StatelessWidget {
         image: imageProvider,
         width: 42,
         height: 42,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         gaplessPlayback: true,
       ),
     );
@@ -3605,7 +3679,7 @@ class _FolderPreview extends StatelessWidget {
         image: imageProvider,
         width: 42,
         height: 42,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         gaplessPlayback: true,
       ),
     );
@@ -3777,7 +3851,7 @@ class _AssetGroup extends StatelessWidget {
                               File(firstAsset.path),
                               width: 36,
                               height: 36,
-                              fit: BoxFit.cover,
+                              fit: BoxFit.contain,
                             ),
                           ),
                           const SizedBox(width: 6),
@@ -3993,7 +4067,7 @@ class _AssetThumb extends StatelessWidget {
                   borderRadius: BorderRadius.circular(6),
                   child: Image(
                     image: imageProvider,
-                    fit: BoxFit.cover,
+                    fit: BoxFit.contain,
                     gaplessPlayback: true,
                   ),
                 ),
@@ -4176,7 +4250,7 @@ class _AssetDragFeedback extends StatelessWidget {
           child: RepaintBoundary(
             child: Image(
               image: imageProvider,
-              fit: BoxFit.cover,
+              fit: BoxFit.contain,
               gaplessPlayback: true,
             ),
           ),
@@ -5549,7 +5623,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
           for (final item in normalItems) displaySlots[item.asset.id]!,
         };
 
-        return Stack(
+        final canvas = Stack(
           key: _stackKey,
           clipBehavior: Clip.none,
           children: [
@@ -5580,7 +5654,9 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
                         ? const SizedBox.expand()
                         : _EmptyStoryboardSlot(
                             index: index,
-                            highlighted: _hoverSlot == index,
+                            highlighted:
+                                _hoverSlot == index ||
+                                _externalHoverSlot == index,
                           ),
                   ),
                 ),
@@ -5661,8 +5737,56 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
               ),
           ],
         );
+        if (widget.board.locked) {
+          return canvas;
+        }
+        return DropTarget(
+          key: const ValueKey('storyboard-canvas-file-drop-target'),
+          onDragEntered: (details) =>
+              _updateExternalHoverSlot(details.localPosition, slotRects),
+          onDragUpdated: (details) =>
+              _updateExternalHoverSlot(details.localPosition, slotRects),
+          onDragExited: (_) {
+            if (_externalHoverSlot != null) {
+              setState(() => _externalHoverSlot = null);
+            }
+          },
+          onDragDone: (details) {
+            final slotIndex = _slotAtPosition(details.localPosition, slotRects);
+            if (_externalHoverSlot != null) {
+              setState(() => _externalHoverSlot = null);
+            }
+            if (slotIndex != null && occupiedDisplaySlots.contains(slotIndex)) {
+              return;
+            }
+            unawaited(
+              ref
+                  .read(storyboardControllerProvider)
+                  .importPathsToSelectedBoard(
+                    details.files.map((file) => file.path),
+                  ),
+            );
+          },
+          child: canvas,
+        );
       },
     );
+  }
+
+  void _updateExternalHoverSlot(Offset position, List<Rect> slotRects) {
+    final slotIndex = _slotAtPosition(position, slotRects);
+    if (_externalHoverSlot != slotIndex) {
+      setState(() => _externalHoverSlot = slotIndex);
+    }
+  }
+
+  int? _slotAtPosition(Offset position, List<Rect> slotRects) {
+    for (var index = 0; index < slotRects.length; index++) {
+      if (slotRects[index].contains(position)) {
+        return index;
+      }
+    }
+    return null;
   }
 
   Widget _buildPositionedNormalItem({
@@ -6744,7 +6868,7 @@ class _ImageEditDialogState extends State<_ImageEditDialog> {
                       width: 150,
                       height: 104,
                       child: sourceFile.existsSync()
-                          ? Image.file(sourceFile, fit: BoxFit.cover)
+                          ? Image.file(sourceFile, fit: BoxFit.contain)
                           : ColoredBox(
                               color: scheme.surfaceContainerHighest,
                               child: Icon(
@@ -6940,7 +7064,7 @@ class _ImageEditDialogState extends State<_ImageEditDialog> {
                       height: 76,
                       child: Image.file(
                         File(path),
-                        fit: BoxFit.cover,
+                        fit: BoxFit.contain,
                         cacheWidth: 224,
                         cacheHeight: 152,
                         errorBuilder: (_, _, _) => ColoredBox(
@@ -8255,10 +8379,10 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                const _InspectorSettingLine(
+                _InspectorSettingLine(
                   icon: Icons.crop_16_9_rounded,
                   label: '比例',
-                  value: StoryboardController.highDefinitionRedrawAspectRatio,
+                  value: widget.controller.projectAspectRatioLabel,
                 ),
                 const SizedBox(height: 6),
                 const _InspectorSettingLine(

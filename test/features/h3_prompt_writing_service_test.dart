@@ -1,5 +1,6 @@
 import 'package:filmstoryboard/features/replicate/data/h3_prompt_writing_service.dart';
 import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
+import 'package:filmstoryboard/features/storyboard/domain/cinematic_motion_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -27,6 +28,8 @@ void main() {
     expect(instruction, contains('<Picture 1> 是复刻分镜图'));
     expect(instruction, contains('<Picture 2> 是产品外观参考'));
     expect(instruction, contains('所有描述性正文必须使用简体中文'));
+    expect(instruction, contains('即梦 / Seedance 2.0 成熟导演语法作为基线'));
+    expect(instruction, contains('一个物理镜头尽量只使用一种有动机的主运镜'));
     expect(instruction, contains('按真实时间速度播放'));
     expect(instruction, contains('禁止把视觉上的慢动作'));
     expect(instruction, contains('禁止时间拉伸'));
@@ -46,6 +49,61 @@ void main() {
 
     expect(instruction, isNot(contains('选定风格：')));
     expect(instruction, isNot(contains('风格化约束（')));
+    expect(instruction, contains('空间层 + 时间层'));
+  });
+
+  test('慢动作只接受剧情描述中的明确正向授权', () {
+    expect(
+      CinematicMotionPolicy.hasExplicitSlowMotionIntent('人物落地时使用慢动作，突出冲击力'),
+      isTrue,
+    );
+    expect(
+      CinematicMotionPolicy.hasExplicitSlowMotionIntent('以120fps升格拍摄落水瞬间'),
+      isTrue,
+    );
+    expect(
+      CinematicMotionPolicy.hasExplicitSlowMotionIntent('不要慢动作，摄影机缓慢推近人物表情'),
+      isFalse,
+      reason: '慢速运镜不是慢动作授权，否定要求也不能被误判为授权',
+    );
+    expect(
+      CinematicMotionPolicy.hasExplicitSlowMotionIntent('平稳跟随并在结尾缓停'),
+      isFalse,
+    );
+  });
+
+  test('未授权时 H3 指令禁止慢动作且结果校验会拦截', () {
+    final instruction = service.buildRewriteInstruction(
+      draft: '人物向前奔跑。',
+      durationSeconds: 6,
+      storyboardImageCount: 1,
+    );
+    expect(instruction, contains('播放速度规则（最高优先级）'));
+    expect(instruction, contains('缓慢推近/平稳跟随/末段缓停'));
+    expect(instruction, contains('不能覆盖本条'));
+
+    const prompt = '''subject_definitions:
+<Picture 1> 是人物动作参考。
+
+summary:
+[参考生成] 6秒视频，人物完成一次奔跑动作。
+
+retention_analysis:
+<Picture 1> ([Shot 1] 动作参考): fully_preserved - 保留人物与场景。
+
+detailed_description:
+[Shot 1] 人物以慢动作向前奔跑，摄影机同步跟随。
+
+overall_soundscape:
+脚步声与动作同步。
+
+non_diegetic_music:
+N/A''';
+    expect(
+      service.validationErrors(prompt),
+      contains('用户未授权慢动作，最终提示词不得包含慢动作、慢放、升格或变速慢放'),
+    );
+    expect(service.validationErrors(prompt, allowSlowMotion: true), isEmpty);
   });
 
   test('8 个风格均将精炼约束注入视觉改写指令', () {
@@ -199,5 +257,107 @@ N/A''';
     expect(errors, contains('缺少附件引用 <Picture 2>'));
     expect(errors.any((error) => error.contains('Picture 编号')), isTrue);
     expect(service.extractDurationSeconds(invalid), isNull);
+  });
+
+  test('方案 A 只有明确切镜文字才允许多镜头', () {
+    expect(
+      H3PromptWritingService.shouldUseSingleContinuousShot(
+        description: '同一段攀爬动作从全景连续推进到近景，镜头始终跟随人物。',
+        storyboardImageCount: 3,
+      ),
+      isTrue,
+      reason: '单纯景别变化和连续推进不能被解释为切镜',
+    );
+    expect(
+      H3PromptWritingService.shouldUseSingleContinuousShot(
+        description: '第一个镜头低角度跟随攀爬，随后硬切到第二个镜头的脚部近景。',
+        storyboardImageCount: 3,
+      ),
+      isFalse,
+    );
+    expect(
+      H3PromptWritingService.hasExplicitMultiShotIntent(
+        '人物继续攀爬，[Shot 2] 切至顶部俯拍。',
+      ),
+      isTrue,
+    );
+    expect(
+      H3PromptWritingService.hasExplicitMultiShotIntent(
+        '不要切镜，不得出现第二个镜头，保持一镜到底。',
+      ),
+      isFalse,
+    );
+    expect(
+      H3PromptWritingService.hasExplicitMultiShotIntent('镜头 3 的当前剧情描述'),
+      isFalse,
+      reason: '拍摄脚本条目编号不是多镜头创作指令',
+    );
+  });
+
+  test('单连续镜头指令把多图定义为阶段帧并拒绝 Shot 2', () {
+    final instruction = service.buildRewriteInstruction(
+      draft: '人物在三张连续画面中完成攀爬动作。',
+      durationSeconds: 10,
+      storyboardImageCount: 3,
+      singleContinuousShot: true,
+    );
+
+    expect(instruction, contains('当前目标镜头结构：单一连续镜头（最高优先级）'));
+    expect(instruction, contains('同一物理镜头按时间顺序抽取的动作阶段帧'));
+    expect(instruction, contains('禁止把 Picture N 映射成 Shot N'));
+    expect(instruction, contains('必须且只能出现一次 [Shot 1]'));
+    expect(instruction, contains('不是新镜头首帧'));
+    expect(
+      service.validationErrors(
+        '不合格的输出',
+        referenceImageCount: 3,
+        requireAiDuration: true,
+        singleContinuousShot: true,
+      ),
+      isNotEmpty,
+      reason: '缺失字段的首轮输出应返回校验错误并进入修复请求，不能抛出 RangeError',
+    );
+
+    const splitPrompt = '''subject_definitions:
+<Picture 1> 是攀爬动作的开始阶段。
+<Picture 2> 是攀爬动作的中间阶段。
+<Picture 3> 是攀爬动作的结束阶段。
+
+summary:
+[参考生成] 10秒视频，人物连续向上攀爬。
+
+retention_analysis:
+<Picture 1> ([Shot 1] 动作参考): fully_preserved - 保留开始姿态。
+<Picture 2> ([Shot 2] 动作参考): fully_preserved - 保留中间姿态。
+<Picture 3> ([Shot 2] 动作参考): fully_preserved - 保留结束姿态。
+
+detailed_description:
+[Shot 1] 人物从第一张图片的姿态开始向上攀爬。
+[Shot 2] 在 00:05.000，镜头切换到第二张图片的构图，人物继续攀爬。
+
+overall_soundscape:
+自然风声与鞋底摩擦岩石的声音保持同步。
+
+non_diegetic_music:
+N/A''';
+
+    expect(
+      service.validationErrors(
+        splitPrompt,
+        referenceImageCount: 3,
+        requireAiDuration: true,
+        singleContinuousShot: true,
+      ),
+      contains('单一连续镜头模式只允许 [Shot 1]，不得出现 [Shot 2] 或更高编号'),
+    );
+    expect(
+      service.validationErrors(
+        splitPrompt,
+        referenceImageCount: 3,
+        requireAiDuration: true,
+      ),
+      isEmpty,
+      reason: '明确多镜头模式仍允许合法的 Shot 2',
+    );
   });
 }

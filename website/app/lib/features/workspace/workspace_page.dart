@@ -3,7 +3,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../../app/remote_app.dart';
 import '../../core/models/remote_models.dart';
+import '../exporter/exporter_page.dart';
+import '../settings/settings_page.dart';
 import '../storyboard/storyboard_review_page.dart';
+import '../video_analysis/video_analysis_page.dart';
+import '../video_generation/video_generation_page.dart';
 import 'remote_app_controller.dart';
 
 class WorkspacePage extends StatefulWidget {
@@ -33,43 +37,25 @@ class _WorkspacePageState extends State<WorkspacePage> {
           );
           return Scaffold(
             body: SafeArea(
-              child: desktop
-                  ? Row(
-                      children: [
-                        _SideNavigation(
-                          selected: _section,
-                          onSelected: (value) =>
-                              setState(() => _section = value),
-                        ),
-                        Expanded(child: body),
-                      ],
-                    )
-                  : body,
-            ),
-            bottomNavigationBar: desktop
-                ? null
-                : NavigationBar(
-                    selectedIndex: _section,
-                    onDestinationSelected: (value) =>
-                        setState(() => _section = value),
-                    destinations: const [
-                      NavigationDestination(
-                        icon: Icon(Icons.space_dashboard_outlined),
-                        selectedIcon: Icon(Icons.space_dashboard_rounded),
-                        label: '工作台',
+              child: Stack(
+                children: [
+                  Positioned.fill(bottom: desktop ? 104 : 92, child: body),
+                  Positioned(
+                    left: 10,
+                    right: 10,
+                    bottom: 10,
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: _WorkspaceDock(
+                        selected: _section,
+                        compact: !desktop,
+                        onSelected: (value) => setState(() => _section = value),
                       ),
-                      NavigationDestination(
-                        icon: Icon(Icons.dashboard_customize_outlined),
-                        selectedIcon: Icon(Icons.dashboard_customize_rounded),
-                        label: '故事板',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.table_rows_outlined),
-                        selectedIcon: Icon(Icons.table_rows_rounded),
-                        label: '拍摄脚本',
-                      ),
-                    ],
+                    ),
                   ),
+                ],
+              ),
+            ),
           );
         },
       );
@@ -77,97 +63,86 @@ class _WorkspacePageState extends State<WorkspacePage> {
   );
 }
 
-class _SideNavigation extends StatelessWidget {
-  const _SideNavigation({required this.selected, required this.onSelected});
+class _WorkspaceDock extends StatelessWidget {
+  const _WorkspaceDock({
+    required this.selected,
+    required this.compact,
+    required this.onSelected,
+  });
 
   final int selected;
+  final bool compact;
   final ValueChanged<int> onSelected;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: 236,
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 18),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLowest,
-        border: Border(
-          right: BorderSide(
-            color: scheme.outlineVariant.withValues(alpha: .45),
+    const destinations = [
+      (Icons.space_dashboard_outlined, Icons.space_dashboard_rounded, '工作台'),
+      (Icons.video_file_outlined, Icons.video_file_rounded, '视频解析'),
+      (
+        Icons.dashboard_customize_outlined,
+        Icons.dashboard_customize_rounded,
+        '故事板',
+      ),
+      (Icons.table_rows_outlined, Icons.table_rows_rounded, '拍摄脚本'),
+      (
+        Icons.auto_awesome_motion_outlined,
+        Icons.auto_awesome_motion_rounded,
+        '生成视频',
+      ),
+      (Icons.ios_share_outlined, Icons.ios_share_rounded, '导出'),
+      (Icons.tune_outlined, Icons.tune_rounded, '设置'),
+    ];
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 780),
+      child: Material(
+        key: const ValueKey('workspace-bottom-dock'),
+        elevation: 18,
+        color: scheme.surfaceContainerHigh.withValues(alpha: .96),
+        shadowColor: Colors.black.withValues(alpha: .34),
+        borderRadius: BorderRadius.circular(24),
+        clipBehavior: Clip.antiAlias,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: .55),
+            ),
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 7 : 11,
+                vertical: 7,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var index = 0; index < destinations.length; index++)
+                    _DockItem(
+                      selected: selected == index,
+                      compact: compact,
+                      icon: destinations[index].$1,
+                      selectedIcon: destinations[index].$2,
+                      label: destinations[index].$3,
+                      onTap: () => onSelected(index),
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              children: [
-                BrandMark(size: 38),
-                SizedBox(width: 11),
-                Expanded(
-                  child: Text(
-                    'FilmStoryboard',
-                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 34),
-          _NavItem(
-            selected: selected == 0,
-            icon: Icons.space_dashboard_outlined,
-            selectedIcon: Icons.space_dashboard_rounded,
-            label: '导演工作台',
-            onTap: () => onSelected(0),
-          ),
-          const SizedBox(height: 8),
-          _NavItem(
-            selected: selected == 1,
-            icon: Icons.dashboard_customize_outlined,
-            selectedIcon: Icons.dashboard_customize_rounded,
-            label: '故事板审阅',
-            onTap: () => onSelected(1),
-          ),
-          const SizedBox(height: 8),
-          _NavItem(
-            selected: selected == 2,
-            icon: Icons.table_rows_outlined,
-            selectedIcon: Icons.table_rows_rounded,
-            label: '拍摄脚本',
-            onTap: () => onSelected(2),
-          ),
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: scheme.primaryContainer.withValues(alpha: .45),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.shield_outlined, size: 19),
-                SizedBox(width: 9),
-                Expanded(
-                  child: Text(
-                    '本地数据 · 加密通道',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
 }
 
-class _NavItem extends StatelessWidget {
-  const _NavItem({
+class _DockItem extends StatelessWidget {
+  const _DockItem({
     required this.selected,
+    required this.compact,
     required this.icon,
     required this.selectedIcon,
     required this.label,
@@ -175,6 +150,7 @@ class _NavItem extends StatelessWidget {
   });
 
   final bool selected;
+  final bool compact;
   final IconData icon;
   final IconData selectedIcon;
   final String label;
@@ -183,25 +159,35 @@ class _NavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? scheme.primaryContainer : Colors.transparent,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-          child: Row(
-            children: [
-              Icon(selected ? selectedIcon : icon, size: 21),
-              const SizedBox(width: 12),
-              Text(
-                label,
-                style: TextStyle(
-                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+    return Tooltip(
+      message: label,
+      child: Material(
+        color: selected ? scheme.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(17),
+        child: InkWell(
+          key: ValueKey('workspace-dock-$label'),
+          borderRadius: BorderRadius.circular(17),
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: compact ? 72 : 96,
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(selected ? selectedIcon : icon, size: 23),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: compact ? 10 : 11,
+                    fontWeight: selected ? FontWeight.w900 : FontWeight.w600,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -238,16 +224,36 @@ class _WorkspaceBody extends StatelessWidget {
                     ? _Dashboard(
                         key: const ValueKey('dashboard'),
                         controller: controller,
-                        onOpenStoryboards: () => onSectionChanged(1),
-                        onOpenScripts: () => onSectionChanged(2),
+                        onOpenStoryboards: () => onSectionChanged(2),
+                        onOpenScripts: () => onSectionChanged(3),
                       )
                     : section == 1
+                    ? VideoAnalysisPage(
+                        key: const ValueKey('video-analysis'),
+                        controller: controller,
+                      )
+                    : section == 2
                     ? StoryboardReviewPage(
                         key: const ValueKey('storyboards'),
                         controller: controller,
                       )
-                    : _ScriptWorkspace(
+                    : section == 3
+                    ? _ScriptWorkspace(
                         key: const ValueKey('scripts'),
+                        controller: controller,
+                      )
+                    : section == 4
+                    ? VideoGenerationPage(
+                        key: const ValueKey('video-generation'),
+                        controller: controller,
+                      )
+                    : section == 5
+                    ? ExporterPage(
+                        key: const ValueKey('exporter'),
+                        controller: controller,
+                      )
+                    : SettingsPage(
+                        key: const ValueKey('settings'),
                         controller: controller,
                       ),
               ),
@@ -330,6 +336,7 @@ class _TopBar extends StatelessWidget {
           PopupMenuButton<String>(
             tooltip: '账户与连接',
             onSelected: (value) {
+              if (value == 'projects') controller.showProjectSelection();
               if (value == 'logout') controller.logout();
             },
             itemBuilder: (context) => [
@@ -338,6 +345,14 @@ class _TopBar extends StatelessWidget {
                 child: Text(controller.session?.clientName ?? '远程客户端'),
               ),
               const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'projects',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.folder_open_rounded),
+                  title: Text('切换工程'),
+                ),
+              ),
               const PopupMenuItem(
                 value: 'logout',
                 child: ListTile(
@@ -723,33 +738,520 @@ class _RecentScriptTile extends StatelessWidget {
   );
 }
 
-class _ScriptWorkspace extends StatelessWidget {
+class _ScriptWorkspace extends StatefulWidget {
   const _ScriptWorkspace({super.key, required this.controller});
   final RemoteAppController controller;
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      if (constraints.maxWidth >= 1120) {
-        return Row(
-          children: [
-            SizedBox(width: 270, child: _ScriptList(controller: controller)),
-            const VerticalDivider(width: 1),
-            SizedBox(width: 360, child: _ShotList(controller: controller)),
-            const VerticalDivider(width: 1),
-            Expanded(
-              child: _ShotInspector(
-                controller: controller,
-                shot: controller.selectedShot,
+  State<_ScriptWorkspace> createState() => _ScriptWorkspaceState();
+}
+
+class _ScriptWorkspaceState extends State<_ScriptWorkspace> {
+  int _step = 0;
+
+  RemoteAppController get controller => widget.controller;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!controller.shootingWorkflowAvailable) {
+      return LayoutBuilder(builder: _buildConfirmLayout);
+    }
+    return Column(
+      children: [
+        _ShootingWorkflowSteps(
+          selected: _step,
+          workflow: controller.shootingWorkflow,
+          onSelected: (step) => setState(() => _step = step),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: switch (_step) {
+            0 => _ShootingPrepareAssetsStep(controller: controller),
+            1 => LayoutBuilder(builder: _buildConfirmLayout),
+            _ => _ShootingBuildStep(controller: controller),
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConfirmLayout(BuildContext context, BoxConstraints constraints) {
+    if (constraints.maxWidth >= 1120) {
+      return Row(
+        children: [
+          SizedBox(width: 250, child: _ScriptList(controller: controller)),
+          const VerticalDivider(width: 1),
+          SizedBox(width: 340, child: _ShotList(controller: controller)),
+          const VerticalDivider(width: 1),
+          Expanded(
+            child: Column(
+              children: [
+                if (controller.shootingWorkflowAvailable)
+                  _ConfirmShotsToolbar(controller: controller),
+                Expanded(
+                  child: _ShotInspector(
+                    controller: controller,
+                    shot: controller.selectedShot,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      children: [
+        if (controller.shootingWorkflowAvailable)
+          _ConfirmShotsToolbar(controller: controller),
+        Expanded(child: _CompactScriptWorkspace(controller: controller)),
+      ],
+    );
+  }
+}
+
+class _ShootingWorkflowSteps extends StatelessWidget {
+  const _ShootingWorkflowSteps({
+    required this.selected,
+    required this.workflow,
+    required this.onSelected,
+  });
+
+  final int selected;
+  final RemoteShootingWorkflow? workflow;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      (
+        '准备资产',
+        '匹配当前脚本参考资产',
+        Icons.inventory_2_outlined,
+        workflow?.prepareAssetsStatus ?? 'pending',
+        const ValueKey('shooting-step-prepare'),
+      ),
+      (
+        '确认镜头',
+        '核对并编辑全部镜头',
+        Icons.fact_check_outlined,
+        workflow?.confirmShotsStatus ?? 'pending',
+        const ValueKey('shooting-step-confirm'),
+      ),
+      (
+        '构建与复刻',
+        '构建提示词并复刻分镜',
+        Icons.account_tree_outlined,
+        workflow?.composePromptsStatus ?? 'pending',
+        const ValueKey('shooting-step-build'),
+      ),
+    ];
+    return SizedBox(
+      height: 94,
+      child: ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+        scrollDirection: Axis.horizontal,
+        itemCount: items.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final item = items[index];
+          final active = selected == index;
+          return SizedBox(
+            width: 260,
+            child: Card(
+              key: item.$5,
+              color: active
+                  ? Theme.of(context).colorScheme.primaryContainer
+                  : null,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => onSelected(index),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Row(
+                    children: [
+                      CircleAvatar(child: Icon(item.$3)),
+                      const SizedBox(width: 11),
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${index + 1}. ${item.$1}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            Text(
+                              item.$2,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        item.$4 == 'completed'
+                            ? Icons.check_circle_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        color: item.$4 == 'completed'
+                            ? Colors.green
+                            : Theme.of(context).colorScheme.outline,
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ShootingPrepareAssetsStep extends StatelessWidget {
+  const _ShootingPrepareAssetsStep({required this.controller});
+
+  final RemoteAppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final workflow = controller.shootingWorkflow;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final content = _PrepareAssetsContent(
+          controller: controller,
+          workflow: workflow,
+        );
+        if (constraints.maxWidth < 980) return content;
+        return Row(
+          children: [
+            SizedBox(width: 250, child: _ScriptList(controller: controller)),
+            const VerticalDivider(width: 1),
+            Expanded(child: content),
           ],
         );
-      }
-      return _CompactScriptWorkspace(controller: controller);
-    },
+      },
+    );
+  }
+}
+
+class _PrepareAssetsContent extends StatelessWidget {
+  const _PrepareAssetsContent({
+    required this.controller,
+    required this.workflow,
+  });
+
+  final RemoteAppController controller;
+  final RemoteShootingWorkflow? workflow;
+
+  @override
+  Widget build(BuildContext context) {
+    final script = controller.selectedScript;
+    final currentWorkflow = workflow;
+    if (script == null || currentWorkflow == null) {
+      return const Center(child: Text('选择一份拍摄脚本以准备资产'));
+    }
+    return SingleChildScrollView(
+      key: const ValueKey('shooting-prepare-assets-page'),
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 40),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '步骤 1 · 准备资产',
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w900),
+                    ),
+                    Text(
+                      '${currentWorkflow.assets.length} 个资产 · ${currentWorkflow.links.length} 条镜头匹配',
+                    ),
+                  ],
+                ),
+              ),
+              FilledButton.icon(
+                key: const ValueKey('match-shooting-assets'),
+                onPressed:
+                    controller.canEdit &&
+                        !controller.shootingWorkflowCommandBusy &&
+                        !currentWorkflow.isBusy
+                    ? () =>
+                          controller.startShootingWorkflowAction('matchAssets')
+                    : null,
+                icon: const Icon(Icons.auto_awesome_outlined),
+                label: const Text('自动匹配资产'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (currentWorkflow.assets.isEmpty)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('当前脚本还没有可用参考资产，请先在桌面资产库准备素材。'),
+              ),
+            )
+          else
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final asset in currentWorkflow.assets)
+                  SizedBox(
+                    width: 280,
+                    child: Card(
+                      clipBehavior: Clip.antiAlias,
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 92,
+                            height: 76,
+                            child: _RemoteFrame(
+                              controller: controller,
+                              mediaId: asset.mediaId,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  asset.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                Text(
+                                  '#${asset.referenceNumber} · ${asset.type}',
+                                ),
+                                Text(
+                                  '${currentWorkflow.links.where((link) => link.assetId == asset.id).length} 个镜头已匹配',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          const SizedBox(height: 22),
+          Text(
+            '镜头匹配结果',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 10),
+          for (final shot in script.shots)
+            Card(
+              child: ListTile(
+                leading: CircleAvatar(child: Text('${shot.shotNumber}')),
+                title: Text(
+                  shot.content.isEmpty ? '镜头 ${shot.shotNumber}' : shot.content,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  '${currentWorkflow.links.where((link) => link.shotId == shot.id).length} 个匹配资产',
+                ),
+                trailing: const Icon(Icons.link_rounded),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConfirmShotsToolbar extends StatelessWidget {
+  const _ConfirmShotsToolbar({required this.controller});
+
+  final RemoteAppController controller;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+    child: Wrap(
+      spacing: 10,
+      runSpacing: 8,
+      children: [
+        FilledButton.tonalIcon(
+          key: const ValueKey('confirm-shooting-shots'),
+          onPressed:
+              controller.canEdit && !controller.shootingWorkflowCommandBusy
+              ? controller.confirmShootingWorkflowShots
+              : null,
+          icon: const Icon(Icons.done_all_rounded),
+          label: const Text('确认全部镜头'),
+        ),
+        FilledButton.icon(
+          key: const ValueKey('build-shooting-script'),
+          onPressed:
+              controller.canEdit && !controller.shootingWorkflowCommandBusy
+              ? () => controller.startShootingWorkflowAction('buildScript')
+              : null,
+          icon: const Icon(Icons.account_tree_outlined),
+          label: const Text('构建脚本'),
+        ),
+      ],
+    ),
   );
 }
+
+class _ShootingBuildStep extends StatelessWidget {
+  const _ShootingBuildStep({required this.controller});
+
+  final RemoteAppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final workflow = controller.shootingWorkflow;
+    final script = controller.selectedScript;
+    if (workflow == null || script == null) {
+      return const Center(child: Text('选择一份拍摄脚本开始构建'));
+    }
+    return SingleChildScrollView(
+      key: const ValueKey('shooting-build-page'),
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 40),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1180),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '步骤 3 · 构建脚本与复刻分镜',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '构建进度 ${workflow.analysisCompleted}/${workflow.analysisTotal} · '
+                '${workflow.promptCount} 个提示词 · ${workflow.replicas.length} 个复刻结果',
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  FilledButton.icon(
+                    key: const ValueKey('build-shooting-script-final'),
+                    onPressed:
+                        controller.canEdit &&
+                            !controller.shootingWorkflowCommandBusy &&
+                            !workflow.isBusy
+                        ? () => controller.startShootingWorkflowAction(
+                            'buildScript',
+                          )
+                        : null,
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: const Text('构建脚本'),
+                  ),
+                  FilledButton.tonalIcon(
+                    key: const ValueKey('replicate-all-storyboards'),
+                    onPressed:
+                        controller.canEdit &&
+                            workflow.promptCount > 0 &&
+                            !controller.shootingWorkflowCommandBusy &&
+                            !workflow.isBusy
+                        ? () => controller.startShootingWorkflowAction(
+                            'replicateStoryboards',
+                          )
+                        : null,
+                    icon: const Icon(Icons.auto_awesome_motion_outlined),
+                    label: const Text('复刻全部分镜'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const ValueKey('replicate-selected-storyboard'),
+                    onPressed:
+                        controller.canEdit &&
+                            controller.selectedShot != null &&
+                            workflow.promptCount > 0 &&
+                            !controller.shootingWorkflowCommandBusy &&
+                            !workflow.isBusy
+                        ? () => controller.startShootingWorkflowAction(
+                            'replicateStoryboards',
+                            shotId: controller.selectedShot!.id,
+                          )
+                        : null,
+                    icon: const Icon(Icons.filter_center_focus_rounded),
+                    label: const Text('复刻当前镜头'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 22),
+              Text(
+                '可恢复任务',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 10),
+              if (controller.shootingWorkflowTasks.isEmpty)
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('还没有脚本构建或复刻任务。'),
+                  ),
+                )
+              else
+                for (final task in controller.shootingWorkflowTasks)
+                  Card(
+                    child: ListTile(
+                      leading: Icon(
+                        task.terminal
+                            ? task.status == 'succeeded'
+                                  ? Icons.check_circle_outline_rounded
+                                  : Icons.error_outline_rounded
+                            : Icons.sync_rounded,
+                      ),
+                      title: Text(_shootingTaskLabel(task.kind)),
+                      subtitle: Text(
+                        task.errorMessage.isNotEmpty
+                            ? task.errorMessage
+                            : task.message,
+                      ),
+                      trailing: task.cancellable
+                          ? IconButton(
+                              tooltip: '取消任务',
+                              onPressed: () =>
+                                  controller.cancelRemoteTask(task.id),
+                              icon: const Icon(Icons.stop_circle_outlined),
+                            )
+                          : Text(task.status),
+                    ),
+                  ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _shootingTaskLabel(String kind) => switch (kind) {
+  'shootingAssetMatch' => '匹配资产',
+  'shootingScriptBuild' => '构建脚本',
+  'storyboardReplication' => '复刻分镜',
+  _ => kind,
+};
 
 class _CompactScriptWorkspace extends StatelessWidget {
   const _CompactScriptWorkspace({required this.controller});

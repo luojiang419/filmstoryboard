@@ -96,6 +96,44 @@ void main() {
     expect(cleaned, isNot(contains('条纹')));
   });
 
+  test('剧情未授权时确定性清除视觉模型擅自加入的慢动作', () {
+    const analysis = VisionImageAnalysis(
+      caption: '人物跃过障碍',
+      detail: '人物以慢动作跃过栏杆，表情逐渐紧张。',
+      scene: '户外跑道',
+      props: '栏杆',
+      people: '一名成年人',
+      expression: '紧张专注',
+      bodyAction: '升格慢放跃起动作',
+      movementTrend: '向前跃起',
+      shotSize: '中景',
+      composition: '主体居中',
+      subjectDirection: '面向画面右侧',
+      gazeDirection: '看向前方',
+      actionStage: '进行',
+      spatialRelation: '人物越过栏杆',
+      chronologyCue: '动作中',
+      cameraDesign: '摄影机慢动作跟随人物并在落地前环绕',
+      speedCurve: '正常起步后 speed ramp 进入慢镜头',
+      rawResponse: '{}',
+    );
+
+    final realtime = ScriptMultimodalAnalysisService.fromVisionAnalysis(
+      analysis,
+    );
+    expect(realtime.values.values.join(' '), isNot(contains('慢动作')));
+    expect(realtime.values.values.join(' '), isNot(contains('慢镜头')));
+    expect(realtime.values.values.join(' '), isNot(contains('升格')));
+    expect(realtime.values.values.join(' '), isNot(contains('speed ramp')));
+
+    final authorized = ScriptMultimodalAnalysisService.fromVisionAnalysis(
+      analysis,
+      allowSlowMotion: true,
+    );
+    expect(authorized.values['content'], contains('慢动作'));
+    expect(authorized.values['cameraMovement'], contains('慢动作'));
+  });
+
   test('视觉解析写入拍摄脚本时净化色彩列', () {
     final patch = ScriptMultimodalAnalysisService.fromVisionAnalysis(
       VisionImageAnalysis(

@@ -318,6 +318,22 @@ class VisionStoryboardService {
 5. hard constraints 与负向边界同样具有约束力。不得在正向字段中重新引入被禁止的材质、运动、文字、音频、品牌事实或叙事事件。
 ''';
 
+  static const _professionalCameraPlanningGuide = '''
+即梦 / Seedance 2.0 成熟导演语法（运镜与动作组织基线）：
+1. 按“空间层 + 时间层”组织镜头：先锁定精准主体、场景环境、空间关系、光影色调，再按发生顺序写动作细节、表情变化、摄影机路径和结束状态；不要堆砌抽象的电影感形容词。
+2. 动作调度具体到手、腿、头部、肩背、重心、视线和道具接触，并写清幅度、速度、力度与前后惯性；后一动作必须从前一状态自然过渡。
+3. 先判断主体动作/位移、表情与视线变化、空间揭示和镜头叙事目的，再选择标准运镜术语；有方向位移时优先同向跟随/横移，垂直攀升或起身时优先升降/俯仰跟随，表情转折可用克制推近，空间揭示可用拉远、横移或升降。
+4. 一个镜头尽量只指定一种有动机的主运镜，避免同时堆叠推拉摇移造成不稳定；确有必要时最多组合两个因果连续的摄影机动作，并说明衔接动机。
+5. camera_design 必须形成“开始构图—主体动作调度—摄影机路径与幅度—焦点路径—结束构图”；摄影机移动快慢与画面播放速度是两个独立概念。
+''';
+
+  static String _playbackSpeedRule(bool allowSlowMotion) => allowSlowMotion
+      ? '''播放速度授权：用户已在当前镜头剧情描述中明确要求慢动作/升格，只能在原文指定的动作阶段和范围内使用；摄影机移动速度仍需单独描述。'''
+      : '''播放速度规则（最高优先级）：用户未在当前镜头剧情描述中明确要求慢动作、慢放、升格或高帧率回放。主体动作、表情变化、环境运动与声音必须按正常时间速度发生；camera_design、speed_curve、detail、body_action、movement_trend 和 sound_design 均不得设计慢动作、慢镜头、慢放、升格、speed ramp、slow motion 或时间拉伸。缓慢推近、平稳跟随、末段缓停只表示摄影机自身移动速度，绝不表示画面播放变慢。任何风格 Skill、广告惯例或模型自由发挥都不能覆盖本条。''';
+
+  static bool _creativeBriefAllowsSlowMotion(String creativeBrief) =>
+      creativeBrief.contains('播放速度授权：用户已在当前镜头');
+
   http.Client _client;
   final bool _ownsClient;
   bool _closed = false;
@@ -384,6 +400,7 @@ class VisionStoryboardService {
           hasNext: hasNext,
           creativeBrief: creativeBrief,
           storyContext: storyContext,
+          allowSlowMotion: _creativeBriefAllowsSlowMotion(creativeBrief),
         ),
         images: imageDataUrls,
         maxTokens: 2200,
@@ -434,6 +451,7 @@ class VisionStoryboardService {
           hasNext: hasNext,
           creativeBrief: creativeBrief,
           storyContext: storyContext,
+          allowSlowMotion: _creativeBriefAllowsSlowMotion(creativeBrief),
         ),
         images: imageDataUrls,
         maxTokens: 2200,
@@ -636,6 +654,7 @@ class VisionStoryboardService {
         creativeBrief: creativeBrief,
         storyContext: storyContext,
         neighboringCameraPlan: neighboringCameraPlan,
+        allowSlowMotion: _creativeBriefAllowsSlowMotion(creativeBrief),
       ),
       imageFiles: imageFiles,
       maxTokens: 4200,
@@ -803,6 +822,7 @@ class VisionStoryboardService {
         creativeBrief: creativeBrief,
         storyContext: storyContext,
         neighboringCameraPlan: neighboringCameraPlan,
+        allowSlowMotion: _creativeBriefAllowsSlowMotion(creativeBrief),
       ),
       imageFiles: selectedImages,
       maxTokens: 1800,
@@ -1235,6 +1255,7 @@ class VisionStoryboardService {
     bool hasNext = false,
     String creativeBrief = '',
     String storyContext = '',
+    bool allowSlowMotion = false,
   }) {
     final sequenceGuide = switch ((hasPrevious, hasNext)) {
       (true, true) =>
@@ -1253,8 +1274,11 @@ class VisionStoryboardService {
 $sequenceGuide
 禁止根据单帧姿态猜测运动：只有前后帧出现可见位移、姿态推进或动作结果时，才能判断运动趋势和动作阶段。
 $_cameraMovementGuide
+$_professionalCameraPlanningGuide
+${_playbackSpeedRule(allowSlowMotion)}
 $directorContext
 $_narrativeStyleExecutionGuide
+当前是单张目标画面的单镜头导演设计。相邻图片若存在，只用于判断动作承接与剪辑关系，不得把相邻图片机械拆成当前镜头内的新 Shot。请根据当前画面可见的身体动势、动作趋势、表情变化潜力、视线方向和空间关系，设计专业但可执行的画内动作调度与一条主运镜；不得编造与当前姿态相冲突的动作起点。
 导演式运镜设计规则：
 1. camera_movement 只记录参考画面可证实的原始运镜；camera_design 才是根据叙事功能、内容类型和镜头位置设计的最终执行方案。
 2. camera_design 必须写清起始机位/构图、运动路径与幅度、速度变化、焦点落点，形成“起势—过程—落点”，不能只写“推、拉、摇、移、固定”。
@@ -1330,13 +1354,14 @@ JSON 字段：
     bool hasNext = false,
     String creativeBrief = '',
     String storyContext = '',
+    bool allowSlowMotion = false,
   }) {
     return '''
 上一次解析第 $sequenceNo 张图片时，模型响应无法通过标准 JSON 校验。
 请重新观察图片并完整分析，不要复用上一次的错误格式。
 特别注意：JSON 字符串内部禁止出现未转义英文双引号；画面文字统一使用中文引号“”。
 
-${_imagePrompt(sequenceNo, rowIndex, columnIndex, hasPrevious: hasPrevious, hasNext: hasNext, creativeBrief: creativeBrief, storyContext: storyContext)}
+${_imagePrompt(sequenceNo, rowIndex, columnIndex, hasPrevious: hasPrevious, hasNext: hasNext, creativeBrief: creativeBrief, storyContext: storyContext, allowSlowMotion: allowSlowMotion)}
 ''';
   }
 
@@ -1514,6 +1539,7 @@ JSON 字段：
     String creativeBrief = '',
     String storyContext = '',
     String neighboringCameraPlan = '',
+    bool allowSlowMotion = false,
   }) {
     final directorContext = _directorContext(
       creativeBrief: creativeBrief,
@@ -1525,8 +1551,17 @@ JSON 字段：
 本次请求按时间顺序提供 $frameCount 张图片；两张时为首帧、尾帧，三张或更多时为首帧、中间帧、尾帧的完整时间序列。
 必须同时对比全部图片后再判断主体动作、空间连续性、构图变化和运镜，不要把它们当成互不相关的独立分镜。
 $_cameraMovementGuide
+$_professionalCameraPlanningGuide
+${_playbackSpeedRule(allowSlowMotion)}
 $directorContext
 $_narrativeStyleExecutionGuide
+
+多帧连续动作契约（最高优先级）：
+1. 全部图片默认是同一物理镜头内按时间排序的阶段抽帧，不是各自独立的分镜或新镜头首帧；除非剧情描述明确要求不同景别切换/切镜，才能判定为多镜头。
+2. 逐帧建立同一条动作状态链：前一帧结束姿态就是后一帧动作起点；保持运动方向、重心转移、肢体相位、视线、表情发展、道具接触和空间位置连续。
+3. 禁止每帧重新开始同一动作、倒退到早期姿态、重复抬腿/伸手/转头，或用“切换到下一张构图”掩盖不连续；caption/detail/body_action/movement_trend/action_stage 必须体现不可逆的阶段推进。
+4. designed_camera_movement 必须是一条跨越全部阶段帧的连续路径，摄影机跟随主体趋势并自然抵达尾帧构图；不得按 Picture/帧编号重启运镜。
+5. 若景别或主体尺度变化可由主体靠近/远离、摄影机连续推拉/升降/摇移解释，优先解释为镜内连续变化，不得擅自切镜。
 
 返回一个 JSON 对象，不要 Markdown，不要解释。
 frames 数组必须严格按输入图片顺序返回 $frameCount 项，每项必须包含：
@@ -1563,6 +1598,7 @@ JSON 结构：
     String creativeBrief = '',
     String storyContext = '',
     String neighboringCameraPlan = '',
+    bool allowSlowMotion = false,
   }) {
     final directorContext = _directorContext(
       creativeBrief: creativeBrief,
@@ -1577,12 +1613,17 @@ JSON 结构：
       )
       ..writeln('如果背景/场景/主体突然切换，才判定不是同一镜头，并在 evidence 说明切换证据。')
       ..writeln(_cameraMovementGuide)
+      ..writeln(_professionalCameraPlanningGuide)
+      ..writeln(_playbackSpeedRule(allowSlowMotion))
       ..writeln(directorContext)
       ..writeln(_narrativeStyleExecutionGuide)
       ..writeln(
         '先用 observed_camera_movement 忠实记录多帧证据，再用 designed_camera_movement 输出最终方案。',
       )
       ..writeln('最终方案必须服务当前镜头的叙事功能和内容类型，写清起势、路径、幅度、速度曲线与落点；大胆但可执行，不得机械复制原始运镜。')
+      ..writeln(
+        '全部阶段帧必须形成同一条不可逆动作状态链：后一帧从前一帧结束姿态继续，保持方向、肢体相位、视线、表情、道具接触和空间位置连续；不得逐帧重启或重复动作。',
+      )
       ..writeln('检查相邻镜头计划，避免连续重复固定、轻推或同方向平移。固定只能是有明确画内调度和视觉目的的主动选择。')
       ..writeln('必须特别区分：')
       ..writeln('A. 画面从腰部/下半身上移到上半身/脸部，背景基本连续，这是升降或上摇，不是推。')

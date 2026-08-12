@@ -32,6 +32,8 @@ void main() {
                   'width': 1920,
                   'height': 1080,
                   'r_frame_rate': '24/1',
+                  'duration': '12.458333',
+                  'nb_frames': '299',
                 },
                 {'codec_type': 'audio'},
               ],
@@ -63,14 +65,96 @@ void main() {
       outputDirectory: Directory('${root.path}${Platform.pathSeparator}frames'),
     );
 
-    expect(metadata.durationMs, 12500);
+    expect(metadata.durationMs, 12458);
     expect(metadata.frameRate, 24);
+    expect(metadata.frameCount, 299);
     expect(metadata.hasAudio, isTrue);
+    expect(metadata.rotationDegrees, 0);
+    expect(metadata.displayWidth, 1920);
+    expect(metadata.displayHeight, 1080);
     expect(frames.map((frame) => frame.timestampMs), [0, 1000]);
     expect(calls.first, containsAllInOrder(['-show_entries']));
+    expect(
+      calls.first[calls.first.indexOf('-show_entries') + 1],
+      contains('stream_side_data=rotation'),
+    );
     expect(calls.first, isNot(contains('-show_format')));
     expect(calls.first, isNot(contains('-show_streams')));
     expect(calls[1], containsAllInOrder(['-vf', 'fps=1/1.0', '-q:v', '2']));
+  });
+
+  test('FFprobe 会按 display matrix 旋转角计算视频实际显示尺寸', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'filmstoryboard-portrait-metadata-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final video = File('${root.path}${Platform.pathSeparator}portrait.mp4')
+      ..writeAsStringSync('video');
+    final extractor = FfmpegFrameExtractor(
+      runner: FfmpegProcessRunner(
+        run: (_, _) async => FfmpegProcessResult(
+          exitCode: 0,
+          stdout: jsonEncode({
+            'format': {'duration': '8'},
+            'streams': [
+              {
+                'codec_type': 'video',
+                'width': 1920,
+                'height': 1080,
+                'avg_frame_rate': '30/1',
+                'side_data_list': [
+                  {'side_data_type': 'Display Matrix', 'rotation': -90},
+                ],
+              },
+            ],
+          }),
+          stderr: '',
+        ),
+      ),
+    );
+
+    final metadata = await extractor.probe(video);
+
+    expect(metadata.rotationDegrees, 270);
+    expect(metadata.displayWidth, 1080);
+    expect(metadata.displayHeight, 1920);
+    expect(metadata.isPortrait, isTrue);
+    expect(metadata.displayAspectRatio, closeTo(9 / 16, 0.0001));
+  });
+
+  test('FFprobe 在没有 display matrix 时兼容 rotate 标签', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'filmstoryboard-rotate-tag-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final video = File('${root.path}${Platform.pathSeparator}portrait.mov')
+      ..writeAsStringSync('video');
+    final extractor = FfmpegFrameExtractor(
+      runner: FfmpegProcessRunner(
+        run: (_, _) async => FfmpegProcessResult(
+          exitCode: 0,
+          stdout: jsonEncode({
+            'format': {'duration': '5'},
+            'streams': [
+              {
+                'codec_type': 'video',
+                'width': 3840,
+                'height': 2160,
+                'r_frame_rate': '25/1',
+                'tags': {'rotate': '90'},
+              },
+            ],
+          }),
+          stderr: '',
+        ),
+      ),
+    );
+
+    final metadata = await extractor.probe(video);
+
+    expect(metadata.rotationDegrees, 90);
+    expect(metadata.displayWidth, 2160);
+    expect(metadata.displayHeight, 3840);
   });
 
   test('帧质量服务标记模糊、曝光异常和重复帧，不删除源帧', () {

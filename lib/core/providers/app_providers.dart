@@ -4,14 +4,25 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/settings/application/settings_controller.dart';
 import '../../features/settings/data/settings_repository.dart';
+import '../../features/settings/data/resolve_plugin_installer.dart';
 import '../../features/projects/application/project_service.dart';
+import '../../features/projects/application/project_aspect_controller.dart';
+import '../../features/projects/data/project_aspect_repository.dart';
 import '../../features/projects/data/legacy_project_migrator.dart';
 import '../../features/projects/data/project_catalog_repository.dart';
 import '../../features/projects/data/project_operations_service.dart';
 import '../../features/remote_access/application/remote_access_facade.dart';
 import '../../features/remote_access/application/remote_access_controller.dart';
+import '../../features/remote_access/application/remote_export_registry.dart';
 import '../../features/remote_access/application/remote_media_registry.dart';
+import '../../features/remote_access/application/remote_project_registry.dart';
+import '../../features/remote_access/application/remote_settings_registry.dart';
+import '../../features/remote_access/application/remote_shooting_workflow_registry.dart';
 import '../../features/remote_access/application/remote_storyboard_registry.dart';
+import '../../features/remote_access/application/remote_task_registry.dart';
+import '../../features/remote_access/application/remote_upload_registry.dart';
+import '../../features/remote_access/application/remote_video_analysis_registry.dart';
+import '../../features/remote_access/application/remote_video_generation_registry.dart';
 import '../../features/remote_access/application/remote_workspace_registry.dart';
 import '../../features/remote_access/data/remote_access_repository.dart';
 import '../../features/remote_access/domain/remote_events.dart';
@@ -46,6 +57,16 @@ final currentProjectNameProvider = Provider<String>(
   dependencies: [],
 );
 
+final projectAspectControllerProvider = Provider<ProjectAspectController>((
+  ref,
+) {
+  final controller = ProjectAspectController(
+    repository: ProjectAspectRepository(ref.watch(appDatabaseProvider)),
+  );
+  ref.onDispose(controller.dispose);
+  return controller;
+}, dependencies: [appDatabaseProvider]);
+
 final remoteChangeBusProvider = Provider<RemoteChangeBus>((ref) {
   final bus = RemoteChangeBus();
   ref.onDispose(() => unawaited(bus.close()));
@@ -58,16 +79,114 @@ final remoteWorkspaceRegistryProvider = Provider<RemoteWorkspaceRegistry>((
   return RemoteWorkspaceRegistry(ref.watch(remoteChangeBusProvider));
 }, dependencies: [remoteChangeBusProvider]);
 
+final remoteProjectRegistryProvider = Provider<RemoteProjectRegistry>((ref) {
+  return RemoteProjectRegistry(changeBus: ref.watch(remoteChangeBusProvider));
+}, dependencies: [remoteChangeBusProvider]);
+
 final remoteMediaRegistryProvider = Provider<RemoteMediaRegistry>((ref) {
   return RemoteMediaRegistry(
     workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
   );
 }, dependencies: [remoteWorkspaceRegistryProvider]);
 
+final remoteTaskRegistryProvider = Provider<RemoteTaskRegistry>((ref) {
+  return RemoteTaskRegistry(
+    workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+    changeBus: ref.watch(remoteChangeBusProvider),
+  );
+}, dependencies: [remoteWorkspaceRegistryProvider, remoteChangeBusProvider]);
+
+final remoteExportRegistryProvider = Provider<RemoteExportRegistry>(
+  (ref) {
+    final registry = RemoteExportRegistry(
+      workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+      changeBus: ref.watch(remoteChangeBusProvider),
+      taskRegistry: ref.watch(remoteTaskRegistryProvider),
+    );
+    ref.onDispose(registry.dispose);
+    return registry;
+  },
+  dependencies: [
+    remoteWorkspaceRegistryProvider,
+    remoteChangeBusProvider,
+    remoteTaskRegistryProvider,
+  ],
+);
+
+final remoteUploadRegistryProvider = Provider<RemoteUploadRegistry>((ref) {
+  return RemoteUploadRegistry(
+    workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+  );
+}, dependencies: [remoteWorkspaceRegistryProvider]);
+
+final remoteVideoAnalysisRegistryProvider =
+    Provider<RemoteVideoAnalysisRegistry>(
+      (ref) {
+        final registry = RemoteVideoAnalysisRegistry(
+          workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+          changeBus: ref.watch(remoteChangeBusProvider),
+          mediaRegistry: ref.watch(remoteMediaRegistryProvider),
+          uploadRegistry: ref.watch(remoteUploadRegistryProvider),
+          taskRegistry: ref.watch(remoteTaskRegistryProvider),
+        );
+        ref.onDispose(registry.dispose);
+        return registry;
+      },
+      dependencies: [
+        remoteWorkspaceRegistryProvider,
+        remoteChangeBusProvider,
+        remoteMediaRegistryProvider,
+        remoteUploadRegistryProvider,
+        remoteTaskRegistryProvider,
+      ],
+    );
+
+final remoteVideoGenerationRegistryProvider =
+    Provider<RemoteVideoGenerationRegistry>(
+      (ref) {
+        final registry = RemoteVideoGenerationRegistry(
+          workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+          changeBus: ref.watch(remoteChangeBusProvider),
+          mediaRegistry: ref.watch(remoteMediaRegistryProvider),
+          taskRegistry: ref.watch(remoteTaskRegistryProvider),
+        );
+        ref.onDispose(registry.dispose);
+        return registry;
+      },
+      dependencies: [
+        remoteWorkspaceRegistryProvider,
+        remoteChangeBusProvider,
+        remoteMediaRegistryProvider,
+        remoteTaskRegistryProvider,
+      ],
+    );
+
 final remoteStoryboardRegistryProvider = Provider<RemoteStoryboardRegistry>((
   ref,
 ) {
   final registry = RemoteStoryboardRegistry(
+    workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+    changeBus: ref.watch(remoteChangeBusProvider),
+  );
+  ref.onDispose(registry.dispose);
+  return registry;
+}, dependencies: [remoteWorkspaceRegistryProvider, remoteChangeBusProvider]);
+
+final remoteShootingWorkflowRegistryProvider =
+    Provider<RemoteShootingWorkflowRegistry>(
+      (ref) {
+        final registry = RemoteShootingWorkflowRegistry(
+          workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
+          changeBus: ref.watch(remoteChangeBusProvider),
+        );
+        ref.onDispose(registry.dispose);
+        return registry;
+      },
+      dependencies: [remoteWorkspaceRegistryProvider, remoteChangeBusProvider],
+    );
+
+final remoteSettingsRegistryProvider = Provider<RemoteSettingsRegistry>((ref) {
+  final registry = RemoteSettingsRegistry(
     workspaceRegistry: ref.watch(remoteWorkspaceRegistryProvider),
     changeBus: ref.watch(remoteChangeBusProvider),
   );
@@ -82,6 +201,15 @@ final remoteAccessFacadeProvider = Provider<RemoteAccessFacade>(
       changeBus: ref.watch(remoteChangeBusProvider),
       mediaRegistry: ref.watch(remoteMediaRegistryProvider),
       storyboardRegistry: ref.watch(remoteStoryboardRegistryProvider),
+      shootingWorkflowRegistry: ref.watch(
+        remoteShootingWorkflowRegistryProvider,
+      ),
+      projectRegistry: ref.watch(remoteProjectRegistryProvider),
+      taskRegistry: ref.watch(remoteTaskRegistryProvider),
+      exportRegistry: ref.watch(remoteExportRegistryProvider),
+      videoAnalysisRegistry: ref.watch(remoteVideoAnalysisRegistryProvider),
+      videoGenerationRegistry: ref.watch(remoteVideoGenerationRegistryProvider),
+      settingsRegistry: ref.watch(remoteSettingsRegistryProvider),
     );
   },
   dependencies: [
@@ -89,6 +217,13 @@ final remoteAccessFacadeProvider = Provider<RemoteAccessFacade>(
     remoteChangeBusProvider,
     remoteMediaRegistryProvider,
     remoteStoryboardRegistryProvider,
+    remoteShootingWorkflowRegistryProvider,
+    remoteProjectRegistryProvider,
+    remoteTaskRegistryProvider,
+    remoteExportRegistryProvider,
+    remoteVideoAnalysisRegistryProvider,
+    remoteVideoGenerationRegistryProvider,
+    remoteSettingsRegistryProvider,
   ],
 );
 
@@ -100,6 +235,8 @@ final remoteAccessControllerProvider = Provider<RemoteAccessController>(
       facade: ref.watch(remoteAccessFacadeProvider),
       changeBus: ref.watch(remoteChangeBusProvider),
       mediaRegistry: ref.watch(remoteMediaRegistryProvider),
+      exportRegistry: ref.watch(remoteExportRegistryProvider),
+      uploadRegistry: ref.watch(remoteUploadRegistryProvider),
     );
     ref.onDispose(controller.dispose);
     return controller;
@@ -110,6 +247,8 @@ final remoteAccessControllerProvider = Provider<RemoteAccessController>(
     remoteAccessFacadeProvider,
     remoteChangeBusProvider,
     remoteMediaRegistryProvider,
+    remoteExportRegistryProvider,
+    remoteUploadRegistryProvider,
   ],
 );
 
@@ -145,6 +284,10 @@ final settingsRepositoryProvider = Provider<SettingsRepository>((ref) {
 
 final settingsControllerProvider = Provider<SettingsController>((ref) {
   throw StateError('SettingsController 尚未初始化');
+});
+
+final resolvePluginInstallerProvider = Provider<ResolvePluginInstaller>((ref) {
+  return const ResolvePluginInstaller();
 });
 
 final updaterServiceProvider = Provider<UpdaterService>((ref) {

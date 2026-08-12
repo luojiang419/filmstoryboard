@@ -198,7 +198,7 @@ void main() {
       record?.sourceImageFingerprint,
       'sha256:${sha256.convert([4, 5, 6])}',
     );
-    expect(record?.analysisRuleVersion, 6);
+    expect(record?.analysisRuleVersion, 8);
   });
 
   test('解析分镜缺少复刻图时不回退原视频帧', () async {
@@ -361,7 +361,7 @@ void main() {
             allOf(
               contains('内容类型：品牌宣传短片'),
               contains('【MiniMax-H3 完整官方 Skill（强制执行）】'),
-              contains('【软件内置视频后端 Skill（强制读取）】'),
+              contains('【软件内置视频提示词 Skill（仅供当前后端）】'),
               contains('目标后端：MiniMax H3'),
               contains('已按当前剧情自动匹配'),
             ),

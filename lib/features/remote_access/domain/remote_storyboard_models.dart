@@ -38,6 +38,22 @@ class RemoteStoryboardItemRecord {
   final bool resourceRemoved;
 }
 
+class RemoteStoryboardAssetRecord {
+  const RemoteStoryboardAssetRecord({
+    required this.id,
+    required this.sourceName,
+    required this.indexNo,
+    required this.localPath,
+  });
+
+  final String id;
+  final String sourceName;
+  final int indexNo;
+
+  /// 仅供桌面服务注册媒体白名单，禁止直接序列化到远程响应。
+  final String localPath;
+}
+
 class RemoteStoryboardBoardRecord {
   const RemoteStoryboardBoardRecord({
     required this.id,
@@ -110,6 +126,22 @@ class RemoteStoryboardEditCommand {
   final bool clearSummary;
 }
 
+enum RemoteStoryboardLayoutAction { add, move, remove }
+
+class RemoteStoryboardLayoutCommand {
+  const RemoteStoryboardLayoutCommand({
+    required this.boardId,
+    required this.action,
+    required this.assetId,
+    this.slotIndex,
+  });
+
+  final String boardId;
+  final RemoteStoryboardLayoutAction action;
+  final String assetId;
+  final int? slotIndex;
+}
+
 enum RemoteStoryboardEditOutcome { updated, unchanged, notFound, locked }
 
 class RemoteStoryboardAnnotation {
@@ -165,9 +197,13 @@ class RemoteStoryboardSourceChange {
 abstract interface class RemoteStoryboardSource {
   List<RemoteStoryboardBoardRecord> get boards;
   List<RemoteStoryboardBoardGroupRecord> get boardGroups;
+  List<RemoteStoryboardAssetRecord> get assets;
   Stream<RemoteStoryboardSourceChange> get changes;
 
   RemoteStoryboardBoardRecord? boardById(String boardId);
 
   RemoteStoryboardEditOutcome applyEdit(RemoteStoryboardEditCommand command);
+  RemoteStoryboardEditOutcome applyLayout(
+    RemoteStoryboardLayoutCommand command,
+  );
 }

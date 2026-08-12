@@ -87,6 +87,35 @@ class LibTvCliService {
     );
   }
 
+  Future<List<LibTvModelSummary>> videoModels() async {
+    final json = await _run(const ['model', 'search', '--type', 'video']);
+    final result = <LibTvModelSummary>[];
+    final seen = <String>{};
+    for (final match in _mapsDeep(json)) {
+      final modelName = _text(match['modelName']);
+      final modelKey = _text(match['modelKey']);
+      if (modelName.isEmpty || modelKey.isEmpty || !seen.add(modelKey)) {
+        continue;
+      }
+      result.add(
+        LibTvModelSummary(
+          modelName: modelName,
+          modelKey: modelKey,
+          modality: _text(match['modality']).isEmpty
+              ? 'video'
+              : _text(match['modality']),
+        ),
+      );
+    }
+    if (result.isEmpty) {
+      throw LibTvCliException(
+        'LibTV 没有返回可用的视频模型。',
+        rawOutput: jsonEncode(json),
+      );
+    }
+    return List.unmodifiable(result);
+  }
+
   Future<LibTvModelSpec> model(String name) async {
     final json = await _run(['model', name]);
     final modelName = _text(_findValue(json, const ['modelName']));
@@ -153,6 +182,7 @@ class LibTvCliService {
     required int durationSeconds,
     bool enableSound = true,
     bool searchEnabled = true,
+    Map<String, String> parameters = const {},
     bool Function()? isCanceled,
   }) async {
     if (!File(sourceImagePath).existsSync()) {
@@ -204,6 +234,17 @@ class LibTvCliService {
     }
     final normalizedPrompt = promptWithNodeReferences(prompt, imageNodeKeys);
     final nodeName = 'FS-$suffix-视频';
+    final generationParameters = parameters.isEmpty
+        ? <String, String>{
+            'modeType': 'mixed2video',
+            'count': '1',
+            'ratio': ratio,
+            'resolution': resolution,
+            'enableSound': enableSound ? 'on' : 'off',
+            'search_enabled': searchEnabled ? '1' : '0',
+          }
+        : <String, String>{...parameters};
+    generationParameters['duration'] = '$durationSeconds';
     final process = await processStarter(executable, [
       'node',
       'create',
@@ -216,20 +257,10 @@ class LibTvCliService {
       normalizedPrompt,
       '--set',
       'model=$modelName',
-      '--set',
-      'modeType=mixed2video',
-      '--set',
-      'count=1',
-      '--set',
-      'ratio=$ratio',
-      '--set',
-      'resolution=$resolution',
-      '--set',
-      'duration=${durationSeconds.clamp(4, 15)}',
-      '--set',
-      'enableSound=${enableSound ? 'on' : 'off'}',
-      '--set',
-      'search_enabled=${searchEnabled ? '1' : '0'}',
+      for (final parameter in generationParameters.entries) ...[
+        '--set',
+        '${parameter.key}=${parameter.value}',
+      ],
       for (final nodeKey in imageNodeKeys) ...['--left', nodeKey],
       '--run',
     ], runInShell: runInShell);

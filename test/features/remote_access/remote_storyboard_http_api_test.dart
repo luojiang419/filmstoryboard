@@ -143,6 +143,14 @@ void main() {
     );
     expect(media.statusCode, HttpStatus.ok);
     expect(media.bytes, const [0, 1, 2, 3, 4, 5]);
+    final assets = await _request(
+      client,
+      base.resolve('/api/v1/storyboards/$boardId/assets'),
+      token: viewerToken,
+    );
+    expect(assets.statusCode, HttpStatus.ok);
+    expect(jsonEncode(assets.json), isNot(contains(root.path)));
+    expect(jsonEncode(assets.json), isNot(contains('localPath')));
 
     final viewerWrite = await _request(
       client,
@@ -230,12 +238,39 @@ void main() {
           as Map<String, Object?>)['resolved'],
       isTrue,
     );
+    final viewerLayout = await _request(
+      client,
+      base.resolve('/api/v1/storyboards/$boardId/layout'),
+      method: 'POST',
+      token: viewerToken,
+      body: const {
+        'expectedRevision': 4,
+        'action': 'remove',
+        'assetId': 'asset-http',
+      },
+    );
+    expect(viewerLayout.statusCode, HttpStatus.forbidden);
+    final layout = await _request(
+      client,
+      base.resolve('/api/v1/storyboards/$boardId/layout'),
+      method: 'POST',
+      token: directorToken,
+      body: const {
+        'expectedRevision': 4,
+        'action': 'remove',
+        'assetId': 'asset-http',
+      },
+    );
+    expect(layout.statusCode, HttpStatus.ok);
+    expect(layout.json['revision'], 5);
+    expect(layout.json['itemCount'], 0);
     expect(
       audit.events.map((event) => event.action),
       containsAll([
         'storyboard.update',
         'storyboard.annotation.create',
         'storyboard.annotation.update',
+        'storyboard.layout.remove',
       ]),
     );
   });

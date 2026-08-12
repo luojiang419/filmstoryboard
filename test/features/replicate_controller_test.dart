@@ -162,9 +162,9 @@ void main() {
 
     await controller.selectH3PromptStyle('brand-promo');
 
-    expect(controller.selectedH3PromptStyle.id, 'brand-promo');
-    expect(settingsController.value.h3PromptStyleId, 'brand-promo');
-    expect(settingsRepository.load().h3PromptStyleId, 'brand-promo');
+    expect(controller.selectedH3PromptStyle, H3PromptStyle.general);
+    expect(settingsController.value.h3PromptStyleId, H3PromptStyle.generalId);
+    expect(settingsRepository.load().h3PromptStyleId, H3PromptStyle.generalId);
   });
 
   test('确认页手动镜头组的 H3 提示词包含整组帧和组内全部资产', () async {
@@ -375,8 +375,19 @@ void main() {
     final changedAspectRatio = initialDescriptor.aspectRatios.contains('1:1')
         ? '1:1'
         : initialDescriptor.aspectRatios.first;
-    controller.updateGenerationDefaults(aspectRatio: changedAspectRatio);
+    final changedImageSize = ImageGenerationCatalog.resolutionsFor(
+      initialGenerationModel,
+      changedAspectRatio,
+    ).last;
+    final changedQuality = initialDescriptor.qualities.last;
+    controller.updateGenerationDefaults(
+      aspectRatio: changedAspectRatio,
+      imageSize: changedImageSize,
+      quality: changedQuality,
+    );
     expect(controller.value.run?.generationAspectRatio, changedAspectRatio);
+    expect(controller.value.run?.generationImageSize, changedImageSize);
+    expect(controller.value.run?.generationQuality, changedQuality);
     expect(controller.value.selectedScriptId, script.id);
     expect(
       controller.moveToStep(ReplicateStep.prepareAssets),
@@ -404,6 +415,8 @@ void main() {
     );
     expect(controller.value.run?.confirmedShotIds, contains(shot.id));
     expect(controller.value.run?.generationAspectRatio, changedAspectRatio);
+    expect(controller.value.run?.generationImageSize, changedImageSize);
+    expect(controller.value.run?.generationQuality, changedQuality);
 
     final secondSource = File('${root.path}/second.png');
     await secondSource.writeAsBytes([137, 80, 78, 71, 13], flush: true);
@@ -1100,6 +1113,24 @@ void main() {
       imageGenerationService: imageService,
       visionService: visionService,
     );
+    final generationModel = controller.resolvedGenerationModel;
+    final generationDescriptor = ImageGenerationCatalog.descriptorFor(
+      generationModel,
+    )!;
+    final generationAspectRatio =
+        generationDescriptor.aspectRatios.contains('1:1')
+        ? '1:1'
+        : generationDescriptor.aspectRatios.last;
+    final generationImageSize = ImageGenerationCatalog.resolutionsFor(
+      generationModel,
+      generationAspectRatio,
+    ).last;
+    final generationQuality = generationDescriptor.qualities.last;
+    controller.updateGenerationDefaults(
+      aspectRatio: generationAspectRatio,
+      imageSize: generationImageSize,
+      quality: generationQuality,
+    );
     addTearDown(() async {
       controller.dispose();
       shootingController.dispose();
@@ -1131,6 +1162,24 @@ void main() {
       ..requestGate = null;
 
     expect(imageService.requests, hasLength(2));
+    expect(
+      imageService.requests.every(
+        (request) => request.aspectRatio == generationAspectRatio,
+      ),
+      isTrue,
+    );
+    expect(
+      imageService.requests.every(
+        (request) => request.imageSize == generationImageSize,
+      ),
+      isTrue,
+    );
+    expect(
+      imageService.requests.every(
+        (request) => request.quality == generationQuality,
+      ),
+      isTrue,
+    );
     expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
     expect(imageService.requests[1].referenceImagePaths.first, frame2.path);
     expect(imageService.requests[0].referenceImagePaths, [
@@ -1570,6 +1619,13 @@ void main() {
     );
     repository.upsertPrompt(prompt);
     controller.refresh();
+    controller.selectPromptFormatForAll(ShotPromptFormat.kling);
+    expect(
+      controller.promptFormatFor(controller.value.prompts.single),
+      ShotPromptFormat.sd2,
+      reason: '缺少目标模型原生版本时不得从其他模型文本自动派生',
+    );
+    expect(controller.value.prompts.single.prompt, '初始提示词');
     controller.updatePromptText(prompt.id, '用户修改后的六字段提示词');
     expect(
       repository.listPrompts(controller.value.run!.id).single.isUserEdited,
@@ -1737,7 +1793,7 @@ void main() {
 
     final visionService = _RecordingVisionStoryboardService()
       ..completionResponses.addAll([
-        '不合格的输出',
+        _splitFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 7),
         _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 7),
       ]);
     final repository = ReplicateRepository(database);
@@ -1768,7 +1824,14 @@ void main() {
       maxConcurrent: 1,
     );
 
-    expect(succeeded, isTrue);
+    expect(
+      succeeded,
+      isTrue,
+      reason: [
+        controller.value.errorMessage,
+        for (final prompt in controller.value.prompts) prompt.errorMessage,
+      ].where((message) => message.isNotEmpty).join('；'),
+    );
     expect(visionService.analyzeCount, 0);
     expect(visionService.completionPrompts, hasLength(2));
     expect(
@@ -1782,6 +1845,11 @@ void main() {
     );
     final firstRequest = visionService.completionPrompts.first;
     expect(firstRequest, contains('先快速推近人物手中产品'));
+    expect(firstRequest, contains('当前目标镜头结构：单一连续镜头（最高优先级）'));
+    expect(firstRequest, contains('同一物理连续镜头按时间顺序抽取的第 1 个动作阶段帧'));
+    expect(firstRequest, contains('只允许一个 [Shot 1]，不得产生切镜或 [Shot 2+]'));
+    expect(firstRequest, contains('播放速度规则（最高优先级）'));
+    expect(firstRequest, contains('缓慢推近/平稳跟随/末段缓停'));
     expect(firstRequest, contains('<official_skill_file'));
     expect(firstRequest, isNot(contains('人物从画面左侧拿起白色瓶子')));
     expect(firstRequest, isNot(contains('白色瓶子进入中心特写')));
@@ -1794,6 +1862,10 @@ void main() {
     expect(firstRequest, isNot(contains('绝不能进入请求的旧构图')));
     expect(firstRequest, isNot(contains('绝不能进入请求的旧摄影备注')));
     expect(visionService.completionPrompts.last, contains('这是唯一一次格式修复'));
+    expect(
+      visionService.completionPrompts.last,
+      contains('单一连续镜头模式只允许 [Shot 1]'),
+    );
 
     final prompt = controller.value.prompts.single;
     expect(prompt.status, ProcessingStatus.completed);
@@ -1804,14 +1876,16 @@ void main() {
     expect(shootingController.value.shots.last.durationSeconds, 7);
     final raw = jsonDecode(prompt.rawResponse) as Map<String, dynamic>;
     expect(raw['h3Prompt'], startsWith('subject_definitions:'));
-    expect(raw['klingPrompt'], contains('图片1至图片2'));
-    expect(raw['sd2Prompt'], contains('参考图1至参考图2'));
+    expect(raw['klingPrompt'], isEmpty);
+    expect(raw['sd2Prompt'], isEmpty);
     expect(raw['promptSource'], 'freeCreationReferenceVision');
     expect(raw['h3PromptStyleId'], 'brand-promo');
     expect(raw['videoSkillBackend'], 'minimaxH3');
     expect(raw['videoSkillAutomaticallySelected'], isTrue);
     expect(raw['formatRepairCount'], 1);
     expect(raw['referenceImagePaths'], [firstFrame.path, secondFrame.path]);
+    expect(raw['shotStructureMode'], 'singleContinuousShot');
+    expect(raw['slowMotionAuthorized'], isFalse);
     expect(
       raw['freeCreationContextMode'],
       'referenceImagesOptionalUserDescriptionAndSkill',
@@ -1821,14 +1895,38 @@ void main() {
     expect(prompt.assetIds, isEmpty);
 
     controller.selectPromptFormat(prompt.id, ShotPromptFormat.kling);
-    expect(controller.value.prompts.single.prompt, startsWith('图片1至图片2'));
+    expect(
+      controller.value.prompts.single.prompt,
+      startsWith('subject_definitions:'),
+    );
     controller.selectPromptFormat(prompt.id, ShotPromptFormat.h3);
     expect(
       controller.value.prompts.single.prompt,
       startsWith('subject_definitions:'),
     );
     controller.selectPromptFormat(prompt.id, ShotPromptFormat.sd2);
-    expect(controller.value.prompts.single.prompt, startsWith('参考图1至参考图2'));
+    expect(
+      controller.value.prompts.single.prompt,
+      startsWith('subject_definitions:'),
+    );
+    controller.selectPromptFormatForAll(ShotPromptFormat.kling);
+    expect(
+      controller.promptFormatFor(controller.value.prompts.single),
+      ShotPromptFormat.h3,
+    );
+    expect(
+      controller.value.prompts.single.prompt,
+      startsWith('subject_definitions:'),
+    );
+    controller.selectPromptFormatForAll(ShotPromptFormat.h3);
+    expect(
+      controller.promptFormatFor(controller.value.prompts.single),
+      ShotPromptFormat.h3,
+    );
+    expect(
+      controller.value.prompts.single.prompt,
+      startsWith('subject_definitions:'),
+    );
 
     controller.updateFreeCreationStoryOverride('这段新分镜故事也不应使自由创作提示词失效。');
     workflowRepository.upsertScriptAsset(
@@ -1918,7 +2016,7 @@ void main() {
     controller.setFreeCreationEnabled(true);
 
     expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
-    expect(visionService.completionPrompts.single, contains('用户未提供文字描述'));
+    expect(visionService.completionPrompts.single, contains('用户未提供描述'));
     expect(controller.value.prompts.single.prompt, contains('5秒视频'));
 
     await settingsController.saveVideoGenerationApiConfig(
@@ -1932,10 +2030,16 @@ void main() {
     );
     expect(
       controller.promptFormatFor(controller.value.prompts.single),
-      ShotPromptFormat.sd2,
+      ShotPromptFormat.kling,
+      reason: '切换模型时不得把既有可灵提示词冒充成即梦版本',
     );
-    expect(controller.value.prompts.single.prompt, contains('参考图1'));
-    expect(shootingController.value.shots.single.prompt, contains('参考图1'));
+    expect(controller.value.prompts.single.prompt, contains('图片1'));
+    expect(shootingController.value.shots.single.prompt, contains('图片1'));
+    expect(
+      controller.value.run!.composePromptsStatus,
+      ProcessingStatus.pending,
+      reason: '目标模型缺少原生提示词时必须要求重新构建',
+    );
 
     controller.updatePromptText(
       controller.value.prompts.single.id,
@@ -1955,7 +2059,177 @@ void main() {
 
     expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
     expect(controller.value.prompts.single.prompt, contains('6秒视频'));
+    expect(controller.value.prompts.single.prompt, contains('@图片 1'));
+    expect(
+      controller.promptFormatFor(controller.value.prompts.single),
+      ShotPromptFormat.sd2,
+    );
     expect(controller.value.prompts.single.prompt, isNot(contains('上一次手工内容')));
+  });
+
+  test('自由创作局部解析只重建当前组并在复刻完整后整组切换图源', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'free-creation-single-group-rebuild-',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '局部解析图源切换');
+    final originalFrames = <File>[];
+    final replicaFrames = <File>[];
+    for (var index = 1; index <= 3; index++) {
+      originalFrames.add(
+        await File(
+          p.join(root.path, 'original-$index.png'),
+        ).writeAsBytes([137, 80, 78, 71, index]),
+      );
+      replicaFrames.add(
+        await File(
+          p.join(root.path, 'replica-$index.png'),
+        ).writeAsBytes([137, 80, 78, 71, index + 10]),
+      );
+    }
+    final shots = [
+      for (var index = 0; index < 3; index++) shootingController.addShot()!,
+    ];
+    for (var index = 0; index < shots.length; index++) {
+      shootingController.updateShot(
+        shots[index].copyWith(
+          framePath: originalFrames[index].path,
+          freeCreationDescription: '镜头 ${index + 1}',
+        ),
+      );
+    }
+    expect(
+      shootingController.setContinuousShotRange(
+        startShotId: shots[0].id,
+        endShotId: shots[1].id,
+      ),
+      isTrue,
+    );
+
+    final visionService = _RecordingVisionStoryboardService()
+      ..completionResponses.addAll([
+        _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 5),
+        _validFreeCreationH3Prompt(pictureCount: 1, durationSeconds: 4),
+        _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 6),
+        _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 7),
+      ]);
+    final repository = ReplicateRepository(database);
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      visionService: visionService,
+      enforceFreeCreationMode: true,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    expect(await controller.buildFreeCreationPrompts(maxConcurrent: 1), isTrue);
+    expect(visionService.completionImagePaths, [
+      [originalFrames[0].path, originalFrames[1].path],
+      [originalFrames[2].path],
+    ]);
+    final untouchedPrompt = controller.value.prompts.firstWhere(
+      (prompt) => prompt.scriptShotId == shots[2].id,
+    );
+    final now = DateTime.now().toUtc();
+    repository.upsertReplicatedShotImage(
+      ReplicatedShotImage(
+        id: 'replica-${shots[0].id}',
+        runId: controller.value.run!.id,
+        scriptShotId: shots[0].id,
+        shotNumber: shots[0].shotNumber,
+        originalFramePath: originalFrames[0].path,
+        generatedFramePath: replicaFrames[0].path,
+        assetIds: const [],
+        prompt: '',
+        model: 'test',
+        rawResponse: '',
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    controller.refresh();
+
+    expect(
+      await controller.buildFreeCreationPrompts(
+        maxConcurrent: 1,
+        onlyShotIds: {shots[0].id},
+        overwriteUserEdited: true,
+      ),
+      isTrue,
+    );
+    expect(visionService.completionImagePaths.last, [
+      originalFrames[0].path,
+      originalFrames[1].path,
+    ], reason: '同一镜头组的复刻图不完整时不得混用复刻图和原视频帧');
+    expect(
+      controller.value.prompts
+          .firstWhere((prompt) => prompt.scriptShotId == shots[2].id)
+          .updatedAt,
+      untouchedPrompt.updatedAt,
+      reason: '局部解析不能重建其他镜头组',
+    );
+
+    repository.upsertReplicatedShotImage(
+      ReplicatedShotImage(
+        id: 'replica-${shots[1].id}',
+        runId: controller.value.run!.id,
+        scriptShotId: shots[1].id,
+        shotNumber: shots[1].shotNumber,
+        originalFramePath: originalFrames[1].path,
+        generatedFramePath: replicaFrames[1].path,
+        assetIds: const [],
+        prompt: '',
+        model: 'test',
+        rawResponse: '',
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    controller.refresh();
+
+    expect(
+      await controller.buildFreeCreationPrompts(
+        maxConcurrent: 1,
+        onlyShotIds: {shots[0].id},
+        overwriteUserEdited: true,
+      ),
+      isTrue,
+    );
+    expect(visionService.completionImagePaths.last, [
+      replicaFrames[0].path,
+      replicaFrames[1].path,
+    ]);
+    final rebuiltPrompt = controller.value.prompts.firstWhere(
+      (prompt) => prompt.scriptShotId == shots[0].id,
+    );
+    expect(rebuiltPrompt.prompt, contains('7秒视频'));
+    expect(shootingController.value.shots.first.prompt, rebuiltPrompt.prompt);
+    final raw = jsonDecode(rebuiltPrompt.rawResponse) as Map<String, dynamic>;
+    expect(raw['referenceImagePaths'], [
+      replicaFrames[0].path,
+      replicaFrames[1].path,
+    ]);
   });
 
   test('自由创作镜头范围变化后不复用首次构建的手改提示词', () async {
@@ -2056,6 +2330,53 @@ void main() {
     expect(rebuiltFirst.prompt, isNot(contains('旧范围用户手改内容')));
     final raw = jsonDecode(rebuiltFirst.rawResponse) as Map<String, dynamic>;
     expect(raw['referenceImageCount'], 2);
+    expect(raw['shotStructureMode'], 'singleContinuousShot');
+    final singleReferencePrompt = controller.value.prompts.firstWhere(
+      (prompt) => prompt.scriptShotId == shots[2].id,
+    );
+    expect(
+      (jsonDecode(singleReferencePrompt.rawResponse)
+          as Map<String, dynamic>)['shotStructureMode'],
+      'singleReference',
+    );
+
+    visionService.completionResponses.add(
+      _validFreeCreationH3Prompt(pictureCount: 2, durationSeconds: 8),
+    );
+    shootingController.updateShot(
+      shootingController.value.shots.first.copyWith(
+        freeCreationDescription: '第一个镜头低角度跟随攀爬，随后硬切到第二个镜头的脚部近景。',
+      ),
+    );
+    controller.refresh();
+    expect(
+      await controller.buildFreeCreationPrompts(
+        maxConcurrent: 1,
+        onlyShotIds: {shots.first.id},
+        overwriteUserEdited: true,
+      ),
+      isTrue,
+    );
+    expect(
+      visionService.completionPrompts.last,
+      contains('用户明确要求多镜头；按用户文字组织镜头'),
+    );
+    expect(
+      visionService.completionPrompts.last,
+      isNot(contains('当前目标镜头结构：单一连续镜头（最高优先级）')),
+    );
+    final explicitMultiPrompt = controller.value.prompts.firstWhere(
+      (prompt) => prompt.scriptShotId == shots.first.id,
+    );
+    expect(
+      (jsonDecode(explicitMultiPrompt.rawResponse)
+          as Map<String, dynamic>)['shotStructureMode'],
+      'explicitMultiShot',
+    );
+    final explicitRaw =
+        jsonDecode(explicitMultiPrompt.rawResponse) as Map<String, dynamic>;
+    expect(explicitRaw['klingPrompt'], contains('8秒视频'));
+    expect(explicitRaw['h3Prompt'], isEmpty);
   });
 
   test('不同拍摄脚本可并行构建且切换后恢复各自运行态', () async {
@@ -2327,6 +2648,38 @@ non_diegetic_music:
 N/A''';
 }
 
+String _splitFreeCreationH3Prompt({
+  required int pictureCount,
+  required int durationSeconds,
+}) {
+  final definitions = [
+    for (var index = 1; index <= pictureCount; index++)
+      '<Picture $index> 是连续动作的第 $index 张参考图。',
+  ].join('\n');
+  final retention = [
+    for (var index = 1; index <= pictureCount; index++)
+      '<Picture $index> ([Shot $index] 首帧): fully_preserved - 保留该图的主体、构图和动作阶段。',
+  ].join('\n');
+  return '''subject_definitions:
+$definitions
+
+summary:
+[参考生成] $durationSeconds秒视频，人物完成连续动作。
+
+retention_analysis:
+$retention
+
+detailed_description:
+[Shot 1] 人物从 <Picture 1> 的姿态开始动作。
+[Shot 2] 在 00:03.500，镜头切换到 <Picture 2> 的构图并继续动作。
+
+overall_soundscape:
+自然环境底噪与人物动作声保持同步。
+
+non_diegetic_music:
+N/A''';
+}
+
 int _occurrences(String text, String pattern) =>
     RegExp(RegExp.escape(pattern)).allMatches(text).length;
 
@@ -2407,9 +2760,26 @@ class _RecordingVisionStoryboardService extends VisionStoryboardService {
       }
       final gate = completionGate;
       if (gate != null) await gate;
-      return completionResponses.isEmpty
+      final response = completionResponses.isEmpty
           ? resolvedPrompt
           : completionResponses.removeAt(0);
+      if (response.trimLeft().startsWith('subject_definitions:')) {
+        final duration =
+            RegExp(r'(\d+)\s*秒视频').firstMatch(response)?.group(1) ?? '6';
+        if (prompt.trimLeft().startsWith('你正在为可灵图生视频编写')) {
+          final range = imageFiles.length <= 1
+              ? '图片1作为起始画面参考'
+              : '图片1至图片${imageFiles.length}作为同一连续镜头的顺序动作参考';
+          return '$duration秒视频。$range。保持图片中的主体、场景和外观一致，主体按正常速度连续完成用户指定动作，平稳跟随镜头，无切镜。';
+        }
+        if (prompt.trimLeft().startsWith('你正在为即梦 / Seedance 2.0')) {
+          final range = imageFiles.length <= 1
+              ? '@图片 1 作为起始画面参考'
+              : '@图片 1 至 @图片 ${imageFiles.length} 作为同一连续镜头的顺序动作参考';
+          return '$duration秒视频。$range。保持参考图中的主体、场景和外观一致，主体按正常速度连续完成用户指定动作，中景平稳跟随，无切镜，保留自然环境声。';
+        }
+      }
+      return response;
     } finally {
       activeCompletions--;
     }

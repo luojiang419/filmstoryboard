@@ -14,7 +14,9 @@ import '../domain/remote_events.dart';
 import '../server/embedded_web_server.dart';
 import 'remote_access_facade.dart';
 import 'remote_auth_service.dart';
+import 'remote_export_registry.dart';
 import 'remote_media_registry.dart';
+import 'remote_upload_registry.dart';
 
 class RemoteAccessController extends ChangeNotifier {
   RemoteAccessController({
@@ -23,12 +25,16 @@ class RemoteAccessController extends ChangeNotifier {
     required RemoteAccessFacade facade,
     required RemoteChangeBus changeBus,
     required RemoteMediaRegistry mediaRegistry,
+    RemoteExportRegistry? exportRegistry,
+    RemoteUploadRegistry? uploadRegistry,
     Directory? webRootOverride,
   }) : _repository = repository,
        _directories = directories,
        _facade = facade,
        _changeBus = changeBus,
        _mediaRegistry = mediaRegistry,
+       _exportRegistry = exportRegistry,
+       _uploadRegistry = uploadRegistry,
        _webRootOverride = webRootOverride,
        _config = repository.load();
 
@@ -37,6 +43,8 @@ class RemoteAccessController extends ChangeNotifier {
   final RemoteAccessFacade _facade;
   final RemoteChangeBus _changeBus;
   final RemoteMediaRegistry _mediaRegistry;
+  final RemoteExportRegistry? _exportRegistry;
+  final RemoteUploadRegistry? _uploadRegistry;
   final Directory? _webRootOverride;
 
   RemoteAccessConfig _config;
@@ -126,15 +134,24 @@ class RemoteAccessController extends ChangeNotifier {
         facade: _facade,
         changeBus: _changeBus,
         mediaRegistry: _mediaRegistry,
+        exportRegistry: _exportRegistry,
+        uploadRegistry: _uploadRegistry,
         auditLogger: JsonLineRemoteAuditLogger(
           File(p.join(_directories.logs.path, 'remote_access_audit.jsonl')),
         ),
         webRoot: webRoot,
-        capabilitiesProvider: () => const {
+        capabilitiesProvider: () => {
+          'projects': true,
           'workspace': true,
           'storyboards': true,
           'shootingScripts': true,
-          'videoGeneration': false,
+          'shootingWorkflow': true,
+          'videoGeneration': true,
+          'videoAnalysis': true,
+          'videoUploads': true,
+          'tasks': true,
+          'exports': _exportRegistry != null,
+          'settings': true,
           'mediaStreaming': true,
         },
       );

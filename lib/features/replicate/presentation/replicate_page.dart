@@ -13,6 +13,8 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../story_design/application/story_design_controller.dart';
+import '../../storyboard/data/image_generation_service.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/application/script_analysis_controller.dart';
@@ -862,21 +864,21 @@ class _StepBar extends StatelessWidget {
             children: [
               _StepCard(
                 number: 1,
-                title: '确认镜头',
-                summary: '${state.shots.length}个镜头已就绪',
-                status: run.confirmShotsStatus,
-                selected: run.currentStep == ReplicateStep.confirmShots,
-                onTap: () => controller.moveToStep(ReplicateStep.confirmShots),
-              ),
-              const _StepConnector(),
-              _StepCard(
-                number: 2,
                 title: '准备资产',
                 summary:
                     '$readyAssets/${state.assets.length} 已生成、还差${state.assets.length - readyAssets}个',
                 status: run.prepareAssetsStatus,
                 selected: run.currentStep == ReplicateStep.prepareAssets,
                 onTap: () => controller.moveToStep(ReplicateStep.prepareAssets),
+              ),
+              const _StepConnector(),
+              _StepCard(
+                number: 2,
+                title: '确认镜头',
+                summary: '${state.shots.length}个镜头已就绪',
+                status: run.confirmShotsStatus,
+                selected: run.currentStep == ReplicateStep.confirmShots,
+                onTap: () => controller.moveToStep(ReplicateStep.confirmShots),
               ),
               const _StepConnector(),
               _StepCard(
@@ -1030,7 +1032,7 @@ class _BuildCameraStyleSelector extends StatelessWidget {
       isExpanded: true,
       isDense: true,
       decoration: const InputDecoration(
-        labelText: 'H3 Skill 路由偏好',
+        labelText: '本地 H3 Skill 路由偏好',
         prefixIcon: Icon(Icons.movie_filter_outlined),
         border: OutlineInputBorder(),
       ),
@@ -1135,6 +1137,16 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
             controller: widget.controller,
             showPrompt: _showBuiltScript && widget.state.prompts.isNotEmpty,
             shotNavigationController: widget.shotNavigationController,
+            onAnalyze: (group) async {
+              final succeeded = await widget.controller
+                  .buildFreeCreationPrompts(
+                    onlyShotIds: {group.shots.first.id},
+                    overwriteUserEdited: true,
+                  );
+              if (succeeded && mounted) {
+                setState(() => _showBuiltScript = true);
+              }
+            },
             onOpenFrame: (group, showOriginal) => _showScriptFrameGallery(
               context,
               group.shots,
@@ -1182,25 +1194,28 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
       child: Column(
         children: [
           _StepToolbar(
-            title: '步骤 1 · 确认镜头',
+            title: '步骤 2 · 确认镜头',
             subtitle: freeCreationEnabled
                 ? _showBuiltScript && widget.state.prompts.isNotEmpty
-                      ? '自由创作已生成 ${builtShots.length} 个 H3 Ref2VA 提示词，可直接编辑保存。'
+                      ? '自由创作已按${widget.controller.composePromptModelLabel}独立规则生成 ${builtShots.length} 个提示词，可直接编辑保存。'
                       : '设置镜头范围后可按需填写剧情描述；留空时将自动分析参考图并生成最合适的提示词。'
                 : _showBuiltScript
-                ? widget.controller.selectedH3PromptStyle.isGeneral
-                      ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 检查。'
-                      : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 检查。'
+                ? !widget.controller.showsH3SkillRoutingPreference
+                      ? '已按${widget.controller.composePromptModelLabel}独立规则构建 ${builtShots.length} 个镜头组；可前往步骤 3 生成视频。'
+                      : widget.controller.selectedH3PromptStyle.isGeneral
+                      ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
+                      : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
                 : '先手动设置每个镜头的首帧和结束帧范围；范围内全部图片按顺序合并为一次多图视觉请求，未设置范围的帧各自独立。构建进度 ${analysis.completedCount}/${analysis.totalCount}。',
             actions: [
-              _BuildCameraStyleSelector(
-                selectedStyle: widget.controller.selectedH3PromptStyle,
-                enabled: !analysis.isBusy && !widget.state.isBusy,
-                onChanged: (styleId) async {
-                  await widget.controller.selectH3PromptStyle(styleId);
-                  if (mounted) setState(() => _showBuiltScript = false);
-                },
-              ),
+              if (widget.controller.showsH3SkillRoutingPreference)
+                _BuildCameraStyleSelector(
+                  selectedStyle: widget.controller.selectedH3PromptStyle,
+                  enabled: !analysis.isBusy && !widget.state.isBusy,
+                  onChanged: (styleId) async {
+                    await widget.controller.selectH3PromptStyle(styleId);
+                    if (mounted) setState(() => _showBuiltScript = false);
+                  },
+                ),
               FilledButton.icon(
                 key: const ValueKey('script-build-continuous-shots'),
                 onPressed:
@@ -1278,11 +1293,11 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
                   label: const Text('取消构建'),
                 ),
               FilledButton.icon(
-                key: const ValueKey('replicate-new-next-assets'),
+                key: const ValueKey('replicate-new-next-videos'),
                 onPressed: widget.state.shots.isEmpty
                     ? null
                     : () => widget.controller.moveToStep(
-                        ReplicateStep.prepareAssets,
+                        ReplicateStep.generateVideos,
                       ),
                 icon: const Icon(Icons.arrow_forward_rounded),
                 label: const Text('下一步'),
@@ -2117,7 +2132,7 @@ class _BuiltFrameThumbnail extends StatelessWidget {
           ColoredBox(
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
             child: exists
-                ? Image.file(File(path), fit: BoxFit.cover)
+                ? Image.file(File(path), fit: BoxFit.contain)
                 : Icon(
                     Icons.image_not_supported_outlined,
                     size: 18,
@@ -2395,7 +2410,7 @@ class _ComposePromptStatusPanel extends StatelessWidget {
                     state.confirmedShots,
                   ).length,
                 ),
-                if (controller.usesOfficialH3PromptWriting) ...[
+                if (controller.showsH3SkillRoutingPreference) ...[
                   const SizedBox(height: 12),
                   _H3PromptStyleSelector(
                     selectedStyle: controller.selectedH3PromptStyle,
@@ -2614,8 +2629,8 @@ class _H3PromptStyleSelector extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               selectedStyle.isGeneral
-                  ? '仅当设置页选中 MiniMax H3 时，系统才会按每个镜头的剧情描述自动加载至多一个中文专项 Skill；未命中时只使用通用 H3。可灵和 LibTV 不会叠加 H3 Skill。'
-                  : '这是 MiniMax H3 的手动覆盖项：构建时固定读取该中文专项 Skill，不再按剧情自动判断。设置页选中可灵或 LibTV 时不会注入此 H3 Skill。',
+                  ? '仅当设置页选中本地 MiniMax H3 时，系统才会按每个镜头的剧情描述自动加载至多一个中文专项 Skill；未命中时只使用通用 H3。其他视频模型不会显示或执行此路由。'
+                  : '这是本地 MiniMax H3 的手动覆盖项：构建时固定读取该中文专项 Skill，不再按剧情自动判断；其他视频模型不会显示或执行此路由。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.tertiary,
               ),
@@ -2881,7 +2896,7 @@ class _ComposeGroupFrameThumbnail extends StatelessWidget {
             child: hasFile
                 ? Image.file(
                     File(path),
-                    fit: BoxFit.cover,
+                    fit: BoxFit.contain,
                     errorBuilder: (_, _, _) =>
                         Center(child: Text('$emptyLabel加载失败')),
                   )
@@ -3033,6 +3048,7 @@ class _FreeCreationShotTable extends StatefulWidget {
     required this.controller,
     required this.showPrompt,
     required this.shotNavigationController,
+    required this.onAnalyze,
     required this.onOpenFrame,
   });
 
@@ -3040,6 +3056,7 @@ class _FreeCreationShotTable extends StatefulWidget {
   final ReplicateController controller;
   final bool showPrompt;
   final ReplicateShotNavigationController shotNavigationController;
+  final Future<void> Function(ScriptShotGroup group) onAnalyze;
   final void Function(ScriptShotGroup group, bool showOriginal) onOpenFrame;
 
   @override
@@ -3047,6 +3064,7 @@ class _FreeCreationShotTable extends StatefulWidget {
 }
 
 class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
+  static const _shotNumberWidth = 84.0;
   static const _originalWidth = 250.0;
   static const _replicaWidth = 250.0;
   static const _descriptionWidth = 430.0;
@@ -3116,6 +3134,7 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
         if (prompt.scriptShotId != null) prompt.scriptShotId!: prompt,
     };
     final totalWidth =
+        _shotNumberWidth +
         _originalWidth +
         _replicaWidth +
         _descriptionWidth +
@@ -3135,6 +3154,10 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
               key: const ValueKey('free-creation-table-header'),
               children: [
                 const _FreeCreationHeaderCell(
+                  label: '镜号',
+                  width: _shotNumberWidth,
+                ),
+                const _FreeCreationHeaderCell(
                   label: '原视频帧范围',
                   width: _originalWidth,
                 ),
@@ -3147,9 +3170,10 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
                   width: _descriptionWidth,
                 ),
                 if (widget.showPrompt)
-                  const _FreeCreationHeaderCell(
-                    label: '提示词',
+                  _FreeCreationPromptHeaderCell(
                     width: _promptWidth,
+                    prompts: widget.state.prompts,
+                    controller: widget.controller,
                   ),
                 const _FreeCreationHeaderCell(
                   label: '功能菜单',
@@ -3180,6 +3204,7 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
                             replicatedByShotId: replicatedByShotId,
                             prompt: promptByShotId[head.id],
                             showPrompt: widget.showPrompt,
+                            shotNumberWidth: _shotNumberWidth,
                             originalWidth: _originalWidth,
                             replicaWidth: _replicaWidth,
                             descriptionWidth: _descriptionWidth,
@@ -3187,6 +3212,7 @@ class _FreeCreationShotTableState extends State<_FreeCreationShotTable> {
                             actionWidth: _actionWidth,
                             actionsEnabled: !widget.state.isBusy,
                             onOpenFrame: widget.onOpenFrame,
+                            onAnalyze: () => widget.onAnalyze(group),
                             onRemove: () => _confirmRemoveGroup(group),
                           );
                         },
@@ -3272,6 +3298,76 @@ class _FreeCreationHeaderCell extends StatelessWidget {
   );
 }
 
+class _FreeCreationPromptHeaderCell extends StatelessWidget {
+  const _FreeCreationPromptHeaderCell({
+    required this.width,
+    required this.prompts,
+    required this.controller,
+  });
+
+  final double width;
+  final List<ShotPrompt> prompts;
+  final ReplicateController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final format = controller.promptFormatFor(prompts.first);
+    final theme = Theme.of(context);
+    return SizedBox(
+      width: width,
+      height: 44,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          border: Border(
+            right: BorderSide(color: theme.colorScheme.outlineVariant),
+            bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                '提示词',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 16),
+              SizedBox(
+                key: const ValueKey('free-creation-prompt-format-selector'),
+                width: 260,
+                height: 36,
+                child: SegmentedButton<ShotPromptFormat>(
+                  segments: const [
+                    ButtonSegment(
+                      value: ShotPromptFormat.kling,
+                      label: Text('可灵'),
+                    ),
+                    ButtonSegment(
+                      value: ShotPromptFormat.h3,
+                      label: Text('H3'),
+                    ),
+                    ButtonSegment(
+                      value: ShotPromptFormat.sd2,
+                      label: Text('即梦'),
+                    ),
+                  ],
+                  selected: {format},
+                  onSelectionChanged: (selection) =>
+                      controller.selectPromptFormatForAll(selection.first),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _FreeCreationShotRow extends StatelessWidget {
   const _FreeCreationShotRow({
     super.key,
@@ -3282,6 +3378,7 @@ class _FreeCreationShotRow extends StatelessWidget {
     required this.replicatedByShotId,
     required this.prompt,
     required this.showPrompt,
+    required this.shotNumberWidth,
     required this.originalWidth,
     required this.replicaWidth,
     required this.descriptionWidth,
@@ -3289,6 +3386,7 @@ class _FreeCreationShotRow extends StatelessWidget {
     required this.actionWidth,
     required this.actionsEnabled,
     required this.onOpenFrame,
+    required this.onAnalyze,
     required this.onRemove,
   });
 
@@ -3299,6 +3397,7 @@ class _FreeCreationShotRow extends StatelessWidget {
   final Map<String, ReplicatedShotImage> replicatedByShotId;
   final ShotPrompt? prompt;
   final bool showPrompt;
+  final double shotNumberWidth;
   final double originalWidth;
   final double replicaWidth;
   final double descriptionWidth;
@@ -3306,6 +3405,7 @@ class _FreeCreationShotRow extends StatelessWidget {
   final double actionWidth;
   final bool actionsEnabled;
   final void Function(ScriptShotGroup group, bool showOriginal) onOpenFrame;
+  final Future<void> Function() onAnalyze;
   final VoidCallback onRemove;
 
   @override
@@ -3314,6 +3414,17 @@ class _FreeCreationShotRow extends StatelessWidget {
       height: _NewShotTable.rowHeight,
       child: Row(
         children: [
+          _NewShotNumberCell(
+            group: group,
+            sequenceNumber: index + 1,
+            shot: head,
+            confirmed: false,
+            enabled: false,
+            width: shotNumberWidth,
+            controller: controller,
+            contextMenuItems: () => _manualGroupMenuItems(context),
+            onContextMenuSelected: _handleManualGroupAction,
+          ),
           _ShotFrameRangeOrSingleCell(
             group: group,
             shot: head,
@@ -3354,6 +3465,8 @@ class _FreeCreationShotRow extends StatelessWidget {
             shotId: head.id,
             width: actionWidth,
             enabled: actionsEnabled,
+            isGroup: group.shots.length > 1,
+            onAnalyze: onAnalyze,
             onRemove: onRemove,
           ),
         ],
@@ -3409,6 +3522,8 @@ class _FreeCreationActionCell extends StatelessWidget {
     required this.shotId,
     required this.width,
     required this.enabled,
+    required this.isGroup,
+    required this.onAnalyze,
     required this.onRemove,
   });
 
@@ -3416,6 +3531,8 @@ class _FreeCreationActionCell extends StatelessWidget {
   final String shotId;
   final double width;
   final bool enabled;
+  final bool isGroup;
+  final Future<void> Function() onAnalyze;
   final VoidCallback onRemove;
 
   @override
@@ -3434,9 +3551,16 @@ class _FreeCreationActionCell extends StatelessWidget {
             ),
           ),
         ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          runAlignment: WrapAlignment.center,
           children: [
+            IconButton(
+              key: ValueKey('free-creation-analyze-$shotId'),
+              tooltip: isGroup ? '解析当前镜头组' : '解析当前镜头',
+              onPressed: enabled ? () => onAnalyze() : null,
+              icon: const Icon(Icons.manage_search_rounded),
+            ),
             ReorderableDragStartListener(
               index: index,
               enabled: enabled,
@@ -3735,134 +3859,84 @@ class _FreeCreationPromptCellState extends State<_FreeCreationPromptCell> {
             ? const Center(child: Text('待构建'))
             : Padding(
                 padding: const EdgeInsets.fromLTRB(7, 4, 5, 4),
-                child: Column(
+                child: Row(
                   children: [
-                    SizedBox(
-                      height: 36,
-                      child: SegmentedButton<ShotPromptFormat>(
-                        key: ValueKey(
-                          'free-creation-prompt-format-${prompt.id}',
+                    Expanded(
+                      child: TextField(
+                        key: ValueKey('free-creation-prompt-${prompt.id}'),
+                        controller: _textController,
+                        focusNode: _focusNode,
+                        minLines: 3,
+                        maxLines: 4,
+                        decoration: InputDecoration(
+                          isDense: true,
+                          border: const OutlineInputBorder(),
+                          labelText: prompt.isUserEdited
+                              ? '已手动修改'
+                              : prompt.status == ProcessingStatus.failed
+                              ? '生成失败'
+                              : _promptFormatLabel(
+                                  widget.controller.promptFormatFor(prompt),
+                                ),
+                          errorText: prompt.status == ProcessingStatus.failed
+                              ? prompt.errorMessage
+                              : null,
                         ),
-                        segments: const [
-                          ButtonSegment(
-                            value: ShotPromptFormat.kling,
-                            label: Text('可灵'),
-                          ),
-                          ButtonSegment(
-                            value: ShotPromptFormat.h3,
-                            label: Text('H3'),
-                          ),
-                          ButtonSegment(
-                            value: ShotPromptFormat.sd2,
-                            label: Text('即梦'),
-                          ),
-                        ],
-                        selected: {widget.controller.promptFormatFor(prompt)},
-                        onSelectionChanged: (selection) => widget.controller
-                            .selectPromptFormat(prompt.id, selection.first),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Expanded(
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              key: ValueKey(
-                                'free-creation-prompt-${prompt.id}',
+                    const SizedBox(width: 4),
+                    SizedBox(
+                      width: 36,
+                      height: 92,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: '保存提示词',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 32,
+                                height: 32,
                               ),
-                              controller: _textController,
-                              focusNode: _focusNode,
-                              minLines: 2,
-                              maxLines: 3,
-                              decoration: InputDecoration(
-                                isDense: true,
-                                border: const OutlineInputBorder(),
-                                labelText: prompt.isUserEdited
-                                    ? '已手动修改'
-                                    : prompt.status == ProcessingStatus.failed
-                                    ? '生成失败'
-                                    : _promptFormatLabel(
-                                        widget.controller.promptFormatFor(
-                                          prompt,
-                                        ),
-                                      ),
-                                errorText:
-                                    prompt.status == ProcessingStatus.failed
-                                    ? prompt.errorMessage
-                                    : null,
-                              ),
+                              onPressed: _textController.text.trim().isEmpty
+                                  ? null
+                                  : () => widget.controller.updatePromptText(
+                                      prompt.id,
+                                      _textController.text,
+                                    ),
+                              icon: const Icon(Icons.save_rounded, size: 18),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          SizedBox(
-                            width: 36,
-                            height: 92,
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    tooltip: '保存提示词',
-                                    visualDensity: VisualDensity.compact,
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 32,
-                                      height: 32,
-                                    ),
-                                    onPressed:
-                                        _textController.text.trim().isEmpty
-                                        ? null
-                                        : () => widget.controller
-                                              .updatePromptText(
-                                                prompt.id,
-                                                _textController.text,
-                                              ),
-                                    icon: const Icon(
-                                      Icons.save_rounded,
-                                      size: 18,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip: '复制提示词',
-                                    visualDensity: VisualDensity.compact,
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 32,
-                                      height: 32,
-                                    ),
-                                    onPressed: () => Clipboard.setData(
-                                      ClipboardData(text: _textController.text),
-                                    ),
-                                    icon: const Icon(
-                                      Icons.copy_rounded,
-                                      size: 18,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip:
-                                        prompt.status == ProcessingStatus.failed
-                                        ? '重试生成'
-                                        : '单镜头重新生成',
-                                    visualDensity: VisualDensity.compact,
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints.tightFor(
-                                      width: 32,
-                                      height: 32,
-                                    ),
-                                    onPressed: () =>
-                                        _regenerate(context, prompt),
-                                    icon: const Icon(
-                                      Icons.refresh_rounded,
-                                      size: 18,
-                                    ),
-                                  ),
-                                ],
+                            IconButton(
+                              tooltip: '复制提示词',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 32,
+                                height: 32,
                               ),
+                              onPressed: () => Clipboard.setData(
+                                ClipboardData(text: _textController.text),
+                              ),
+                              icon: const Icon(Icons.copy_rounded, size: 18),
                             ),
-                          ),
-                        ],
+                            IconButton(
+                              tooltip: prompt.status == ProcessingStatus.failed
+                                  ? '重试生成'
+                                  : '单镜头重新生成',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 32,
+                                height: 32,
+                              ),
+                              onPressed: () => _regenerate(context, prompt),
+                              icon: const Icon(Icons.refresh_rounded, size: 18),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
@@ -4980,7 +5054,7 @@ class _ShotFrameThumbnail extends StatelessWidget {
                   child: exists
                       ? Image.file(
                           File(path),
-                          fit: BoxFit.cover,
+                          fit: BoxFit.contain,
                           errorBuilder: (_, _, _) => Icon(emptyIcon, size: 20),
                         )
                       : Icon(
@@ -5306,7 +5380,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
       child: Column(
         children: [
           _StepToolbar(
-            title: '步骤 2 · 匹配资产图',
+            title: '步骤 1 · 匹配资产图',
             subtitle: '按当前脚本镜头顺序匹配参考资产图，核对后可继续复刻分镜。',
             actions: [
               OutlinedButton.icon(
@@ -5320,6 +5394,21 @@ class _NewPrepareAssetsStep extends StatelessWidget {
                 label: Text(
                   assetBindingController.value.isBusy ? '匹配中…' : '自动匹配资产',
                 ),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey('replicate-generation-parameters'),
+                onPressed: state.isBusy
+                    ? null
+                    : () => showDialog<void>(
+                        context: context,
+                        builder: (context) =>
+                            _ReplicateGenerationParametersDialog(
+                              controller: controller,
+                              run: state.run!,
+                            ),
+                      ),
+                icon: const Icon(Icons.tune_rounded),
+                label: const Text('生成参数'),
               ),
               if (assetBindingController.value.isBusy)
                 OutlinedButton.icon(
@@ -5336,9 +5425,9 @@ class _NewPrepareAssetsStep extends StatelessWidget {
                 label: Text(state.isBusy ? '复刻中…' : '一键复刻'),
               ),
               FilledButton.icon(
-                key: const ValueKey('replicate-new-next-prompts'),
+                key: const ValueKey('replicate-new-next-confirm'),
                 onPressed: (canContinue || hasConfirmedBinding)
-                    ? () => controller.moveToStep(ReplicateStep.generateVideos)
+                    ? () => controller.moveToStep(ReplicateStep.confirmShots)
                     : null,
                 icon: const Icon(Icons.arrow_forward_rounded),
                 label: const Text('下一步'),
@@ -5373,6 +5462,179 @@ class _NewPrepareAssetsStep extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _ReplicateGenerationParametersDialog extends StatefulWidget {
+  const _ReplicateGenerationParametersDialog({
+    required this.controller,
+    required this.run,
+  });
+
+  final ReplicateController controller;
+  final ReplicateRun run;
+
+  @override
+  State<_ReplicateGenerationParametersDialog> createState() =>
+      _ReplicateGenerationParametersDialogState();
+}
+
+class _ReplicateGenerationParametersDialogState
+    extends State<_ReplicateGenerationParametersDialog> {
+  late final String _model;
+  late String _aspectRatio;
+  late String _imageSize;
+  late String _quality;
+
+  List<String> get _aspectRatioOptions =>
+      StoryDesignController.aspectRatioOptionsFor(_model);
+
+  List<String> get _imageSizeOptions =>
+      StoryDesignController.imageSizeOptionsFor(_model, _aspectRatio);
+
+  List<String> get _qualityOptions =>
+      StoryDesignController.qualityOptionsFor(_model);
+
+  Map<String, String>? get _imageSizeLabels =>
+      StoryDesignController.imageSizeLabelsFor(_model, _aspectRatio);
+
+  @override
+  void initState() {
+    super.initState();
+    _model = widget.controller.resolvedGenerationModel;
+    _aspectRatio = _normalizedOption(
+      widget.run.generationAspectRatio,
+      _aspectRatioOptions,
+    );
+    _imageSize = _normalizedOption(
+      widget.run.generationImageSize,
+      _imageSizeOptions,
+    );
+    _quality = _normalizedOption(widget.run.generationQuality, _qualityOptions);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final supportsQuality = StoryDesignController.supportsQuality(_model);
+    return AlertDialog(
+      key: const ValueKey('replicate-generation-parameters-dialog'),
+      title: const Text('生成参数'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '当前图片模型：${ImageGenerationModelCatalog.labelFor(_model)}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              key: const ValueKey('replicate-generation-aspect-ratio'),
+              initialValue: _aspectRatioOptions.contains(_aspectRatio)
+                  ? _aspectRatio
+                  : null,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: '比例',
+                prefixIcon: Icon(Icons.aspect_ratio_rounded),
+              ),
+              items: [
+                for (final ratio in _aspectRatioOptions)
+                  DropdownMenuItem(
+                    value: ratio,
+                    child: Text(ratio, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (ratio) {
+                if (ratio == null) return;
+                setState(() {
+                  _aspectRatio = ratio;
+                  _imageSize = _normalizedOption('', _imageSizeOptions);
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              key: ValueKey('replicate-generation-image-size-$_aspectRatio'),
+              initialValue: _imageSizeOptions.contains(_imageSize)
+                  ? _imageSize
+                  : null,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: '分辨率',
+                prefixIcon: Icon(Icons.photo_size_select_large_rounded),
+              ),
+              items: [
+                for (final size in _imageSizeOptions)
+                  DropdownMenuItem(
+                    value: size,
+                    child: Text(
+                      _imageSizeLabels?[size] ?? size,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              onChanged: (size) {
+                if (size != null) setState(() => _imageSize = size);
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              key: const ValueKey('replicate-generation-quality'),
+              initialValue: _qualityOptions.contains(_quality)
+                  ? _quality
+                  : null,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: '质量',
+                prefixIcon: Icon(Icons.high_quality_rounded),
+              ),
+              items: [
+                for (final quality in _qualityOptions)
+                  DropdownMenuItem(
+                    value: quality,
+                    child: Text(
+                      GptImageGenerationPreset.qualityLabels[quality] ??
+                          quality,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              onChanged: !supportsQuality
+                  ? null
+                  : (quality) {
+                      if (quality != null) setState(() => _quality = quality);
+                    },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const ValueKey('save-replicate-generation-parameters'),
+          onPressed: () {
+            widget.controller.updateGenerationDefaults(
+              aspectRatio: _aspectRatio,
+              imageSize: _imageSize,
+              quality: _quality,
+            );
+            Navigator.of(context).pop();
+          },
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+
+  static String _normalizedOption(String value, List<String> options) {
+    if (options.isEmpty) return '';
+    return options.contains(value) ? value : options.first;
   }
 }
 
@@ -6640,7 +6902,7 @@ class _BindingAssetPreview extends StatelessWidget {
         child: exists
             ? Image.file(
                 File(path),
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 errorBuilder: (_, _, _) =>
                     const Icon(Icons.broken_image_outlined),
               )
@@ -6760,14 +7022,14 @@ class _ConfirmShotsStep extends StatelessWidget {
       child: Column(
         children: [
           _StepToolbar(
-            title: '步骤 1 · 查阅脚本镜头',
+            title: '步骤 2 · 查阅脚本镜头',
             subtitle: '请自行查阅并编辑镜头内容，修改会同步回拍摄脚本。',
             actions: [
               FilledButton.icon(
                 key: const ValueKey('replicate-next-assets'),
                 onPressed: state.shots.isEmpty
                     ? null
-                    : () => controller.moveToStep(ReplicateStep.prepareAssets),
+                    : () => controller.moveToStep(ReplicateStep.generateVideos),
                 icon: const Icon(Icons.arrow_forward_rounded),
                 label: const Text('下一步'),
               ),
@@ -7011,7 +7273,7 @@ class _PrepareAssetsStep extends StatelessWidget {
       child: Column(
         children: [
           _StepToolbar(
-            title: '步骤 2 · 准备参考素材',
+            title: '步骤 1 · 准备参考素材',
             subtitle: '模型引用使用图片N、视频N、音频N；删除后不改动既有编号。',
             actions: [
               OutlinedButton.icon(
@@ -7028,7 +7290,7 @@ class _PrepareAssetsStep extends StatelessWidget {
                           item.path.isNotEmpty &&
                           File(item.path).existsSync(),
                     )
-                    ? () => controller.moveToStep(ReplicateStep.generateVideos)
+                    ? () => controller.moveToStep(ReplicateStep.confirmShots)
                     : null,
                 icon: const Icon(Icons.arrow_forward_rounded),
                 label: const Text('下一步'),
@@ -7330,7 +7592,7 @@ class _AssetCard extends StatelessWidget {
               child: isImage && asset.path.isNotEmpty
                   ? Image.file(
                       File(asset.path),
-                      fit: BoxFit.cover,
+                      fit: BoxFit.contain,
                       errorBuilder: (_, _, _) => _AssetIcon(type: asset.type),
                     )
                   : _AssetIcon(type: asset.type),

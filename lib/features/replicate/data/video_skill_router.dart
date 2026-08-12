@@ -7,14 +7,13 @@ class VideoSkillRoute {
     required this.backendKind,
     required this.promptStyle,
     required this.automaticallySelected,
+    required this.supportsH3NarrativeSkill,
   });
 
   final BundledVideoSkillKind? backendKind;
   final H3PromptStyle promptStyle;
   final bool automaticallySelected;
-
-  bool get supportsH3NarrativeSkill =>
-      backendKind == BundledVideoSkillKind.minimaxH3;
+  final bool supportsH3NarrativeSkill;
 }
 
 /// 先以设置页选中的视频模型做硬门控，再从当前镜头剧情中至多选择一个专项 Skill。
@@ -111,11 +110,15 @@ class VideoSkillRouter {
     H3PromptStyle preferredStyle = H3PromptStyle.general,
   }) {
     final backendKind = BundledVideoSkillLibrary.kindForConfig(config);
-    if (backendKind != BundledVideoSkillKind.minimaxH3) {
+    final supportsH3NarrativeSkill =
+        backendKind == BundledVideoSkillKind.minimaxH3 &&
+        config?.supportsLocalH3SkillRouting == true;
+    if (!supportsH3NarrativeSkill) {
       return VideoSkillRoute(
         backendKind: backendKind,
         promptStyle: H3PromptStyle.general,
         automaticallySelected: false,
+        supportsH3NarrativeSkill: false,
       );
     }
     if (!preferredStyle.isGeneral) {
@@ -123,6 +126,7 @@ class VideoSkillRouter {
         backendKind: backendKind,
         promptStyle: preferredStyle,
         automaticallySelected: false,
+        supportsH3NarrativeSkill: true,
       );
     }
 
@@ -148,6 +152,7 @@ class VideoSkillRouter {
       backendKind: backendKind,
       promptStyle: matched ? bestStyle : H3PromptStyle.general,
       automaticallySelected: matched,
+      supportsH3NarrativeSkill: true,
     );
   }
 }

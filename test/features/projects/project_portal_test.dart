@@ -16,6 +16,17 @@ void main() {
     expect(const ProjectPortal(), isA<ProjectPortal>());
   });
 
+  test('创建工程对话框提供自动、横屏和竖屏画幅', () {
+    final source = File(
+      'lib/features/projects/presentation/project_portal.dart',
+    ).readAsStringSync();
+
+    expect(source, contains("ValueKey('create-project-aspect-mode')"));
+    expect(source, contains('for (final mode in ProjectAspectMode.values)'));
+    expect(source, contains('第一个有效视频会自动匹配 16:9、4:3、3:4、4:5 或 9:16'));
+    expect(source, contains('aspectMode: _aspectMode'));
+  });
+
   testWidgets('工程首页提供已有工程的重命名入口', (tester) async {
     late Directory root;
     late AppDirectories directories;

@@ -29,6 +29,7 @@ class VideoImportService {
 
   Future<VideoImportResult> importVideo(
     File source, {
+    String? sourceFileName,
     Duration frameInterval = const Duration(seconds: 1),
     VideoFrameExtractionStrategy strategy =
         VideoFrameExtractionStrategy.sceneAndInterval,
@@ -38,7 +39,7 @@ class VideoImportService {
       throw StateError('视频文件不存在：${source.path}');
     }
     final id = _uuid.v4();
-    final fileName = p.basename(source.path);
+    final fileName = p.basename(sourceFileName?.trim() ?? source.path);
     final directoryName = '${_safeStem(fileName)}-${id.substring(0, 8)}';
     final videoDirectory = Directory(
       p.join(directories.videos.path, directoryName),
@@ -90,6 +91,7 @@ class VideoImportService {
           frameRate: metadata.frameRate,
           width: metadata.width,
           height: metadata.height,
+          rotationDegrees: metadata.rotationDegrees,
           hasAudio: metadata.hasAudio,
           frameCount: frames.length,
           successfulFrames: frames.length,

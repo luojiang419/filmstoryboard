@@ -7,24 +7,39 @@ import '../core/database/app_database.dart';
 import '../core/providers/app_providers.dart';
 import '../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../features/exporter/presentation/exporter_page.dart';
+import '../features/exporter/application/export_remote_source.dart';
 import '../features/grid_cut/presentation/grid_cut_page.dart';
 import '../features/onboarding/application/onboarding_controller.dart';
 import '../features/onboarding/data/onboarding_repository.dart';
 import '../features/onboarding/presentation/onboarding_overlay.dart';
 import '../features/settings/application/settings_controller.dart';
+import '../features/settings/application/settings_remote_source.dart';
 import '../features/settings/domain/app_settings.dart';
 import '../features/settings/presentation/settings_page.dart';
 import '../features/shooting_script/presentation/shooting_script_page.dart';
 import '../features/shooting_script/application/shooting_script_controller.dart';
+import '../features/shooting_script/application/shooting_script_remote_source.dart';
+import '../features/shooting_script/application/script_analysis_controller.dart';
+import '../features/shooting_script/application/script_asset_binding_controller.dart';
 import '../features/story_design/presentation/story_design_page.dart';
 import '../features/remote_access/application/remote_storyboard_registry.dart';
+import '../features/remote_access/application/remote_shooting_workflow_registry.dart';
+import '../features/remote_access/application/remote_export_registry.dart';
+import '../features/remote_access/application/remote_video_analysis_registry.dart';
+import '../features/remote_access/application/remote_video_generation_registry.dart';
+import '../features/remote_access/application/remote_settings_registry.dart';
 import '../features/storyboard/application/storyboard_controller.dart';
 import '../features/storyboard/application/storyboard_remote_source.dart';
 import '../features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
 import '../features/storyboard/presentation/storyboard_page.dart';
+import '../features/replicate/application/replicate_controller.dart';
 import '../features/updater/application/updater_controller.dart';
 import '../features/updater/domain/app_update_config.dart';
 import '../features/video_analysis/presentation/video_analysis_page.dart';
+import '../features/video_analysis/application/video_analysis_controller.dart';
+import '../features/video_analysis/application/video_analysis_remote_source.dart';
+import '../features/video_generation/application/video_generation_controller.dart';
+import '../features/video_generation/application/video_generation_remote_source.dart';
 import '../features/video_generation/presentation/video_generation_page.dart';
 import 'window_title_bar.dart';
 
@@ -58,9 +73,19 @@ class _AppShellState extends ConsumerState<AppShell> {
   late final StoryboardController _storyboardController;
   late final StoryboardRemoteSource _storyboardRemoteSource;
   late final RemoteStoryboardRegistry _remoteStoryboardRegistry;
+  late final ShootingScriptRemoteSource _shootingScriptRemoteSource;
+  late final RemoteShootingWorkflowRegistry _remoteShootingWorkflowRegistry;
+  late final VideoAnalysisRemoteSource _videoAnalysisRemoteSource;
+  late final RemoteVideoAnalysisRegistry _remoteVideoAnalysisRegistry;
+  late final VideoGenerationRemoteSource _videoGenerationRemoteSource;
+  late final RemoteVideoGenerationRegistry _remoteVideoGenerationRegistry;
+  late final ExportRemoteSource _exportRemoteSource;
+  late final RemoteExportRegistry _remoteExportRegistry;
   late final StoryboardShootingScriptSyncController
   _storyboardScriptSyncController;
   late final SettingsController _settingsController;
+  late final SettingsRemoteSource _settingsRemoteSource;
+  late final RemoteSettingsRegistry _remoteSettingsRegistry;
   bool _updatePromptVisible = false;
   bool _assetNormalizationPromptVisible = false;
   bool _assetNormalizationDeferred = false;
@@ -85,15 +110,46 @@ class _AppShellState extends ConsumerState<AppShell> {
     )..addListener(_handleOnboardingChanged);
     _storyboardController = ref.read(storyboardControllerProvider)
       ..addListener(_handleAssetNormalizationStateChanged);
+    _settingsController = ref.read(settingsControllerProvider)
+      ..addListener(_handleSettingsChanged);
     _storyboardRemoteSource = StoryboardRemoteSource(_storyboardController);
     _remoteStoryboardRegistry = ref.read(remoteStoryboardRegistryProvider)
       ..attach(_storyboardRemoteSource);
+    _shootingScriptRemoteSource = ShootingScriptRemoteSource(
+      replicateController: ref.read(replicateControllerProvider),
+      analysisController: ref.read(scriptAnalysisControllerProvider),
+      assetBindingController: ref.read(scriptAssetBindingControllerProvider),
+    );
+    _remoteShootingWorkflowRegistry = ref.read(
+      remoteShootingWorkflowRegistryProvider,
+    )..attach(_shootingScriptRemoteSource);
+    _videoAnalysisRemoteSource = VideoAnalysisRemoteSource(
+      ref.read(videoAnalysisControllerProvider),
+    );
+    _remoteVideoAnalysisRegistry = ref.read(remoteVideoAnalysisRegistryProvider)
+      ..attach(_videoAnalysisRemoteSource);
+    _videoGenerationRemoteSource = VideoGenerationRemoteSource(
+      ref.read(videoGenerationControllerProvider),
+    );
+    _remoteVideoGenerationRegistry = ref.read(
+      remoteVideoGenerationRegistryProvider,
+    )..attach(_videoGenerationRemoteSource);
+    _settingsRemoteSource = SettingsRemoteSource(_settingsController);
+    _remoteSettingsRegistry = ref.read(remoteSettingsRegistryProvider)
+      ..attach(_settingsRemoteSource);
+    _exportRemoteSource = ExportRemoteSource(
+      storyboardController: _storyboardController,
+      shootingScriptController: ref.read(shootingScriptControllerProvider),
+      settingsController: ref.read(settingsControllerProvider),
+      database: ref.read(appDatabaseProvider),
+      directories: ref.read(projectDirectoriesProvider),
+    );
+    _remoteExportRegistry = ref.read(remoteExportRegistryProvider)
+      ..attach(_exportRemoteSource);
     _storyboardScriptSyncController = StoryboardShootingScriptSyncController(
       storyboardController: _storyboardController,
       shootingScriptController: ref.read(shootingScriptControllerProvider),
     );
-    _settingsController = ref.read(settingsControllerProvider)
-      ..addListener(_handleSettingsChanged);
     _tabIndex =
         _loadSavedTabIndex() ??
         widget.initialTabIndex.clamp(0, _tabs.length - 1).toInt();
@@ -118,6 +174,15 @@ class _AppShellState extends ConsumerState<AppShell> {
     _storyboardController.removeListener(_handleAssetNormalizationStateChanged);
     _remoteStoryboardRegistry.detach(source: _storyboardRemoteSource);
     _storyboardRemoteSource.dispose();
+    _remoteShootingWorkflowRegistry.detach(source: _shootingScriptRemoteSource);
+    _shootingScriptRemoteSource.dispose();
+    _remoteVideoAnalysisRegistry.detach(source: _videoAnalysisRemoteSource);
+    _remoteVideoGenerationRegistry.detach(source: _videoGenerationRemoteSource);
+    _videoGenerationRemoteSource.dispose();
+    _remoteSettingsRegistry.detach(source: _settingsRemoteSource);
+    _settingsRemoteSource.dispose();
+    _remoteExportRegistry.detach(source: _exportRemoteSource);
+    _exportRemoteSource.dispose();
     _storyboardScriptSyncController.dispose();
     _settingsController.removeListener(_handleSettingsChanged);
     _updaterController.removeListener(_handleUpdaterStateChanged);

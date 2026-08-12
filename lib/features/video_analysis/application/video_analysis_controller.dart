@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,8 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
+import '../../projects/application/project_aspect_controller.dart';
+import '../../projects/domain/project_aspect_ratio.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../shooting_script/application/script_analysis_controller.dart';
@@ -31,6 +34,7 @@ final videoAnalysisControllerProvider = Provider<VideoAnalysisController>(
       storyboardController: ref.watch(storyboardControllerProvider),
       shootingScriptController: ref.watch(shootingScriptControllerProvider),
       scriptAnalysisController: ref.watch(scriptAnalysisControllerProvider),
+      projectAspectController: ref.watch(projectAspectControllerProvider),
     );
     ref.onDispose(controller.dispose);
     return controller;
@@ -42,6 +46,7 @@ final videoAnalysisControllerProvider = Provider<VideoAnalysisController>(
     storyboardControllerProvider,
     shootingScriptControllerProvider,
     scriptAnalysisControllerProvider,
+    projectAspectControllerProvider,
   ],
 );
 
@@ -211,6 +216,8 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     StoryboardController? storyboardController,
     ShootingScriptController? shootingScriptController,
     ShootingScriptAnalysisController? scriptAnalysisController,
+    ProjectAspectController? projectAspectController,
+    FfmpegFrameExtractor? metadataRepairExtractor,
     VideoAnalysisService? analysisService,
     AnalysisReportExportService reportExportService =
         const AnalysisReportExportService(),
@@ -221,12 +228,15 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
        _storyboardController = storyboardController,
        _shootingScriptController = shootingScriptController,
        _scriptAnalysisController = scriptAnalysisController,
+       _projectAspectController = projectAspectController,
+       _metadataRepairExtractor = metadataRepairExtractor,
        _analysisService =
            analysisService ?? VideoAnalysisService(repository: repository),
        _reportExportService = reportExportService,
        _uuid = uuid,
        super(const VideoAnalysisState()) {
     refresh();
+    _legacyMetadataRepair = _repairLegacyVideoMetadata();
   }
 
   final WorkspaceDirectories _directories;
@@ -235,12 +245,18 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   final StoryboardController? _storyboardController;
   final ShootingScriptController? _shootingScriptController;
   final ShootingScriptAnalysisController? _scriptAnalysisController;
+  final ProjectAspectController? _projectAspectController;
+  final FfmpegFrameExtractor? _metadataRepairExtractor;
   final VideoAnalysisService _analysisService;
   final AnalysisReportExportService _reportExportService;
   final Uuid _uuid;
   final _analysisSessionsByVideoId = <String, _VideoAnalysisSession>{};
   final _removedFrameUndoHistory = <String, List<_RemovedVideoFrame>>{};
   final _removedFrameRedoHistory = <String, List<_RemovedVideoFrame>>{};
+  late final Future<int> _legacyMetadataRepair;
+  bool _isDisposed = false;
+
+  Future<int> get legacyMetadataRepair => _legacyMetadataRepair;
 
   bool isAnalysisActiveFor(String videoId) =>
       _analysisSessionsByVideoId[videoId]?.isAnalyzing ?? false;
@@ -269,6 +285,33 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
         (_removedFrameRedoHistory[videoId]?.isNotEmpty ?? false);
   }
 
+  bool canUndoFrameRemovalFor(String videoId) =>
+      (_removedFrameUndoHistory[videoId]?.isNotEmpty ?? false);
+
+  bool canRedoFrameRemovalFor(String videoId) =>
+      (_removedFrameRedoHistory[videoId]?.isNotEmpty ?? false);
+
+  bool removeFrameFor(String videoId, String frameId) {
+    if (value.selectedVideoId != videoId) selectVideo(videoId);
+    if (!value.frames.any((frame) => frame.id == frameId)) return false;
+    removeFrame(frameId);
+    return !value.frames.any((frame) => frame.id == frameId);
+  }
+
+  bool undoFrameRemovalFor(String videoId) {
+    if (value.selectedVideoId != videoId) selectVideo(videoId);
+    if (!canUndoFrameRemoval) return false;
+    undoFrameRemoval();
+    return true;
+  }
+
+  bool redoFrameRemovalFor(String videoId) {
+    if (value.selectedVideoId != videoId) selectVideo(videoId);
+    if (!canRedoFrameRemoval) return false;
+    redoFrameRemoval();
+    return true;
+  }
+
   void refresh({String? selectVideoId}) {
     final videos = _repository.listSourceVideos();
     final selectedId =
@@ -278,6 +321,101 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
             : (videos.isEmpty ? '' : videos.first.id));
     value = value.copyWith(videos: videos, selectedVideoId: selectedId);
     _loadSelectedVideo();
+  }
+
+  VideoAnalysisState snapshotForVideo(String videoId) {
+    final video = _repository
+        .listSourceVideos()
+        .where((item) => item.id == videoId)
+        .firstOrNull;
+    if (video == null) {
+      return const VideoAnalysisState();
+    }
+    final session = _analysisSessionsByVideoId[videoId];
+    return VideoAnalysisState(
+      videos: [video],
+      frames: _repository.listVideoFrames(videoId),
+      shots: _repository.listVideoShots(videoId),
+      frameAnalyses: _repository.listVideoFrameAnalyses(videoId),
+      marketingAnalyses: _repository.listMarketingAnalyses(videoId),
+      summary: _repository.getVideoSummary(videoId),
+      selectedVideoId: videoId,
+      isAnalyzing: session?.isAnalyzing ?? false,
+      isPaused: session?.isPaused ?? false,
+      completedProgress: session?.completedProgress ?? 0,
+      totalProgress: session?.totalProgress ?? 0,
+      message: session?.message ?? '',
+      errorMessage: session?.errorMessage ?? '',
+    );
+  }
+
+  Future<int> _repairLegacyVideoMetadata() async {
+    if (_repository.isLegacyOrientationRepairCompleted) {
+      return 0;
+    }
+    final settings = _settingsController.value;
+    final extractor =
+        _metadataRepairExtractor ??
+        FfmpegFrameExtractor(
+          ffmpegExecutable: settings.ffmpegExecutable,
+          ffprobeExecutable: settings.ffprobeExecutable,
+        );
+    var repairedCount = 0;
+    var hasProbeFailure = false;
+    for (final video in _repository.listSourceVideos()) {
+      final file = _legacyVideoSource(video);
+      if (!file.existsSync()) {
+        continue;
+      }
+      try {
+        final metadata = await extractor.probe(file);
+        if (metadata.width == video.width &&
+            metadata.height == video.height &&
+            metadata.rotationDegrees == video.rotationDegrees) {
+          continue;
+        }
+        _repository.upsertSourceVideo(
+          video.copyWith(
+            durationMs: metadata.durationMs > 0
+                ? metadata.durationMs
+                : video.durationMs,
+            frameRate: metadata.frameRate > 0
+                ? metadata.frameRate
+                : video.frameRate,
+            width: metadata.width > 0 ? metadata.width : video.width,
+            height: metadata.height > 0 ? metadata.height : video.height,
+            rotationDegrees: metadata.rotationDegrees,
+            hasAudio: metadata.hasAudio,
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+        repairedCount++;
+      } catch (_) {
+        hasProbeFailure = true;
+      }
+    }
+    if (!hasProbeFailure) {
+      _repository.markLegacyOrientationRepairCompleted();
+    }
+    if (repairedCount > 0 && !_isDisposed) {
+      refresh();
+    }
+    return repairedCount;
+  }
+
+  File _legacyVideoSource(SourceVideo video) {
+    final storedFile = resolveVideo(video);
+    if (storedFile.existsSync()) {
+      return storedFile;
+    }
+    final originalPath = video.originalPath.trim();
+    if (originalPath.isNotEmpty) {
+      final originalFile = File(originalPath);
+      if (originalFile.existsSync()) {
+        return originalFile;
+      }
+    }
+    return storedFile;
   }
 
   void selectVideo(String videoId) {
@@ -348,6 +486,14 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
 
   Future<void> importVideo(File file) => importVideos([file]);
 
+  Future<void> importUploadedVideo(
+    File file, {
+    required String fileName,
+  }) async {
+    if (value.isBusy || file.path.trim().isEmpty) return;
+    await _importSingleVideo(file, sourceFileName: fileName);
+  }
+
   /// 依次处理所选视频，避免 FFmpeg 与视觉模型请求相互抢占资源。
   /// 每个视频提取完候选帧后立即创建故事板和拍摄脚本；全自动模式再继续
   /// 视觉解析，普通模式则等待用户选择“解析全部”或“继续未完成”。
@@ -373,7 +519,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     }
   }
 
-  Future<bool> _importSingleVideo(File file) async {
+  Future<bool> _importSingleVideo(File file, {String? sourceFileName}) async {
     value = value.copyWith(
       isImporting: true,
       isPaused: false,
@@ -395,6 +541,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
             extractor: extractor,
           ).importVideo(
             file,
+            sourceFileName: sourceFileName,
             frameInterval: Duration(
               milliseconds: (intervalSeconds * 1000).round(),
             ),
@@ -486,6 +633,21 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
         updatedAt: DateTime.now().toUtc(),
       );
       _repository.upsertSourceVideo(importedVideo);
+      final aspectResult = _projectAspectController?.detectFromDimensions(
+        width: importedVideo.displayWidth,
+        height: importedVideo.displayHeight,
+      );
+      final aspectMessage =
+          aspectResult == ProjectAspectDetectionResult.resolved
+          ? '；项目画幅已自动设为 '
+                '${_projectAspectController!.state.effectiveRatio.label}'
+          : '';
+      final aspectWarning =
+          aspectResult == ProjectAspectDetectionResult.conflict
+          ? '导入视频为${importedVideo.isPortrait ? '竖屏' : '横屏'}，'
+                '与项目 ${_projectAspectController!.state.effectiveRatio.label} '
+                '画幅不同；已保留项目画幅'
+          : '';
       value = value.copyWith(isImporting: false);
       refresh(selectVideoId: result.video.id);
       try {
@@ -497,8 +659,11 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
             ? ''
             : '；${artifacts.message.substring(1)}';
         value = value.copyWith(
-          message: '候选帧提取完成$artifactMessage，可开始视觉解析',
-          errorMessage: artifacts.errorMessage,
+          message: '候选帧提取完成$aspectMessage$artifactMessage，可开始视觉解析',
+          errorMessage: [
+            if (aspectWarning.isNotEmpty) aspectWarning,
+            if (artifacts.errorMessage.isNotEmpty) artifacts.errorMessage,
+          ].join('；'),
         );
       } catch (error) {
         value = value.copyWith(
@@ -530,8 +695,11 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     bool retryFailedOnly = false,
     bool forceAll = false,
     bool allVideos = false,
+    String? videoId,
   }) async {
-    final video = value.selectedVideo;
+    final video = videoId == null
+        ? value.selectedVideo
+        : value.videos.where((item) => item.id == videoId).firstOrNull;
     final settings = _settingsController.value;
     if (video == null ||
         value.isImporting ||
@@ -737,18 +905,27 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   }
 
   void pauseAnalysis() {
-    final session = _analysisSessionsByVideoId[value.selectedVideoId];
-    if (session?.isAnalyzing != true) return;
+    pauseAnalysisFor(value.selectedVideoId);
+  }
+
+  bool pauseAnalysisFor(String videoId) {
+    final session = _analysisSessionsByVideoId[videoId];
+    if (session?.isAnalyzing != true) return false;
     session!
       ..shouldContinue = false
       ..cancelRequested = false
       ..message = '正在等待当前帧完成后暂停…';
     _publishAnalysisSession(session);
+    return true;
   }
 
   void cancelAnalysis() {
-    final session = _analysisSessionsByVideoId[value.selectedVideoId];
-    if (session?.isAnalyzing != true) return;
+    cancelAnalysisFor(value.selectedVideoId);
+  }
+
+  bool cancelAnalysisFor(String videoId) {
+    final session = _analysisSessionsByVideoId[videoId];
+    if (session?.isAnalyzing != true) return false;
     session!
       ..cancelRequested = true
       ..shouldContinue = false
@@ -758,6 +935,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     // 全部请求。按视频取消时只停止该会话后续帧，不伤及
     // 其他正在并行的视频。
     _publishAnalysisSession(session);
+    return true;
   }
 
   Future<bool> generateStoryboardForSelectedVideo() async {
@@ -789,6 +967,12 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       );
       return false;
     }
+  }
+
+  Future<bool> generateStoryboardForVideo(String videoId) async {
+    if (!value.videos.any((video) => video.id == videoId)) return false;
+    if (value.selectedVideoId != videoId) selectVideo(videoId);
+    return generateStoryboardForSelectedVideo();
   }
 
   Future<_FollowUpArtifactsResult> _createFollowUpArtifacts(
@@ -1127,6 +1311,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
 
   @override
   void dispose() {
+    _isDisposed = true;
     for (final session in _analysisSessionsByVideoId.values) {
       session.shouldContinue = false;
     }

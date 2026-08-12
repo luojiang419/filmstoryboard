@@ -1418,6 +1418,14 @@ void main() {
       ),
     );
 
+    expect(
+      find.byKey(const ValueKey('storyboard-asset-panel-drop-target')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('storyboard-canvas-file-drop-target')),
+      findsOneWidget,
+    );
     expect(find.byTooltip('修改图片'), findsNothing);
 
     final imageFinder = find.byKey(const ValueKey('storyboard-image-asset-1'));

@@ -86,11 +86,7 @@ class VideoGenerationTaskService {
     }
     final videoApiConfig = _videoApiConfig;
     if (videoApiConfig?.isLibTvCli == true) {
-      return _submitAndTrackLibTv(
-        submission,
-        videoApiConfig!,
-        isCanceled: isCanceled,
-      );
+      return _submitAndTrackLibTv(submission, isCanceled: isCanceled);
     }
     if (videoApiConfig != null &&
         videoApiConfig.isHttpApi &&
@@ -158,8 +154,7 @@ class VideoGenerationTaskService {
   }
 
   Future<VideoGenerationTask> _submitAndTrackLibTv(
-    VideoGenerationSubmission submission,
-    VideoGenerationApiConfig config, {
+    VideoGenerationSubmission submission, {
     bool Function()? isCanceled,
   }) async {
     var current = submission.task.copyWith(
@@ -181,14 +176,11 @@ class VideoGenerationTaskService {
         prompt: current.prompt,
         sourceImagePath: submission.sourceImagePath,
         referenceImagePaths: submission.referenceImagePaths,
-        modelName: config.model.trim().isEmpty
+        modelName: current.model.trim().isEmpty
             ? LibTvCliService.seedance20ModelName
-            : config.model.trim(),
-        ratio: current.parameters['ratio'] ?? '16:9',
-        resolution: current.parameters['resolution'] ?? '720p',
+            : current.model.trim(),
         durationSeconds: current.durationSeconds,
-        enableSound: current.parameters['enableSound'] != 'off',
-        searchEnabled: current.parameters['search_enabled'] != '0',
+        parameters: current.parameters,
         isCanceled: isCanceled,
       );
       if (isCanceled?.call() == true) {

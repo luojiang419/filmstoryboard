@@ -53,6 +53,8 @@ class VideoMetadata {
     required this.width,
     required this.height,
     required this.hasAudio,
+    this.frameCount = 0,
+    this.rotationDegrees = 0,
   });
 
   final int durationMs;
@@ -60,6 +62,20 @@ class VideoMetadata {
   final int width;
   final int height;
   final bool hasAudio;
+  final int frameCount;
+  final int rotationDegrees;
+
+  bool get hasQuarterTurn => rotationDegrees == 90 || rotationDegrees == 270;
+
+  int get displayWidth => hasQuarterTurn ? height : width;
+
+  int get displayHeight => hasQuarterTurn ? width : height;
+
+  double get displayAspectRatio => displayWidth > 0 && displayHeight > 0
+      ? displayWidth / displayHeight
+      : 16 / 9;
+
+  bool get isPortrait => displayHeight > displayWidth;
 }
 
 class ExtractedFrame {
@@ -94,7 +110,8 @@ class FfmpegFrameExtractor {
     '-print_format',
     'json',
     '-show_entries',
-    'stream=codec_type,width,height,r_frame_rate,avg_frame_rate:format=duration',
+    'stream=codec_type,width,height,r_frame_rate,avg_frame_rate,duration,nb_frames:'
+        'stream_tags=rotate:stream_side_data=rotation:format=duration',
     videoPath,
   ];
 
@@ -156,17 +173,51 @@ class FfmpegFrameExtractor {
       );
       final format = json['format'] as Map<String, dynamic>? ?? const {};
       return VideoMetadata(
-        durationMs: _durationMilliseconds(format['duration']),
+        durationMs: _durationMilliseconds(
+          videoStream['duration'] ?? format['duration'],
+        ),
         frameRate: _frameRate(
           videoStream['r_frame_rate'] ?? videoStream['avg_frame_rate'],
         ),
         width: _int(videoStream['width']),
         height: _int(videoStream['height']),
         hasAudio: streams.any((stream) => stream['codec_type'] == 'audio'),
+        frameCount: _int(videoStream['nb_frames']),
+        rotationDegrees: _rotationDegrees(videoStream),
       );
     } on FormatException catch (error) {
       throw StateError('FFprobe 返回数据格式无效：$error');
     }
+  }
+
+  static int _rotationDegrees(Map<String, dynamic> stream) {
+    final sideData = stream['side_data_list'];
+    if (sideData is List) {
+      for (final item in sideData) {
+        if (item is! Map) continue;
+        final parsed = _number(item['rotation']);
+        if (parsed != null) return _normalizeRotation(parsed.round());
+      }
+    }
+    final tags = stream['tags'];
+    if (tags is Map) {
+      final parsed = _number(tags['rotate']);
+      if (parsed != null) return _normalizeRotation(parsed.round());
+    }
+    return 0;
+  }
+
+  static num? _number(Object? value) {
+    if (value is num) return value;
+    return num.tryParse('$value'.trim());
+  }
+
+  static int _normalizeRotation(int degrees) {
+    final normalized = ((degrees % 360) + 360) % 360;
+    if (normalized >= 45 && normalized < 135) return 90;
+    if (normalized >= 135 && normalized < 225) return 180;
+    if (normalized >= 225 && normalized < 315) return 270;
+    return 0;
   }
 
   Future<List<ExtractedFrame>> extract({

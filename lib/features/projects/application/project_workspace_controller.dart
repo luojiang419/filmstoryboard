@@ -8,6 +8,7 @@ import '../../../core/services/app_directories.dart';
 import '../data/legacy_project_migrator.dart';
 import '../data/project_catalog_repository.dart';
 import '../domain/project_models.dart';
+import '../domain/project_aspect_ratio.dart';
 import 'project_service.dart';
 
 enum ProjectWorkspacePhase { booting, welcome, home, opening, editor }
@@ -108,7 +109,11 @@ class ProjectWorkspaceController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> createProject({String? name, Directory? parentDirectory}) async {
+  Future<void> createProject({
+    String? name,
+    Directory? parentDirectory,
+    ProjectAspectMode aspectMode = ProjectAspectMode.auto,
+  }) async {
     final previousPhase = phase == ProjectWorkspacePhase.welcome
         ? ProjectWorkspacePhase.welcome
         : ProjectWorkspacePhase.home;
@@ -121,6 +126,7 @@ class ProjectWorkspaceController extends ChangeNotifier {
       final opened = await _projectService.createProject(
         name: name ?? '',
         parentDirectory: parent,
+        aspectMode: aspectMode,
       );
       session = opened;
       refreshProjects();
@@ -149,6 +155,43 @@ class ProjectWorkspaceController extends ChangeNotifier {
       notifyListeners();
     } catch (error) {
       phase = previousPhase;
+      errorMessage = error.toString();
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> switchToCatalogProject(ProjectEntry entry) async {
+    if (phase == ProjectWorkspacePhase.booting ||
+        phase == ProjectWorkspacePhase.opening) {
+      throw const ProjectException('桌面端正在切换工程，请稍后再试');
+    }
+    if (session?.manifest.projectId == entry.projectId) {
+      return;
+    }
+    if (!entry.exists) {
+      throw const ProjectException('工程当前不可用');
+    }
+    final closing = session;
+    phase = ProjectWorkspacePhase.opening;
+    errorMessage = null;
+    notifyListeners();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    try {
+      final opened = await _projectService.openProject(File(entry.indexPath));
+      session = opened;
+      refreshProjects();
+      phase = ProjectWorkspacePhase.editor;
+      notifyListeners();
+      if (closing != null) {
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await closing.close();
+      }
+    } catch (error) {
+      session = closing;
+      phase = closing == null
+          ? ProjectWorkspacePhase.home
+          : ProjectWorkspacePhase.editor;
       errorMessage = error.toString();
       notifyListeners();
       rethrow;

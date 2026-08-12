@@ -67,6 +67,7 @@ class SourceVideo {
     required this.frameRate,
     required this.width,
     required this.height,
+    this.rotationDegrees = 0,
     required this.hasAudio,
     required this.frameCount,
     required this.successfulFrames,
@@ -85,6 +86,7 @@ class SourceVideo {
   final double frameRate;
   final int width;
   final int height;
+  final int rotationDegrees;
   final bool hasAudio;
   final int frameCount;
   final int successfulFrames;
@@ -94,12 +96,25 @@ class SourceVideo {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  bool get hasQuarterTurn => rotationDegrees == 90 || rotationDegrees == 270;
+
+  int get displayWidth => hasQuarterTurn ? height : width;
+
+  int get displayHeight => hasQuarterTurn ? width : height;
+
+  double get displayAspectRatio => displayWidth > 0 && displayHeight > 0
+      ? displayWidth / displayHeight
+      : 16 / 9;
+
+  bool get isPortrait => displayHeight > displayWidth;
+
   SourceVideo copyWith({
     String? storedPath,
     int? durationMs,
     double? frameRate,
     int? width,
     int? height,
+    int? rotationDegrees,
     bool? hasAudio,
     int? frameCount,
     int? successfulFrames,
@@ -116,6 +131,7 @@ class SourceVideo {
     frameRate: frameRate ?? this.frameRate,
     width: width ?? this.width,
     height: height ?? this.height,
+    rotationDegrees: rotationDegrees ?? this.rotationDegrees,
     hasAudio: hasAudio ?? this.hasAudio,
     frameCount: frameCount ?? this.frameCount,
     successfulFrames: successfulFrames ?? this.successfulFrames,

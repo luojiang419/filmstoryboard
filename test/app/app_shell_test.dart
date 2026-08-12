@@ -124,6 +124,8 @@ void main() {
     expect(find.text('确认镜头'), findsOneWidget);
     expect(find.text('准备资产'), findsOneWidget);
     expect(find.text('合成提示词'), findsNothing);
+    await tester.tap(find.text('确认镜头'));
+    await tester.pumpAndSettle();
     expect(
       find.byKey(const ValueKey('start-replicate-from-shooting-script')),
       findsNothing,

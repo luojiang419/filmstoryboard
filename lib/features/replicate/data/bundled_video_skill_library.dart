@@ -24,18 +24,15 @@ class BundledVideoSkillDocument {
 
   String toVisionModelContext() {
     final buffer = StringBuffer()
-      ..writeln('【软件内置视频后端 Skill（强制读取）】')
+      ..writeln('【软件内置视频提示词 Skill（仅供当前后端）】')
       ..writeln('目标后端：$label')
       ..writeln('固定资源版本：$sourceRevision')
       ..writeln('本次按需加载文件数：$fileCount')
       ..writeln('执行边界：')
-      ..writeln('1. 你是当前软件所连接的视觉模型，必须阅读下面的完整 Skill 文件，并据此规划适配目标后端的视频提示词。')
-      ..writeln('2. CLI 登录、上传、画布、提交、轮询和下载由软件本身执行；不得声称你已经执行命令、登录、扣费或生成。')
-      ..writeln('3. 只把 Skill 中与模型能力、素材引用、提示词结构、参数边界和失败纪律有关的规则落实到当前镜头设计。')
-      ..writeln(
-        '4. 模型清单和动态参数仍以软件运行时读取结果为准；不得用示例虚构模型名、账号、额度、URL 或 generationId。',
-      )
-      ..writeln('5. 用户素材和画面可见事实优先于示例内容，示例只能学习结构。');
+      ..writeln('1. 只读取下面属于当前目标后端的提示词 Skill，不得套用其他视频模型的格式、字段、标签或示例。')
+      ..writeln('2. 只把素材引用、提示词结构、动作、运镜和必要约束落实到当前镜头；提交和生成由软件执行。')
+      ..writeln('3. 模型与参数以软件运行时配置为准；不得输出命令、账号、URL、任务 ID 或执行声明。')
+      ..writeln('4. 用户素材和画面可见事实优先；不得从示例复制主体、服装、产品、颜色或剧情。');
     for (final entry in files.entries) {
       buffer
         ..writeln()
@@ -43,7 +40,7 @@ class BundledVideoSkillDocument {
         ..writeln(entry.value.trim())
         ..writeln('</bundled_video_skill_file>');
     }
-    buffer.writeln('【软件内置视频后端 Skill 结束】');
+    buffer.writeln('【软件内置视频提示词 Skill 结束】');
     return buffer.toString().trim();
   }
 }
@@ -62,23 +59,9 @@ class BundledVideoSkillLibrary implements VideoSkillLibrary {
   static const _h3AssetRoot = 'assets/minimax_h3_skills/';
 
   static const Map<BundledVideoSkillKind, List<String>> runtimeFiles = {
-    BundledVideoSkillKind.klingCli: [
-      'kling-cli/SKILL.md',
-      'kling-cli/reference.md',
-      'kling-cli/api-examples.md',
-    ],
+    BundledVideoSkillKind.klingCli: ['kling-cli/prompt-guide.md'],
     BundledVideoSkillKind.libTvCli: [
-      'libtv-cli/SKILL.md',
-      'libtv-cli/commands/login.md',
-      'libtv-cli/commands/account.md',
-      'libtv-cli/commands/model.md',
-      'libtv-cli/commands/project.md',
-      'libtv-cli/commands/upload.md',
-      'libtv-cli/commands/node.md',
-      'libtv-cli/model-schema/schema.md',
-      'libtv-cli/node-types/image.md',
-      'libtv-cli/node-types/video.md',
-      'libtv-cli/prompt-guides/SD2提示词规则.md',
+      'libtv-cli/prompt-guides/image-to-video-prompt-guide.md',
     ],
     BundledVideoSkillKind.minimaxH3: [
       'skills/h3-prompt-writing/SKILL.md',
@@ -108,14 +91,7 @@ class BundledVideoSkillLibrary implements VideoSkillLibrary {
     if (config == null) return null;
     if (config.isLibTvCli) return BundledVideoSkillKind.libTvCli;
     if (config.isKlingCli) return BundledVideoSkillKind.klingCli;
-    final identity = [
-      config.id,
-      config.name,
-      config.model,
-      config.baseUrl,
-    ].join(' ').toLowerCase();
-    if (identity.contains('minimax') ||
-        RegExp(r'(^|[^a-z0-9])h3([^a-z0-9]|$)').hasMatch(identity)) {
+    if (config.supportsLocalH3SkillRouting) {
       return BundledVideoSkillKind.minimaxH3;
     }
     return null;
@@ -146,9 +122,9 @@ class BundledVideoSkillLibrary implements VideoSkillLibrary {
         BundledVideoSkillKind.minimaxH3 => 'MiniMax H3',
       },
       sourceRevision: switch (kind) {
-        BundledVideoSkillKind.klingCli =>
-          '43237a7bc8f500652c4de97462931182e9a125e0 / Skill 0.1.3',
-        BundledVideoSkillKind.libTvCli => 'Skill 1.1.3',
+        BundledVideoSkillKind.klingCli => '可灵图生视频规则 1.0',
+        BundledVideoSkillKind.libTvCli =>
+          'Doubao Seedance 2.0 官方指南精炼版 / 2026-06-08',
         BundledVideoSkillKind.minimaxH3 =>
           'b7227fa6a6206e9fb30562383d39e53cf3866a48 / 中文适配',
       },

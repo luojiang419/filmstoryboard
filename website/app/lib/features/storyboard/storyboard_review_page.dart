@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import '../../core/models/remote_models.dart';
 import '../workspace/remote_app_controller.dart';
 
+typedef _StoryboardLayoutCallback =
+    Future<void> Function(String action, String assetId, {int? slotIndex});
+
 class StoryboardReviewPage extends StatefulWidget {
   const StoryboardReviewPage({super.key, required this.controller});
 
@@ -72,7 +75,7 @@ class _StoryboardReviewPageState extends State<StoryboardReviewPage> {
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        final desktop = constraints.maxWidth >= 1040;
+        final desktop = constraints.maxWidth >= 1180;
         final boardList = _StoryboardBoardList(
           controller: widget.controller,
           groups: widget.controller.storyboardGroups,
@@ -83,9 +86,24 @@ class _StoryboardReviewPageState extends State<StoryboardReviewPage> {
         if (desktop) {
           return Row(
             children: [
-              SizedBox(width: 286, child: boardList),
+              SizedBox(width: 250, child: boardList),
               const VerticalDivider(width: 1),
               Expanded(child: editor),
+              const VerticalDivider(width: 1),
+              SizedBox(
+                width: 330,
+                child: _StoryboardToolsPanel(
+                  controller: widget.controller,
+                  detail: detail,
+                  nameController: _nameController,
+                  editable: _editable,
+                  dirty: _dirty,
+                  saving: _saving,
+                  onNameChanged: _markDirty,
+                  onRename: _save,
+                  onLayout: _updateLayout,
+                ),
+              ),
             ],
           );
         }
@@ -120,15 +138,10 @@ class _StoryboardReviewPageState extends State<StoryboardReviewPage> {
                 children: [
                   SizedBox(
                     width: 420,
-                    child: TextField(
-                      key: const ValueKey('storyboard-name-field'),
-                      controller: _nameController,
-                      readOnly: !_editable,
-                      decoration: const InputDecoration(
-                        labelText: '画板名称',
-                        prefixIcon: Icon(Icons.dashboard_customize_outlined),
-                      ),
-                      onChanged: (_) => _markDirty(),
+                    child: Text(
+                      detail.name,
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w900),
                     ),
                   ),
                   _StateChip(
@@ -156,7 +169,7 @@ class _StoryboardReviewPageState extends State<StoryboardReviewPage> {
               ],
               const SizedBox(height: 18),
               _sectionTitle(
-                '画板审阅',
+                '画板排版',
                 '${detail.rows} 行 × ${detail.columns} 列 · ${detail.itemCount} 个镜头',
               ),
               const SizedBox(height: 10),
@@ -166,7 +179,23 @@ class _StoryboardReviewPageState extends State<StoryboardReviewPage> {
                 captionControllers: _captionControllers,
                 editable: _editable,
                 onCaptionChanged: _markDirty,
+                onLayout: _updateLayout,
               ),
+              if (MediaQuery.sizeOf(context).width < 1180) ...[
+                const SizedBox(height: 16),
+                _StoryboardToolsPanel(
+                  controller: widget.controller,
+                  detail: detail,
+                  nameController: _nameController,
+                  editable: _editable,
+                  dirty: _dirty,
+                  saving: _saving,
+                  onNameChanged: _markDirty,
+                  onRename: _save,
+                  onLayout: _updateLayout,
+                  embedded: true,
+                ),
+              ],
               const SizedBox(height: 20),
               _buildSummaryEditor(detail),
               const SizedBox(height: 20),
@@ -437,6 +466,23 @@ class _StoryboardReviewPageState extends State<StoryboardReviewPage> {
     });
   }
 
+  Future<void> _updateLayout(
+    String action,
+    String assetId, {
+    int? slotIndex,
+  }) async {
+    if (!_editable || widget.controller.busy) return;
+    await widget.controller.updateStoryboardLayout(
+      action: action,
+      assetId: assetId,
+      slotIndex: slotIndex,
+    );
+    if (!mounted || widget.controller.errorMessage.isNotEmpty) return;
+    final detail = widget.controller.selectedStoryboard;
+    if (detail == null) return;
+    setState(() => _loadedRevision = detail.revision);
+  }
+
   Future<void> _addAnnotation() async {
     final body = _annotationController.text.trim();
     if (body.isEmpty) return;
@@ -520,6 +566,7 @@ class _StoryboardGrid extends StatelessWidget {
     required this.captionControllers,
     required this.editable,
     required this.onCaptionChanged,
+    required this.onLayout,
   });
 
   final RemoteAppController controller;
@@ -527,15 +574,31 @@ class _StoryboardGrid extends StatelessWidget {
   final Map<String, TextEditingController> captionControllers;
   final bool editable;
   final VoidCallback onCaptionChanged;
+  final _StoryboardLayoutCallback onLayout;
 
   @override
   Widget build(BuildContext context) {
     final items = [...detail.items]
       ..sort((first, second) => first.slotIndex.compareTo(second.slotIndex));
     if (items.isEmpty) {
-      return const SizedBox(
-        height: 180,
-        child: Center(child: Text('当前画板还没有镜头图片。')),
+      return DragTarget<String>(
+        onWillAcceptWithDetails: (_) => editable && !controller.busy,
+        onAcceptWithDetails: (details) => onLayout('add', details.data),
+        builder: (context, candidates, _) => AnimatedContainer(
+          key: const ValueKey('empty-storyboard-drop-target'),
+          duration: const Duration(milliseconds: 160),
+          height: 180,
+          decoration: BoxDecoration(
+            color: candidates.isEmpty
+                ? Theme.of(context).colorScheme.surfaceContainerLow
+                : Theme.of(context).colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+          child: const Center(child: Text('从右侧素材面板拖入图片，或点击“加入画板”')),
+        ),
       );
     }
     return LayoutBuilder(
@@ -564,56 +627,50 @@ class _StoryboardGrid extends StatelessWidget {
               final item = items[index];
               final selected =
                   controller.selectedStoryboardItem?.assetId == item.assetId;
-              return Card(
-                clipBehavior: Clip.antiAlias,
-                color: selected
-                    ? Theme.of(context).colorScheme.primaryContainer
-                    : null,
-                child: InkWell(
-                  onTap: () => controller.selectStoryboardItem(item.assetId),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            _StoryboardRemoteImage(
-                              controller: controller,
-                              mediaId: item.imageMediaId,
-                              flipHorizontal: item.flipHorizontal,
-                              flipVertical: item.flipVertical,
+              final card = _StoryboardItemCard(
+                controller: controller,
+                item: item,
+                selected: selected,
+                editable: editable,
+                captionController: captionControllers[item.assetId],
+                onCaptionChanged: onCaptionChanged,
+                onRemove: () => onLayout('remove', item.assetId),
+              );
+              return DragTarget<String>(
+                onWillAcceptWithDetails: (details) =>
+                    editable &&
+                    !controller.busy &&
+                    details.data != item.assetId,
+                onAcceptWithDetails: (details) {
+                  final alreadyUsed = items.any(
+                    (candidate) => candidate.assetId == details.data,
+                  );
+                  onLayout(
+                    alreadyUsed ? 'move' : 'add',
+                    details.data,
+                    slotIndex: item.slotIndex,
+                  );
+                },
+                builder: (context, candidates, _) => LongPressDraggable<String>(
+                  data: item.assetId,
+                  maxSimultaneousDrags: editable && !controller.busy ? 1 : 0,
+                  feedback: Material(
+                    elevation: 12,
+                    borderRadius: BorderRadius.circular(14),
+                    child: SizedBox(width: 210, height: 180, child: card),
+                  ),
+                  childWhenDragging: Opacity(opacity: .35, child: card),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      border: candidates.isEmpty
+                          ? null
+                          : Border.all(
+                              color: Theme.of(context).colorScheme.primary,
+                              width: 3,
                             ),
-                            Positioned(
-                              left: 8,
-                              top: 8,
-                              child: CircleAvatar(
-                                radius: 15,
-                                child: Text('${item.slotIndex + 1}'),
-                              ),
-                            ),
-                            if (item.resourceRemoved)
-                              const Center(child: Chip(label: Text('源图片已移除'))),
-                          ],
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-                        child: TextField(
-                          key: ValueKey('storyboard-caption-${item.assetId}'),
-                          controller: captionControllers[item.assetId],
-                          readOnly: !editable,
-                          minLines: 2,
-                          maxLines: 2,
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            hintText: '镜头描述',
-                            border: InputBorder.none,
-                          ),
-                          onChanged: (_) => onCaptionChanged(),
-                        ),
-                      ),
-                    ],
+                    ),
+                    child: card,
                   ),
                 ),
               );
@@ -621,6 +678,267 @@ class _StoryboardGrid extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _StoryboardItemCard extends StatelessWidget {
+  const _StoryboardItemCard({
+    required this.controller,
+    required this.item,
+    required this.selected,
+    required this.editable,
+    required this.captionController,
+    required this.onCaptionChanged,
+    required this.onRemove,
+  });
+
+  final RemoteAppController controller;
+  final RemoteStoryboardItem item;
+  final bool selected;
+  final bool editable;
+  final TextEditingController? captionController;
+  final VoidCallback onCaptionChanged;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    clipBehavior: Clip.antiAlias,
+    color: selected ? Theme.of(context).colorScheme.primaryContainer : null,
+    child: InkWell(
+      onTap: () => controller.selectStoryboardItem(item.assetId),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _StoryboardRemoteImage(
+                  controller: controller,
+                  mediaId: item.imageMediaId,
+                  flipHorizontal: item.flipHorizontal,
+                  flipVertical: item.flipVertical,
+                ),
+                Positioned(
+                  left: 8,
+                  top: 8,
+                  child: CircleAvatar(
+                    radius: 15,
+                    child: Text('${item.slotIndex + 1}'),
+                  ),
+                ),
+                if (editable)
+                  Positioned(
+                    right: 6,
+                    top: 6,
+                    child: IconButton.filledTonal(
+                      key: ValueKey('remove-storyboard-item-${item.assetId}'),
+                      tooltip: '移出画板',
+                      onPressed: controller.busy ? null : onRemove,
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                    ),
+                  ),
+                if (item.resourceRemoved)
+                  const Center(child: Chip(label: Text('源图片已移除'))),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+            child: TextField(
+              key: ValueKey('storyboard-caption-${item.assetId}'),
+              controller: captionController,
+              readOnly: !editable,
+              minLines: 2,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: '镜头描述',
+                border: InputBorder.none,
+              ),
+              onChanged: (_) => onCaptionChanged(),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _StoryboardToolsPanel extends StatelessWidget {
+  const _StoryboardToolsPanel({
+    required this.controller,
+    required this.detail,
+    required this.nameController,
+    required this.editable,
+    required this.dirty,
+    required this.saving,
+    required this.onNameChanged,
+    required this.onRename,
+    required this.onLayout,
+    this.embedded = false,
+  });
+
+  final RemoteAppController controller;
+  final RemoteStoryboardDetail? detail;
+  final TextEditingController nameController;
+  final bool editable;
+  final bool dirty;
+  final bool saving;
+  final VoidCallback onNameChanged;
+  final Future<void> Function() onRename;
+  final _StoryboardLayoutCallback onLayout;
+  final bool embedded;
+
+  @override
+  Widget build(BuildContext context) {
+    final board = detail;
+    if (board == null) return const Center(child: Text('请选择画板'));
+    final unusedAssets = controller.storyboardAssets
+        .where((asset) => !asset.used)
+        .toList(growable: false);
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '画板功能',
+          style: Theme.of(
+            context,
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '拖动画板镜头可重新排序，也可把下方素材直接拖到目标格位。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          key: const ValueKey('storyboard-name-field'),
+          controller: nameController,
+          readOnly: !editable,
+          maxLength: 200,
+          decoration: const InputDecoration(
+            labelText: '画板名称',
+            prefixIcon: Icon(Icons.drive_file_rename_outline_rounded),
+          ),
+          onChanged: (_) => onNameChanged(),
+        ),
+        FilledButton.tonalIcon(
+          key: const ValueKey('rename-storyboard-board'),
+          onPressed: dirty && editable && !saving && !controller.busy
+              ? onRename
+              : null,
+          icon: const Icon(Icons.check_rounded),
+          label: Text(saving ? '正在同步…' : '重命名并保存'),
+        ),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '图片素材',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+              ),
+            ),
+            Text('${unusedAssets.length} 张可加入'),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (unusedAssets.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 22),
+            child: Text('当前没有未使用的图片素材。'),
+          )
+        else
+          for (final asset in unusedAssets)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 9),
+              child: _StoryboardAssetTile(
+                controller: controller,
+                asset: asset,
+                enabled: editable && !controller.busy,
+                onAdd: () => onLayout('add', asset.id),
+              ),
+            ),
+      ],
+    );
+    if (embedded) {
+      return Card(
+        key: const ValueKey('storyboard-tools-panel'),
+        child: Padding(padding: const EdgeInsets.all(16), child: content),
+      );
+    }
+    return ColoredBox(
+      key: const ValueKey('storyboard-tools-panel'),
+      color: Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 40),
+        child: content,
+      ),
+    );
+  }
+}
+
+class _StoryboardAssetTile extends StatelessWidget {
+  const _StoryboardAssetTile({
+    required this.controller,
+    required this.asset,
+    required this.enabled,
+    required this.onAdd,
+  });
+
+  final RemoteAppController controller;
+  final RemoteStoryboardAsset asset;
+  final bool enabled;
+  final VoidCallback onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final tile = Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 82,
+            height: 66,
+            child: _StoryboardRemoteImage(
+              controller: controller,
+              mediaId: asset.imageMediaId,
+              flipHorizontal: false,
+              flipVertical: false,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${asset.sourceName} ${asset.indexNo}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          IconButton(
+            key: ValueKey('add-storyboard-asset-${asset.id}'),
+            tooltip: '加入画板',
+            onPressed: enabled ? onAdd : null,
+            icon: const Icon(Icons.add_photo_alternate_outlined),
+          ),
+        ],
+      ),
+    );
+    return LongPressDraggable<String>(
+      data: asset.id,
+      maxSimultaneousDrags: enabled ? 1 : 0,
+      feedback: Material(
+        elevation: 12,
+        borderRadius: BorderRadius.circular(14),
+        child: SizedBox(width: 280, child: tile),
+      ),
+      childWhenDragging: Opacity(opacity: .35, child: tile),
+      child: tile,
     );
   }
 }

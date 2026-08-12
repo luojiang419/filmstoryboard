@@ -5,9 +5,11 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../data/project_catalog_repository.dart';
+import '../data/project_aspect_repository.dart';
 import '../data/project_directories.dart';
 import '../data/project_path_resolver.dart';
 import '../domain/project_manifest.dart';
+import '../domain/project_aspect_ratio.dart';
 import '../domain/project_models.dart';
 
 class ProjectService {
@@ -70,6 +72,7 @@ class ProjectService {
   Future<ProjectSession> createProject({
     required String name,
     required Directory parentDirectory,
+    ProjectAspectMode aspectMode = ProjectAspectMode.auto,
   }) async {
     final normalizedName = name.trim();
     final error = validateProjectName(normalizedName);
@@ -88,6 +91,9 @@ class ProjectService {
       final stagingDirectories = ProjectDirectories.fromRoot(staging);
       await stagingDirectories.create();
       final database = await AppDatabase.open(stagingDirectories.databaseFile);
+      ProjectAspectRepository(
+        database,
+      ).save(ProjectAspectState(mode: aspectMode));
       final validDatabase = database.integrityCheck();
       database.dispose();
       if (!validDatabase) {

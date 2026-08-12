@@ -273,8 +273,11 @@ class KlingVideoPromptAdapter {
     return true;
   }
 
-  static bool _isKlingPrompt(String prompt) =>
-      RegExp(r'^(?:以)?图片\s*1\s*(?:作为|为)').hasMatch(prompt);
+  static bool _isKlingPrompt(String prompt) => RegExp(
+    r'^(?:以)?图片\s*1\s*'
+    r'(?:(?:至|到|[-~～])\s*图片?\s*\d+\s*)?'
+    r'(?:作为|为)',
+  ).hasMatch(prompt);
 
   static bool _isStructuredPrompt(String value) {
     const markers = [

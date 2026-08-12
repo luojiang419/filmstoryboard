@@ -12,8 +12,11 @@ import '../../../app/app_shell.dart';
 import '../../../app/window_title_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../remote_access/application/remote_workspace_registry.dart';
+import '../../remote_access/application/remote_project_registry.dart';
+import '../application/project_remote_source.dart';
 import '../application/project_workspace_controller.dart';
 import '../domain/project_models.dart';
+import '../domain/project_aspect_ratio.dart';
 
 class ProjectPortal extends ConsumerStatefulWidget {
   const ProjectPortal({super.key, this.initialProjectIndexPath});
@@ -32,11 +35,14 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
 
   late final ProjectWorkspaceController _controller;
   late final RemoteWorkspaceRegistry _remoteWorkspaceRegistry;
+  late final RemoteProjectRegistry _remoteProjectRegistry;
+  late final ProjectRemoteSource _projectRemoteSource;
 
   @override
   void initState() {
     super.initState();
     _remoteWorkspaceRegistry = ref.read(remoteWorkspaceRegistryProvider);
+    _remoteProjectRegistry = ref.read(remoteProjectRegistryProvider);
     _controller = ProjectWorkspaceController(
       appDirectories: ref.read(appDirectoriesProvider),
       globalDatabase: ref.read(globalDatabaseProvider),
@@ -44,6 +50,8 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
       projectService: ref.read(projectServiceProvider),
       legacyMigrator: ref.read(legacyProjectMigratorProvider),
     )..addListener(_handleChanged);
+    _projectRemoteSource = ProjectRemoteSource(_controller);
+    _remoteProjectRegistry.attach(_projectRemoteSource);
     unawaited(
       _controller.initialize(
         initialProjectIndexPath: widget.initialProjectIndexPath,
@@ -53,6 +61,8 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
 
   @override
   void dispose() {
+    _remoteProjectRegistry.detach(source: _projectRemoteSource);
+    _projectRemoteSource.dispose();
     _remoteWorkspaceRegistry.detach(
       projectId: _controller.session?.manifest.projectId,
     );
@@ -166,6 +176,7 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
       await _controller.createProject(
         name: request.name,
         parentDirectory: request.parentDirectory,
+        aspectMode: request.aspectMode,
       );
     } catch (error) {
       _showError(error);
@@ -1274,10 +1285,12 @@ class _CreateProjectRequest {
   const _CreateProjectRequest({
     required this.name,
     required this.parentDirectory,
+    required this.aspectMode,
   });
 
   final String name;
   final Directory parentDirectory;
+  final ProjectAspectMode aspectMode;
 }
 
 class _CreateProjectDialog extends StatefulWidget {
@@ -1292,6 +1305,7 @@ class _CreateProjectDialog extends StatefulWidget {
 class _CreateProjectDialogState extends State<_CreateProjectDialog> {
   final _nameController = TextEditingController();
   late Directory _parentDirectory;
+  ProjectAspectMode _aspectMode = ProjectAspectMode.auto;
   String? _errorText;
 
   @override
@@ -1326,6 +1340,26 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> {
                 errorText: _errorText,
               ),
               onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<ProjectAspectMode>(
+              key: const ValueKey('create-project-aspect-mode'),
+              initialValue: _aspectMode,
+              decoration: const InputDecoration(labelText: '项目画幅'),
+              items: [
+                for (final mode in ProjectAspectMode.values)
+                  DropdownMenuItem(value: mode, child: Text(mode.label)),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _aspectMode = value);
+              },
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _aspectMode == ProjectAspectMode.auto
+                  ? '第一个有效视频会自动匹配 16:9、4:3、3:4、4:5 或 9:16；后续不同画幅只提示，不会改变项目。'
+                  : '该项目固定使用 ${_aspectMode.label}，导入视频不会自动改动画幅。',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
             const Text('创建位置'),
@@ -1383,7 +1417,11 @@ class _CreateProjectDialogState extends State<_CreateProjectDialog> {
     }
     Navigator.pop(
       context,
-      _CreateProjectRequest(name: name, parentDirectory: _parentDirectory),
+      _CreateProjectRequest(
+        name: name,
+        parentDirectory: _parentDirectory,
+        aspectMode: _aspectMode,
+      ),
     );
   }
 }

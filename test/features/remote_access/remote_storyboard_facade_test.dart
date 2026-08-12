@@ -36,6 +36,45 @@ void main() {
     expect(item['imageMediaId'], isNotEmpty);
     expect(jsonEncode(detail), isNot(contains(fixture.root.path)));
     expect(jsonEncode(detail), isNot(contains('localPath')));
+    final assets = fixture.facade.storyboardAssets(fixture.boardId);
+    final asset =
+        (assets['items']! as List<Object?>).single as Map<String, Object?>;
+    expect(asset['id'], 'asset-1');
+    expect(asset['used'], isTrue);
+    expect(asset['imageMediaId'], isNotEmpty);
+    expect(jsonEncode(assets), isNot(contains(fixture.root.path)));
+    expect(jsonEncode(assets), isNot(contains('localPath')));
+  });
+
+  test('布局命令校验修订号并通过资源 ID 移除镜头', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    final revision = fixture.storyboardRegistry.revisionFor(fixture.boardId);
+
+    final updated = fixture.facade.updateStoryboardLayout(
+      boardId: fixture.boardId,
+      expectedRevision: revision,
+      action: 'remove',
+      assetId: 'asset-1',
+    );
+
+    expect(updated['revision'], revision + 1);
+    expect(updated['itemCount'], 0);
+    expect(
+      () => fixture.facade.updateStoryboardLayout(
+        boardId: fixture.boardId,
+        expectedRevision: revision,
+        action: 'remove',
+        assetId: 'asset-1',
+      ),
+      throwsA(
+        isA<RemoteOperationException>().having(
+          (error) => error.code,
+          'code',
+          'revision_conflict',
+        ),
+      ),
+    );
   });
 
   test('必要编辑和批注共用修订冲突且锁定只阻止内容编辑', () async {

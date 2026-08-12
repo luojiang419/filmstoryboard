@@ -74,6 +74,111 @@ void main() {
     expect(model.modelKey, 'star-video2');
   });
 
+  test('LibTV service 通过官方 model search 命令列出全部视频模型', () async {
+    final calls = <List<String>>[];
+    Future<ProcessResult> runner(
+      String executable,
+      List<String> arguments, {
+      required bool runInShell,
+    }) async {
+      calls.add(arguments);
+      return ProcessResult(
+        1,
+        0,
+        jsonEncode({
+          'query': '',
+          'nodeType': 'video',
+          'matchKind': 'all',
+          'matches': [
+            {
+              'modelName': 'Seedance 2.0',
+              'modelKey': 'star-video2',
+              'modality': 'video',
+            },
+            {
+              'modelName': 'Kling O1',
+              'modelKey': 'kling-o1',
+              'modality': 'video',
+            },
+          ],
+        }),
+        '',
+      );
+    }
+
+    final models = await LibTvCliService(processRunner: runner).videoModels();
+
+    expect(calls.single, ['model', 'search', '--type', 'video']);
+    expect(models.map((model) => model.modelName), [
+      'Seedance 2.0',
+      'Kling O1',
+    ]);
+    expect(models.last.modelKey, 'kling-o1');
+  });
+
+  test('LibTV 模型 schema 完整解析模式、分组参数、枚举和数值范围', () {
+    const model = LibTvModelSpec(
+      modelName: '动态模型',
+      modelKey: 'dynamic-video',
+      modality: 'video',
+      schema: {
+        'properties': {
+          'modeType': {
+            'items': {
+              'singleImage2video': [1, 1],
+              'mixed2video': [1, 9],
+            },
+          },
+          'count': [1, 2, 4],
+          'ratio': {
+            'displayName': '比例',
+            'default': '16:9',
+            'component': 'singleButton',
+            'enum': [
+              {'value': 'adaptive', 'displayName': '自动'},
+              {'value': '16:9', 'displayName': '横屏'},
+            ],
+          },
+          'duration': {
+            'displayName': '时长',
+            'default': 5,
+            'component': 'slider',
+            'min': 4,
+            'max': 15,
+            'step': 1,
+          },
+          'search_enabled': {
+            'displayName': '联网增强',
+            'default': 1,
+            'component': 'switch',
+          },
+        },
+        'config': {
+          'settings': {
+            'singleImage2video': ['ratio', 'duration'],
+            'mixed2video': ['ratio', 'duration'],
+          },
+          'advancedSettings': ['search_enabled'],
+        },
+      },
+    );
+
+    expect(model.imageInputModeTypes, ['singleImage2video', 'mixed2video']);
+    expect(model.inputRangeForMode('mixed2video'), (min: 1, max: 9));
+    expect(model.countOptions.map((option) => option.value), ['1', '2', '4']);
+    final parameters = model.parametersForMode('singleImage2video');
+    expect(parameters.map((parameter) => parameter.key), [
+      'ratio',
+      'duration',
+      'search_enabled',
+    ]);
+    expect(parameters.first.options.first.label, '自动');
+    expect(parameters[1].min, 4);
+    expect(parameters[1].max, 15);
+    expect(parameters.last.isSwitch, isTrue);
+    expect(parameters.last.group, LibTvParameterGroup.advanced);
+  });
+
   test('即梦图片引用会转换为 LibTV 节点引用并补齐未引用首帧', () {
     expect(
       LibTvCliService.promptWithNodeReferences(
@@ -153,22 +258,30 @@ void main() {
           taskId: 'task-1234567890',
           prompt: '镜头1：图片1中的人物缓慢转头。',
           sourceImagePath: source.path,
-          ratio: 'adaptive',
-          resolution: '480p',
+          modelName: 'Kling O1',
           durationSeconds: 5,
-          enableSound: false,
-          searchEnabled: false,
+          parameters: const {
+            'modeType': 'singleImage2video',
+            'count': '1',
+            'ratio': 'adaptive',
+            'resolution': '480p',
+            'enableSound': 'off',
+            'search_enabled': '0',
+            'cameraControl': 'horizontal',
+          },
         );
 
     expect(result.projectUuid, 'project-1');
     expect(result.videoUrl, 'https://cdn.example.com/result.mp4');
     final generateCall = calls.last;
     expect(generateCall, containsAllInOrder(['node', 'create']));
-    expect(generateCall, contains('model=Seedance 2.0'));
+    expect(generateCall, contains('model=Kling O1'));
+    expect(generateCall, contains('modeType=singleImage2video'));
     expect(generateCall, contains('ratio=adaptive'));
     expect(generateCall, contains('resolution=480p'));
     expect(generateCall, contains('enableSound=off'));
     expect(generateCall, contains('search_enabled=0'));
+    expect(generateCall, contains('cameraControl=horizontal'));
     final promptIndex = generateCall.indexOf('--prompt');
     expect(promptIndex, greaterThanOrEqualTo(0));
     expect(

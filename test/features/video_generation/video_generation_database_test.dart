@@ -88,6 +88,46 @@ void main() {
     expect(database.integrityCheck(), isTrue);
   });
 
+  test('schema 20 升级后为历史生成任务补齐默认 IO 字段', () async {
+    final file = File('${root.path}/legacy-v20.sqlite');
+    final legacy = sqlite3.open(file.path);
+    legacy
+      ..execute('''
+        CREATE TABLE video_generation_tasks(
+          id TEXT PRIMARY KEY,
+          duration_seconds INTEGER NOT NULL
+        );
+      ''')
+      ..execute(
+        "INSERT INTO video_generation_tasks(id, duration_seconds) VALUES('task-1', 5);",
+      )
+      ..execute('PRAGMA user_version = 20;')
+      ..close();
+
+    final database = await AppDatabase.open(file);
+    addTearDown(database.dispose);
+    final columns = database
+        .selectRows('PRAGMA table_info(video_generation_tasks);')
+        .map((row) => row['name'])
+        .toSet();
+    final row = database
+        .selectRows(
+          'SELECT source_duration_ms, trim_in_ms, trim_out_ms '
+          "FROM video_generation_tasks WHERE id = 'task-1';",
+        )
+        .single;
+
+    expect(
+      columns,
+      containsAll(['source_duration_ms', 'trim_in_ms', 'trim_out_ms']),
+    );
+    expect(row, {'source_duration_ms': 0, 'trim_in_ms': 0, 'trim_out_ms': 0});
+    expect(
+      database.selectRows('PRAGMA user_version;').single['user_version'],
+      AppDatabase.currentSchemaVersion,
+    );
+  });
+
   test('配置、提示词草稿、不可变提交快照和恢复队列可往返', () async {
     final database = await AppDatabase.open(
       File('${root.path}/current.sqlite'),
@@ -147,6 +187,9 @@ void main() {
           prompt: '提交时固定文本',
           creditsBefore: 46220,
           status: VideoGenerationTaskStatus.timedOut,
+          sourceDurationMs: 5200,
+          trimInMs: 400,
+          trimOutMs: 4600,
           createdAt: now,
           updatedAt: now,
         ),
@@ -167,6 +210,11 @@ void main() {
     );
     expect(repository.listRecoverableTasks(includeTimedOut: false), isEmpty);
     expect(repository.getTask('task-1')?.prompt, '提交时固定文本');
+    final storedTask = repository.getTask('task-1')!;
+    expect(storedTask.sourceDurationMs, 5200);
+    expect(storedTask.trimRange.inPoint, const Duration(milliseconds: 400));
+    expect(storedTask.trimRange.outPoint, const Duration(milliseconds: 4600));
+    expect(storedTask.trimRange.duration, const Duration(milliseconds: 4200));
   });
 
   test('生成目录使用安全稳定脚本名且不创建原视频片段目录', () async {

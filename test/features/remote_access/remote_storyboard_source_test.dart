@@ -112,6 +112,72 @@ void main() {
     expect(fixture.controller.value.selectedBoardId, secondBoard.id);
     expect(storyboardEventCount, 1);
   });
+
+  test('远程布局复用桌面加入、拖拽排序和移除能力', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    const firstAsset = StoryboardCutAsset(
+      id: 'asset-layout-1',
+      imageId: 'image-layout-1',
+      sourceName: '布局帧',
+      path: r'C:\not-exposed\layout-1.png',
+      indexNo: 1,
+    );
+    const secondAsset = StoryboardCutAsset(
+      id: 'asset-layout-2',
+      imageId: 'image-layout-2',
+      sourceName: '布局帧',
+      path: r'C:\not-exposed\layout-2.png',
+      indexNo: 2,
+    );
+    fixture.controller.addOrRemoveAsset(firstAsset);
+    fixture.controller.addOrRemoveAsset(secondAsset);
+    final target = fixture.controller.addBoard();
+    expect(
+      fixture.source.assets.map((asset) => asset.id),
+      containsAll([firstAsset.id, secondAsset.id]),
+    );
+
+    RemoteStoryboardEditOutcome apply(
+      RemoteStoryboardLayoutAction action,
+      String assetId, {
+      int? slotIndex,
+    }) => fixture.storyboardRegistry.performRemoteMutation(
+      (source) => source.applyLayout(
+        RemoteStoryboardLayoutCommand(
+          boardId: target.id,
+          action: action,
+          assetId: assetId,
+          slotIndex: slotIndex,
+        ),
+      ),
+    );
+
+    expect(
+      apply(RemoteStoryboardLayoutAction.add, firstAsset.id),
+      RemoteStoryboardEditOutcome.updated,
+    );
+    expect(
+      apply(RemoteStoryboardLayoutAction.add, secondAsset.id),
+      RemoteStoryboardEditOutcome.updated,
+    );
+    expect(
+      apply(RemoteStoryboardLayoutAction.move, secondAsset.id, slotIndex: 0),
+      RemoteStoryboardEditOutcome.updated,
+    );
+    expect(
+      fixture.controller.value.selectedBoard!.items.first.asset.id,
+      secondAsset.id,
+    );
+    expect(
+      apply(RemoteStoryboardLayoutAction.remove, firstAsset.id),
+      RemoteStoryboardEditOutcome.updated,
+    );
+    expect(
+      fixture.controller.value.selectedBoard!.items.single.asset.id,
+      secondAsset.id,
+    );
+  });
 }
 
 class _Fixture {

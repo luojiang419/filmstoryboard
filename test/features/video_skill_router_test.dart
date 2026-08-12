@@ -30,6 +30,14 @@ void main() {
     apiKey: '',
     model: 'Seedance 2.0',
   );
+  const remoteH3 = VideoGenerationApiConfig(
+    id: 'remote-minimax-h3',
+    name: 'MiniMax H3 远程',
+    kind: VideoGenerationApiConfigKind.httpApi,
+    baseUrl: 'https://example.com',
+    apiKey: '',
+    model: 'MiniMax-H3',
+  );
 
   test('H3 根据当前剧情自动选择至多一个专项 Skill', () {
     final music = router.resolve(
@@ -85,5 +93,18 @@ void main() {
     expect(klingRoute.promptStyle, H3PromptStyle.general);
     expect(libTvRoute.backendKind, BundledVideoSkillKind.libTvCli);
     expect(libTvRoute.promptStyle, H3PromptStyle.general);
+  });
+
+  test('远程 H3 不显示也不执行只供本地模型使用的 H3 Skill 路由', () {
+    final route = router.resolve(
+      config: remoteH3,
+      narrativeText: '音乐 MV 与歌词贴字',
+      preferredStyle: H3PromptStyle.resolve('music-video-subtitle'),
+    );
+
+    expect(route.backendKind, isNull);
+    expect(route.supportsH3NarrativeSkill, isFalse);
+    expect(route.promptStyle, H3PromptStyle.general);
+    expect(route.automaticallySelected, isFalse);
   });
 }

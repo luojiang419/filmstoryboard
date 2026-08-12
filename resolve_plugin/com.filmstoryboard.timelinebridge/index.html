@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FilmStoryboard 时间线桥接</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header>
+        <div class="eyebrow">FILMSTORYBOARD</div>
+        <h1>时间线桥接</h1>
+        <p>保持本窗口开启，即可从软件端发送最新素材和 I/O 点。</p>
+      </header>
+
+      <section class="status-card" aria-live="polite">
+        <div class="status-heading">
+          <span id="status-dot" class="status-dot starting"></span>
+          <strong id="status-label">正在启动</strong>
+        </div>
+        <p id="status-message">正在初始化 Resolve 接口…</p>
+      </section>
+
+      <dl class="details">
+        <div><dt>当前项目</dt><dd id="project-name">—</dd></div>
+        <div><dt>Resolve</dt><dd id="resolve-version">—</dd></div>
+        <div><dt>插件版本</dt><dd id="plugin-version">—</dd></div>
+        <div><dt>本机 Bridge</dt><dd id="bridge-address">—</dd></div>
+        <div><dt>最近请求</dt><dd id="last-request">尚未收到请求</dd></div>
+      </dl>
+
+      <button id="refresh-button" type="button">刷新状态</button>
+      <p class="security-note">Bridge 仅监听本机回环地址，并使用共享随机令牌鉴权。</p>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>

@@ -35,6 +35,18 @@ class StoryboardRemoteSource implements RemoteStoryboardSource {
       .toList(growable: false);
 
   @override
+  List<RemoteStoryboardAssetRecord> get assets => _allAssets
+      .map(
+        (asset) => RemoteStoryboardAssetRecord(
+          id: asset.id,
+          sourceName: asset.sourceName,
+          indexNo: asset.indexNo,
+          localPath: asset.path,
+        ),
+      )
+      .toList(growable: false);
+
+  @override
   Stream<RemoteStoryboardSourceChange> get changes => _changes.stream;
 
   @override
@@ -73,6 +85,71 @@ class StoryboardRemoteSource implements RemoteStoryboardSource {
     return changed
         ? RemoteStoryboardEditOutcome.updated
         : RemoteStoryboardEditOutcome.unchanged;
+  }
+
+  @override
+  RemoteStoryboardEditOutcome applyLayout(
+    RemoteStoryboardLayoutCommand command,
+  ) {
+    final current = _controller.value.boards
+        .cast<StoryboardBoard?>()
+        .firstWhere(
+          (board) => board?.id == command.boardId,
+          orElse: () => null,
+        );
+    if (current == null) return RemoteStoryboardEditOutcome.notFound;
+    if (current.locked) return RemoteStoryboardEditOutcome.locked;
+    _controller.openBoard(command.boardId);
+    final before = jsonEncode(_boardSignatureJson(current));
+    switch (command.action) {
+      case RemoteStoryboardLayoutAction.add:
+        final asset = _assetById(command.assetId);
+        if (asset == null) return RemoteStoryboardEditOutcome.notFound;
+        final slotIndex = command.slotIndex;
+        if (slotIndex == null) {
+          _controller.addOrRemoveAsset(asset);
+        } else {
+          _controller.placeAssetAtSlot(asset, slotIndex);
+        }
+      case RemoteStoryboardLayoutAction.move:
+        final item = current.items.cast<StoryboardItem?>().firstWhere(
+          (candidate) => candidate?.asset.id == command.assetId,
+          orElse: () => null,
+        );
+        if (item == null) return RemoteStoryboardEditOutcome.notFound;
+        _controller.moveItem(item.slotIndex, command.slotIndex!);
+      case RemoteStoryboardLayoutAction.remove:
+        if (!current.items.any((item) => item.asset.id == command.assetId)) {
+          return RemoteStoryboardEditOutcome.notFound;
+        }
+        _controller.removeAsset(command.assetId);
+    }
+    final updated = _controller.value.boards
+        .cast<StoryboardBoard?>()
+        .firstWhere(
+          (board) => board?.id == command.boardId,
+          orElse: () => null,
+        );
+    if (updated == null) return RemoteStoryboardEditOutcome.notFound;
+    return before == jsonEncode(_boardSignatureJson(updated))
+        ? RemoteStoryboardEditOutcome.unchanged
+        : RemoteStoryboardEditOutcome.updated;
+  }
+
+  StoryboardCutAsset? _assetById(String assetId) => _allAssets
+      .cast<StoryboardCutAsset?>()
+      .firstWhere((asset) => asset?.id == assetId, orElse: () => null);
+
+  List<StoryboardCutAsset> get _allAssets {
+    final byId = <String, StoryboardCutAsset>{
+      for (final asset in _controller.value.assets) asset.id: asset,
+    };
+    for (final board in _controller.value.boards) {
+      for (final item in board.items) {
+        byId.putIfAbsent(item.asset.id, () => item.asset);
+      }
+    }
+    return byId.values.toList(growable: false);
   }
 
   void _handleControllerChanged() {
@@ -125,6 +202,7 @@ class StoryboardRemoteSource implements RemoteStoryboardSource {
     'rowDividerOpacity': board.rowDividerOpacity,
     'titleAlignment': board.titleAlignment.name,
     'portraitMode': board.portraitMode,
+    'imageAspectRatio': board.imageAspectRatio,
     'locked': board.locked,
     'groupId': board.groupId,
     'summary': board.summary == null

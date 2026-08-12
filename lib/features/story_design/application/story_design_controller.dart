@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../grid_cut/application/grid_cut_controller.dart';
+import '../../projects/application/project_aspect_controller.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../storyboard/data/image_generation_diagnostic_logger.dart';
@@ -28,6 +29,7 @@ final storyDesignControllerProvider = Provider<StoryDesignController>(
       preferencesRepository: StoryDesignPreferencesRepository(
         ref.watch(appDatabaseProvider),
       ),
+      projectAspectController: ref.watch(projectAspectControllerProvider),
     );
     ref.onDispose(controller.dispose);
     return controller;
@@ -36,6 +38,7 @@ final storyDesignControllerProvider = Provider<StoryDesignController>(
     projectDirectoriesProvider,
     gridCutControllerProvider,
     appDatabaseProvider,
+    projectAspectControllerProvider,
   ],
 );
 
@@ -45,12 +48,14 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     required SettingsController settingsController,
     required GridCutController gridCutController,
     StoryDesignPreferencesRepository? preferencesRepository,
+    ProjectAspectController? projectAspectController,
     StoryDesignResultRepository? resultRepository,
     ImageGenerationService? imageGenerationService,
   }) : _directories = directories,
        _settingsController = settingsController,
        _gridCutController = gridCutController,
        _preferencesRepository = preferencesRepository,
+       _projectAspectController = projectAspectController,
        _resultRepository =
            resultRepository ?? StoryDesignResultRepository(directories),
        _imageGenerationService =
@@ -67,8 +72,12 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
            resultRepository:
                resultRepository ?? StoryDesignResultRepository(directories),
            fallbackModel: settingsController.value.imageGenerationModel,
+           projectAspectRatio:
+               projectAspectController?.state.effectiveRatio.label ?? '16:9',
          ),
-       );
+       ) {
+    _projectAspectController?.addListener(_handleProjectAspectChanged);
+  }
 
   static const _imageTypes = XTypeGroup(
     label: '图片',
@@ -81,6 +90,7 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   final SettingsController _settingsController;
   final GridCutController _gridCutController;
   final StoryDesignPreferencesRepository? _preferencesRepository;
+  final ProjectAspectController? _projectAspectController;
   final StoryDesignResultRepository _resultRepository;
   final ImageGenerationService _imageGenerationService;
   final bool _ownsImageGenerationService;
@@ -147,10 +157,30 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   @override
   void dispose() {
     _disposed = true;
+    _projectAspectController?.removeListener(_handleProjectAspectChanged);
     if (_ownsImageGenerationService) {
       _imageGenerationService.close();
     }
     super.dispose();
+  }
+
+  void _handleProjectAspectChanged() {
+    final projectAspectRatio =
+        _projectAspectController?.state.effectiveRatio.label ?? '16:9';
+    final normalized = _normalizeGenerationParams(
+      model: value.model,
+      aspectRatio: projectAspectRatio,
+      imageSize: value.imageSize,
+      quality: value.quality,
+    );
+    _setGenerationParameters(
+      value.copyWith(
+        aspectRatio: normalized.aspectRatio,
+        imageSize: normalized.imageSize,
+        quality: normalized.quality,
+        message: '项目画幅已切换为 $projectAspectRatio',
+      ),
+    );
   }
 
   void setPrompt(String prompt) {
@@ -565,6 +595,7 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     required StoryDesignPreferencesRepository? preferencesRepository,
     required StoryDesignResultRepository resultRepository,
     required String fallbackModel,
+    required String projectAspectRatio,
   }) {
     final defaultModel = _normalizeModel(fallbackModel);
     final preferences =
@@ -573,7 +604,9 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     final model = _normalizeModel(preferences.model);
     final normalized = _normalizeGenerationParams(
       model: model,
-      aspectRatio: preferences.aspectRatio,
+      aspectRatio: preferences.aspectRatio == 'auto'
+          ? projectAspectRatio
+          : preferences.aspectRatio,
       imageSize: preferences.imageSize,
       quality: preferences.quality,
     );

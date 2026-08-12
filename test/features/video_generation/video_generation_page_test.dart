@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 void main() {
-  test('LibTV 预设在设置页和生成页提供浏览器授权与即梦规则提示', () {
+  test('LibTV 预设提供浏览器授权、动态模型与 schema 参数控件', () {
     final generationSource = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
     ).readAsStringSync();
@@ -31,16 +31,18 @@ void main() {
     final controllerSource = File(
       'lib/features/video_generation/application/video_generation_controller.dart',
     ).readAsStringSync();
-    expect(controllerSource, contains('seconds.round().clamp(4, 15)'));
-    expect(generationSource, contains('即梦提示词'));
-    expect(generationSource, contains("'libtv-aspect-ratio-"));
-    expect(generationSource, contains("'libtv-resolution-"));
-    expect(generationSource, contains("'libtv-enable-sound-"));
-    expect(generationSource, contains("'libtv-search-enabled-"));
-    expect(generationSource, contains('controller.updateLibTvAspectRatio'));
-    expect(generationSource, contains('controller.updateLibTvResolution'));
-    expect(generationSource, contains('controller.updateLibTvSoundEnabled'));
-    expect(generationSource, contains('controller.updateLibTvSearchEnabled'));
+    expect(controllerSource, contains('_normalizedLibTvDuration(seconds)'));
+    expect(generationSource, contains("'libtv-model-"));
+    expect(generationSource, contains("'libtv-mode-"));
+    expect(generationSource, contains("'libtv-parameter-"));
+    expect(generationSource, contains('controller.selectLibTvModel'));
+    expect(
+      generationSource,
+      contains('controller.selectedLibTvModelKey.isEmpty'),
+    );
+    expect(generationSource, contains('controller.updateLibTvModeType'));
+    expect(generationSource, contains('controller.updateLibTvParameter'));
+    expect(generationSource, contains('LibTvModelParameterSpec'));
     expect(settingsSource, contains('VideoGenerationApiConfigKind.libTvCli'));
     expect(settingsSource, contains('即梦 2.0 官方提示词教程'));
     expect(settingsSource, contains('脚本专属 LibTV 画布'));
@@ -145,11 +147,52 @@ void main() {
       source,
       contains('tasks.where(_shouldKeepVideoTaskInCell).firstOrNull'),
     );
-    expect(source, contains("key: const ValueKey('export-timeline-xml')"));
+    expect(source, contains("key: ValueKey('export-timeline-xml')"));
+    expect(source, contains("key: const ValueKey('export-timeline-menu')"));
+    expect(source, contains("key: ValueKey('send-timeline-to-davinci')"));
+    expect(source, contains("title: Text('导出 XML 时间线')"));
+    expect(source, contains("title: Text('发送到达芬奇')"));
+    expect(source, contains('controller.sendTimelineToDaVinci()'));
     expect(source, contains("label: const Text('导出时间线')"));
+    expect(source, contains("key: const ValueKey('export-composed-video')"));
+    expect(source, contains("label: const Text('导出视频')"));
+    expect(source, contains('controller.exportVideo'));
+    expect(source, contains("'generated-video-io-button-\${latest.id}'"));
+    final generatedCellStart = source.indexOf('class _GeneratedVideoCell');
+    final generatedCellBuildEnd = source.indexOf(
+      'Future<void> _editTrim',
+      generatedCellStart,
+    );
+    final generatedCellBuild = source.substring(
+      generatedCellStart,
+      generatedCellBuildEnd,
+    );
+    expect(generatedCellBuild, contains('height: 150'));
+    expect(generatedCellBuild, contains('OutlinedButton.icon('));
+    expect(generatedCellBuild, isNot(contains('FilledButton.tonalIcon(')));
+    expect(
+      generatedCellBuild.indexOf("'generated-video-menu-\${shot.id}'"),
+      lessThan(
+        generatedCellBuild.indexOf("'generated-video-io-button-\${latest.id}'"),
+      ),
+    );
+    expect(source, contains('showGeneratedVideoTrimEditor('));
+    expect(source, contains('controller.updateTaskTrimRange(task, range)'));
+    expect(source, contains('start: widget.range.inPoint'));
+    expect(source, contains('end: widget.range.outPoint'));
+    expect(
+      source,
+      contains(
+        'oldWidget.range.inPoint != widget.range.inPoint ||\n'
+        '        oldWidget.range.outPoint != widget.range.outPoint) {\n'
+        '      unawaited(_applyRange());',
+      ),
+    );
+    expect(source, contains('await _player.open(Media(widget.file.path)'));
+    expect(source, contains('await _player.seek(widget.range.inPoint);'));
     expect(
       source.indexOf("key: const ValueKey('generate-all-videos')"),
-      lessThan(source.indexOf("key: const ValueKey('export-timeline-xml')")),
+      lessThan(source.indexOf("key: const ValueKey('export-timeline-menu')")),
     );
     expect(source, contains('bool _shouldKeepVideoTaskInCell'));
     final keepHelperStart = source.indexOf('bool _shouldKeepVideoTaskInCell');
@@ -175,6 +218,17 @@ void main() {
     expect(progressBranch, lessThan(completedBranch));
   });
 
+  test('视频生成页 XML 导出复用设置页默认时间线目录', () {
+    final source = File(
+      'lib/features/video_generation/application/video_generation_controller.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('DefaultExportDirectories('));
+    expect(source, contains('settings.exportDirectory'));
+    expect(source, contains(').timelines'));
+    expect(source, contains('ffprobeExecutable: settings.ffprobeExecutable'));
+  });
+
   test('生成视频右侧作品管理面板按脚本镜头折叠归纳版本', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
@@ -194,6 +248,13 @@ void main() {
     expect(source, contains("final panel = _WorkManagementPanel("));
     expect(source, contains("class _WorkManagementPanel"));
     expect(source, contains("'作品管理'"));
+    expect(
+      source,
+      contains("key: const ValueKey('clean-invalid-generated-works')"),
+    );
+    expect(source, contains("label: const Text('清理')"));
+    expect(source, contains('controller.invalidWorkTaskCount == 0'));
+    expect(source, contains('controller.cleanInvalidWorks'));
     expect(
       source,
       contains("List<_WorkVideoShotGroup> _orderedWorkVideoShotGroups"),
@@ -248,6 +309,14 @@ void main() {
     expect(itemSource, contains('controller.saveGeneratedVideoCopy('));
     expect(itemSource, contains('controller.deleteTask(task)'));
     expect(itemSource, contains('删除该作品？'));
+    expect(itemSource, contains('controller.selectWorkPreviewTask(task)'));
+    expect(source, contains('class _WorkVideoTrimPreview'));
+    expect(source, contains("'work-management-large-preview-\${task.id}'"));
+    expect(source, contains('GeneratedVideoTrimEditor('));
+    expect(source, contains('LogicalKeyboardKey.arrowLeft'));
+    expect(source, contains('LogicalKeyboardKey.arrowRight'));
+    expect(source, contains('controller.closeWorkPreview()'));
+    expect(source, contains("'close-work-management-large-preview'"));
   });
 
   test('合成提示词页按镜头组显示多帧画面', () {

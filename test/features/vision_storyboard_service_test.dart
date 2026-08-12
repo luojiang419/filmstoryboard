@@ -204,6 +204,12 @@ void main() {
     final content = requests.single['messages'][0]['content'] as List<dynamic>;
     final prompt = (content.first as Map<String, dynamic>)['text'] as String;
     expect(prompt, contains('镜头画面感'));
+    expect(prompt, contains('即梦 / Seedance 2.0 成熟导演语法'));
+    expect(prompt, contains('空间层 + 时间层'));
+    expect(prompt, contains('一个镜头尽量只指定一种有动机的主运镜'));
+    expect(prompt, contains('身体动势、动作趋势、表情变化潜力、视线方向'));
+    expect(prompt, contains('播放速度规则（最高优先级）'));
+    expect(prompt, contains('缓慢推近、平稳跟随、末段缓停只表示摄影机自身移动速度'));
     expect(prompt, contains('不要写成孤立标签'));
     expect(prompt, contains('神态'));
     expect(prompt, contains('姿态动作'));
@@ -288,6 +294,10 @@ void main() {
     final content = requests.single['messages'][0]['content'] as List<dynamic>;
     final prompt = (content.first as Map<String, dynamic>)['text'] as String;
     expect(prompt, contains('按时间顺序提供 4 张图片'));
+    expect(prompt, contains('全部图片默认是同一物理镜头内按时间排序的阶段抽帧'));
+    expect(prompt, contains('前一帧结束姿态就是后一帧动作起点'));
+    expect(prompt, contains('禁止每帧重新开始同一动作'));
+    expect(prompt, contains('不得按 Picture/帧编号重启运镜'));
     final imageParts = content
         .whereType<Map<String, dynamic>>()
         .where((part) => part['type'] == 'image_url')

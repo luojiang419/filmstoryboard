@@ -144,6 +144,7 @@ void main() {
       await tester.runAsync(() => root.delete(recursive: true));
     });
 
+    replicateController.moveToStep(ReplicateStep.confirmShots);
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -356,6 +357,7 @@ void main() {
       await tester.runAsync(() => root.delete(recursive: true));
     });
 
+    replicateController.moveToStep(ReplicateStep.confirmShots);
     await tester.pumpWidget(
       ProviderScope(
         overrides: [

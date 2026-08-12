@@ -7,8 +7,11 @@ import 'package:filmstoryboard/features/projects/application/project_service.dar
 import 'package:filmstoryboard/features/projects/application/project_workspace_controller.dart';
 import 'package:filmstoryboard/features/projects/data/legacy_project_migrator.dart';
 import 'package:filmstoryboard/features/projects/data/project_catalog_repository.dart';
+import 'package:filmstoryboard/features/projects/data/project_aspect_repository.dart';
 import 'package:filmstoryboard/features/projects/data/project_path_resolver.dart';
+import 'package:filmstoryboard/features/projects/domain/project_aspect_ratio.dart';
 import 'package:filmstoryboard/features/projects/domain/project_manifest.dart';
+import 'package:filmstoryboard/features/projects/domain/project_models.dart';
 
 void main() {
   group('ProjectManifest', () {
@@ -107,12 +110,32 @@ void main() {
 
       expect(indexFile.existsSync(), isTrue);
       expect(firstSession.directories.databaseFile.existsSync(), isTrue);
+      expect(
+        ProjectAspectRepository(firstSession.database).load().mode,
+        ProjectAspectMode.auto,
+      );
       expect(catalog.load().single.displayName, '广告分镜');
       await firstSession.close();
 
       final reopened = await service.openProject(indexFile);
       expect(reopened.manifest.projectId, catalog.load().single.projectId);
       await reopened.close();
+    });
+
+    test('创建工程时持久化手动竖屏画幅', () async {
+      final projects = Directory(
+        '${root.path}${Platform.pathSeparator}projects',
+      );
+      final session = await service.createProject(
+        name: '竖屏广告',
+        parentDirectory: projects,
+        aspectMode: ProjectAspectMode.portrait,
+      );
+
+      final state = ProjectAspectRepository(session.database).load();
+      expect(state.mode, ProjectAspectMode.portrait);
+      expect(state.effectiveRatio, ProjectAspectRatio.portrait9x16);
+      await session.close();
     });
 
     test('does not overwrite an existing same-name directory', () async {
@@ -271,6 +294,74 @@ void main() {
         File(controller.projects.single.indexPath).parent.path,
         directoryPath,
       );
+    },
+  );
+
+  test(
+    'remote catalog switch keeps current project when target open fails',
+    () async {
+      final root = await Directory.systemTemp.createTemp('workspace_switch_');
+      final directories = await AppDirectories.create(
+        executableDirectory: root,
+      );
+      final globalDatabase = await AppDatabase.open(directories.databaseFile);
+      final catalog = ProjectCatalogRepository(globalDatabase);
+      final service = ProjectService(catalog: catalog);
+      final controller = ProjectWorkspaceController(
+        appDirectories: directories,
+        globalDatabase: globalDatabase,
+        catalog: catalog,
+        projectService: service,
+        legacyMigrator: LegacyProjectMigrator(
+          appDirectories: directories,
+          globalDatabase: globalDatabase,
+          catalog: catalog,
+        ),
+      );
+      addTearDown(() async {
+        await controller.disposeSession();
+        controller.dispose();
+        globalDatabase.dispose();
+        await root.delete(recursive: true);
+      });
+
+      await controller.initialize();
+      await controller.createProject(name: '当前工程');
+      final currentId = controller.session!.manifest.projectId;
+      final targetSession = await service.createProject(
+        name: '目标工程',
+        parentDirectory: controller.defaultProjectRoot,
+      );
+      final targetId = targetSession.manifest.projectId;
+      await targetSession.close();
+      controller.refreshProjects();
+      final target = controller.projects.singleWhere(
+        (entry) => entry.projectId == targetId,
+      );
+
+      await controller.switchToCatalogProject(target);
+      expect(controller.session!.manifest.projectId, targetId);
+      expect(controller.phase, ProjectWorkspacePhase.editor);
+
+      final brokenSession = await service.createProject(
+        name: '稍后损坏的工程',
+        parentDirectory: controller.defaultProjectRoot,
+      );
+      final brokenId = brokenSession.manifest.projectId;
+      await brokenSession.close();
+      controller.refreshProjects();
+      final staleAvailableEntry = controller.projects.singleWhere(
+        (entry) => entry.projectId == brokenId,
+      );
+      await File(staleAvailableEntry.indexPath).delete();
+
+      await expectLater(
+        controller.switchToCatalogProject(staleAvailableEntry),
+        throwsA(isA<ProjectException>()),
+      );
+      expect(controller.session!.manifest.projectId, targetId);
+      expect(controller.session!.manifest.projectId, isNot(currentId));
+      expect(controller.phase, ProjectWorkspacePhase.editor);
     },
   );
 }

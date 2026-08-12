@@ -7,6 +7,10 @@ import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
 import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
+import 'package:filmstoryboard/features/remote_access/domain/remote_video_generation_models.dart';
+import 'package:filmstoryboard/features/projects/application/project_aspect_controller.dart';
+import 'package:filmstoryboard/features/projects/data/project_aspect_repository.dart';
+import 'package:filmstoryboard/features/projects/domain/project_aspect_ratio.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
@@ -14,12 +18,19 @@ import 'package:filmstoryboard/features/settings/domain/video_generation_api_con
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
+import 'package:filmstoryboard/features/video_analysis/data/ffmpeg_frame_extractor.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_controller.dart';
+import 'package:filmstoryboard/features/video_generation/application/video_generation_remote_source.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_task_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/cli_dependency_installer.dart';
+import 'package:filmstoryboard/features/video_generation/data/davinci_resolve_bridge_client.dart';
+import 'package:filmstoryboard/features/video_generation/data/davinci_resolve_connection_service.dart';
+import 'package:filmstoryboard/features/video_generation/data/davinci_resolve_plugin_launcher.dart';
+import 'package:filmstoryboard/features/video_generation/data/generated_video_compose_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_models.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_resolver.dart';
 import 'package:filmstoryboard/features/video_generation/data/kling_cli_service.dart';
@@ -28,6 +39,7 @@ import 'package:filmstoryboard/features/video_generation/data/libtv_cli_resolver
 import 'package:filmstoryboard/features/video_generation/data/libtv_cli_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/minimax_video_api_service.dart';
 import 'package:filmstoryboard/features/video_generation/data/video_generation_repository.dart';
+import 'package:filmstoryboard/features/video_generation/domain/generated_video_trim_range.dart';
 import 'package:filmstoryboard/features/video_generation/domain/video_generation_models.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -35,6 +47,47 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  test('发送到达芬奇时桥接离线会自动拉起并恢复连接', () async {
+    final bridge = _RecoveringDaVinciBridgeClient();
+    var launchCount = 0;
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(),
+      daVinciBridgeClient: bridge,
+      daVinciResolveConnectionService: DaVinciResolveConnectionService(
+        pollInterval: const Duration(milliseconds: 1),
+        startupTimeout: const Duration(milliseconds: 10),
+        delay: (_) async {},
+      ),
+      daVinciResolvePluginLauncher: DaVinciResolvePluginLauncher(
+        methodInvoker: (_) async {
+          launchCount++;
+          return const <String, Object?>{'success': true};
+        },
+      ),
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.sendTimelineToDaVinci();
+
+    expect(launchCount, 1);
+    expect(bridge.healthCount, 2);
+    expect(fixture.controller.value.errorMessage, '暂无可导出的完成视频');
+  });
+
+  test('发送到达芬奇的响应超时不再显示误导性错误文字', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(),
+      daVinciBridgeClient: _TimeoutDaVinciBridgeClient(),
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.sendTimelineToDaVinci();
+
+    expect(fixture.controller.value.isBusy, isFalse);
+    expect(fixture.controller.value.message, isEmpty);
+    expect(fixture.controller.value.errorMessage, isEmpty);
+  });
+
   test('模型清单到达后自动选择可灵 o3，并使用 16:9、1080p', () async {
     final root = await Directory.systemTemp.createTemp(
       'video-generation-controller-',
@@ -131,6 +184,43 @@ void main() {
     expect(
       repository.getProfile(controller.value.selectedScriptId)?.parameters,
       containsPair('resolution', '1080p'),
+    );
+  });
+
+  test('竖屏项目为新选择的可灵模型使用9比16默认比例', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(),
+      projectAspectMode: ProjectAspectMode.portrait,
+    );
+    addTearDown(fixture.dispose);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      identity: const KlingIdentity(
+        userId: 'portrait-user',
+        imageToVideoModels: [
+          KlingModelSpec(
+            model: 'portrait-model',
+            alias: '竖屏模型',
+            description: '',
+            arguments: [
+              KlingArgumentSpec(
+                name: 'aspect_ratio',
+                required: false,
+                defaultValue: '16:9',
+                allowedValues: ['16:9', '9:16'],
+                description: '',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    fixture.shootingController.addShot();
+
+    expect(fixture.controller.projectAspectRatioLabel, '9:16');
+    expect(
+      fixture.controller.value.profile?.parameters['aspect_ratio'],
+      '9:16',
     );
   });
 
@@ -776,6 +866,158 @@ void main() {
     await generation;
   });
 
+  test('脚本重建提示词后生成页退出旧手工稿并展示新构建稿', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final frame = await File(
+      p.join(fixture.root.path, 'rebuilt-prompt-source.png'),
+    ).writeAsBytes([1, 2, 3]);
+    final shot = fixture.shootingController.addShot()!;
+    fixture.shootingController.updateShot(
+      shot.copyWith(framePath: frame.path, prompt: '第一次构建提示词'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    fixture.controller.updateEditedPrompt(shot.id, '旧手工稿');
+    expect(
+      fixture.controller.value.drafts[shot.id]?.promptMode,
+      VideoPromptMode.edited,
+    );
+    expect(fixture.controller.value.drafts[shot.id]?.selectedPrompt, '旧手工稿');
+
+    final currentShot = fixture.shootingController.value.shots.single;
+    fixture.shootingController.updateShot(
+      currentShot.copyWith(prompt: '复刻分镜解析后的新构建提示词'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final rebuiltDraft = fixture.controller.value.drafts[shot.id]!;
+    expect(rebuiltDraft.sourcePrompt, '复刻分镜解析后的新构建提示词');
+    expect(rebuiltDraft.editedPrompt, '旧手工稿', reason: '旧手工稿应保留供用户切回查看');
+    expect(rebuiltDraft.promptMode, isNot(VideoPromptMode.edited));
+    expect(rebuiltDraft.selectedPrompt, contains('复刻分镜解析后的新构建提示词'));
+  });
+
+  test('全局及单镜头构建结果在脚本回写延迟时仍直接进入生成页', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final first = fixture.shootingController.addShot()!;
+    final second = fixture.shootingController.addShot()!;
+    const firstBuiltPrompt = '全局构建生成的镜头一最终提示词';
+    const secondBuiltPrompt = '全局构建生成的镜头二最终提示词';
+    const firstRebuiltPrompt = '单镜头重新构建后的镜头一最终提示词';
+    final repository = ReplicateRepository(fixture.database);
+    ShotPrompt promptFor(ScriptShot shot, String prompt) => ShotPrompt(
+      id: 'direct-build-prompt-${shot.id}',
+      runId: fixture.replicateController.value.run!.id,
+      shotNumber: shot.shotNumber,
+      scriptShotId: shot.id,
+      assetIds: const [],
+      prompt: prompt,
+      model: ReplicateController.promptModel,
+      rawResponse: '',
+      status: ProcessingStatus.completed,
+      errorMessage: '',
+      updatedAt: DateTime.now().toUtc(),
+    );
+    repository
+      ..upsertPrompt(promptFor(first, firstBuiltPrompt))
+      ..upsertPrompt(promptFor(second, secondBuiltPrompt));
+
+    fixture.replicateController.refresh();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      fixture.shootingController.value.shots.every(
+        (shot) => shot.prompt.isEmpty,
+      ),
+      isTrue,
+    );
+    expect(
+      fixture.controller.value.drafts[first.id]?.sourcePrompt,
+      firstBuiltPrompt,
+      reason: '全局构建完成后，视频生成页不能依赖拍摄脚本的二次回写',
+    );
+    expect(
+      fixture.controller.value.drafts[second.id]?.sourcePrompt,
+      secondBuiltPrompt,
+    );
+
+    repository.upsertPrompt(
+      ShotPrompt(
+        id: 'direct-build-prompt-${first.id}',
+        runId: fixture.replicateController.value.run!.id,
+        shotNumber: first.shotNumber,
+        scriptShotId: first.id,
+        assetIds: const [],
+        prompt: firstRebuiltPrompt,
+        model: ReplicateController.promptModel,
+        rawResponse: '',
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+
+    fixture.replicateController.refresh();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      fixture.controller.value.drafts[first.id]?.sourcePrompt,
+      firstRebuiltPrompt,
+      reason: '单镜头构建完成后必须立即覆盖对应视频提示词草稿',
+    );
+    expect(
+      fixture.controller.value.drafts[second.id]?.sourcePrompt,
+      secondBuiltPrompt,
+      reason: '单镜头构建不能改动其他镜头的提示词',
+    );
+  });
+
+  test('连续镜头组的多图构建提示词完整进入可灵生成草稿', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final first = fixture.shootingController.addShot()!;
+    final second = fixture.shootingController.addShot()!;
+    fixture.shootingController.updateShot(
+      first.copyWith(continuesToNext: true),
+    );
+    fixture.shootingController.updateShot(
+      second.copyWith(continuesFromPrevious: true),
+    );
+    const builtPrompt =
+        '图片1至图片2作为同一连续镜头的顺序阶段参考，保持主体、场景、动作因果、构图与光影连续。'
+        '[参考生成] 黄昏岩石山顶，人物转身仰望星空，6秒视频。';
+    ReplicateRepository(fixture.database).upsertPrompt(
+      ShotPrompt(
+        id: 'continuous-build-prompt-${first.id}',
+        runId: fixture.replicateController.value.run!.id,
+        shotNumber: first.shotNumber,
+        scriptShotId: first.id,
+        assetIds: const [],
+        prompt: builtPrompt,
+        model: ReplicateController.promptModel,
+        rawResponse: '',
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+
+    fixture.replicateController.refresh();
+    await Future<void>.delayed(Duration.zero);
+
+    final draft = fixture.controller.value.drafts[first.id]!;
+    expect(draft.sourcePrompt, builtPrompt);
+    expect(draft.klingPrompt, builtPrompt);
+    expect(draft.selectedPrompt, builtPrompt);
+  });
+
   test('不同镜头单格生成会立即并发提交且不锁住页面', () async {
     final fixture = await _createControllerFixture(
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
@@ -866,6 +1108,149 @@ void main() {
     fixture.fakeCli.completeQueryAsFailed();
     await firstGeneration;
     await secondGeneration;
+  });
+
+  test('选定多镜头生成只提交指定镜头并复用批量并发队列', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      identity: const KlingIdentity(
+        userId: 'user-1',
+        imageToVideoModels: [
+          KlingModelSpec(
+            model: 'kling-video-v3_0_omni',
+            alias: '可灵 o3',
+            description: '',
+            arguments: [
+              KlingArgumentSpec(
+                name: 'duration',
+                required: false,
+                defaultValue: '2',
+                allowedValues: ['2', '3', '5'],
+                description: '',
+              ),
+            ],
+          ),
+        ],
+      ),
+      account: const KlingAccount(
+        userId: 'user-1',
+        membershipType: 'pro',
+        membershipDescription: '专业版',
+        availableCredits: 88,
+      ),
+    );
+    fixture.controller.selectModel('kling-video-v3_0_omni');
+
+    final frames = <File>[];
+    final shots = <ScriptShot>[];
+    for (var index = 0; index < 3; index++) {
+      final frame = await File(
+        p.join(fixture.root.path, 'selection-${index + 1}.png'),
+      ).writeAsBytes([index + 1]);
+      frames.add(frame);
+      final shot = fixture.shootingController.addShot()!.copyWith(
+        framePath: frame.path,
+        durationSeconds: 2,
+        prompt: '选定镜头 ${index + 1}',
+      );
+      fixture.shootingController.updateShot(shot);
+      shots.add(shot);
+    }
+    await Future<void>.delayed(Duration.zero);
+
+    final generation = fixture.controller.generateSelection([
+      shots.first,
+      shots.last,
+    ]);
+    await _waitUntil(() => fixture.fakeCli.submittedImagePaths.length == 2);
+
+    expect(
+      fixture.fakeCli.submittedImagePaths.map(p.normalize),
+      containsAll([
+        p.normalize(frames.first.path),
+        p.normalize(frames.last.path),
+      ]),
+    );
+    expect(
+      fixture.fakeCli.submittedImagePaths.map(p.normalize),
+      isNot(contains(p.normalize(frames[1].path))),
+    );
+    expect(fixture.controller.value.isGeneratingAll, isTrue);
+
+    fixture.fakeCli.completeQueryAsFailed();
+    await generation;
+    expect(fixture.controller.value.isGeneratingAll, isFalse);
+  });
+
+  test('远程生成适配器使用真实控制器投影选项并启动指定镜头', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      identity: const KlingIdentity(
+        userId: 'user-1',
+        imageToVideoModels: [
+          KlingModelSpec(
+            model: 'kling-video-v3_0_omni',
+            alias: '可灵 o3',
+            description: '',
+            arguments: [
+              KlingArgumentSpec(
+                name: 'duration',
+                required: false,
+                defaultValue: '2',
+                allowedValues: ['2', '3', '5'],
+                description: '',
+              ),
+            ],
+          ),
+        ],
+      ),
+      account: const KlingAccount(
+        userId: 'user-1',
+        membershipType: 'pro',
+        membershipDescription: '专业版',
+        availableCredits: 88,
+      ),
+    );
+    fixture.controller.selectModel('kling-video-v3_0_omni');
+    final frame = await File(
+      p.join(fixture.root.path, 'remote-source.png'),
+    ).writeAsBytes([1, 2, 3]);
+    final shot = fixture.shootingController.addShot()!.copyWith(
+      framePath: frame.path,
+      durationSeconds: 2,
+      prompt: '远程适配器真实生成提示词',
+    );
+    fixture.shootingController.updateShot(shot);
+    await Future<void>.delayed(Duration.zero);
+    final source = VideoGenerationRemoteSource(fixture.controller);
+    addTearDown(source.dispose);
+
+    expect(source.options.backendReady, isTrue);
+    expect(source.options.models.single.id, 'kling-video-v3_0_omni');
+    expect(source.groups.single.id, shot.id);
+    expect(source.groups.single.canGenerate, isTrue);
+
+    final generation = source.startGeneration(
+      RemoteVideoGenerationCommand(
+        scriptId: fixture.controller.value.selectedScriptId,
+        shotIds: [shot.id],
+        parameters: const {'duration': '2'},
+      ),
+      operationId: 'remote-operation-1',
+    );
+    await _waitUntil(() => fixture.fakeCli.submittedImagePaths.length == 1);
+    fixture.fakeCli.completeQueryAsFailed();
+    final result = await generation;
+
+    expect(result.tasks, hasLength(1));
+    expect(result.tasks.single.shotId, shot.id);
+    expect(result.tasks.single.status, 'failed');
   });
 
   test('一键生成遇到已运行镜头时只立即提交其他镜头', () async {
@@ -1107,6 +1492,7 @@ void main() {
     expect(libTvCli.startedCount, 1);
     expect(libTvCli.killedCount, 1);
     expect(fixture.controller.value.libTvAccount?.userId, 'libtv-user-1');
+    expect(fixture.controller.libTvModels.length, 2);
     expect(fixture.controller.value.libTvModel?.modelKey, 'star-video2');
     expect(fixture.controller.shouldRequestActiveCliLogin, isFalse);
     expect(fixture.controller.libTvParameterSummary, contains('分辨率：720p'));
@@ -1120,9 +1506,19 @@ void main() {
     expect(fixture.controller.selectedLibTvResolution, '480p');
     expect(fixture.controller.selectedLibTvSoundEnabled, isFalse);
     expect(fixture.controller.selectedLibTvSearchEnabled, isFalse);
-    expect(fixture.controller.libTvParameterSummary, contains('生成比例：adaptive'));
+    expect(fixture.controller.libTvParameterSummary, contains('比例：adaptive'));
     expect(fixture.controller.libTvParameterSummary, contains('生成音频：关闭'));
     expect(fixture.controller.libTvParameterSummary, contains('联网增强：关闭'));
+
+    await fixture.controller.selectLibTvModel('kling-o1');
+
+    expect(fixture.controller.selectedLibTvModelKey, 'kling-o1');
+    expect(fixture.controller.selectedLibTvModelName, 'Kling O1');
+    expect(fixture.controller.value.profile?.model, 'Kling O1');
+    expect(fixture.controller.libTvModeTypes, ['singleImage2video']);
+    expect(fixture.controller.selectedLibTvAspectRatio, '16:9');
+    expect(fixture.controller.libTvDurationMin, 5);
+    expect(fixture.controller.libTvDurationMax, 10);
   });
 
   test('缺少 Node 和可灵 CLI 时按区域自动安装并重新检测环境', () async {
@@ -2380,6 +2776,146 @@ non_diegetic_music: Minimal ambient music.''',
     expect(fixture.controller.value.message, contains('视频已保存到'));
   });
 
+  test('生成视频 IO 点修改后立即写入任务记录和控制器状态', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final shot = fixture.shootingController.addShot()!;
+    final now = DateTime.now().toUtc();
+    final task = VideoGenerationTask(
+      id: 'task-trim-range',
+      scriptId: shot.scriptId,
+      shotId: shot.id,
+      model: 'test-model',
+      durationSeconds: 5,
+      promptMode: VideoPromptMode.klingOptimized,
+      prompt: 'IO 持久化测试',
+      status: VideoGenerationTaskStatus.completed,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+    );
+    final repository = VideoGenerationRepository(fixture.database)
+      ..upsertTask(task);
+
+    fixture.controller.updateTaskTrimRange(
+      task,
+      const GeneratedVideoTrimRange(
+        sourceDuration: Duration(milliseconds: 5234),
+        inPoint: Duration(milliseconds: 367),
+        outPoint: Duration(milliseconds: 4567),
+      ),
+    );
+
+    final stored = repository.getTask(task.id)!;
+    expect(stored.sourceDurationMs, 5234);
+    expect(stored.trimInMs, 367);
+    expect(stored.trimOutMs, 4567);
+    final visible = fixture.controller.value.tasks.singleWhere(
+      (item) => item.id == task.id,
+    );
+    expect(visible.sourceDurationMs, stored.sourceDurationMs);
+    expect(visible.trimInMs, stored.trimInMs);
+    expect(visible.trimOutMs, stored.trimOutMs);
+  });
+
+  test('作品大预览按镜号切换相邻镜头的最新可用版本', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final firstShot = fixture.shootingController.addShot()!;
+    final secondShot = fixture.shootingController.addShot()!;
+    final thirdShot = fixture.shootingController.addShot()!;
+    final firstOldFile = await File(
+      p.join(fixture.root.path, 'preview-first-old.mp4'),
+    ).writeAsBytes([1]);
+    final firstLatestFile = await File(
+      p.join(fixture.root.path, 'preview-first-latest.mp4'),
+    ).writeAsBytes([2]);
+    final secondFile = await File(
+      p.join(fixture.root.path, 'preview-second.mp4'),
+    ).writeAsBytes([3]);
+    final now = DateTime.now().toUtc();
+    VideoGenerationTask task({
+      required String id,
+      required ScriptShot shot,
+      required File file,
+      required DateTime createdAt,
+    }) => VideoGenerationTask(
+      id: id,
+      scriptId: shot.scriptId,
+      shotId: shot.id,
+      model: 'test-model',
+      durationSeconds: 5,
+      promptMode: VideoPromptMode.klingOptimized,
+      prompt: '作品大预览测试',
+      status: VideoGenerationTaskStatus.completed,
+      localPath: file.path,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      completedAt: createdAt,
+    );
+
+    final firstOld = task(
+      id: 'preview-first-old',
+      shot: firstShot,
+      file: firstOldFile,
+      createdAt: now,
+    );
+    final firstLatest = task(
+      id: 'preview-first-latest',
+      shot: firstShot,
+      file: firstLatestFile,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+    final second = task(
+      id: 'preview-second',
+      shot: secondShot,
+      file: secondFile,
+      createdAt: now.add(const Duration(seconds: 2)),
+    );
+    final missingThird = task(
+      id: 'preview-third-missing',
+      shot: thirdShot,
+      file: File(p.join(fixture.root.path, 'missing.mp4')),
+      createdAt: now.add(const Duration(seconds: 3)),
+    );
+    final repository = VideoGenerationRepository(fixture.database)
+      ..upsertTask(firstOld)
+      ..upsertTask(firstLatest)
+      ..upsertTask(second)
+      ..upsertTask(missingThird);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      tasks: repository.listTasks(
+        scriptId: fixture.controller.value.selectedScriptId,
+      ),
+    );
+
+    fixture.controller.selectWorkPreviewTask(firstOld);
+    expect(fixture.controller.value.selectedPreviewTask?.id, firstOld.id);
+    expect(fixture.controller.canNavigateWorkPreview(-1), isFalse);
+    expect(fixture.controller.canNavigateWorkPreview(1), isTrue);
+
+    fixture.controller.navigateWorkPreview(1);
+    expect(fixture.controller.value.selectedPreviewTask?.id, second.id);
+    expect(
+      fixture.controller.canNavigateWorkPreview(1),
+      isFalse,
+      reason: '本地文件丢失的第三镜头不能进入预览导航',
+    );
+
+    fixture.controller.navigateWorkPreview(-1);
+    expect(
+      fixture.controller.value.selectedPreviewTask?.id,
+      firstLatest.id,
+      reason: '切回镜头时应选择该镜头最新可用版本',
+    );
+    fixture.controller.closeWorkPreview();
+    expect(fixture.controller.value.selectedPreviewTask, isNull);
+  });
+
   test('作品管理删除会同步清理本地视频和任务记录', () async {
     final fixture = await _createControllerFixture(
       cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
@@ -2412,6 +2948,143 @@ non_diegetic_music: Minimal ambient music.''',
 
     expect(source.existsSync(), isFalse);
     expect(repository.listTasks().where((item) => item.id == task.id), isEmpty);
+  });
+
+  test('导出视频复用时间线镜头顺序和 I/O 范围并匹配项目画幅', () async {
+    List<String>? ffmpegArguments;
+    final composeService = GeneratedVideoComposeService(
+      probe: (_) async => const VideoMetadata(
+        durationMs: 5200,
+        frameRate: 30,
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      ),
+      runner: FfmpegProcessRunner(
+        run: (_, arguments) async {
+          ffmpegArguments = arguments;
+          await File(arguments.last).writeAsBytes([1, 2, 3]);
+          return const FfmpegProcessResult(exitCode: 0, stdout: '', stderr: '');
+        },
+      ),
+    );
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+      projectAspectMode: ProjectAspectMode.portrait4x5,
+      composeService: composeService,
+    );
+    addTearDown(fixture.dispose);
+    final shot = fixture.shootingController.addShot()!;
+    final source = await File(
+      p.join(fixture.root.path, 'compose-controller-source.mp4'),
+    ).writeAsBytes([4, 5, 6]);
+    final now = DateTime.now().toUtc();
+    final task = VideoGenerationTask(
+      id: 'compose-controller-task',
+      scriptId: shot.scriptId,
+      shotId: shot.id,
+      model: 'test',
+      durationSeconds: 5,
+      sourceDurationMs: 5200,
+      trimInMs: 400,
+      trimOutMs: 4600,
+      promptMode: VideoPromptMode.klingOptimized,
+      prompt: '导出视频控制器测试',
+      status: VideoGenerationTaskStatus.completed,
+      localPath: source.path,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+    );
+    fixture.controller.value = fixture.controller.value.copyWith(tasks: [task]);
+
+    expect(fixture.controller.canExportVideo, isTrue);
+    await fixture.controller.exportVideo();
+
+    final filter =
+        ffmpegArguments![ffmpegArguments!.indexOf('-filter_complex') + 1];
+    expect(filter, contains('trim=start=0.400:end=4.600'));
+    expect(filter, contains('scale=1080:1350'));
+    expect(fixture.controller.value.isBusy, isFalse);
+    expect(fixture.controller.value.errorMessage, isEmpty);
+    expect(fixture.controller.value.message, contains('视频已导出：'));
+  });
+
+  test('清理只移除当前脚本中本地文件丢失的完成作品', () async {
+    final fixture = await _createControllerFixture(
+      cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+    );
+    addTearDown(fixture.dispose);
+    final firstShot = fixture.shootingController.addShot()!;
+    final secondShot = fixture.shootingController.addShot()!;
+    final validFile = await File(
+      p.join(fixture.root.path, 'clean-valid.mp4'),
+    ).writeAsBytes([1]);
+    final now = DateTime.now().toUtc();
+    VideoGenerationTask task({
+      required String id,
+      required ScriptShot shot,
+      required VideoGenerationTaskStatus status,
+      required String localPath,
+    }) => VideoGenerationTask(
+      id: id,
+      scriptId: shot.scriptId,
+      shotId: shot.id,
+      model: 'test',
+      durationSeconds: 4,
+      promptMode: VideoPromptMode.klingOptimized,
+      prompt: '清理测试',
+      status: status,
+      localPath: localPath,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: status.isTerminal ? now : null,
+    );
+    final valid = task(
+      id: 'clean-valid',
+      shot: firstShot,
+      status: VideoGenerationTaskStatus.completed,
+      localPath: validFile.path,
+    );
+    final missingCompleted = task(
+      id: 'clean-missing-completed',
+      shot: firstShot,
+      status: VideoGenerationTaskStatus.completed,
+      localPath: p.join(fixture.root.path, 'missing-completed.mp4'),
+    );
+    final missingPartial = task(
+      id: 'clean-missing-partial',
+      shot: secondShot,
+      status: VideoGenerationTaskStatus.partialCompleted,
+      localPath: p.join(fixture.root.path, 'missing-partial.mp4'),
+    );
+    final failed = task(
+      id: 'clean-failed',
+      shot: secondShot,
+      status: VideoGenerationTaskStatus.failed,
+      localPath: p.join(fixture.root.path, 'failed.mp4'),
+    );
+    final repository = VideoGenerationRepository(fixture.database)
+      ..upsertTask(valid)
+      ..upsertTask(missingCompleted)
+      ..upsertTask(missingPartial)
+      ..upsertTask(failed);
+    fixture.controller.value = fixture.controller.value.copyWith(
+      tasks: [valid, missingCompleted, missingPartial, failed],
+      selectedPreviewTaskId: missingCompleted.id,
+    );
+
+    expect(fixture.controller.invalidWorkTaskCount, 2);
+    final removed = await fixture.controller.cleanInvalidWorks();
+
+    expect(removed, 2);
+    expect(repository.getTask(missingCompleted.id), isNull);
+    expect(repository.getTask(missingPartial.id), isNull);
+    expect(repository.getTask(valid.id), isNotNull);
+    expect(repository.getTask(failed.id), isNotNull);
+    expect(fixture.controller.value.selectedPreviewTask, isNull);
+    expect(fixture.controller.value.message, '已清理 2 个失效作品');
+    expect(fixture.controller.invalidWorkTaskCount, 0);
   });
 
   test('当前工程相对路径完成视频可解析到生成视频列可显示文件', () async {
@@ -2598,8 +3271,13 @@ Future<_ControllerFixture> _createControllerFixture({
   _FakeLibTvCliService? libTvCliService,
   CliDependencyInstaller? dependencyInstaller,
   MiniMaxVideoApiService? videoApiService,
+  GeneratedVideoComposeService? composeService,
+  DaVinciResolveBridgeClient? daVinciBridgeClient,
+  DaVinciResolveConnectionService? daVinciResolveConnectionService,
+  DaVinciResolvePluginLauncher? daVinciResolvePluginLauncher,
   Duration loginAuthorizationTimeout = const Duration(seconds: 1),
   Duration loginAuthorizationPollInterval = const Duration(milliseconds: 1),
+  ProjectAspectMode? projectAspectMode,
   void Function(
     VideoGenerationRepository repository,
     ShootingScriptController shootingController,
@@ -2625,6 +3303,14 @@ Future<_ControllerFixture> _createControllerFixture({
     settingsController: settingsController,
   );
   final videoGenerationRepository = VideoGenerationRepository(database);
+  ProjectAspectController? projectAspectController;
+  if (projectAspectMode != null) {
+    final aspectRepository = ProjectAspectRepository(database)
+      ..save(ProjectAspectState(mode: projectAspectMode));
+    projectAspectController = ProjectAspectController(
+      repository: aspectRepository,
+    );
+  }
   beforeController?.call(videoGenerationRepository, shootingController);
   final controller = VideoGenerationController(
     repository: videoGenerationRepository,
@@ -2634,6 +3320,7 @@ Future<_ControllerFixture> _createControllerFixture({
     replicateController: replicateController,
     directories: directories,
     settingsController: settingsController,
+    projectAspectController: projectAspectController,
     cliResolver: cliResolver ?? const KlingCliResolver(),
     cliService: cliService,
     libTvCliResolver: libTvCliResolver ?? const LibTvCliResolver(),
@@ -2643,6 +3330,14 @@ Future<_ControllerFixture> _createControllerFixture({
         : (_) => libTvCliService,
     dependencyInstaller: dependencyInstaller ?? const CliDependencyInstaller(),
     videoApiService: videoApiService,
+    composeService: composeService ?? const GeneratedVideoComposeService(),
+    daVinciBridgeClient:
+        daVinciBridgeClient ?? const DaVinciResolveBridgeClient(),
+    daVinciResolveConnectionService:
+        daVinciResolveConnectionService ??
+        const DaVinciResolveConnectionService(),
+    daVinciResolvePluginLauncher:
+        daVinciResolvePluginLauncher ?? const DaVinciResolvePluginLauncher(),
     loginAuthorizationTimeout: loginAuthorizationTimeout,
     loginAuthorizationPollInterval: loginAuthorizationPollInterval,
   );
@@ -2663,6 +3358,7 @@ Future<_ControllerFixture> _createControllerFixture({
     shootingController: shootingController,
     replicateController: replicateController,
     controller: controller,
+    projectAspectController: projectAspectController,
     fakeCli: cliService,
   );
 }
@@ -2675,6 +3371,7 @@ class _ControllerFixture {
     required this.shootingController,
     required this.replicateController,
     required this.controller,
+    required this.projectAspectController,
     required this.fakeCli,
   });
 
@@ -2684,15 +3381,48 @@ class _ControllerFixture {
   final ShootingScriptController shootingController;
   final ReplicateController replicateController;
   final VideoGenerationController controller;
+  final ProjectAspectController? projectAspectController;
   final _FakeKlingCliService fakeCli;
 
   Future<void> dispose() async {
     controller.dispose();
+    projectAspectController?.dispose();
     replicateController.dispose();
     shootingController.dispose();
     settingsController.dispose();
     database.dispose();
     if (root.existsSync()) await root.delete(recursive: true);
+  }
+}
+
+class _RecoveringDaVinciBridgeClient extends DaVinciResolveBridgeClient {
+  int healthCount = 0;
+
+  @override
+  Future<DaVinciBridgeHealth> health() async {
+    healthCount++;
+    if (healthCount == 1) {
+      throw const DaVinciBridgeException(
+        '插件离线',
+        kind: DaVinciBridgeFailureKind.pluginUnavailable,
+      );
+    }
+    return const DaVinciBridgeHealth(
+      pluginVersion: '0.2.5',
+      resolveVersion: '21.0',
+      projectName: '自动连接测试',
+      projectId: 'project-1',
+    );
+  }
+}
+
+class _TimeoutDaVinciBridgeClient extends DaVinciResolveBridgeClient {
+  @override
+  Future<DaVinciBridgeHealth> health() async {
+    throw const DaVinciBridgeException(
+      '达芬奇流程整合插件响应超时',
+      kind: DaVinciBridgeFailureKind.timeout,
+    );
   }
 }
 
@@ -2959,10 +3689,87 @@ class _FakeLibTvCliService extends LibTvCliService {
   }
 
   @override
-  Future<LibTvModelSpec> model(String name) async => const LibTvModelSpec(
-    modelName: 'Seedance 2.0',
-    modelKey: 'star-video2',
-    modality: 'video',
-    schema: {},
-  );
+  Future<List<LibTvModelSummary>> videoModels() async => const [
+    LibTvModelSummary(
+      modelName: 'Seedance 2.0',
+      modelKey: 'star-video2',
+      modality: 'video',
+    ),
+    LibTvModelSummary(
+      modelName: 'Kling O1',
+      modelKey: 'kling-o1',
+      modality: 'video',
+    ),
+  ];
+
+  @override
+  Future<LibTvModelSpec> model(String name) async {
+    if (name == 'kling-o1') {
+      return const LibTvModelSpec(
+        modelName: 'Kling O1',
+        modelKey: 'kling-o1',
+        modality: 'video',
+        schema: {
+          'properties': {
+            'modeType': {
+              'items': {
+                'singleImage2video': [1, 1],
+              },
+            },
+            'count': [1],
+            'ratio': {
+              'displayName': '比例',
+              'default': '9:16',
+              'enum': ['16:9', '9:16'],
+            },
+            'duration': {'min': 5, 'max': 10, 'default': 5},
+          },
+          'config': {
+            'settings': ['ratio', 'duration'],
+          },
+        },
+      );
+    }
+    return const LibTvModelSpec(
+      modelName: 'Seedance 2.0',
+      modelKey: 'star-video2',
+      modality: 'video',
+      schema: {
+        'properties': {
+          'modeType': {
+            'items': {
+              'singleImage2video': [1, 1],
+              'mixed2video': [1, 9],
+            },
+          },
+          'count': [1],
+          'ratio': {
+            'displayName': '比例',
+            'default': '16:9',
+            'enum': ['adaptive', '16:9', '9:16'],
+          },
+          'resolution': {
+            'displayName': '分辨率',
+            'default': '720p',
+            'enum': ['480p', '720p'],
+          },
+          'duration': {'min': 4, 'max': 15, 'default': 5},
+          'enableSound': {
+            'displayName': '生成音频',
+            'default': 'on',
+            'component': 'switch',
+          },
+          'search_enabled': {
+            'displayName': '联网增强',
+            'default': 1,
+            'component': 'switch',
+          },
+        },
+        'config': {
+          'settings': ['ratio', 'resolution', 'duration', 'enableSound'],
+          'advancedSettings': ['search_enabled'],
+        },
+      },
+    );
+  }
 }

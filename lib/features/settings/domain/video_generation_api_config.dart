@@ -38,6 +38,25 @@ class VideoGenerationApiConfig {
   bool get isLibTvCli => kind == VideoGenerationApiConfigKind.libTvCli;
   bool get isHttpApi => kind == VideoGenerationApiConfigKind.httpApi;
 
+  bool get isLocalHttpApi {
+    if (!isHttpApi) return false;
+    final host = Uri.tryParse(baseUrl.trim())?.host.toLowerCase() ?? '';
+    return host == 'localhost' ||
+        host == '127.0.0.1' ||
+        host == '::1' ||
+        host == '0.0.0.0';
+  }
+
+  bool get isMiniMaxH3Model {
+    final identity = [id, name, model].join(' ').toLowerCase();
+    return identity.contains('minimax') ||
+        identity.contains('海螺') ||
+        RegExp(r'(^|[^a-z0-9])h3([^a-z0-9]|$)').hasMatch(identity);
+  }
+
+  /// H3 专项 Skill 只服务软件内连接的本地 H3 后端。
+  bool get supportsLocalH3SkillRouting => isLocalHttpApi && isMiniMaxH3Model;
+
   VideoGenerationApiConfig copyWith({
     String? name,
     VideoGenerationApiConfigKind? kind,

@@ -37,6 +37,7 @@ void main() {
       expect(decoded.allowedOrigins, const ['https://director.example.com']);
       expect(decoded.sessionDuration, const Duration(hours: 8));
       expect(decoded.pairingCodeTtl, const Duration(minutes: 5));
+      expect(decoded.maxUploadBytes, source.maxUploadBytes);
     });
   });
 }

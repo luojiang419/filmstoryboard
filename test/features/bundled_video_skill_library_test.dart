@@ -14,13 +14,13 @@ void main() {
       assets.where(
         (path) => path.startsWith('assets/video_cli_skills/libtv-cli/'),
       ),
-      hasLength(45),
+      hasLength(46),
     );
     expect(
       assets.where(
         (path) => path.startsWith('assets/video_cli_skills/kling-cli/'),
       ),
-      hasLength(3),
+      hasLength(4),
     );
     expect(
       assets.where(
@@ -63,16 +63,16 @@ void main() {
     final libTvDocument = (await library.loadForConfig(libTv))!;
     final h3Document = (await library.loadForConfig(h3))!;
 
-    expect(klingDocument.fileCount, 3);
-    expect(klingDocument.files['kling-cli/SKILL.md'], contains('who_am_i'));
-    expect(libTvDocument.fileCount, 11);
+    expect(klingDocument.fileCount, 1);
     expect(
-      libTvDocument.files['libtv-cli/commands/node.md'],
-      contains('node create'),
+      klingDocument.files['kling-cli/prompt-guide.md'],
+      contains('参考图是主体外观'),
     );
+    expect(libTvDocument.fileCount, 1);
     expect(
-      libTvDocument.files['libtv-cli/prompt-guides/SD2提示词规则.md'],
-      contains('Doubao Seedance 2.0 系列'),
+      libTvDocument
+          .files['libtv-cli/prompt-guides/image-to-video-prompt-guide.md'],
+      contains('参考图已经表达'),
     );
     expect(h3Document.fileCount, 3);
     expect(
@@ -82,12 +82,12 @@ void main() {
 
     for (final document in [klingDocument, libTvDocument, h3Document]) {
       final context = document.toVisionModelContext();
-      expect(context, contains('软件内置视频后端 Skill（强制读取）'));
+      expect(context, contains('软件内置视频提示词 Skill（仅供当前后端）'));
       expect(
         RegExp('<bundled_video_skill_file ').allMatches(context),
         hasLength(document.fileCount),
       );
-      expect(context, contains('CLI 登录、上传、画布、提交、轮询和下载由软件本身执行'));
+      expect(context, isNot(contains('登录、上传、画布、提交、轮询和下载')));
     }
   });
 
@@ -103,5 +103,20 @@ void main() {
     );
 
     expect(await library.loadForConfig(unknown), isNull);
+  });
+
+  test('远程 H3 HTTP 模型不会加载只供本地模型使用的 H3 Skill', () async {
+    final library = BundledVideoSkillLibrary();
+    const remoteH3 = VideoGenerationApiConfig(
+      id: 'remote-h3',
+      name: 'MiniMax H3 远程',
+      kind: VideoGenerationApiConfigKind.httpApi,
+      baseUrl: 'https://example.com',
+      apiKey: '',
+      model: 'MiniMax-H3',
+    );
+
+    expect(remoteH3.supportsLocalH3SkillRouting, isFalse);
+    expect(await library.loadForConfig(remoteH3), isNull);
   });
 }

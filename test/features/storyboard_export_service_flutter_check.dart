@@ -213,6 +213,29 @@ void main() {
     expect(board.imageAspectRatio, 16 / 9);
   });
 
+  test('项目9比16画幅导出时保留竖屏格位比例', () async {
+    const board = StoryboardBoard(
+      id: 'board-project-portrait',
+      name: '项目竖屏画板',
+      width: 360,
+      height: 360,
+      rows: 1,
+      columns: 1,
+      gap: 12,
+      items: [],
+      storyDescriptionEnabled: false,
+      imageAspectRatio: 9 / 16,
+    );
+
+    final bytes = await const StoryboardExportService().renderBoardToPng(board);
+    final image = img.decodePng(bytes)!;
+
+    expect(image.width, 360);
+    expect(image.height, board.adaptiveHeight());
+    expect(image.height, greaterThan(image.width));
+    expect(board.imageAspectRatio, 9 / 16);
+  });
+
   test('导出故事板会绘制画板名称并应用标题对齐', () async {
     const baseBoard = StoryboardBoard(
       id: 'board-title',

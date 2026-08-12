@@ -192,6 +192,24 @@ void main() {
     expect(find.text('准备资产'), findsOneWidget);
     expect(find.text('合成提示词'), findsNothing);
     expect(find.text('生成视频'), findsOneWidget);
+    expect(
+      replicateController.value.run!.currentStep,
+      ReplicateStep.prepareAssets,
+    );
+    expect(
+      find.byKey(const ValueKey('replicate-new-prepare-assets-step')),
+      findsOneWidget,
+    );
+    expect(
+      tester.getCenter(find.text('准备资产')).dx,
+      lessThan(tester.getCenter(find.text('确认镜头')).dx),
+    );
+    expect(
+      tester.getCenter(find.text('确认镜头')).dx,
+      lessThan(tester.getCenter(find.text('生成视频')).dx),
+    );
+    expect(replicateController.moveToStep(ReplicateStep.confirmShots), isTrue);
+    await tester.pump();
     expect(find.text('原视频帧范围'), findsOneWidget);
     expect(find.text('复刻分镜范围'), findsOneWidget);
     expect(find.text('切换脚本模版'), findsOneWidget);
@@ -217,12 +235,14 @@ void main() {
     expect(replicateController.value.run!.freeCreationEnabled, isTrue);
     final freeHeader = find.byKey(const ValueKey('free-creation-table-header'));
     expect(freeHeader, findsOneWidget);
-    for (final label in const ['原视频帧范围', '复刻分镜范围', '剧情描述', '功能菜单']) {
+    for (final label in const ['镜号', '原视频帧范围', '复刻分镜范围', '剧情描述', '功能菜单']) {
       expect(
         find.descendant(of: freeHeader, matching: find.text(label)),
         findsOneWidget,
       );
     }
+    expect(find.byKey(ValueKey('toggle-new-shot-${shot.id}')), findsOneWidget);
+    expect(find.text('1（1）'), findsOneWidget);
     expect(
       find.descendant(of: freeHeader, matching: find.text('提示词')),
       findsNothing,
@@ -241,6 +261,11 @@ void main() {
       find.byKey(ValueKey('free-creation-remove-${shot.id}')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(ValueKey('free-creation-analyze-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('解析当前镜头'), findsOneWidget);
     final versionBeforeDescription =
         shootingController.value.selectedScript!.version;
     await tester.showKeyboard(descriptionField);
@@ -381,17 +406,37 @@ void main() {
       findsOneWidget,
     );
     final promptFormatSelector = find.byKey(
-      ValueKey(
-        'free-creation-prompt-format-${replicateController.value.prompts.single.id}',
-      ),
+      const ValueKey('free-creation-prompt-format-selector'),
     );
     expect(promptFormatSelector, findsOneWidget);
+    expect(
+      find.descendant(of: freeHeader, matching: promptFormatSelector),
+      findsOneWidget,
+      reason: '三类提示词切换项应只显示在提示词列表头',
+    );
+    expect(
+      find.byKey(
+        ValueKey(
+          'free-creation-prompt-format-${replicateController.value.prompts.single.id}',
+        ),
+      ),
+      findsNothing,
+      reason: '每个脚本条目内不再重复显示提示词切换项',
+    );
     for (final label in const ['可灵', 'H3', '即梦']) {
       expect(
         find.descendant(of: promptFormatSelector, matching: find.text(label)),
         findsOneWidget,
       );
     }
+    final promptFormatSegmentedButton = tester
+        .widget<SegmentedButton<ShotPromptFormat>>(
+          find.descendant(
+            of: promptFormatSelector,
+            matching: find.byType(SegmentedButton<ShotPromptFormat>),
+          ),
+        );
+    expect(promptFormatSegmentedButton.onSelectionChanged, isNotNull);
     final promptField = find.byKey(
       ValueKey(
         'free-creation-prompt-${replicateController.value.prompts.single.id}',
@@ -468,7 +513,21 @@ void main() {
     );
     await tester.tap(find.byTooltip('关闭预览'));
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.byKey(const ValueKey('replicate-new-next-assets')));
+    await tester.tap(find.byKey(const ValueKey('replicate-new-next-videos')));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.byKey(const ValueKey('replicate-new-generate-videos-step')),
+      findsOneWidget,
+    );
+    final videoPromptField = find.byKey(ValueKey('video-prompt-${shot.id}'));
+    expect(videoPromptField, findsOneWidget);
+    expect(
+      tester.widget<TextFormField>(videoPromptField).controller?.text,
+      allOf(isNotEmpty, contains('【中间插入】')),
+      reason: '确认镜头构建并编辑后的提示词必须自动进入下一步视频生成提示词框',
+    );
+    expect(replicateController.moveToStep(ReplicateStep.prepareAssets), isTrue);
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(
@@ -482,7 +541,7 @@ void main() {
       find.byKey(ValueKey('replicate-user-instructions-${shot.id}')),
       findsOneWidget,
     );
-    expect(find.text('步骤 2 · 匹配资产图'), findsOneWidget);
+    expect(find.text('步骤 1 · 匹配资产图'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('prepare-assets-right-asset-library-panel')),
       findsOneWidget,
@@ -503,9 +562,50 @@ void main() {
       find.descendant(of: prepareStep, matching: find.text('整体约束')),
       findsNothing,
     );
+    final autoMatchButton = find.byKey(
+      const ValueKey('script-auto-match-assets'),
+    );
+    final generationParametersButton = find.byKey(
+      const ValueKey('replicate-generation-parameters'),
+    );
+    expect(generationParametersButton, findsOneWidget);
     expect(
-      find.descendant(of: prepareStep, matching: find.text('生成参数设置')),
-      findsNothing,
+      tester.getCenter(generationParametersButton).dx,
+      greaterThan(tester.getCenter(autoMatchButton).dx),
+      reason: '生成参数按钮必须位于自动匹配资产右侧',
+    );
+    await tester.tap(generationParametersButton);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('replicate-generation-parameters-dialog')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('replicate-generation-aspect-ratio')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('replicate-generation-quality')),
+      findsOneWidget,
+    );
+    expect(find.text('分辨率'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('replicate-generation-aspect-ratio')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('1:1').last);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('save-replicate-generation-parameters')),
+    );
+    await tester.pumpAndSettle();
+    expect(replicateController.value.run?.generationAspectRatio, '1:1');
+    expect(
+      replicateRepository
+          .getRun(replicateController.value.run!.id)
+          ?.generationAspectRatio,
+      '1:1',
+      reason: '弹窗保存后必须立即写入当前复刻任务',
     );
     expect(find.text('资产库'), findsOneWidget);
     expect(
@@ -669,7 +769,13 @@ void main() {
     );
     replicateController.refresh();
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.byKey(const ValueKey('replicate-new-next-prompts')));
+    await tester.tap(find.byKey(const ValueKey('replicate-new-next-confirm')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.byKey(const ValueKey('replicate-new-confirm-shots-step')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('replicate-new-next-videos')));
     await tester.pump(const Duration(seconds: 1));
     await tester.pump();
     expect(
@@ -889,6 +995,8 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 220));
+    expect(replicateController.moveToStep(ReplicateStep.confirmShots), isTrue);
+    await tester.pump();
 
     final firstHandle = find.byKey(
       ValueKey('free-creation-reorder-${first.id}'),
@@ -1068,6 +1176,16 @@ void main() {
       find.byKey(const ValueKey('build-camera-style-dropdown-brand-promo')),
       findsOneWidget,
     );
+
+    await settingsController.setActiveVideoGenerationApiConfig(
+      AppSettings.defaultKlingCliVideoGenerationConfigId,
+    );
+    replicateController.refresh();
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('build-camera-style-dropdown-brand-promo')),
+      findsNothing,
+    );
   });
 
   testWidgets('准备资产步骤改为匹配资产图并移除全局规则入口', (tester) async {
@@ -1245,7 +1363,7 @@ void main() {
       find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
       findsOneWidget,
     );
-    expect(find.text('步骤 2 · 匹配资产图'), findsOneWidget);
+    expect(find.text('步骤 1 · 匹配资产图'), findsOneWidget);
     expect(
       find.descendant(of: prepareStep, matching: find.text('匹配资产图')),
       findsAtLeastNWidgets(1),
@@ -1454,6 +1572,8 @@ void main() {
     }
 
     await pumpPage();
+    expect(replicateController.moveToStep(ReplicateStep.confirmShots), isTrue);
+    await tester.pump();
 
     await tester.tap(
       find.byKey(const ValueKey('collapse-confirm-story-panel')),
@@ -1667,6 +1787,8 @@ void main() {
     );
     await tester.pumpWidget(buildPage());
     await tester.pump(const Duration(milliseconds: 220));
+    expect(replicateController.moveToStep(ReplicateStep.confirmShots), isTrue);
+    await tester.pump();
 
     expect(find.byKey(const ValueKey('script-auto-analyze-all')), findsNothing);
     expect(find.textContaining('先手动设置每个镜头的首帧和结束帧范围'), findsOneWidget);

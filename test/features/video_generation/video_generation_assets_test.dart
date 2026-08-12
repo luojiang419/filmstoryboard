@@ -71,6 +71,7 @@ void main() {
         frameRate: 25,
         width: 1920,
         height: 1080,
+        rotationDegrees: 90,
         hasAudio: true,
         frameCount: 1,
         successfulFrames: 1,
@@ -113,6 +114,7 @@ void main() {
       p.normalize(originalVideo.path),
     );
     expect(range.inPoint, const Duration(milliseconds: 2700));
+    expect(range.aspectRatio, closeTo(9 / 16, 0.0001));
     expect(p.normalize(range.thumbnailFile!.path), p.normalize(frameFile.path));
   });
 
@@ -227,6 +229,20 @@ void main() {
       _shot(),
       sourcePrompt: official,
       availableImageReferences: 1,
+    );
+
+    expect(prompt, official);
+  });
+
+  test('步骤3已选择可灵时原样保留多图连续镜头提示词', () {
+    const official =
+        '图片1至图片2作为同一连续镜头的顺序阶段参考，保持主体、场景、动作因果、构图与光影连续。'
+        '[参考生成] 黄昏岩石山顶，人物转身仰望星空，6秒视频。';
+    final prompt = const KlingVideoPromptAdapter().adapt(
+      _shot(),
+      sourcePrompt: official,
+      actionSequence: [_shot(), _shot().copyWith(shotNumber: 2)],
+      availableImageReferences: 2,
     );
 
     expect(prompt, official);

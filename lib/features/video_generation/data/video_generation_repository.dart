@@ -134,9 +134,10 @@ class VideoGenerationRepository {
         id, script_id, shot_id, generation_id, model, parameters_json,
         duration_seconds, prompt_mode, prompt_text, credits_before,
         credits_after, status, result_url, result_without_watermark_url,
-        local_path, used_watermarked_fallback, error_message, created_at,
-        updated_at, completed_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        local_path, source_duration_ms, trim_in_ms, trim_out_ms,
+        used_watermarked_fallback, error_message, created_at, updated_at,
+        completed_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         generation_id = excluded.generation_id,
         credits_before = excluded.credits_before,
@@ -145,6 +146,9 @@ class VideoGenerationRepository {
         result_url = excluded.result_url,
         result_without_watermark_url = excluded.result_without_watermark_url,
         local_path = excluded.local_path,
+        source_duration_ms = excluded.source_duration_ms,
+        trim_in_ms = excluded.trim_in_ms,
+        trim_out_ms = excluded.trim_out_ms,
         used_watermarked_fallback = excluded.used_watermarked_fallback,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at,
@@ -166,6 +170,9 @@ class VideoGenerationRepository {
         task.resultUrl,
         task.resultWithoutWatermarkUrl,
         task.localPath,
+        task.sourceDurationMs,
+        task.trimInMs,
+        task.trimOutMs,
         task.usedWatermarkedFallback ? 1 : 0,
         task.errorMessage,
         task.createdAt.toIso8601String(),
@@ -224,6 +231,9 @@ class VideoGenerationRepository {
     resultWithoutWatermarkUrl:
         row['result_without_watermark_url'] as String? ?? '',
     localPath: row['local_path'] as String? ?? '',
+    sourceDurationMs: row['source_duration_ms'] as int? ?? 0,
+    trimInMs: row['trim_in_ms'] as int? ?? 0,
+    trimOutMs: row['trim_out_ms'] as int? ?? 0,
     usedWatermarkedFallback:
         (row['used_watermarked_fallback'] as int? ?? 0) != 0,
     errorMessage: row['error_message'] as String? ?? '',

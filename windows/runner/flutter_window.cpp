@@ -3,6 +3,8 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "flutter/standard_method_codec.h"
+#include "resolve_plugin_launcher.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +27,30 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  resolve_automation_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(),
+          "filmstoryboard/davinci_resolve_automation",
+          &flutter::StandardMethodCodec::GetInstance());
+  resolve_automation_channel_->SetMethodCallHandler(
+      [](const flutter::MethodCall<flutter::EncodableValue>& call,
+         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+             result) {
+        if (call.method_name() != "launchWorkflowIntegration") {
+          result->NotImplemented();
+          return;
+        }
+        const ResolvePluginLaunchResult launch_result =
+            LaunchDaVinciResolveWorkflowIntegration();
+        flutter::EncodableMap response;
+        response[flutter::EncodableValue("success")] =
+            flutter::EncodableValue(launch_result.success);
+        response[flutter::EncodableValue("code")] =
+            flutter::EncodableValue(launch_result.code);
+        response[flutter::EncodableValue("message")] =
+            flutter::EncodableValue(launch_result.message);
+        result->Success(flutter::EncodableValue(response));
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -40,6 +66,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  resolve_automation_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

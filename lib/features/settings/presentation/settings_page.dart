@@ -38,6 +38,7 @@ enum _SettingsSection {
   promptDefaults,
   imageGenerationApi,
   videoGenerationApi,
+  plugins,
   updater,
   dataDirectories,
 }
@@ -58,6 +59,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   late final TextEditingController _updateManualProxyUrlController;
   late VideoFrameExtractionStrategy _videoExtractionStrategy;
   final _expandedSections = <_SettingsSection>{};
+  bool _isInstallingResolvePlugin = false;
+  bool? _resolvePluginInstallSucceeded;
+  String? _resolvePluginInstallMessage;
 
   @override
   void initState() {
@@ -181,6 +185,36 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     await controller.setUpdateManualProxyUrl(
       _updateManualProxyUrlController.text,
     );
+  }
+
+  Future<void> _installResolvePlugin() async {
+    if (_isInstallingResolvePlugin) return;
+    setState(() {
+      _isInstallingResolvePlugin = true;
+      _resolvePluginInstallSucceeded = null;
+      _resolvePluginInstallMessage = '正在请求管理员权限并安装插件…';
+    });
+
+    late final String message;
+    late final bool succeeded;
+    try {
+      final result = await ref.read(resolvePluginInstallerProvider).install();
+      message = result.message;
+      succeeded = true;
+    } catch (error) {
+      message = '$error';
+      succeeded = false;
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _isInstallingResolvePlugin = false;
+      _resolvePluginInstallSucceeded = succeeded;
+      _resolvePluginInstallMessage = message;
+    });
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   AppDatabase get _globalSettingsDatabase {
@@ -760,6 +794,73 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 onSelect: settingsController.setActiveVideoGenerationApiConfig,
                 onSave: settingsController.saveVideoGenerationApiConfig,
                 onDelete: settingsController.deleteVideoGenerationApiConfig,
+              ),
+            ),
+            const SizedBox(height: 14),
+            _CollapsibleSection(
+              title: '插件',
+              expanded: _sectionExpanded(_SettingsSection.plugins),
+              onToggle: () => _toggleSection(_SettingsSection.plugins),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'DaVinci Resolve 流程整合',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '从软件 data 文件夹中的内置插件包自动安装到 Resolve“流程整合”插件目录。'
+                    '安装时会请求 Windows 管理员权限；是否能够加载由目标机 Resolve 环境决定。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    key: const ValueKey('install-resolve-plugin-button'),
+                    onPressed: _isInstallingResolvePlugin
+                        ? null
+                        : _installResolvePlugin,
+                    icon: _isInstallingResolvePlugin
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.extension_rounded),
+                    label: Text(
+                      _isInstallingResolvePlugin ? '正在安装…' : '安装达芬奇插件',
+                    ),
+                  ),
+                  if (_resolvePluginInstallMessage != null) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          _resolvePluginInstallSucceeded == false
+                              ? Icons.error_outline_rounded
+                              : _resolvePluginInstallSucceeded == true
+                              ? Icons.check_circle_outline_rounded
+                              : Icons.hourglass_top_rounded,
+                          size: 18,
+                          color: _resolvePluginInstallSucceeded == false
+                              ? scheme.error
+                              : _resolvePluginInstallSucceeded == true
+                              ? scheme.primary
+                              : scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _resolvePluginInstallMessage!,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
               ),
             ),
             const SizedBox(height: 14),
@@ -1615,7 +1716,7 @@ class _VideoGenerationApiConfigSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '点击卡片即可设为默认。视觉模型只读取当前所选视频模型对应的后端 Skill：可灵只读可灵、LibTV/Seedance 只读 LibTV、MiniMax H3 先读通用 H3，再按每个镜头的剧情描述最多自动追加一个专项 Skill；未知 HTTP 模型不会误加载 H3。可灵与 LibTV CLI 均使用本机命令行并在需要时自动打开浏览器授权；LibTV 为每个脚本复用独立画布。',
+          '点击卡片即可设为默认。视觉模型只读取当前所选视频模型对应的提示词 Skill：可灵只读可灵图生视频规则，LibTV/Seedance 只读 Seedance 规则；仅本地 MiniMax H3 读取通用 H3，并可按镜头剧情最多追加一个专项 Skill。远程 H3、未知 HTTP 模型和其他视频模型不会显示或执行本地 H3 Skill 路由偏好。可灵与 LibTV CLI 均使用本机命令行并在需要时自动打开浏览器授权；LibTV 为每个脚本复用独立画布。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 4),

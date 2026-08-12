@@ -19,6 +19,7 @@ import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_canvas_style.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../../video_analysis/data/analysis_report_export_service.dart';
+import '../../video_analysis/data/ffmpeg_frame_extractor.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../../video_generation/data/video_generation_repository.dart';
@@ -560,6 +561,9 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
         outputDirectory: DefaultExportDirectories(
           settings.exportDirectory,
         ).timelines,
+        metadataProbe: FfmpegFrameExtractor(
+          ffprobeExecutable: settings.ffprobeExecutable,
+        ).probe,
       );
       if (mounted) {
         setState(() => _message = '时间线 XML 已导出：${file.path}');

@@ -1,0 +1,13 @@
+{
+  "name": "filmstoryboard-resolve-timeline-bridge",
+  "version": "0.2.6",
+  "private": true,
+  "description": "FilmStoryboard DaVinci Resolve Workflow Integration",
+  "main": "main.js",
+  "scripts": {
+    "test": "node --test tests/bridge_server.test.js tests/package_metadata.test.js tests/plugin_window_lifecycle.test.js tests/resolve_bridge_token.test.js tests/resolve_gateway.test.js tests/timeline_binding_store.test.js tests/timeline_sync_service.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

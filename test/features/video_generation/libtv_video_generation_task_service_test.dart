@@ -73,10 +73,12 @@ void main() {
     );
 
     expect(fake.submittedScriptName, 'LibTV测试脚本');
+    expect(fake.submittedModelName, 'Seedance 2.0');
     expect(fake.submittedRatio, 'adaptive');
     expect(fake.submittedResolution, '480p');
     expect(fake.submittedEnableSound, isFalse);
     expect(fake.submittedSearchEnabled, isFalse);
+    expect(fake.submittedParameters['modeType'], 'singleImage2video');
     expect(result.status, VideoGenerationTaskStatus.completed);
     expect(result.generationId, 'remote-task-1');
     expect(result.parameters[libTvProjectUuidParameter], 'project-1');
@@ -128,6 +130,8 @@ VideoGenerationTask _task() {
       'resolution': '480p',
       'enableSound': 'off',
       'search_enabled': '0',
+      'modeType': 'singleImage2video',
+      'count': '1',
     },
     durationSeconds: 5,
     promptMode: VideoPromptMode.original,
@@ -143,10 +147,12 @@ class _FakeLibTvCliService extends LibTvCliService {
 
   final bool cancel;
   String submittedScriptName = '';
+  String submittedModelName = '';
   String submittedRatio = '';
   String submittedResolution = '';
   bool? submittedEnableSound;
   bool? submittedSearchEnabled;
+  Map<String, String> submittedParameters = const {};
 
   @override
   Future<LibTvGenerationResult> generateImageToVideo({
@@ -162,13 +168,16 @@ class _FakeLibTvCliService extends LibTvCliService {
     required int durationSeconds,
     bool enableSound = true,
     bool searchEnabled = true,
+    Map<String, String> parameters = const {},
     bool Function()? isCanceled,
   }) async {
     submittedScriptName = scriptName;
-    submittedRatio = ratio;
-    submittedResolution = resolution;
-    submittedEnableSound = enableSound;
-    submittedSearchEnabled = searchEnabled;
+    submittedModelName = modelName;
+    submittedRatio = parameters['ratio'] ?? ratio;
+    submittedResolution = parameters['resolution'] ?? resolution;
+    submittedEnableSound = (parameters['enableSound'] ?? 'on') != 'off';
+    submittedSearchEnabled = (parameters['search_enabled'] ?? '1') != '0';
+    submittedParameters = Map.unmodifiable(parameters);
     if (cancel) throw const LibTvGenerationCanceledException();
     return const LibTvGenerationResult(
       projectUuid: 'project-1',

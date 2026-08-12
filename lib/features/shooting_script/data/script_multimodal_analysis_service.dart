@@ -2,6 +2,7 @@ import 'dart:io';
 
 import '../../settings/domain/app_settings.dart';
 import '../../storyboard/data/vision_storyboard_service.dart';
+import '../../storyboard/domain/cinematic_motion_policy.dart';
 import '../domain/shooting_script_models.dart';
 import '../domain/shooting_script_workflow_models.dart';
 
@@ -39,6 +40,13 @@ class ScriptMultimodalAnalysisService {
     String creativeBrief = '',
     String storyContext = '',
   }) async {
+    final allowSlowMotion = CinematicMotionPolicy.hasExplicitSlowMotionIntent(
+      shot.freeCreationDescription,
+    );
+    final effectiveCreativeBrief = _withPlaybackSpeedBoundary(
+      creativeBrief,
+      allowSlowMotion: allowSlowMotion,
+    );
     final analysis = await _visionService.analyzeImage(
       settings: settings,
       imageFile: imageFile,
@@ -48,13 +56,14 @@ class ScriptMultimodalAnalysisService {
       allowThinking: settings.videoAnalysisThinkingEnabled,
       previousImageFile: previousImageFile,
       nextImageFile: nextImageFile,
-      creativeBrief: creativeBrief,
+      creativeBrief: effectiveCreativeBrief,
       storyContext: storyContext,
     );
     return fromVisionAnalysis(
       analysis,
       shot: shot,
       creativeBrief: creativeBrief,
+      allowSlowMotion: allowSlowMotion,
     );
   }
 
@@ -78,12 +87,19 @@ class ScriptMultimodalAnalysisService {
         storyContext: storyContext,
       );
     }
+    final allowSlowMotion = CinematicMotionPolicy.hasExplicitSlowMotionIntent(
+      shots.first.freeCreationDescription,
+    );
+    final effectiveCreativeBrief = _withPlaybackSpeedBoundary(
+      creativeBrief,
+      allowSlowMotion: allowSlowMotion,
+    );
     final groupAnalysis = await _visionService.analyzeShotGroupImages(
       settings: settings,
       imageFiles: imageFiles,
       shotNumber: shots.first.shotNumber,
       allowThinking: settings.videoAnalysisThinkingEnabled,
-      creativeBrief: creativeBrief,
+      creativeBrief: effectiveCreativeBrief,
       storyContext: storyContext,
       neighboringCameraPlan: neighboringCameraPlan,
     );
@@ -91,7 +107,8 @@ class ScriptMultimodalAnalysisService {
       shots: shots,
       analyses: groupAnalysis.frames,
       motion: groupAnalysis.motion,
-      creativeBrief: creativeBrief,
+      creativeBrief: effectiveCreativeBrief,
+      allowSlowMotion: allowSlowMotion,
     );
   }
 
@@ -103,15 +120,31 @@ class ScriptMultimodalAnalysisService {
     }
   }
 
+  static String _withPlaybackSpeedBoundary(
+    String creativeBrief, {
+    required bool allowSlowMotion,
+  }) => [
+    creativeBrief.trim(),
+    allowSlowMotion
+        ? '播放速度授权：用户已在当前镜头剧情描述中明确要求慢动作/升格，仅按原文指定阶段使用。'
+        : '播放速度边界：用户未在当前镜头剧情描述中授权慢动作/升格，所有动作按正常时间速度推进。',
+  ].where((part) => part.isNotEmpty).join('\n');
+
   static ScriptShotAnalysisPatch fromVisionAnalysis(
     VisionImageAnalysis analysis, {
     ScriptShot? shot,
     String creativeBrief = '',
+    bool allowSlowMotion = false,
   }) {
     final values = <String, String>{};
     final confidence = <String, double>{};
     void add(String field, String value, double score) {
-      final normalized = _normalizeGeneratedField(field, value);
+      final normalized = _normalizeGeneratedField(
+        field,
+        allowSlowMotion
+            ? value
+            : CinematicMotionPolicy.enforceRealtimePlayback(value),
+      );
       if (normalized.isEmpty) return;
       values[field] = normalized;
       confidence[field] = score;
@@ -205,6 +238,7 @@ class ScriptMultimodalAnalysisService {
     required List<VisionImageAnalysis> analyses,
     required VisionShotMotionAnalysis motion,
     String creativeBrief = '',
+    bool allowSlowMotion = false,
   }) {
     if (analyses.isEmpty) {
       throw const FormatException('镜头组缺少视觉分析结果');
@@ -237,7 +271,12 @@ class ScriptMultimodalAnalysisService {
     final values = <String, String>{};
     final confidence = <String, double>{};
     void add(String field, String value, double score) {
-      final normalized = _normalizeGeneratedField(field, value);
+      final normalized = _normalizeGeneratedField(
+        field,
+        allowSlowMotion
+            ? value
+            : CinematicMotionPolicy.enforceRealtimePlayback(value),
+      );
       if (normalized.isEmpty) return;
       values[field] = normalized;
       confidence[field] = score;

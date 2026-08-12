@@ -8,16 +8,31 @@ import '../domain/video_analysis_models.dart';
 class VideoAnalysisRepository {
   const VideoAnalysisRepository(this._database);
 
+  static const _legacyOrientationRepairSetting =
+      'videoOrientationMetadataRepairVersion';
+  static const _legacyOrientationRepairVersion = '1';
+
   final AppDatabase _database;
+
+  bool get isLegacyOrientationRepairCompleted =>
+      _database.getSetting(_legacyOrientationRepairSetting) ==
+      _legacyOrientationRepairVersion;
+
+  void markLegacyOrientationRepairCompleted() {
+    _database.setSetting(
+      _legacyOrientationRepairSetting,
+      _legacyOrientationRepairVersion,
+    );
+  }
 
   void upsertSourceVideo(SourceVideo video) {
     _database.executeStatement(
       '''
       INSERT INTO source_videos(
         id, original_path, file_name, stored_path, duration_ms, frame_rate,
-        width, height, has_audio, frame_count, successful_frames,
+        width, height, rotation_degrees, has_audio, frame_count, successful_frames,
         failed_frames, status, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         original_path = excluded.original_path,
         file_name = excluded.file_name,
@@ -26,6 +41,7 @@ class VideoAnalysisRepository {
         frame_rate = excluded.frame_rate,
         width = excluded.width,
         height = excluded.height,
+        rotation_degrees = excluded.rotation_degrees,
         has_audio = excluded.has_audio,
         frame_count = excluded.frame_count,
         successful_frames = excluded.successful_frames,
@@ -43,6 +59,7 @@ class VideoAnalysisRepository {
         video.frameRate,
         video.width,
         video.height,
+        video.rotationDegrees,
         video.hasAudio ? 1 : 0,
         video.frameCount,
         video.successfulFrames,
@@ -687,6 +704,7 @@ class VideoAnalysisRepository {
     frameRate: (row['frame_rate'] as num).toDouble(),
     width: row['width'] as int,
     height: row['height'] as int,
+    rotationDegrees: row['rotation_degrees'] as int? ?? 0,
     hasAudio: row['has_audio'] == 1,
     frameCount: row['frame_count'] as int,
     successfulFrames: row['successful_frames'] as int,

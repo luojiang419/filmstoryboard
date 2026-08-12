@@ -1,3 +1,5 @@
+import 'generated_video_trim_range.dart';
+
 enum VideoPromptMode { klingOptimized, h3Optimized, original, edited }
 
 enum VideoGenerationTaskStatus {
@@ -125,6 +127,9 @@ class VideoGenerationTask {
     this.resultUrl = '',
     this.resultWithoutWatermarkUrl = '',
     this.localPath = '',
+    this.sourceDurationMs = 0,
+    this.trimInMs = 0,
+    this.trimOutMs = 0,
     this.usedWatermarkedFallback = false,
     this.errorMessage = '',
     required this.createdAt,
@@ -147,11 +152,22 @@ class VideoGenerationTask {
   final String resultUrl;
   final String resultWithoutWatermarkUrl;
   final String localPath;
+  final int sourceDurationMs;
+  final int trimInMs;
+  final int trimOutMs;
   final bool usedWatermarkedFallback;
   final String errorMessage;
   final DateTime createdAt;
   final DateTime updatedAt;
   final DateTime? completedAt;
+
+  GeneratedVideoTrimRange get trimRange =>
+      GeneratedVideoTrimRange.fromMilliseconds(
+        sourceDurationMs: sourceDurationMs,
+        trimInMs: trimInMs,
+        trimOutMs: trimOutMs,
+        fallbackDurationMs: durationSeconds * 1000,
+      );
 
   VideoGenerationTask copyWith({
     String? generationId,
@@ -162,6 +178,9 @@ class VideoGenerationTask {
     String? resultUrl,
     String? resultWithoutWatermarkUrl,
     String? localPath,
+    int? sourceDurationMs,
+    int? trimInMs,
+    int? trimOutMs,
     bool? usedWatermarkedFallback,
     String? errorMessage,
     DateTime? updatedAt,
@@ -183,6 +202,9 @@ class VideoGenerationTask {
     resultWithoutWatermarkUrl:
         resultWithoutWatermarkUrl ?? this.resultWithoutWatermarkUrl,
     localPath: localPath ?? this.localPath,
+    sourceDurationMs: sourceDurationMs ?? this.sourceDurationMs,
+    trimInMs: trimInMs ?? this.trimInMs,
+    trimOutMs: trimOutMs ?? this.trimOutMs,
     usedWatermarkedFallback:
         usedWatermarkedFallback ?? this.usedWatermarkedFallback,
     errorMessage: errorMessage ?? this.errorMessage,

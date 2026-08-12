@@ -11,6 +11,7 @@ import 'package:filmstoryboard/features/storyboard/application/storyboard_contro
 import 'package:filmstoryboard/features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_service.dart';
+import 'package:filmstoryboard/features/video_analysis/data/ffmpeg_frame_extractor.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:image/image.dart' as img;
@@ -18,6 +19,87 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  test('旧工程会一次性回填视频旋转元数据', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'video_orientation_repair_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final repository = VideoAnalysisRepository(database);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final storedVideo = File(p.join(directories.videos.path, 'legacy.mp4'));
+    await storedVideo.parent.create(recursive: true);
+    await storedVideo.writeAsBytes(const [0]);
+    final now = DateTime.utc(2026, 8, 11);
+    repository.upsertSourceVideo(
+      SourceVideo(
+        id: 'legacy-video',
+        originalPath: '',
+        fileName: 'legacy.mp4',
+        storedPath: p
+            .relative(storedVideo.path, from: directories.workspaceRoot.path)
+            .replaceAll('\\', '/'),
+        durationMs: 1000,
+        frameRate: 24,
+        width: 1920,
+        height: 1080,
+        hasAudio: false,
+        frameCount: 0,
+        successfulFrames: 0,
+        failedFrames: 0,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    var probeCount = 0;
+    final extractor = FfmpegFrameExtractor(
+      runner: FfmpegProcessRunner(
+        run: (_, _) async {
+          probeCount++;
+          return const FfmpegProcessResult(
+            exitCode: 0,
+            stdout:
+                '{"streams":[{"codec_type":"video","width":1920,'
+                '"height":1080,"r_frame_rate":"30/1",'
+                '"side_data_list":[{"rotation":-90}]},'
+                '{"codec_type":"audio"}],"format":{"duration":"2.5"}}',
+            stderr: '',
+          );
+        },
+      ),
+    );
+    final controller = VideoAnalysisController(
+      directories: directories,
+      settingsController: settingsController,
+      repository: repository,
+      metadataRepairExtractor: extractor,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    expect(await controller.legacyMetadataRepair, 1);
+
+    final repaired = repository.getSourceVideo('legacy-video')!;
+    expect(probeCount, 1);
+    expect(repaired.rotationDegrees, 270);
+    expect(repaired.displayWidth, 1080);
+    expect(repaired.displayHeight, 1920);
+    expect(repaired.durationMs, 2500);
+    expect(repaired.frameRate, 30);
+    expect(repaired.hasAudio, isTrue);
+    expect(repository.isLegacyOrientationRepairCompleted, isTrue);
+  });
+
   test('移除视频帧可撤销、恢复并还原关联分析和镜头', () async {
     final root = await Directory.systemTemp.createTemp('video_frame_history_');
     final directories = await AppDirectories.create(executableDirectory: root);

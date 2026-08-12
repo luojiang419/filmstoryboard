@@ -11,12 +11,14 @@ class SourceVideoPreviewRange {
     required this.inPoint,
     required this.outPoint,
     this.thumbnailFile,
+    this.aspectRatio = 16 / 9,
   });
 
   final File sourceVideo;
   final Duration inPoint;
   final Duration outPoint;
   final File? thumbnailFile;
+  final double aspectRatio;
 
   Duration get duration => outPoint - inPoint;
 
@@ -26,6 +28,7 @@ class SourceVideoPreviewRange {
     required int sourceDurationMs,
     double paddingSeconds = 1.5,
     File? thumbnailFile,
+    double aspectRatio = 16 / 9,
   }) {
     if (sourceDurationMs <= 0) {
       throw ArgumentError.value(sourceDurationMs, 'sourceDurationMs', '必须大于 0');
@@ -42,6 +45,7 @@ class SourceVideoPreviewRange {
       inPoint: Duration(milliseconds: startMs),
       outPoint: Duration(milliseconds: endMs),
       thumbnailFile: thumbnailFile,
+      aspectRatio: aspectRatio,
     );
   }
 }
@@ -75,6 +79,7 @@ class SourceVideoPreviewResolver {
           inPoint: Duration(milliseconds: startMs),
           outPoint: Duration(milliseconds: endMs),
           thumbnailFile: _firstExistingFile([frame.path], workspaceRoot),
+          aspectRatio: video.displayAspectRatio,
         );
       }
     }
@@ -83,6 +88,7 @@ class SourceVideoPreviewResolver {
       timestampMs: frame?.timestampMs ?? 0,
       sourceDurationMs: video.durationMs,
       paddingSeconds: paddingSeconds,
+      aspectRatio: video.displayAspectRatio,
       thumbnailFile: frame == null
           ? null
           : _firstExistingFile([frame.path], workspaceRoot),

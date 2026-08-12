@@ -8,6 +8,8 @@ import 'package:path/path.dart' as p;
 import '../application/remote_auth_service.dart';
 import '../application/remote_access_facade.dart';
 import '../application/remote_media_registry.dart';
+import '../application/remote_export_registry.dart';
+import '../application/remote_upload_registry.dart';
 import '../data/remote_audit_logger.dart';
 import '../domain/remote_access_config.dart';
 import '../domain/remote_auth_models.dart';
@@ -26,6 +28,8 @@ class EmbeddedWebServer {
     RemoteAccessFacade? facade,
     RemoteChangeBus? changeBus,
     RemoteMediaRegistry? mediaRegistry,
+    RemoteExportRegistry? exportRegistry,
+    RemoteUploadRegistry? uploadRegistry,
     RemoteCapabilitiesProvider? capabilitiesProvider,
     RemoteAuditLogger auditLogger = const NoopRemoteAuditLogger(),
     Directory? webRoot,
@@ -35,6 +39,8 @@ class EmbeddedWebServer {
        _facade = facade,
        _changeBus = changeBus,
        _mediaRegistry = mediaRegistry,
+       _exportRegistry = exportRegistry,
+       _uploadRegistry = uploadRegistry,
        _capabilitiesProvider = capabilitiesProvider ?? _defaultCapabilities,
        _auditLogger = auditLogger,
        _webRoot = webRoot;
@@ -45,6 +51,8 @@ class EmbeddedWebServer {
   final RemoteAccessFacade? _facade;
   final RemoteChangeBus? _changeBus;
   final RemoteMediaRegistry? _mediaRegistry;
+  final RemoteExportRegistry? _exportRegistry;
+  final RemoteUploadRegistry? _uploadRegistry;
   final RemoteCapabilitiesProvider _capabilitiesProvider;
   final RemoteAuditLogger _auditLogger;
   final Directory? _webRoot;
@@ -196,12 +204,419 @@ class EmbeddedWebServer {
         await _handleMedia(request, route[1]);
         return;
       }
+      if (route.length == 4 &&
+          route[0] == 'exports' &&
+          route[1] == 'artifacts' &&
+          route[3] == 'content') {
+        await _handleExportArtifact(request, route[2]);
+        return;
+      }
+      if (_matches(route, const ['exports', 'options'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().exportOptions(),
+        );
+        return;
+      }
+      if (_matches(route, const ['exports', 'tasks'])) {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final result = _requireFacade().startExport(body);
+        await _record(
+          action: 'export.task.start',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'taskId': result['id'], 'exportKind': body['kind']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (route.length == 4 &&
+          route[0] == 'exports' &&
+          route[1] == 'tasks' &&
+          route[3] == 'retry') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = _requireFacade().retryExport(route[2]);
+        await _record(
+          action: 'export.task.retry',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'sourceTaskId': route[2], 'taskId': result['id']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (_matches(route, const ['uploads', 'videos'])) {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        await _handleVideoUpload(
+          request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+        );
+        return;
+      }
+      if (_matches(route, const ['tasks'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().listTasks(),
+        );
+        return;
+      }
+      if (route.length == 2 && route[0] == 'tasks') {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().taskDetail(route[1]),
+        );
+        return;
+      }
+      if (route.length == 3 && route[0] == 'tasks' && route[2] == 'cancel') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = await _requireFacade().cancelTask(route[1]);
+        await _record(
+          action: 'task.cancel',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'taskId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (_matches(route, const ['settings', 'selection'])) {
+        if (request.method == 'GET') {
+          await _writeJson(
+            request.response,
+            HttpStatus.ok,
+            _requireFacade().settingsOptions(),
+          );
+          return;
+        }
+        _requireMethod(request, 'PATCH');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final result = await _requireFacade().updateSettingsSelection(body);
+        await _record(
+          action: 'settings.selection.update',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'fields': body.keys.toList(growable: false)},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
       if (_matches(route, const ['workspace'])) {
         _requireMethod(request, 'GET');
         await _writeJson(
           request.response,
           HttpStatus.ok,
           _requireFacade().workspaceOverview(),
+        );
+        return;
+      }
+      if (_matches(route, const ['projects'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().listProjects(),
+        );
+        return;
+      }
+      if (route.length == 3 && route[0] == 'projects' && route[2] == 'open') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = await _requireFacade().openProject(route[1]);
+        await _record(
+          action: 'project.open',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'projectId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (_matches(route, const ['videos'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().listVideos(),
+        );
+        return;
+      }
+      if (_matches(route, const ['videos', 'import'])) {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final uploadId = body['uploadId'];
+        if (uploadId is! String || uploadId.trim().isEmpty) {
+          throw const RemoteApiException(
+            HttpStatus.badRequest,
+            'invalid_request',
+            '必须提供非空文本 uploadId',
+          );
+        }
+        final result = _requireFacade().importVideoUpload(uploadId.trim());
+        await _record(
+          action: 'video.import',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'uploadId': uploadId.trim(), 'taskId': result['id']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (route.length == 2 && route[0] == 'videos') {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().videoDetail(route[1]),
+        );
+        return;
+      }
+      if (route.length == 3 && route[0] == 'videos' && route[2] == 'analyze') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final retryFailedOnly = body['retryFailedOnly'] ?? false;
+        if (retryFailedOnly is! bool) {
+          throw const RemoteApiException(
+            HttpStatus.badRequest,
+            'invalid_request',
+            'retryFailedOnly 必须是布尔值',
+          );
+        }
+        final result = _requireFacade().startVideoAnalysis(
+          route[1],
+          retryFailedOnly: retryFailedOnly,
+        );
+        await _record(
+          action: 'video.analysis.start',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'videoId': route[1], 'taskId': result['id']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (route.length == 3 && route[0] == 'videos' && route[2] == 'pause') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = _requireFacade().pauseVideoAnalysis(route[1]);
+        await _record(
+          action: 'video.analysis.pause',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'videoId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 4 &&
+          route[0] == 'videos' &&
+          route[2] == 'frames' &&
+          const {'undo', 'redo'}.contains(route[3])) {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = route[3] == 'undo'
+            ? _requireFacade().undoVideoFrameRemoval(route[1])
+            : _requireFacade().redoVideoFrameRemoval(route[1]);
+        await _record(
+          action: 'video.frame.${route[3]}',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'videoId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 4 && route[0] == 'videos' && route[2] == 'frames') {
+        _requireMethod(request, 'DELETE');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = _requireFacade().removeVideoFrame(route[1], route[3]);
+        await _record(
+          action: 'video.frame.remove',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'videoId': route[1], 'frameId': route[3]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 3 && route[0] == 'videos' && route[2] == 'cancel') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = await _requireFacade().cancelVideoAnalysis(route[1]);
+        await _record(
+          action: 'video.analysis.cancel',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'videoId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 3 &&
+          route[0] == 'videos' &&
+          route[2] == 'storyboard') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = _requireFacade().generateVideoStoryboard(route[1]);
+        await _record(
+          action: 'video.storyboard.generate',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'videoId': route[1], 'taskId': result['id']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (_matches(route, const ['video-generation', 'options'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().videoGenerationOptions(),
+        );
+        return;
+      }
+      if (_matches(route, const ['video-generation', 'groups'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().videoGenerationGroups(),
+        );
+        return;
+      }
+      if (_matches(route, const ['video-generation', 'selection'])) {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final scriptId = body['scriptId'];
+        if (scriptId is! String || scriptId.trim().isEmpty) {
+          throw const RemoteApiException(
+            HttpStatus.badRequest,
+            'invalid_request',
+            '必须提供非空文本 scriptId',
+          );
+        }
+        final result = _requireFacade().selectVideoGenerationScript(
+          scriptId.trim(),
+        );
+        await _record(
+          action: 'videoGeneration.selection.update',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'scriptId': scriptId.trim()},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (_matches(route, const ['video-generation', 'tasks'])) {
+        if (request.method == 'GET') {
+          await _writeJson(
+            request.response,
+            HttpStatus.ok,
+            _requireFacade().videoGenerationTasks(),
+          );
+          return;
+        }
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final result = _requireFacade().startVideoGeneration(body);
+        await _record(
+          action: 'videoGeneration.task.start',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'taskId': result['id']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (route.length == 4 &&
+          route[0] == 'video-generation' &&
+          route[1] == 'tasks' &&
+          route[3] == 'cancel') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = await _requireFacade().cancelVideoGenerationTask(
+          route[2],
+        );
+        await _record(
+          action: 'videoGeneration.task.cancel',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'generationTaskId': route[2]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 4 &&
+          route[0] == 'video-generation' &&
+          route[1] == 'tasks' &&
+          route[3] == 'retry') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = _requireFacade().retryVideoGenerationTask(route[2]);
+        await _record(
+          action: 'videoGeneration.task.retry',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'generationTaskId': route[2], 'taskId': result['id']},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
+        return;
+      }
+      if (_matches(route, const ['video-generation', 'works'])) {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().videoGenerationWorks(),
         );
         return;
       }
@@ -247,6 +662,55 @@ class EmbeddedWebServer {
           requestId: requestId,
           sessionId: authentication.session.id,
           metadata: {'boardId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 3 &&
+          route[0] == 'storyboards' &&
+          route[2] == 'assets') {
+        _requireMethod(request, 'GET');
+        await _writeJson(
+          request.response,
+          HttpStatus.ok,
+          _requireFacade().storyboardAssets(route[1]),
+        );
+        return;
+      }
+      if (route.length == 3 &&
+          route[0] == 'storyboards' &&
+          route[2] == 'layout') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final expectedRevision = body['expectedRevision'];
+        final action = body['action'];
+        final assetId = body['assetId'];
+        final slotIndex = body['slotIndex'];
+        if (expectedRevision is! int ||
+            action is! String ||
+            assetId is! String ||
+            (slotIndex != null && slotIndex is! int)) {
+          throw const RemoteApiException(
+            HttpStatus.badRequest,
+            'invalid_request',
+            '必须提供 expectedRevision、action、assetId 和可选 slotIndex',
+          );
+        }
+        final result = _requireFacade().updateStoryboardLayout(
+          boardId: route[1],
+          expectedRevision: expectedRevision,
+          action: action,
+          assetId: assetId,
+          slotIndex: slotIndex as int?,
+        );
+        await _record(
+          action: 'storyboard.layout.$action',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'boardId': route[1], 'assetId': assetId},
         );
         await _writeJson(request.response, HttpStatus.ok, result);
         return;
@@ -336,6 +800,63 @@ class EmbeddedWebServer {
           HttpStatus.ok,
           _requireFacade().scriptDetail(route[1]),
         );
+        return;
+      }
+      if (route.length == 3 &&
+          route[0] == 'scripts' &&
+          route[2] == 'workflow') {
+        if (request.method == 'GET') {
+          await _writeJson(
+            request.response,
+            HttpStatus.ok,
+            _requireFacade().shootingWorkflow(route[1]),
+          );
+          return;
+        }
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final result = _requireFacade().confirmShootingWorkflowShots(route[1]);
+        await _record(
+          action: 'shootingWorkflow.confirmShots',
+          outcome: 'success',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'scriptId': route[1]},
+        );
+        await _writeJson(request.response, HttpStatus.ok, result);
+        return;
+      }
+      if (route.length == 4 &&
+          route[0] == 'scripts' &&
+          route[2] == 'workflow' &&
+          route[3] == 'actions') {
+        _requireMethod(request, 'POST');
+        _requireRole(authentication.session, RemoteAccessRole.director);
+        final body = await _readJson(request);
+        final action = body['action'];
+        final shotId = body['shotId'];
+        if (action is! String || (shotId != null && shotId is! String)) {
+          throw const RemoteApiException(
+            HttpStatus.badRequest,
+            'invalid_request',
+            '必须提供 action 和可选 shotId',
+          );
+        }
+        final result = _requireFacade().startShootingWorkflowAction(
+          scriptId: route[1],
+          action: action,
+          shotId: shotId as String?,
+        );
+        await _record(
+          action: 'shootingWorkflow.$action',
+          outcome: 'accepted',
+          request: request,
+          requestId: requestId,
+          sessionId: authentication.session.id,
+          metadata: {'scriptId': route[1], 'shotId': ?shotId},
+        );
+        await _writeJson(request.response, HttpStatus.accepted, result);
         return;
       }
       if (route.length == 4 && route[0] == 'scripts' && route[2] == 'shots') {
@@ -646,6 +1167,145 @@ class EmbeddedWebServer {
     }
   }
 
+  Future<void> _handleExportArtifact(
+    HttpRequest request,
+    String artifactId,
+  ) async {
+    if (request.method != 'GET' && request.method != 'HEAD') {
+      request.response.headers.set(HttpHeaders.allowHeader, 'GET, HEAD');
+      throw const RemoteApiException(
+        HttpStatus.methodNotAllowed,
+        'method_not_allowed',
+        '导出产物接口只允许 GET 或 HEAD 请求',
+      );
+    }
+    final resource = _exportRegistry?.resolveArtifact(artifactId);
+    if (resource == null) {
+      throw const RemoteApiException(
+        HttpStatus.notFound,
+        'export_artifact_not_found',
+        '导出产物不存在或不允许远程访问',
+      );
+    }
+    final length = await resource.file.length();
+    final download = request.uri.queryParameters['download'] == '1';
+    final disposition = download || !resource.previewable
+        ? 'attachment'
+        : 'inline';
+    final encodedName = Uri.encodeComponent(resource.fileName);
+    final response = request.response;
+    response.headers
+      ..contentType = ContentType.parse(resource.contentType)
+      ..set('Accept-Ranges', 'bytes')
+      ..set(
+        'Content-Disposition',
+        "$disposition; filename=\"download\"; filename*=UTF-8''$encodedName",
+      )
+      ..set(
+        HttpHeaders.lastModifiedHeader,
+        HttpDate.format((await resource.file.lastModified()).toUtc()),
+      );
+    final rangeHeader = request.headers.value('Range');
+    if (rangeHeader == null || rangeHeader.isEmpty) {
+      response
+        ..statusCode = HttpStatus.ok
+        ..contentLength = length;
+      if (request.method == 'HEAD') {
+        await response.close();
+      } else {
+        await resource.file.openRead().pipe(response);
+      }
+      return;
+    }
+    final range = _parseRange(rangeHeader, length);
+    if (range == null) {
+      response.headers.set('Content-Range', 'bytes */$length');
+      throw const RemoteApiException(
+        HttpStatus.requestedRangeNotSatisfiable,
+        'invalid_range',
+        '请求的导出产物字节范围无效',
+      );
+    }
+    final (start, end) = range;
+    response
+      ..statusCode = HttpStatus.partialContent
+      ..contentLength = end - start + 1
+      ..headers.set('Content-Range', 'bytes $start-$end/$length');
+    if (request.method == 'HEAD') {
+      await response.close();
+    } else {
+      await resource.file.openRead(start, end + 1).pipe(response);
+    }
+  }
+
+  Future<void> _handleVideoUpload(
+    HttpRequest request, {
+    required String requestId,
+    required String sessionId,
+  }) async {
+    final registry = _uploadRegistry;
+    if (registry == null) {
+      throw const RemoteApiException(
+        HttpStatus.notImplemented,
+        'feature_unavailable',
+        '视频上传功能尚未启用',
+      );
+    }
+    final contentType = request.headers.contentType?.mimeType;
+    if (contentType != ContentType.binary.mimeType) {
+      throw const RemoteApiException(
+        HttpStatus.unsupportedMediaType,
+        'binary_required',
+        '视频上传必须使用 application/octet-stream',
+      );
+    }
+    final encodedName = request.headers.value('X-File-Name')?.trim() ?? '';
+    if (encodedName.isEmpty) {
+      throw const RemoteApiException(
+        HttpStatus.badRequest,
+        'invalid_file_name',
+        '缺少视频文件名',
+      );
+    }
+    String fileName;
+    try {
+      fileName = Uri.decodeComponent(encodedName);
+    } on FormatException {
+      throw const RemoteApiException(
+        HttpStatus.badRequest,
+        'invalid_file_name',
+        '视频文件名编码无效',
+      );
+    }
+    try {
+      final upload = await registry.receiveVideo(
+        fileName: fileName,
+        bytes: request,
+        maxBytes: _config.maxUploadBytes,
+        declaredLength: request.contentLength >= 0
+            ? request.contentLength
+            : null,
+      );
+      await _record(
+        action: 'video.upload',
+        outcome: 'success',
+        request: request,
+        requestId: requestId,
+        sessionId: sessionId,
+        metadata: {'uploadId': upload.id, 'size': upload.size},
+      );
+      await _writeJson(request.response, HttpStatus.created, upload.toJson());
+    } on RemoteUploadException catch (error) {
+      throw RemoteApiException(
+        error.code == 'upload_too_large'
+            ? HttpStatus.requestEntityTooLarge
+            : HttpStatus.badRequest,
+        error.code,
+        error.message,
+      );
+    }
+  }
+
   RemoteAccessFacade _requireFacade() {
     final facade = _facade;
     if (facade == null) {
@@ -766,7 +1426,7 @@ class EmbeddedWebServer {
       )
       ..set(
         HttpHeaders.accessControlAllowHeadersHeader,
-        'Authorization, Content-Type, If-Match',
+        'Authorization, Content-Type, If-Match, X-File-Name',
       )
       ..set(HttpHeaders.accessControlMaxAgeHeader, '600');
     return true;
@@ -861,7 +1521,9 @@ class EmbeddedWebServer {
     'workspace': false,
     'storyboards': false,
     'shootingScripts': false,
+    'shootingWorkflow': false,
     'videoGeneration': false,
+    'exports': false,
     'mediaStreaming': false,
   };
 
@@ -896,6 +1558,24 @@ class EmbeddedWebServer {
   static int _operationStatus(String code) => switch (code) {
     'not_found' => HttpStatus.notFound,
     'workspace_unavailable' || 'revision_conflict' => HttpStatus.conflict,
+    'project_transition_busy' => HttpStatus.conflict,
+    'project_catalog_unavailable' => HttpStatus.serviceUnavailable,
+    'project_not_found' => HttpStatus.notFound,
+    'project_unavailable' => HttpStatus.conflict,
+    'video_analysis_unavailable' => HttpStatus.serviceUnavailable,
+    'upload_not_found' || 'video_not_found' => HttpStatus.notFound,
+    'video_not_analyzing' => HttpStatus.conflict,
+    'video_generation_unavailable' => HttpStatus.serviceUnavailable,
+    'generation_script_not_found' ||
+    'generation_shot_not_found' ||
+    'generation_task_not_found' => HttpStatus.notFound,
+    'generation_already_running' ||
+    'generation_task_not_retryable' ||
+    'generation_task_not_cancellable' => HttpStatus.conflict,
+    'invalid_generation_request' ||
+    'invalid_generation_parameter' => HttpStatus.badRequest,
+    'video_import_failed' ||
+    'storyboard_not_generated' => HttpStatus.unprocessableEntity,
     'storyboard_locked' => HttpStatus.locked,
     'invalid_changes' => HttpStatus.badRequest,
     _ => HttpStatus.unprocessableEntity,

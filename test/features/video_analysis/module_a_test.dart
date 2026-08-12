@@ -81,6 +81,7 @@ void main() {
         frameRate: 24,
         width: 1920,
         height: 1080,
+        rotationDegrees: 90,
         hasAudio: true,
         frameCount: 2,
         successfulFrames: 2,
@@ -237,7 +238,11 @@ void main() {
       ),
     );
 
-    expect(repository.getSourceVideo('video-1')!.fileName, 'reference.mp4');
+    final restoredVideo = repository.getSourceVideo('video-1')!;
+    expect(restoredVideo.fileName, 'reference.mp4');
+    expect(restoredVideo.rotationDegrees, 90);
+    expect(restoredVideo.displayWidth, 1080);
+    expect(restoredVideo.displayHeight, 1920);
     expect(repository.listVideoFrames('video-1'), hasLength(2));
     expect(repository.listVideoShots('video-1').single.frameIds, [
       'frame-0',

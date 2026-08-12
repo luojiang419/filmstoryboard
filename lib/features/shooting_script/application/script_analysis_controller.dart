@@ -14,6 +14,7 @@ import '../../replicate/data/video_skill_router.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../replicate/domain/h3_prompt_style.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../storyboard/domain/cinematic_motion_policy.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/script_multimodal_analysis_service.dart';
 import '../data/shooting_script_workflow_repository.dart';
@@ -93,7 +94,7 @@ class ScriptAnalysisState {
 
 class ShootingScriptAnalysisController
     extends ValueNotifier<ScriptAnalysisState> {
-  static const _analysisRuleVersion = 6;
+  static const _analysisRuleVersion = 8;
 
   ShootingScriptAnalysisController({
     required ShootingScriptController shootingScriptController,
@@ -465,20 +466,26 @@ class ShootingScriptAnalysisController
         overwriteExisting: overwriteExisting,
       );
       if (overwriteExisting || updatedShot.prompt.trim().isEmpty) {
+        final generatedPrompt = _promptService
+            .generate(
+              shot: updatedShot,
+              assets: const [],
+              globalStyle:
+                  _settingsController.value.replicateDefaultGlobalStyle,
+              constraints:
+                  _settingsController.value.replicateDefaultConstraints,
+              videoReferenceInstruction: script.sourceVideoId == null
+                  ? null
+                  : '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻；保持角色、产品和场景在镜头间连续一致。',
+            )
+            .prompt;
         updatedShot = updatedShot.copyWith(
-          prompt: _promptService
-              .generate(
-                shot: updatedShot,
-                assets: const [],
-                globalStyle:
-                    _settingsController.value.replicateDefaultGlobalStyle,
-                constraints:
-                    _settingsController.value.replicateDefaultConstraints,
-                videoReferenceInstruction: script.sourceVideoId == null
-                    ? null
-                    : '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻；保持角色、产品和场景在镜头间连续一致。',
+          prompt:
+              CinematicMotionPolicy.hasExplicitSlowMotionIntent(
+                shot.freeCreationDescription,
               )
-              .prompt,
+              ? generatedPrompt
+              : CinematicMotionPolicy.enforceRealtimePlayback(generatedPrompt),
         );
       }
       _shootingScriptController.updateShot(updatedShot);
@@ -587,24 +594,30 @@ class ShootingScriptAnalysisController
         updatedHead = updatedHead.copyWith(generationFeedback: '');
       }
       if (overwriteExisting || updatedHead.prompt.trim().isEmpty) {
+        final generatedPrompt = _promptService
+            .generate(
+              shot: shots.length == 1
+                  ? updatedHead
+                  : updatedHead.copyWith(
+                      durationSeconds: updatedDurationTarget.durationSeconds,
+                    ),
+              assets: const [],
+              globalStyle:
+                  _settingsController.value.replicateDefaultGlobalStyle,
+              constraints:
+                  _settingsController.value.replicateDefaultConstraints,
+              videoReferenceInstruction: script.sourceVideoId == null
+                  ? null
+                  : '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻；保持角色、产品和场景在镜头间连续一致。',
+            )
+            .prompt;
         updatedHead = updatedHead.copyWith(
-          prompt: _promptService
-              .generate(
-                shot: shots.length == 1
-                    ? updatedHead
-                    : updatedHead.copyWith(
-                        durationSeconds: updatedDurationTarget.durationSeconds,
-                      ),
-                assets: const [],
-                globalStyle:
-                    _settingsController.value.replicateDefaultGlobalStyle,
-                constraints:
-                    _settingsController.value.replicateDefaultConstraints,
-                videoReferenceInstruction: script.sourceVideoId == null
-                    ? null
-                    : '参考视频1中的主体动作、镜头语言、节奏与视觉风格，按以下分镜复刻；保持角色、产品和场景在镜头间连续一致。',
+          prompt:
+              CinematicMotionPolicy.hasExplicitSlowMotionIntent(
+                head.freeCreationDescription,
               )
-              .prompt,
+              ? generatedPrompt
+              : CinematicMotionPolicy.enforceRealtimePlayback(generatedPrompt),
         );
       }
       _shootingScriptController.updateShot(updatedHead);
@@ -657,18 +670,27 @@ class ShootingScriptAnalysisController
   }
 
   Future<String> _creativeBrief(Iterable<ScriptShot> shots) async {
+    final shotList = shots.toList(growable: false);
     final settings = _settingsController.value;
     final preferredStyle = H3PromptStyle.resolve(settings.h3PromptStyleId);
     final route = const VideoSkillRouter().resolve(
       config: settings.activeVideoGenerationApiConfig,
-      narrativeText: _skillRoutingText(shots),
+      narrativeText: _skillRoutingText(shotList),
       preferredStyle: preferredStyle,
     );
     final style = route.promptStyle;
     final videoSkillDocument = await _videoSkillLibrary.loadForConfig(
       settings.activeVideoGenerationApiConfig,
     );
+    final allowSlowMotion =
+        shotList.isNotEmpty &&
+        CinematicMotionPolicy.hasExplicitSlowMotionIntent(
+          shotList.first.freeCreationDescription,
+        );
     return [
+      if (shotList.isNotEmpty &&
+          shotList.first.freeCreationDescription.trim().isNotEmpty)
+        '当前镜头剧情描述（用户原文，剧情与播放速度授权的唯一来源）：${shotList.first.freeCreationDescription.trim()}',
       if (route.supportsH3NarrativeSkill)
         '内容类型：${style.label}。${style.description}${route.automaticallySelected ? '（已按当前剧情自动匹配）' : ''}',
       if (settings.replicateDefaultGlobalStyle.trim().isNotEmpty)
@@ -680,6 +702,9 @@ class ShootingScriptAnalysisController
         '逐镜头快速核对契约（不得替代上方完整 Skill）：\n${style.visualPromptInstruction.trim()}',
       if (settings.replicateDefaultConstraints.trim().isNotEmpty)
         '制作边界：${settings.replicateDefaultConstraints.trim()}',
+      allowSlowMotion
+          ? '播放速度授权：用户已在当前镜头“剧情描述”中明确要求慢动作/升格，仅按原文指定阶段使用。'
+          : '播放速度边界（最高优先级）：用户未在当前镜头“剧情描述”中明确要求慢动作/升格。所有动作、表情、环境和声音按正常时间速度推进，禁止任何 Skill、风格惯例或模型自由发挥引入慢动作、慢镜头、慢放、升格、高帧率慢放、speed ramp 或时间拉伸；缓慢运镜只表示摄影机移动速度。',
       '''本次构建的时长与节拍规则（用户要求，优先于上方 Skill 中的每秒指令或固定时间段）：
 根据当前画面中的动作阶段、状态变化、运镜幅度和信息量设计自然节奏；不要在画面描述、动作阶段、运镜、声音或转场字段中写“第 N 秒”“0-N 秒”或逐秒任务表。只描述自然的先后关系和完整动作，让视频模型在最终总时长内自行适配。''',
     ].join('\n');

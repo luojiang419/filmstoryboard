@@ -18,6 +18,7 @@ import '../../../core/services/vision_request_rate_limiter.dart';
 import '../../../core/services/workspace_snapshot_save_queue.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../grid_cut/application/grid_cut_controller.dart';
+import '../../projects/application/project_aspect_controller.dart';
 import '../../projects/data/project_path_resolver.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
@@ -34,6 +35,7 @@ final storyboardControllerProvider = Provider<StoryboardController>(
       database: ref.watch(appDatabaseProvider),
       directories: ref.watch(projectDirectoriesProvider),
       settingsController: ref.watch(settingsControllerProvider),
+      projectAspectController: ref.watch(projectAspectControllerProvider),
     );
     unawaited(controller.refreshAssets());
     final cutResultsChangeNotifier = ref.watch(
@@ -53,6 +55,7 @@ final storyboardControllerProvider = Provider<StoryboardController>(
   dependencies: [
     appDatabaseProvider,
     projectDirectoriesProvider,
+    projectAspectControllerProvider,
     cutResultsChangeNotifierProvider,
   ],
 );
@@ -65,6 +68,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     required AppDatabase database,
     WorkspaceDirectories? directories,
     SettingsController? settingsController,
+    ProjectAspectController? projectAspectController,
     VisionStoryboardService? visionService,
     ImageGenerationService? imageGenerationService,
   }) : _database = database,
@@ -73,6 +77,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
            ? null
            : ProjectPathResolver(directories.workspaceRoot),
        _settingsController = settingsController,
+       _projectAspectController = projectAspectController,
        _visionService = visionService ?? VisionStoryboardService(),
        _imageGenerationService =
            imageGenerationService ??
@@ -97,12 +102,13 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       writeSnapshot: (selection) =>
           _database.setSetting(_selectionStateKey, selection),
     );
+    _projectAspectController?.addListener(_handleProjectAspectChanged);
     _restoreWorkspaceOrCreateDefault();
   }
 
   static const _workspaceSnapshotKey = 'storyboardWorkspaceSnapshot';
   static const _selectionStateKey = 'storyboardWorkspaceSelection';
-  static const _workspaceSnapshotVersion = 3;
+  static const _workspaceSnapshotVersion = 4;
   static const _maxConfiguredGridExtent = 12;
   static const _maxAutomaticGridExtent = storyboardMaxGridExtent;
   static const _historyLimit = 100;
@@ -113,17 +119,18 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   static const _manualReplacementSourceName = '手动替换';
   static const _manualReplacementImageId =
       'storyboard-manual-replacement-images';
+  static const _manualAddedFolderName = '手动添加';
   static const _assetNormalizationVersionKey =
       'storyboardAssetNormalizationVersion';
   static const _assetNormalizationVersion = 1;
   static const highDefinitionRedrawModel = 'gemini-3-pro-image';
-  static const highDefinitionRedrawAspectRatio = '16:9';
   static const highDefinitionRedrawImageSize = '4K';
 
   final AppDatabase _database;
   final WorkspaceDirectories? _directories;
   final ProjectPathResolver? _pathResolver;
   final SettingsController? _settingsController;
+  final ProjectAspectController? _projectAspectController;
   final VisionStoryboardService _visionService;
   final ImageGenerationService _imageGenerationService;
   final VisionRunLogger? _visionLogger;
@@ -150,6 +157,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   @override
   void dispose() {
     _disposed = true;
+    _projectAspectController?.removeListener(_handleProjectAspectChanged);
     _workspaceSaveQueue.dispose();
     _selectionSaveQueue.dispose();
     _visionService.cancelActiveRequests();
@@ -160,6 +168,31 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       _imageGenerationService.close();
     }
     super.dispose();
+  }
+
+  double get projectImageAspectRatio =>
+      _projectAspectController?.state.effectiveRatio.value ??
+      StoryboardBoard.defaultImageAspectRatio;
+
+  String get projectAspectRatioLabel =>
+      _projectAspectController?.state.effectiveRatio.label ?? '16:9';
+
+  void _handleProjectAspectChanged() {
+    final ratio = projectImageAspectRatio;
+    if (value.boards.every(
+      (board) => (board.imageAspectRatio - ratio).abs() < 0.0001,
+    )) {
+      return;
+    }
+    _setState(
+      value.copyWith(
+        boards: [
+          for (final board in value.boards)
+            board.copyWith(imageAspectRatio: ratio).withAdaptiveHeight(),
+        ],
+        message: '项目画幅已切换为 $projectAspectRatioLabel',
+      ),
+    );
   }
 
   void cancelVisionAnalysis() {
@@ -531,6 +564,125 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       message: '已保存 $copiedCount 张图片到 $folderName',
       ensureLatest: true,
     );
+  }
+
+  Future<int> importPathsToManualFolder(Iterable<String> paths) async {
+    final importedAssets = await _archivePathsToManualFolder(paths);
+    if (importedAssets.isEmpty) {
+      return 0;
+    }
+    value = value.copyWith(
+      message: '已保存 ${importedAssets.length} 张图片到 $_manualAddedFolderName',
+    );
+    return importedAssets.length;
+  }
+
+  Future<int> importPathsToSelectedBoard(Iterable<String> paths) async {
+    final board = value.selectedBoard;
+    if (board == null) {
+      value = value.copyWith(message: '请先选择画板');
+      return 0;
+    }
+    if (_guardLockedBoard(board, '拖入图片')) {
+      return 0;
+    }
+
+    final targetBoardId = board.id;
+    final importedAssets = await _archivePathsToManualFolder(paths);
+    if (importedAssets.isEmpty) {
+      return 0;
+    }
+
+    final currentBoard = value.selectedBoard;
+    if (currentBoard == null || currentBoard.id != targetBoardId) {
+      value = value.copyWith(
+        message:
+            '已保存 ${importedAssets.length} 张图片到 $_manualAddedFolderName；画板已切换，未自动排版',
+      );
+      return 0;
+    }
+    if (_guardLockedBoard(currentBoard, '拖入图片')) {
+      return 0;
+    }
+
+    final previousCount = currentBoard.visibleItemCount;
+    setAssetsUsed(importedAssets, true);
+    final addedCount = math.max(
+      0,
+      (value.selectedBoard?.visibleItemCount ?? previousCount) - previousCount,
+    );
+    value = value.copyWith(
+      message: addedCount == importedAssets.length
+          ? '已保存并自动排版 $addedCount 张图片'
+          : addedCount == 0
+          ? '图片已保存到 $_manualAddedFolderName，当前画板没有可新增的位置'
+          : '已保存 ${importedAssets.length} 张图片，并自动排版 $addedCount 张',
+    );
+    return addedCount;
+  }
+
+  Future<List<StoryboardCutAsset>> _archivePathsToManualFolder(
+    Iterable<String> paths,
+  ) async {
+    final root = _directories?.storyboardFolders;
+    if (root == null) {
+      value = value.copyWith(message: '数据目录尚未初始化，无法保存图片');
+      return const [];
+    }
+    final folder = Directory(p.join(root.path, _manualAddedFolderName));
+    await folder.create(recursive: true);
+
+    final sources = <File>[];
+    final seenPaths = <String>{};
+    for (final path in paths) {
+      if (!_isSupportedImage(path)) {
+        continue;
+      }
+      final source = File(path);
+      if (!source.existsSync()) {
+        continue;
+      }
+      final normalizedPath = _normalizedFilePath(source.path);
+      if (seenPaths.add(normalizedPath)) {
+        sources.add(source);
+      }
+    }
+    if (sources.isEmpty) {
+      value = value.copyWith(message: '未发现支持的图片文件');
+      return const [];
+    }
+
+    final archivedPaths = <String>[];
+    for (final source in sources) {
+      final sourceInManualFolder =
+          _normalizedFilePath(p.dirname(source.path)) ==
+          _normalizedFilePath(folder.path);
+      final archived = sourceInManualFolder
+          ? source
+          : await _copyImageFileToFolder(source, folder);
+      if (archived != null) {
+        archivedPaths.add(_normalizedFilePath(archived.path));
+      }
+    }
+    if (archivedPaths.isEmpty) {
+      value = value.copyWith(message: '未能保存图片，请检查文件权限');
+      return const [];
+    }
+
+    await _reloadAssets(ensureLatest: true);
+    final archivedPathSet = archivedPaths.toSet();
+    for (final candidate in value.folders) {
+      if (candidate.id != _manualAddedFolderName) {
+        continue;
+      }
+      return candidate.assets
+          .where(
+            (asset) =>
+                archivedPathSet.contains(_normalizedFilePath(asset.path)),
+          )
+          .toList(growable: false);
+    }
+    return const [];
   }
 
   Future<void> createResourceGroup({
@@ -1841,12 +1993,14 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
             width: 1920,
             rows: 3,
             columns: 3,
+            imageAspectRatio: projectImageAspectRatio,
           ),
           rows: 3,
           columns: 3,
           gap: 18,
           items: const [],
           rowCaptions: const ['', '', ''],
+          imageAspectRatio: projectImageAspectRatio,
           autoGeneratedSourceImageId: imageId,
         );
     final nextBoard = _boardWithAdaptiveHeight(
@@ -2887,6 +3041,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       for (final path in extraReferenceImagePaths)
         if (path.trim().isNotEmpty) path.trim(),
     ];
+    final effectiveAspectRatio = aspectRatio.trim().toLowerCase() == 'auto'
+        ? projectAspectRatioLabel
+        : aspectRatio;
     final generationId = _uuid.v4();
     _database.insertImageGenerationRecord(
       id: generationId,
@@ -2896,7 +3053,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       sourcePath: _toStoredPath(currentItem.asset.path),
       model: model,
       prompt: prompt,
-      aspectRatio: aspectRatio,
+      aspectRatio: effectiveAspectRatio,
       imageSize: imageSize,
       quality: quality,
       referencePathsJson: jsonEncode([
@@ -2921,7 +3078,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       sourceAsset: currentItem.asset,
       model: model,
       prompt: prompt,
-      aspectRatio: aspectRatio,
+      aspectRatio: effectiveAspectRatio,
       imageSize: imageSize,
       quality: quality,
       referenceImagePaths: references,
@@ -2977,7 +3134,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           sequenceNo: index + 1,
         ),
         model: highDefinitionRedrawModel,
-        aspectRatio: highDefinitionRedrawAspectRatio,
+        aspectRatio: projectAspectRatioLabel,
         imageSize: highDefinitionRedrawImageSize,
         quality: 'auto',
         extraReferenceImagePaths: const [],
@@ -3017,7 +3174,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       '必须保持完全一致：画面裁切、景别、镜头角度、透视、主体位置、人物身份与脸部特征、姿态与表情、服装和配饰、道具、背景空间关系、光源方向、阴影、色温、曝光和故事连续性。',
       '只补回参考图有视觉证据支持的细节：自然的边缘、发丝、皮肤与毛发纹理、布料和材质纹理、建筑与环境细节、真实光影层次；细节应与原有焦点、景深和颗粒感一致。',
       '严格禁止：新增或删除人物、道具、文字、标识和背景元素；改变构图、动作、表情、年龄、身份、服装颜色或镜头语言；臆造看不见的内容；过度锐化、光晕、塑料皮肤、蜡像感、重复纹理、伪影和不自然的 HDR。原图文字、标识、图案若存在，按原样保留，不重写。',
-      '输出一张适合故事板演示的真实高清 16:9 4K 图像，画面干净、边缘自然、纹理清晰，但不要添加任何新的创意元素或水印。',
+      '输出一张适合故事板演示的真实高清 $projectAspectRatioLabel 4K 图像，画面干净、边缘自然、纹理清晰，但不要添加任何新的创意元素或水印。',
       '格位：第 ${rowIndex + 1} 行，第 ${columnIndex + 1} 列。',
     ];
     final caption = item.caption.trim();
@@ -4537,12 +4694,12 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   }
 
   bool _sameFilePath(File a, File b) {
-    final first = p.normalize(a.absolute.path);
-    final second = p.normalize(b.absolute.path);
-    if (Platform.isWindows) {
-      return first.toLowerCase() == second.toLowerCase();
-    }
-    return first == second;
+    return _normalizedFilePath(a.path) == _normalizedFilePath(b.path);
+  }
+
+  String _normalizedFilePath(String path) {
+    final normalized = p.normalize(File(path).absolute.path);
+    return Platform.isWindows ? normalized.toLowerCase() : normalized;
   }
 
   bool _isSupportedImage(String path) {
@@ -5616,12 +5773,18 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       id: _uuid.v4(),
       name: '画板 $index',
       width: 1920,
-      height: StoryboardBoard.heightForLayout(width: 1920, rows: 3, columns: 3),
+      height: StoryboardBoard.heightForLayout(
+        width: 1920,
+        rows: 3,
+        columns: 3,
+        imageAspectRatio: projectImageAspectRatio,
+      ),
       rows: 3,
       columns: 3,
       gap: 18,
       items: const [],
       rowCaptions: const ['', '', ''],
+      imageAspectRatio: projectImageAspectRatio,
     );
   }
 
@@ -5807,6 +5970,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       'rowDividerOpacity': board.rowDividerOpacity,
       'titleAlignment': board.titleAlignment.name,
       'portraitMode': board.portraitMode,
+      'imageAspectRatio': board.imageAspectRatio,
       'locked': board.locked,
       'autoGeneratedSourceImageId': board.autoGeneratedSourceImageId,
       'groupId': board.groupId,
@@ -5844,6 +6008,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return null;
     }
     final portraitMode = _jsonBool(value['portraitMode'], false);
+    final imageAspectRatio = _jsonDouble(
+      value['imageAspectRatio'],
+      projectImageAspectRatio,
+    ).clamp(0.1, 10).toDouble();
     final rows = _jsonInt(
       value['rows'],
       3,
@@ -5872,6 +6040,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           width: 1920,
           rows: rows,
           columns: columns,
+          imageAspectRatio: imageAspectRatio,
         ),
       ),
       rows: normalizedRows,
@@ -5911,6 +6080,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         orElse: () => StoryboardTitleAlignment.center,
       ),
       portraitMode: portraitMode,
+      imageAspectRatio: imageAspectRatio,
       locked: _jsonBool(value['locked'], false),
       autoGeneratedSourceImageId: _jsonNullableString(
         value['autoGeneratedSourceImageId'],

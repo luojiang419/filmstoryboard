@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/theme/remote_theme.dart';
 import '../features/auth/pairing_page.dart';
+import '../features/projects/project_selection_page.dart';
 import '../features/workspace/remote_app_controller.dart';
 import '../features/workspace/workspace_page.dart';
 
@@ -31,7 +32,7 @@ class _FilmStoryboardRemoteAppState extends State<FilmStoryboardRemoteApp> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
-    title: 'FilmStoryboard 导演远程工作台',
+    title: 'FilmStoryboard 多平台工作台',
     theme: RemoteTheme.light(),
     darkTheme: RemoteTheme.dark(),
     themeMode: ThemeMode.system,
@@ -40,6 +41,9 @@ class _FilmStoryboardRemoteAppState extends State<FilmStoryboardRemoteApp> {
       builder: (context, _) => switch (widget.controller.phase) {
         RemoteAppPhase.loading => const _AppLoadingPage(),
         RemoteAppPhase.signedOut => PairingPage(controller: widget.controller),
+        RemoteAppPhase.projectSelection => ProjectSelectionPage(
+          controller: widget.controller,
+        ),
         RemoteAppPhase.ready => WorkspacePage(controller: widget.controller),
       },
     ),

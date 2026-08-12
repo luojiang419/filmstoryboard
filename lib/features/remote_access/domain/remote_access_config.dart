@@ -11,6 +11,7 @@ class RemoteAccessConfig {
     this.sessionDuration = const Duration(hours: 24),
     this.pairingCodeTtl = const Duration(minutes: 10),
     this.maxRequestBodyBytes = 10 * 1024 * 1024,
+    this.maxUploadBytes = 20 * 1024 * 1024 * 1024,
   }) : bindAddress = bindAddress ?? InternetAddress.loopbackIPv4;
 
   static const defaultPort = 47836;
@@ -23,6 +24,7 @@ class RemoteAccessConfig {
   final Duration sessionDuration;
   final Duration pairingCodeTtl;
   final int maxRequestBodyBytes;
+  final int maxUploadBytes;
 
   RemoteAccessConfig validated() {
     if (port < 1024 || port > 65535) {
@@ -41,6 +43,10 @@ class RemoteAccessConfig {
     }
     if (maxRequestBodyBytes < 1024 || maxRequestBodyBytes > 100 * 1024 * 1024) {
       throw const FormatException('请求体上限必须在 1KB 到 100MB 之间');
+    }
+    if (maxUploadBytes < 1024 * 1024 ||
+        maxUploadBytes > 100 * 1024 * 1024 * 1024) {
+      throw const FormatException('上传上限必须在 1MB 到 100GB 之间');
     }
     for (final origin in allowedOrigins) {
       final uri = Uri.tryParse(origin);
@@ -66,6 +72,7 @@ class RemoteAccessConfig {
     'sessionDurationMinutes': sessionDuration.inMinutes,
     'pairingCodeTtlMinutes': pairingCodeTtl.inMinutes,
     'maxRequestBodyBytes': maxRequestBodyBytes,
+    'maxUploadBytes': maxUploadBytes,
   };
 
   String encode() => jsonEncode(toJson());
@@ -103,6 +110,7 @@ class RemoteAccessConfig {
         'maxRequestBodyBytes',
         10 * 1024 * 1024,
       ),
+      maxUploadBytes: _int(decoded, 'maxUploadBytes', 20 * 1024 * 1024 * 1024),
     ).validated();
   }
 
@@ -115,6 +123,7 @@ class RemoteAccessConfig {
     Duration? sessionDuration,
     Duration? pairingCodeTtl,
     int? maxRequestBodyBytes,
+    int? maxUploadBytes,
   }) => RemoteAccessConfig(
     enabled: enabled ?? this.enabled,
     bindAddress: bindAddress ?? this.bindAddress,
@@ -124,6 +133,7 @@ class RemoteAccessConfig {
     sessionDuration: sessionDuration ?? this.sessionDuration,
     pairingCodeTtl: pairingCodeTtl ?? this.pairingCodeTtl,
     maxRequestBodyBytes: maxRequestBodyBytes ?? this.maxRequestBodyBytes,
+    maxUploadBytes: maxUploadBytes ?? this.maxUploadBytes,
   );
 
   static String _string(

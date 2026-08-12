@@ -738,7 +738,7 @@ class _MiniBoardPreview extends StatelessWidget {
               crossAxisCount: columns,
               crossAxisSpacing: 3,
               mainAxisSpacing: 3,
-              childAspectRatio: board.portraitMode ? 9 / 16 : 16 / 9,
+              childAspectRatio: board.imageAspectRatio,
             ),
             itemCount: rows * columns,
             itemBuilder: (context, index) {

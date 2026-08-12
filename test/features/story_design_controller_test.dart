@@ -8,6 +8,9 @@ import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/grid_cut/application/grid_cut_controller.dart';
 import 'package:filmstoryboard/features/grid_cut/data/grid_crop_service.dart';
 import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dart';
+import 'package:filmstoryboard/features/projects/application/project_aspect_controller.dart';
+import 'package:filmstoryboard/features/projects/data/project_aspect_repository.dart';
+import 'package:filmstoryboard/features/projects/domain/project_aspect_ratio.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/story_design/application/story_design_controller.dart';
@@ -16,6 +19,28 @@ import 'package:filmstoryboard/features/storyboard/data/image_generation_service
 import 'package:test/test.dart';
 
 void main() {
+  test('竖屏项目把设计分镜的首次默认比例设为9比16', () async {
+    final fixture = await _createFixture();
+    final aspectRepository = ProjectAspectRepository(fixture.database)
+      ..save(const ProjectAspectState(mode: ProjectAspectMode.portrait));
+    final aspectController = ProjectAspectController(
+      repository: aspectRepository,
+    );
+    final controller = StoryDesignController(
+      directories: fixture.directories,
+      settingsController: fixture.settingsController,
+      gridCutController: fixture.gridCutController,
+      preferencesRepository: StoryDesignPreferencesRepository(fixture.database),
+      projectAspectController: aspectController,
+    );
+    addTearDown(() {
+      controller.dispose();
+      aspectController.dispose();
+    });
+
+    expect(controller.value.aspectRatio, '9:16');
+  });
+
   test('设计页首次默认无宫格并向API原样发送提示词', () async {
     final fixture = await _createFixture();
     final imageService = _FakeImageGenerationService();

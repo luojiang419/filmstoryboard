@@ -17,6 +17,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
+  test('视频帧网格会为4比5竖屏保留更高的卡片比例', () {
+    final landscape = videoFrameCardAspectRatio(16 / 9);
+    final portrait = videoFrameCardAspectRatio(4 / 5);
+
+    expect(portrait, lessThan(landscape));
+    expect(portrait, closeTo(230 / (230 / (4 / 5) + 42), 0.001));
+  });
+
   testWidgets('视频解析页拖入视频文件会复用导入链路并过滤非视频', (tester) async {
     late final Directory root;
     late final AppDirectories directories;
@@ -164,6 +172,7 @@ Future<void> _pumpPage(
     ProviderScope(
       overrides: [
         appDatabaseProvider.overrideWithValue(database),
+        projectDatabaseProvider.overrideWithValue(database),
         projectDirectoriesProvider.overrideWithValue(directories),
         settingsControllerProvider.overrideWithValue(settingsController),
         storyboardControllerProvider.overrideWithValue(storyboardController),

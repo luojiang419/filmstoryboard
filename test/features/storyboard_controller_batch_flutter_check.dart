@@ -6,6 +6,9 @@ import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/features/projects/application/project_aspect_controller.dart';
+import 'package:filmstoryboard/features/projects/data/project_aspect_repository.dart';
+import 'package:filmstoryboard/features/projects/domain/project_aspect_ratio.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
@@ -16,6 +19,38 @@ import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('项目自动识别为9比16后同步更新现有画板并持久化比例', () async {
+    final root = await Directory.systemTemp.createTemp('storyboard_aspect_');
+    final database = await AppDatabase.open(
+      File(p.join(root.path, 'db.sqlite')),
+    );
+    final aspectRepository = ProjectAspectRepository(database)
+      ..save(const ProjectAspectState(mode: ProjectAspectMode.auto));
+    final aspectController = ProjectAspectController(
+      repository: aspectRepository,
+    );
+    final controller = StoryboardController(
+      database: database,
+      projectAspectController: aspectController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      aspectController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    aspectController.detectFromDimensions(width: 1080, height: 1920);
+    controller.flushWorkspaceSnapshot();
+
+    expect(controller.value.selectedBoard!.imageAspectRatio, 9 / 16);
+    expect(controller.projectAspectRatioLabel, '9:16');
+    expect(
+      database.getSetting('storyboardWorkspaceSnapshot'),
+      contains('"imageAspectRatio":0.5625'),
+    );
+  });
 
   test('批量加选只追加未使用资源并保持顺序', () async {
     final fixture = await _createFixture();
@@ -1243,6 +1278,7 @@ void main() {
       folder.assets.every((asset) => File(asset.path).existsSync()),
       isTrue,
     );
+    expect(controller.value.selectedBoard!.visibleItemCount, 0);
 
     controller.addOrRemoveAsset(folder.assets.first);
     final item = controller.value.selectedBoard!.itemAtSlot(0);
@@ -1261,6 +1297,56 @@ void main() {
       controller.value.selectedBoard!.items.single.resourceRemoved,
       isTrue,
     );
+  });
+
+  test('外部图片拖入资源面板只归档，拖入画板会归档并自动排版', () async {
+    final root = await Directory.systemTemp.createTemp('storyboard_drop_');
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final controller = StoryboardController(
+      database: database,
+      directories: directories,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    final panelSource = File(p.join(root.path, 'panel.png'));
+    final boardSource = File(p.join(root.path, 'board.png'));
+    await panelSource.writeAsBytes(
+      img.encodePng(img.Image(width: 3, height: 4)),
+    );
+    await boardSource.writeAsBytes(
+      img.encodePng(img.Image(width: 4, height: 5)),
+    );
+
+    final savedCount = await controller.importPathsToManualFolder([
+      panelSource.path,
+    ]);
+
+    expect(savedCount, 1);
+    expect(controller.value.selectedBoard!.visibleItemCount, 0);
+    var manualFolder = controller.value.folders.singleWhere(
+      (folder) => folder.name == '手动添加',
+    );
+    expect(manualFolder.assets, hasLength(1));
+    expect(p.basename(manualFolder.assets.single.path), 'panel.png');
+
+    final addedCount = await controller.importPathsToSelectedBoard([
+      boardSource.path,
+    ]);
+
+    expect(addedCount, 1);
+    manualFolder = controller.value.folders.singleWhere(
+      (folder) => folder.name == '手动添加',
+    );
+    expect(manualFolder.assets, hasLength(2));
+    final board = controller.value.selectedBoard!;
+    expect(board.visibleItemCount, 1);
+    expect(p.basename(board.itemAtSlot(0)!.asset.path), 'board.png');
+    expect(controller.value.message, '已保存并自动排版 1 张图片');
   });
 
   test('自定义文件夹可以创建资源编组', () async {

@@ -1,4 +1,5 @@
 import '../domain/h3_prompt_style.dart';
+import '../../storyboard/domain/cinematic_motion_policy.dart';
 
 class H3PromptReference {
   const H3PromptReference({
@@ -38,11 +39,14 @@ class H3PromptWritingService {
     String fullStyleSkillContext = '',
     List<String> repairErrors = const [],
     String previousInvalidPrompt = '',
+    bool singleContinuousShot = false,
+    bool allowSlowMotion = false,
   }) {
     final duration = _duration(durationSeconds);
     final pictures = _pictureDefinitions(
       storyboardImageCount: storyboardImageCount,
       references: references,
+      singleContinuousShot: singleContinuousShot,
     );
     const modeRules = '''
 - 使用 <Subject N> 标记可复用的可见内容，使用 <Picture N> 标记具体帧或分镜规划锚点，使用 <Video N> 标记整体视频结构，使用 <Audio N> 标记参考音频。
@@ -50,6 +54,13 @@ class H3PromptWritingService {
 - retention_analysis 中，可见参考只使用 fully_preserved、partially_preserved、attribute_transfer 或 weak_reference；音频只使用 fully_copy、partially_copy、reference 或 weak_reference。
 - summary 使用中文任务类型前缀，例如 [参考生成] 或 [关键帧补全 + 参考生成]。
 - detailed_description 必须详细可执行，不得缩减为剧情概要；根据时长尽可能完整描述每个镜头。
+''';
+    const seedanceDirectorRules = '''
+
+运镜与动作组织采用即梦 / Seedance 2.0 成熟导演语法作为基线（只影响内容组织，不改变 MiniMax H3 六段字段与引用标签）：
+- 按“空间层 + 时间层”写作：先锁定主体、场景、空间关系和光影，再按发生顺序描述动作、表情、摄影机路径与结束状态。
+- 动作具体到肢体、重心、视线、幅度、速度、力度和前后惯性；后一动作必须从前一状态自然承接。
+- 一个物理镜头尽量只使用一种有动机的主运镜，不堆叠推拉摇移；摄影机移动速度与视频播放速度必须分开表达。
 ''';
     final styleRules = style.isGeneral
         ? ''
@@ -81,6 +92,31 @@ ${previousInvalidPrompt.trim()}
 
 必须在保留创作意图的前提下修复全部错误，不得输出解释。
 ''';
+    final shotStructureRules = singleContinuousShot
+        ? '''
+
+当前目标镜头结构：单一连续镜头（最高优先级）
+- <Picture 1> 至 <Picture $storyboardImageCount> 是同一物理镜头按时间顺序抽取的动作阶段帧，不是不同镜头的首帧，也不代表切镜。
+- detailed_description 中必须且只能出现一次 [Shot 1]；禁止输出 [Shot 2] 或更高编号，禁止写任何切镜时间。
+- 必须在 [Shot 1] 内按图片顺序描述开始、发展和结束阶段，把主体尺度、景别或构图变化解释为镜内动作、连续跟随、推拉、摇移、升降或主体靠近/远离。
+- 禁止把 Picture N 映射成 Shot N，禁止把 <Picture 2> 及后续图片定义为新镜头首帧。
+'''
+        : '''
+
+当前目标镜头结构：按用户文字组织。只有用户明确写出切镜或多个目标镜头时才使用 [Shot 2+]；图片数量不自动等于镜头数量，也不得仅按 Picture 编号机械切镜。
+''';
+    final playbackSpeedRules = allowSlowMotion
+        ? '''
+
+播放速度授权：用户已在当前镜头的剧情描述中明确要求慢动作/升格。只在落实该明确意图所必需的动作阶段使用，不得把整条视频默认处理为慢动作，也不得将摄影机缓慢移动误写成播放变慢。
+'''
+        : '''
+
+播放速度规则（最高优先级）：用户没有在当前镜头的剧情描述中明确要求慢动作、慢放、升格或高帧率回放。
+- 最终提示词中的主体动作、表情变化、环境运动和声音一律按正常时间速度发生。
+- 禁止设计或写出慢动作、慢镜头、慢放、升格、高帧率慢放、speed ramp、slow motion 或时间拉伸；所选风格、完整 Skill、参考图观感和模型自由发挥都不能覆盖本条。
+- “缓慢推近/平稳跟随/末段缓停”只描述摄影机自身的运动速度，不代表画面播放速度改变，也不得据此延长人物动作。
+''';
     return '''
 你是软件内置的 MiniMax H3 中文提示词编辑器。请按 MiniMax H3 官方提示词结构，将附件中的多模态请求改写为中文生成提示词。
 
@@ -97,7 +133,7 @@ $_referenceFormat
 中文写作规则：
 - 所有描述性正文必须使用简体中文。只保留字段名、引用标签、镜头标签、说话人 ID、对话语言标签和 retention 关系枚举的官方写法。
 - 对话、歌词和画面可见文字保留用户原文；中文对话写为 <d>[Chinese] 原文</d>，不翻译、不改写。
-- [Shot 1] 不写时间戳。后续镜头使用严格递增且不超出目标时长的切镜时间，格式为 [Shot N] 在 MM:SS.mmm，……
+- [Shot 1] 不写时间戳。允许多镜头时，后续镜头使用严格递增且不超出目标时长的切镜时间，格式为 [Shot N] 在 MM:SS.mmm，……
 - 详细描述构图、主体、环境、动作、状态变化、运镜、同步声音以及参考内容实际出现或生效的准确时点。
 - 运镜以自然中文动作描述，按需说明运动类型、幅度和速度，不堆叠独立标签。
 - 为发声主体分配稳定的 (S1) 等 ID。<d>[Language] ...</d> 内只放语言标签和用户对话原文。
@@ -106,7 +142,7 @@ $_referenceFormat
 - 禁止把视觉上的慢动作、缓慢运镜或舒缓情绪解释为音频慢放；禁止时间拉伸、低沉变调、拖长尾音、过长混响或把多个动作合成一声。
 - 只有观众能听到的配乐写入 non_diegetic_music；用户或脚本未明确要求配乐时必须写 N/A，不得仅根据画面氛围自动添加慢节奏铺底音乐。
 - 不得创造未定义的引用标签、超出时长的时间点、重复字段、Markdown 围栏、JSON、前置解释或分析过程。
-$modeRules$styleRules$skillRules
+$modeRules$seedanceDirectorRules$styleRules$skillRules$shotStructureRules$playbackSpeedRules
 
 本地确定性草稿（事实和意图来源；将其重组为上述格式，移除重复或非官方包裹）：
 $draft
@@ -147,16 +183,22 @@ $repairRules
     String value, {
     int? referenceImageCount,
     bool requireAiDuration = false,
+    bool singleContinuousShot = false,
+    bool allowSlowMotion = false,
   }) => validationErrors(
     value,
     referenceImageCount: referenceImageCount,
     requireAiDuration: requireAiDuration,
+    singleContinuousShot: singleContinuousShot,
+    allowSlowMotion: allowSlowMotion,
   ).isEmpty;
 
   List<String> validationErrors(
     String value, {
     int? referenceImageCount,
     bool requireAiDuration = false,
+    bool singleContinuousShot = false,
+    bool allowSlowMotion = false,
   }) {
     final prompt = normalize(value);
     final errors = <String>[];
@@ -190,6 +232,31 @@ $repairRules
     if (!_hasChineseBody(prompt)) errors.add('描述性正文必须使用简体中文');
     if (!prompt.contains('[Shot 1]')) {
       errors.add('detailed_description 必须包含 [Shot 1]');
+    }
+    if (singleContinuousShot) {
+      final shotNumbers = RegExp(
+        r'\[Shot\s+(\d+)\]',
+        caseSensitive: false,
+      ).allMatches(prompt).map((match) => int.tryParse(match.group(1) ?? ''));
+      if (shotNumbers.whereType<int>().any((number) => number > 1)) {
+        errors.add('单一连续镜头模式只允许 [Shot 1]，不得出现 [Shot 2] 或更高编号');
+      }
+      final detailed = _fieldBody(
+        prompt,
+        'detailed_description:',
+        'overall_soundscape:',
+      );
+      final detailedShotLabels = RegExp(
+        r'\[Shot\s+\d+\]',
+        caseSensitive: false,
+      ).allMatches(detailed);
+      if (detailedShotLabels.length != 1) {
+        errors.add('单一连续镜头的 detailed_description 必须且只能包含一个 [Shot 1]');
+      }
+    }
+    if (!allowSlowMotion &&
+        CinematicMotionPolicy.containsUnauthorizedSlowMotion(prompt)) {
+      errors.add('用户未授权慢动作，最终提示词不得包含慢动作、慢放、升格或变速慢放');
     }
     if (requireAiDuration) {
       final durations = RegExp(r'(\d+)\s*秒视频').allMatches(prompt).toList();
@@ -240,6 +307,7 @@ $repairRules
   static String _pictureDefinitions({
     required int storyboardImageCount,
     required List<H3PromptReference> references,
+    required bool singleContinuousShot,
   }) {
     final count = storyboardImageCount < 1 ? 1 : storyboardImageCount;
     final referenceByNumber = {
@@ -255,7 +323,9 @@ $repairRules
       for (var index = 1; index <= count; index++) {
         lines.add(
           referenceByNumber.remove(index)?.instruction ??
-              '<Picture $index> 是 $count 张复刻分镜参考中的第 $index 张，用于定义对应动作阶段、构图、空间关系、光线和镜头规划。',
+              (singleContinuousShot
+                  ? '<Picture $index> 是同一连续镜头按时间顺序抽取的第 $index 个动作阶段帧，用于定义该阶段的构图、空间关系和光线；不是新镜头首帧。'
+                  : '<Picture $index> 是 $count 张复刻分镜参考中的第 $index 张，用于定义对应动作阶段、构图、空间关系、光线和镜头规划。'),
         );
       }
     }
@@ -303,8 +373,9 @@ non_diegetic_music:
 
   static String _fieldBody(String value, String start, String end) {
     final startIndex = value.indexOf(start);
+    if (startIndex < 0) return '';
     final endIndex = value.indexOf(end, startIndex + start.length);
-    if (startIndex < 0 || endIndex < 0) return '';
+    if (endIndex < 0) return '';
     return value.substring(startIndex + start.length, endIndex).trim();
   }
 
@@ -312,4 +383,29 @@ non_diegetic_music:
     final normalized = seconds <= 0 ? 4.0 : seconds;
     return normalized.toStringAsFixed(2);
   }
+
+  static bool hasExplicitMultiShotIntent(String value) {
+    final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) return false;
+    final patterns = <RegExp>[
+      RegExp(r'\[Shot\s*[2-9]\d*\]', caseSensitive: false),
+      RegExp(r'第\s*(?:[2-9]\d*|[二三四五六七八九十]+)\s*(?:个)?\s*镜头'),
+      RegExp(r'(?:切到|切至|硬切|跳切|转场|镜头切换|切换镜头)'),
+      RegExp(r'(?:多镜头|双镜头|两(?:个)?镜头|[三四五六七八九十](?:个)?镜头)'),
+    ];
+    for (final clause in normalized.split(RegExp(r'[，,。；;！!？?\n]+'))) {
+      if (RegExp(
+        r'(?:不要|不得|禁止|不应|无需|无须|不能).{0,12}(?:切镜|切换镜头|转场|硬切|多镜头|第二个镜头)',
+      ).hasMatch(clause)) {
+        continue;
+      }
+      if (patterns.any((pattern) => pattern.hasMatch(clause))) return true;
+    }
+    return false;
+  }
+
+  static bool shouldUseSingleContinuousShot({
+    required String description,
+    required int storyboardImageCount,
+  }) => storyboardImageCount > 1 && !hasExplicitMultiShotIntent(description);
 }

@@ -897,7 +897,7 @@ void main() {
     expect(run['free_creation_story_override'], '');
     expect(
       database.selectRows('PRAGMA user_version;').single['user_version'],
-      19,
+      AppDatabase.currentSchemaVersion,
     );
   });
 }

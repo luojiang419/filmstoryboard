@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 19;
+  static const currentSchemaVersion = 21;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -449,6 +449,7 @@ class AppDatabase {
           frame_rate REAL NOT NULL DEFAULT 0,
           width INTEGER NOT NULL DEFAULT 0,
           height INTEGER NOT NULL DEFAULT 0,
+          rotation_degrees INTEGER NOT NULL DEFAULT 0,
           has_audio INTEGER NOT NULL DEFAULT 0,
           frame_count INTEGER NOT NULL DEFAULT 0,
           successful_frames INTEGER NOT NULL DEFAULT 0,
@@ -870,6 +871,9 @@ class AppDatabase {
             result_without_watermark_url TEXT NOT NULL DEFAULT '',
             local_path TEXT NOT NULL DEFAULT '',
             tail_image_path TEXT NOT NULL DEFAULT '',
+            source_duration_ms INTEGER NOT NULL DEFAULT 0,
+            trim_in_ms INTEGER NOT NULL DEFAULT 0,
+            trim_out_ms INTEGER NOT NULL DEFAULT 0,
             used_watermarked_fallback INTEGER NOT NULL DEFAULT 0,
             error_message TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -972,6 +976,20 @@ class AppDatabase {
         _migrateStartEndPairsToShotGroups();
       }
       _database.execute('PRAGMA user_version = 19;');
+    }
+    if (version < 20) {
+      if (_tableExists('source_videos')) {
+        _ensureIntegerColumn('source_videos', 'rotation_degrees');
+      }
+      _database.execute('PRAGMA user_version = 20;');
+    }
+    if (version < 21) {
+      if (_tableExists('video_generation_tasks')) {
+        _ensureIntegerColumn('video_generation_tasks', 'source_duration_ms');
+        _ensureIntegerColumn('video_generation_tasks', 'trim_in_ms');
+        _ensureIntegerColumn('video_generation_tasks', 'trim_out_ms');
+      }
+      _database.execute('PRAGMA user_version = 21;');
     }
   }
 

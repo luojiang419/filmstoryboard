@@ -9,8 +9,10 @@ import 'package:uuid/uuid.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/services/workspace_directories.dart';
+import '../../exporter/data/default_export_directories.dart';
 import '../../replicate/application/replicate_controller.dart';
 import '../../replicate/domain/replicate_models.dart';
+import '../../projects/application/project_aspect_controller.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../settings/domain/video_generation_api_config.dart';
@@ -19,9 +21,14 @@ import '../../shooting_script/data/shooting_script_workflow_repository.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
+import '../../video_analysis/data/ffmpeg_frame_extractor.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/cli_dependency_installer.dart';
+import '../data/davinci_resolve_bridge_client.dart';
+import '../data/davinci_resolve_connection_service.dart';
+import '../data/davinci_resolve_plugin_launcher.dart';
+import '../data/generated_video_compose_service.dart';
 import '../data/kling_cli_models.dart';
 import '../data/kling_cli_resolver.dart';
 import '../data/kling_cli_service.dart';
@@ -33,6 +40,7 @@ import '../data/video_generation_directories.dart';
 import '../data/video_generation_repository.dart';
 import '../data/video_timeline_xml_export_service.dart';
 import '../domain/h3_video_prompt_adapter.dart';
+import '../domain/generated_video_trim_range.dart';
 import '../domain/kling_duration_matcher.dart';
 import '../domain/kling_video_prompt_adapter.dart';
 import '../domain/source_video_preview_range.dart';
@@ -51,6 +59,7 @@ final videoGenerationControllerProvider = Provider<VideoGenerationController>(
       replicateController: ref.watch(replicateControllerProvider),
       directories: ref.watch(projectDirectoriesProvider),
       settingsController: ref.watch(settingsControllerProvider),
+      projectAspectController: ref.watch(projectAspectControllerProvider),
     );
     ref.onDispose(controller.dispose);
     unawaited(controller.initializeEnvironment());
@@ -62,6 +71,7 @@ final videoGenerationControllerProvider = Provider<VideoGenerationController>(
     replicateControllerProvider,
     shootingScriptControllerProvider,
     settingsControllerProvider,
+    projectAspectControllerProvider,
   ],
 );
 
@@ -94,13 +104,16 @@ class VideoGenerationState {
     this.profile,
     this.drafts = const {},
     this.tasks = const [],
+    this.selectedPreviewTaskId = '',
     this.replicatedImages = const [],
     this.environment,
     this.identity,
     this.account,
     this.libTvEnvironment,
     this.libTvAccount,
+    this.libTvModels = const [],
     this.libTvModel,
+    this.isLoadingLibTvModel = false,
     this.isLoadingEnvironment = false,
     this.isBusy = false,
     this.isGeneratingAll = false,
@@ -118,13 +131,16 @@ class VideoGenerationState {
   final VideoGenerationProfile? profile;
   final Map<String, VideoGenerationDraft> drafts;
   final List<VideoGenerationTask> tasks;
+  final String selectedPreviewTaskId;
   final List<ReplicatedShotImage> replicatedImages;
   final KlingCliEnvironment? environment;
   final KlingIdentity? identity;
   final KlingAccount? account;
   final LibTvCliEnvironment? libTvEnvironment;
   final LibTvAccountInfo? libTvAccount;
+  final List<LibTvModelSummary> libTvModels;
   final LibTvModelSpec? libTvModel;
+  final bool isLoadingLibTvModel;
   final bool isLoadingEnvironment;
   final bool isBusy;
   final bool isGeneratingAll;
@@ -142,6 +158,13 @@ class VideoGenerationState {
     return null;
   }
 
+  VideoGenerationTask? get selectedPreviewTask {
+    for (final task in tasks) {
+      if (task.id == selectedPreviewTaskId) return task;
+    }
+    return null;
+  }
+
   VideoGenerationState copyWith({
     List<ShootingScript>? scripts,
     List<ScriptShot>? shots,
@@ -149,13 +172,16 @@ class VideoGenerationState {
     Object? profile = _sentinel,
     Map<String, VideoGenerationDraft>? drafts,
     List<VideoGenerationTask>? tasks,
+    String? selectedPreviewTaskId,
     List<ReplicatedShotImage>? replicatedImages,
     Object? environment = _sentinel,
     Object? identity = _sentinel,
     Object? account = _sentinel,
     Object? libTvEnvironment = _sentinel,
     Object? libTvAccount = _sentinel,
+    List<LibTvModelSummary>? libTvModels,
     Object? libTvModel = _sentinel,
+    bool? isLoadingLibTvModel,
     bool? isLoadingEnvironment,
     bool? isBusy,
     bool? isGeneratingAll,
@@ -174,6 +200,7 @@ class VideoGenerationState {
         : profile as VideoGenerationProfile?,
     drafts: drafts ?? this.drafts,
     tasks: tasks ?? this.tasks,
+    selectedPreviewTaskId: selectedPreviewTaskId ?? this.selectedPreviewTaskId,
     replicatedImages: replicatedImages ?? this.replicatedImages,
     environment: identical(environment, _sentinel)
         ? this.environment
@@ -190,9 +217,11 @@ class VideoGenerationState {
     libTvAccount: identical(libTvAccount, _sentinel)
         ? this.libTvAccount
         : libTvAccount as LibTvAccountInfo?,
+    libTvModels: libTvModels ?? this.libTvModels,
     libTvModel: identical(libTvModel, _sentinel)
         ? this.libTvModel
         : libTvModel as LibTvModelSpec?,
+    isLoadingLibTvModel: isLoadingLibTvModel ?? this.isLoadingLibTvModel,
     isLoadingEnvironment: isLoadingEnvironment ?? this.isLoadingEnvironment,
     isBusy: isBusy ?? this.isBusy,
     isGeneratingAll: isGeneratingAll ?? this.isGeneratingAll,
@@ -216,6 +245,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     required ReplicateController replicateController,
     required WorkspaceDirectories directories,
     required SettingsController settingsController,
+    ProjectAspectController? projectAspectController,
     KlingCliResolver cliResolver = const KlingCliResolver(),
     KlingCliService cliService = const KlingCliService(),
     LibTvCliResolver libTvCliResolver = const LibTvCliResolver(),
@@ -224,6 +254,14 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     LibTvCliService Function(LibTvCliEnvironment environment)?
     libTvCliServiceFactory,
     MiniMaxVideoApiService? videoApiService,
+    GeneratedVideoComposeService composeService =
+        const GeneratedVideoComposeService(),
+    DaVinciResolveBridgeClient daVinciBridgeClient =
+        const DaVinciResolveBridgeClient(),
+    DaVinciResolveConnectionService daVinciResolveConnectionService =
+        const DaVinciResolveConnectionService(),
+    DaVinciResolvePluginLauncher daVinciResolvePluginLauncher =
+        const DaVinciResolvePluginLauncher(),
     Duration loginAuthorizationTimeout = const Duration(minutes: 5),
     Duration loginAuthorizationPollInterval = const Duration(seconds: 2),
     Uuid uuid = const Uuid(),
@@ -234,6 +272,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
        _replicateController = replicateController,
        _directories = directories,
        _settingsController = settingsController,
+       _projectAspectController = projectAspectController,
        _cliResolver = cliResolver,
        _cliService = cliService,
        _libTvCliResolver = libTvCliResolver,
@@ -244,6 +283,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
            ((environment) =>
                LibTvCliService(executable: environment.executablePath)),
        _videoApiService = videoApiService ?? MiniMaxVideoApiService(),
+       _composeService = composeService,
+       _daVinciBridgeClient = daVinciBridgeClient,
+       _daVinciResolveConnectionService = daVinciResolveConnectionService,
+       _daVinciResolvePluginLauncher = daVinciResolvePluginLauncher,
        _loginAuthorizationTimeout = loginAuthorizationTimeout,
        _loginAuthorizationPollInterval = loginAuthorizationPollInterval,
        _uuid = uuid,
@@ -251,6 +294,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _shootingScriptController.addListener(_handleSourcesChanged);
     _replicateController.addListener(_handleSourcesChanged);
     _settingsController.addListener(_handleSettingsChanged);
+    _projectAspectController?.addListener(_handleProjectAspectChanged);
     final removedTaskCount = _removeMissingGeneratedVideoTaskRecords();
     _refreshData();
     if (removedTaskCount > 0) {
@@ -265,6 +309,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   final ReplicateController _replicateController;
   final WorkspaceDirectories _directories;
   final SettingsController _settingsController;
+  final ProjectAspectController? _projectAspectController;
   final KlingCliResolver _cliResolver;
   KlingCliService _cliService;
   final LibTvCliResolver _libTvCliResolver;
@@ -273,6 +318,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   final LibTvCliService Function(LibTvCliEnvironment environment)
   _libTvCliServiceFactory;
   final MiniMaxVideoApiService _videoApiService;
+  final GeneratedVideoComposeService _composeService;
+  final DaVinciResolveBridgeClient _daVinciBridgeClient;
+  final DaVinciResolveConnectionService _daVinciResolveConnectionService;
+  final DaVinciResolvePluginLauncher _daVinciResolvePluginLauncher;
   final Duration _loginAuthorizationTimeout;
   final Duration _loginAuthorizationPollInterval;
   final Uuid _uuid;
@@ -281,6 +330,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   KlingAccount? _cachedKlingAccount;
   LibTvCliEnvironment? _cachedLibTvEnvironment;
   LibTvAccountInfo? _cachedLibTvAccount;
+  List<LibTvModelSummary> _cachedLibTvModels = const [];
   LibTvModelSpec? _cachedLibTvModel;
   Future<void>? _activeEnvironmentInitialization;
   Future<int>? _loginProcessExitCode;
@@ -320,6 +370,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         account: null,
         libTvEnvironment: null,
         libTvAccount: null,
+        libTvModels: const [],
         libTvModel: null,
         isLoadingEnvironment: false,
         message: loadedConfig
@@ -396,6 +447,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         value = value.copyWith(
           libTvEnvironment: environment,
           libTvAccount: null,
+          libTvModels: const [],
           libTvModel: null,
           isLoadingEnvironment: false,
           errorMessage: environment.errorMessage,
@@ -406,6 +458,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       value = value.copyWith(
         libTvEnvironment: environment,
         libTvAccount: null,
+        libTvModels: const [],
         libTvModel: null,
         errorMessage: '',
       );
@@ -417,6 +470,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       value = value.copyWith(
         libTvEnvironment: environment ?? value.libTvEnvironment,
         libTvAccount: null,
+        libTvModels: const [],
         libTvModel: null,
         isLoadingEnvironment: false,
         errorMessage: 'LibTV 未登录或连接失败：$error',
@@ -445,9 +499,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         );
         await _dependencyInstaller.installLibTv();
         _cachedLibTvEnvironment = null;
+        _cachedLibTvModels = const [];
+        _cachedLibTvModel = null;
         value = value.copyWith(
           libTvEnvironment: null,
           libTvAccount: null,
+          libTvModels: const [],
           libTvModel: null,
         );
       } else {
@@ -689,18 +746,28 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   Future<void> _refreshLibTvAccount({required String successMessage}) async {
     final account = await _libTvCliService.accountInfo();
-    final model = await _libTvCliService.model(
-      AppSettings.defaultLibTvCliVideoGenerationModel,
+    final models = await _libTvCliService.videoModels();
+    final selected = _preferredLibTvModel(models);
+    value = value.copyWith(
+      libTvAccount: account,
+      libTvModels: models,
+      isLoadingLibTvModel: true,
+      errorMessage: '',
     );
+    final model = await _libTvCliService.model(selected.modelKey);
     final environment = value.libTvEnvironment;
     if (environment != null && environment.isReady) {
       _cachedLibTvEnvironment = environment;
     }
     _cachedLibTvAccount = account;
+    _cachedLibTvModels = models;
     _cachedLibTvModel = model;
+    _applyLibTvModelProfile(model);
     value = value.copyWith(
       libTvAccount: account,
+      libTvModels: models,
       libTvModel: model,
+      isLoadingLibTvModel: false,
       isLoadingEnvironment: false,
       message: successMessage,
       errorMessage: '',
@@ -743,6 +810,10 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   void _killLoginProcess() => _killLoginProcessCallback?.call();
 
   void selectScript(String scriptId) {
+    if (value.selectedScriptId != scriptId &&
+        value.selectedPreviewTaskId.isNotEmpty) {
+      value = value.copyWith(selectedPreviewTaskId: '');
+    }
     _shootingScriptController.selectScript(scriptId);
   }
 
@@ -757,6 +828,37 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     );
     _repository.upsertProfile(updated);
     value = value.copyWith(profile: updated, message: '已切换可灵模型');
+  }
+
+  Future<void> selectLibTvModel(String modelKey) async {
+    if (!usesLibTvCli || value.isBusy || value.isLoadingLibTvModel) return;
+    final summary = value.libTvModels
+        .where((model) => model.modelKey == modelKey)
+        .firstOrNull;
+    if (summary == null || value.libTvModel?.modelKey == modelKey) return;
+    value = value.copyWith(
+      isLoadingLibTvModel: true,
+      message: '',
+      errorMessage: '',
+    );
+    try {
+      final model = await _libTvCliService.model(modelKey);
+      if (_disposed || !usesLibTvCli) return;
+      _cachedLibTvModel = model;
+      _applyLibTvModelProfile(model, resetParameters: true);
+      value = value.copyWith(
+        libTvModel: model,
+        isLoadingLibTvModel: false,
+        message: '已切换 LibTV 模型：${model.modelName}',
+        errorMessage: '',
+      );
+    } catch (error) {
+      if (_disposed) return;
+      value = value.copyWith(
+        isLoadingLibTvModel: false,
+        errorMessage: '读取 LibTV 模型参数失败：$error',
+      );
+    }
   }
 
   void updateParameter(String name, String parameterValue) {
@@ -916,7 +1018,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       return seconds.round().clamp(1, 15).toDouble();
     }
     if (usesLibTvCli) {
-      return seconds.round().clamp(4, 15).toDouble();
+      return _normalizedLibTvDuration(seconds).toDouble();
     }
     final profile = value.profile;
     final model = profile == null ? null : _model(profile.model);
@@ -1009,6 +1111,99 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       .where((task) => task.shotId == shotId)
       .toList(growable: false);
 
+  void selectWorkPreviewTask(VideoGenerationTask task) {
+    if (task.scriptId != value.selectedScriptId ||
+        !generatedVideoFileFor(task).existsSync()) {
+      return;
+    }
+    value = value.copyWith(selectedPreviewTaskId: task.id);
+  }
+
+  void closeWorkPreview() {
+    if (value.selectedPreviewTaskId.isEmpty) return;
+    value = value.copyWith(selectedPreviewTaskId: '');
+  }
+
+  bool canNavigateWorkPreview(int offset) {
+    final selected = value.selectedPreviewTask;
+    if (selected == null || offset == 0) return false;
+    final tasks = _workPreviewNavigationTasks();
+    final index = tasks.indexWhere((task) => task.shotId == selected.shotId);
+    final targetIndex = index + offset;
+    return index >= 0 && targetIndex >= 0 && targetIndex < tasks.length;
+  }
+
+  void navigateWorkPreview(int offset) {
+    if (offset == 0) return;
+    final selected = value.selectedPreviewTask;
+    if (selected == null) return;
+    final tasks = _workPreviewNavigationTasks();
+    final index = tasks.indexWhere((task) => task.shotId == selected.shotId);
+    final targetIndex = index + offset;
+    if (index < 0 || targetIndex < 0 || targetIndex >= tasks.length) return;
+    value = value.copyWith(selectedPreviewTaskId: tasks[targetIndex].id);
+  }
+
+  List<VideoGenerationTask> _workPreviewNavigationTasks() {
+    final result = <VideoGenerationTask>[];
+    for (final group in ScriptShotGroup.group(value.shots)) {
+      final head = group.shots.first;
+      final candidates =
+          value.tasks
+              .where(
+                (task) =>
+                    task.shotId == head.id &&
+                    (task.status == VideoGenerationTaskStatus.completed ||
+                        task.status ==
+                            VideoGenerationTaskStatus.partialCompleted) &&
+                    generatedVideoFileFor(task).existsSync(),
+              )
+              .toList()
+            ..sort(_compareTaskCreatedAt);
+      if (candidates.isNotEmpty) result.add(candidates.last);
+    }
+    return result;
+  }
+
+  int _compareTaskCreatedAt(
+    VideoGenerationTask first,
+    VideoGenerationTask second,
+  ) {
+    final byCreatedAt = first.createdAt.compareTo(second.createdAt);
+    return byCreatedAt != 0 ? byCreatedAt : first.id.compareTo(second.id);
+  }
+
+  void updateTaskTrimRange(
+    VideoGenerationTask task,
+    GeneratedVideoTrimRange range,
+  ) {
+    final current = _repository.getTask(task.id);
+    if (current == null) return;
+    final normalized = GeneratedVideoTrimRange.fromMilliseconds(
+      sourceDurationMs: range.sourceDuration.inMilliseconds,
+      trimInMs: range.inPoint.inMilliseconds,
+      trimOutMs: range.outPoint.inMilliseconds,
+      fallbackDurationMs: current.durationSeconds * 1000,
+    );
+    final updated = current.copyWith(
+      sourceDurationMs: normalized.sourceDuration.inMilliseconds,
+      trimInMs: normalized.inPoint.inMilliseconds,
+      trimOutMs: normalized.outPoint.inMilliseconds,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertTask(updated);
+    final taskWasVisible = value.tasks.any((item) => item.id == updated.id);
+    value = value.copyWith(
+      tasks: [
+        if (!taskWasVisible) updated,
+        for (final item in value.tasks)
+          if (item.id == updated.id) updated else item,
+      ],
+    );
+  }
+
+  List<VideoGenerationTask> get projectTasks => _repository.listTasks();
+
   bool get usesConfiguredVideoGenerationApi =>
       _settingsController.value.activeVideoGenerationApiConfig?.isHttpApi ==
           true &&
@@ -1071,6 +1266,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return model.isEmpty ? AppSettings.defaultVideoGenerationModel : model;
   }
 
+  String get projectAspectRatioLabel =>
+      _projectAspectController?.state.effectiveRatio.label ?? '16:9';
+
   List<String> get videoApiAspectRatios {
     final ratios = <String>[];
     for (final preset in _videoApiResolutionPresets) {
@@ -1085,8 +1283,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       parameters[_minimaxApiAspectRatioKey],
     );
     if (stored != null) return stored;
+    final preferred = _allowedMiniMaxAspectRatio(projectAspectRatioLabel);
+    if (preferred != null) return preferred;
     final resolution = selectedVideoApiResolution;
-    return _aspectRatioForMiniMaxResolution(resolution) ?? '16:9';
+    return _aspectRatioForMiniMaxResolution(resolution) ??
+        projectAspectRatioLabel;
   }
 
   String get selectedVideoApiResolution {
@@ -1094,6 +1295,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     final stored =
         parameters[_minimaxApiResolutionKey] ?? parameters['resolution'];
     if (_isMiniMaxResolution(stored)) return stored!;
+    if (_allowedMiniMaxAspectRatio(projectAspectRatioLabel) != null) {
+      return _defaultMiniMaxResolutionForAspect(projectAspectRatioLabel);
+    }
     return _videoApiDefaultResolution;
   }
 
@@ -1106,7 +1310,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   List<String> videoApiResolutionsForAspect(String aspectRatio) {
-    final normalized = _allowedMiniMaxAspectRatio(aspectRatio) ?? '16:9';
+    final normalized =
+        _allowedMiniMaxAspectRatio(aspectRatio) ?? projectAspectRatioLabel;
     return [
       for (final preset in _videoApiResolutionPresets)
         if (preset.aspectRatio == normalized) preset.label,
@@ -1174,7 +1379,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       parameters: {
         ...profile.parameters,
         _minimaxApiAspectRatioKey:
-            _aspectRatioForMiniMaxResolution(resolution) ?? '16:9',
+            _aspectRatioForMiniMaxResolution(resolution) ??
+            projectAspectRatioLabel,
         _minimaxApiResolutionKey: resolution,
       },
       updatedAt: DateTime.now().toUtc(),
@@ -1202,9 +1408,69 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       '分辨率：$selectedVideoApiResolution\n'
       '步数：$selectedVideoApiSteps';
 
-  List<String> get libTvAspectRatios => _libTvAspectRatios;
+  List<LibTvModelSummary> get libTvModels => value.libTvModels;
 
-  List<String> get libTvResolutions => _libTvResolutions;
+  String get selectedLibTvModelKey => value.libTvModel?.modelKey ?? '';
+
+  String get selectedLibTvModelName => value.libTvModel?.modelName ?? '';
+
+  List<String> get libTvModeTypes =>
+      value.libTvModel?.imageInputModeTypes ?? const [];
+
+  String get selectedLibTvModeType {
+    final model = value.libTvModel;
+    if (model == null) return '';
+    final stored = value.profile?.parameters[_libTvModeTypeKey] ?? '';
+    if (model.imageInputModeTypes.contains(stored)) return stored;
+    return _preferredLibTvModeType(model, imageCount: 1);
+  }
+
+  List<LibTvModelParameterSpec> get libTvParameterSpecs {
+    final model = value.libTvModel;
+    if (model == null) return const [];
+    return model
+        .parametersForMode(selectedLibTvModeType)
+        .where((parameter) => parameter.key != 'duration')
+        .toList(growable: false);
+  }
+
+  List<LibTvParameterOption> get libTvCountOptions {
+    final options = value.libTvModel?.countOptions ?? const [];
+    return options.isEmpty
+        ? const [LibTvParameterOption(value: '1', label: '1')]
+        : options;
+  }
+
+  String get selectedLibTvCount {
+    final stored = value.profile?.parameters[_libTvCountKey] ?? '';
+    if (libTvCountOptions.any((option) => option.value == stored)) {
+      return stored;
+    }
+    return libTvCountOptions.first.value;
+  }
+
+  String selectedLibTvParameterValue(LibTvModelParameterSpec parameter) {
+    final stored =
+        value.profile?.parameters[_libTvStoredParameterKey(parameter.key)];
+    if (stored != null && _isValidLibTvParameterValue(parameter, stored)) {
+      return stored;
+    }
+    return _preferredLibTvParameterDefault(parameter);
+  }
+
+  List<String> get libTvAspectRatios {
+    final options = _libTvParameter('ratio')?.options ?? const [];
+    return options.isEmpty
+        ? _fallbackLibTvAspectRatios
+        : options.map((option) => option.value).toList(growable: false);
+  }
+
+  List<String> get libTvResolutions {
+    final options = _libTvParameter('resolution')?.options ?? const [];
+    return options.isEmpty
+        ? _fallbackLibTvResolutions
+        : options.map((option) => option.value).toList(growable: false);
+  }
 
   String get selectedLibTvAspectRatio => _normalizedLibTvParameters()['ratio']!;
 
@@ -1212,42 +1478,200 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       _normalizedLibTvParameters()['resolution']!;
 
   bool get selectedLibTvSoundEnabled =>
-      _normalizedLibTvParameters()['enableSound'] == 'on';
+      _libTvBoolValue(_normalizedLibTvParameters()['enableSound']);
 
   bool get selectedLibTvSearchEnabled =>
-      _normalizedLibTvParameters()['search_enabled'] == '1';
+      _libTvBoolValue(_normalizedLibTvParameters()['search_enabled']);
+
+  void updateLibTvModeType(String modeType) {
+    final model = value.libTvModel;
+    final profile = value.profile;
+    if (model == null ||
+        profile == null ||
+        !model.imageInputModeTypes.contains(modeType)) {
+      return;
+    }
+    final updated = profile.copyWith(
+      parameters: {
+        ..._defaultLibTvParameters(model),
+        _libTvModeTypeKey: modeType,
+        _libTvCountKey: selectedLibTvCount,
+      },
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertProfile(updated);
+    value = value.copyWith(profile: updated, message: '已切换 LibTV 生成模式');
+  }
+
+  void updateLibTvCount(String count) {
+    if (!libTvCountOptions.any((option) => option.value == count)) return;
+    updateParameter(_libTvCountKey, count);
+  }
+
+  void updateLibTvParameter(
+    LibTvModelParameterSpec parameter,
+    String parameterValue,
+  ) {
+    if (!_isValidLibTvParameterValue(parameter, parameterValue)) return;
+    updateParameter(_libTvStoredParameterKey(parameter.key), parameterValue);
+  }
+
+  void updateLibTvSwitchParameter(
+    LibTvModelParameterSpec parameter,
+    bool enabled,
+  ) {
+    updateLibTvParameter(parameter, _libTvSwitchValue(parameter, enabled));
+  }
 
   void updateLibTvAspectRatio(String ratio) {
-    if (!_libTvAspectRatios.contains(ratio)) return;
-    updateParameter(_libTvRatioKey, ratio);
+    final parameter = _libTvParameter('ratio');
+    if (parameter == null) {
+      if (!_fallbackLibTvAspectRatios.contains(ratio)) return;
+      updateParameter(_libTvRatioKey, ratio);
+      return;
+    }
+    updateLibTvParameter(parameter, ratio);
   }
 
   void updateLibTvResolution(String resolution) {
-    if (!_libTvResolutions.contains(resolution)) return;
-    updateParameter(_libTvResolutionKey, resolution);
+    final parameter = _libTvParameter('resolution');
+    if (parameter == null) {
+      if (!_fallbackLibTvResolutions.contains(resolution)) return;
+      updateParameter(_libTvResolutionKey, resolution);
+      return;
+    }
+    updateLibTvParameter(parameter, resolution);
   }
 
   void updateLibTvSoundEnabled(bool enabled) {
-    updateParameter(_libTvEnableSoundKey, enabled ? 'on' : 'off');
+    final parameter = _libTvParameter('enableSound');
+    if (parameter == null) {
+      updateParameter(_libTvEnableSoundKey, enabled ? 'on' : 'off');
+      return;
+    }
+    updateLibTvParameter(parameter, _libTvSwitchValue(parameter, enabled));
   }
 
   void updateLibTvSearchEnabled(bool enabled) {
-    updateParameter(_libTvSearchEnabledKey, enabled ? '1' : '0');
+    final parameter = _libTvParameter('search_enabled');
+    if (parameter == null) {
+      updateParameter(_libTvSearchEnabledKey, enabled ? '1' : '0');
+      return;
+    }
+    updateLibTvParameter(parameter, _libTvSwitchValue(parameter, enabled));
   }
 
   String get libTvParameterSummary {
     final parameters = _normalizedLibTvParameters();
-    return '生成比例：${parameters['ratio']}\n'
-        '分辨率：${parameters['resolution']}\n'
-        '生成音频：${parameters['enableSound'] == 'off' ? '关闭' : '开启'}\n'
-        '联网增强：${parameters['search_enabled'] == '0' ? '关闭' : '开启'}\n'
-        '时长范围：4–15 秒';
+    final lines = <String>[
+      '模型：${selectedLibTvModelName.isEmpty ? '未选择' : selectedLibTvModelName}',
+      '生成模式：${libTvModeTypeLabel(selectedLibTvModeType)}',
+      '每镜头生成：${parameters['count'] ?? '1'} 条',
+      for (final parameter in libTvParameterSpecs)
+        '${parameter.displayName}：${_libTvParameterSummaryValue(parameter, parameters[parameter.key] ?? selectedLibTvParameterValue(parameter))}',
+      '时长范围：$libTvDurationMin–$libTvDurationMax 秒（按镜头）',
+    ];
+    return lines.join('\n');
+  }
+
+  String _libTvParameterSummaryValue(
+    LibTvModelParameterSpec parameter,
+    String value,
+  ) {
+    if (parameter.isSwitch) return _libTvBoolValue(value) ? '开启' : '关闭';
+    for (final option in parameter.options) {
+      if (option.value == value) return option.label;
+    }
+    return value;
   }
 
   Map<String, String> _normalizedLibTvParameters() =>
       _libTvParametersForSubmission(
         value.profile?.parameters ?? const <String, String>{},
+        imageInputCount: 1,
       );
+
+  LibTvModelParameterSpec? _libTvParameter(String key) {
+    for (final parameter in libTvParameterSpecs) {
+      if (parameter.key == key) return parameter;
+    }
+    return null;
+  }
+
+  bool _isValidLibTvParameterValue(
+    LibTvModelParameterSpec parameter,
+    String value,
+  ) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) return false;
+    if (parameter.options.isNotEmpty) {
+      return parameter.options.any((option) => option.value == normalized);
+    }
+    if (parameter.hasNumericRange) {
+      final number = num.tryParse(normalized);
+      if (number == null) return false;
+      return number >= parameter.min! && number <= parameter.max!;
+    }
+    return true;
+  }
+
+  String _libTvSwitchValue(LibTvModelParameterSpec parameter, bool enabled) {
+    for (final option in parameter.options) {
+      if (_libTvBoolValue(option.value) == enabled) return option.value;
+    }
+    final defaultValue = parameter.defaultValue.toLowerCase();
+    if (defaultValue == 'true' || defaultValue == 'false') {
+      return enabled ? 'true' : 'false';
+    }
+    if (defaultValue == 'on' || defaultValue == 'off') {
+      return enabled ? 'on' : 'off';
+    }
+    return enabled ? '1' : '0';
+  }
+
+  bool _libTvBoolValue(String? value) =>
+      const {'1', 'true', 'on', 'yes'}.contains(value?.trim().toLowerCase());
+
+  int get libTvDurationMin {
+    final duration = value.libTvModel?.parameter('duration');
+    return duration?.min?.round() ?? 4;
+  }
+
+  int get libTvDurationMax {
+    final duration = value.libTvModel?.parameter('duration');
+    return duration?.max?.round() ?? 15;
+  }
+
+  String libTvModeTypeLabel(String modeType) => switch (modeType) {
+    'text2video' => '文生视频',
+    'singleImage2video' => '单图生视频',
+    'frames2video' => '首尾帧',
+    'image2video' => '多图参考',
+    'video2video' => '视频参考',
+    'videoEdit2video' => '视频编辑',
+    'audio2video' => '音频驱动',
+    'mixed2video' => '全能参考',
+    _ => modeType.isEmpty ? '不支持图像输入' : modeType,
+  };
+
+  int _normalizedLibTvDuration(num seconds) {
+    final duration = value.libTvModel?.parameter('duration');
+    final allowed =
+        duration?.options
+            .map((option) => int.tryParse(option.value))
+            .whereType<int>()
+            .toList(growable: false) ??
+        const [];
+    if (allowed.isNotEmpty) {
+      return allowed.reduce(
+        (best, candidate) =>
+            (candidate - seconds).abs() < (best - seconds).abs()
+            ? candidate
+            : best,
+      );
+    }
+    return seconds.round().clamp(libTvDurationMin, libTvDurationMax).toInt();
+  }
 
   Map<String, String> get selectedVideoApiSubmissionParameters =>
       _miniMaxApiParametersForSubmission(
@@ -1344,6 +1768,34 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     }
   }
 
+  Future<void> generateSelection(Iterable<ScriptShot> shots) async {
+    final owners = <String, ScriptShot>{};
+    for (final shot in shots) {
+      final owner = generationOwnerFor(shot);
+      owners[owner.id] = owner;
+    }
+    final targets = owners.values
+        .where(canGenerateShot)
+        .where(_reserveGenerationPreparation)
+        .toList(growable: false);
+    if (targets.isEmpty) return;
+    try {
+      final submissions = await _prepareGenerationSubmissions(targets);
+      if (submissions.isEmpty) return;
+      final generation = _enqueueGeneration(
+        submissions,
+        isBatch: targets.length > 1,
+        queuedMessage: targets.length == 1
+            ? '已提交生成任务'
+            : '已按镜号提交 ${submissions.length} 个视频任务…',
+      );
+      _preparingShotIds.removeAll(targets.map((shot) => shot.id));
+      await generation;
+    } finally {
+      _preparingShotIds.removeAll(targets.map((shot) => shot.id));
+    }
+  }
+
   bool _reserveGenerationPreparation(ScriptShot shot) {
     if (isGenerationActiveFor(shot)) return false;
     return _preparingShotIds.add(shot.id);
@@ -1367,6 +1819,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         .isNotEmpty;
   }
 
+  bool get canExportVideo => canExportTimelineXml;
+
   Future<void> exportTimelineXml() async {
     final script = value.selectedScript;
     if (script == null) {
@@ -1379,13 +1833,18 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       errorMessage: '',
     );
     try {
-      final directories = await _generationDirectories();
+      final settings = _settingsController.value;
       final file = await const VideoTimelineXmlExportService().export(
         script: script,
         shots: value.shots,
         tasks: value.tasks,
         fileForTask: generatedVideoFileFor,
-        outputDirectory: directories.results,
+        outputDirectory: DefaultExportDirectories(
+          settings.exportDirectory,
+        ).timelines,
+        metadataProbe: FfmpegFrameExtractor(
+          ffprobeExecutable: settings.ffprobeExecutable,
+        ).probe,
       );
       value = value.copyWith(
         isBusy: false,
@@ -1406,6 +1865,136 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
     }
   }
+
+  Future<void> sendTimelineToDaVinci() async {
+    final script = value.selectedScript;
+    if (script == null) {
+      value = value.copyWith(message: '', errorMessage: '尚未选择拍摄脚本');
+      return;
+    }
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在连接达芬奇流程整合插件…',
+      errorMessage: '',
+    );
+    try {
+      final health = await _daVinciResolveConnectionService.connect(
+        healthCheck: _daVinciBridgeClient.health,
+        launchPlugin: _daVinciResolvePluginLauncher.launch,
+        onStatus: (message) {
+          value = value.copyWith(
+            isBusy: true,
+            message: message,
+            errorMessage: '',
+          );
+        },
+      );
+      if (health.projectId.isEmpty) {
+        throw const DaVinciBridgeException('达芬奇当前没有打开项目');
+      }
+      final settings = _settingsController.value;
+      final snapshot = await const VideoTimelineXmlExportService()
+          .buildSnapshot(
+            script: script,
+            shots: value.shots,
+            tasks: value.tasks,
+            fileForTask: generatedVideoFileFor,
+            metadataProbe: FfmpegFrameExtractor(
+              ffprobeExecutable: settings.ffprobeExecutable,
+            ).probe,
+          );
+      final result = await _daVinciBridgeClient.sync(snapshot);
+      final projectLabel = health.projectName.isEmpty
+          ? ''
+          : '（${health.projectName}）';
+      final message = result.unchanged
+          ? '达芬奇时间线已是最新状态$projectLabel'
+          : result.created
+          ? '已在达芬奇$projectLabel创建时间线“${result.timelineName}”，'
+                '同步 ${result.syncedClipCount} 个镜头'
+          : '已更新达芬奇$projectLabel时间线“${result.timelineName}”，'
+                '同步 ${result.syncedClipCount} 个镜头';
+      value = value.copyWith(isBusy: false, message: message, errorMessage: '');
+    } on VideoTimelineXmlExportException catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: error.message,
+      );
+    } on DaVinciBridgeException catch (error) {
+      final shouldHideTimeout = error.kind == DaVinciBridgeFailureKind.timeout;
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: shouldHideTimeout ? '' : error.message,
+      );
+    } catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: '发送到达芬奇失败：$error',
+      );
+    }
+  }
+
+  Future<void> exportVideo() async {
+    final script = value.selectedScript;
+    if (script == null) {
+      value = value.copyWith(errorMessage: '尚未选择拍摄脚本', message: '');
+      return;
+    }
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在按镜号和 I/O 范围拼接视频…',
+      errorMessage: '',
+    );
+    try {
+      final clips = const VideoTimelineXmlExportService().timelineClips(
+        script: script,
+        shots: value.shots,
+        tasks: value.tasks,
+        fileForTask: generatedVideoFileFor,
+      );
+      if (clips.isEmpty) {
+        throw const GeneratedVideoComposeException('暂无可导出的完成视频');
+      }
+      final directories = await _generationDirectories();
+      final canvas = _videoExportCanvas;
+      final file = await _composeService.export(
+        script: script,
+        clips: clips,
+        outputDirectory: directories.results,
+        width: canvas.width,
+        height: canvas.height,
+      );
+      value = value.copyWith(
+        isBusy: false,
+        message: '视频已导出：${file.path}',
+        errorMessage: '',
+      );
+    } on GeneratedVideoComposeException catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: error.message,
+      );
+    } catch (error) {
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: '导出视频失败：$error',
+      );
+    }
+  }
+
+  ({int width, int height}) get _videoExportCanvas =>
+      switch (projectAspectRatioLabel) {
+        '4:3' => (width: 1440, height: 1080),
+        '3:4' => (width: 1080, height: 1440),
+        '4:5' => (width: 1080, height: 1350),
+        '9:16' => (width: 1080, height: 1920),
+        _ => (width: 1920, height: 1080),
+      };
 
   Future<void> previewTask(VideoGenerationTask task) async {
     await previewFile(generatedVideoFileFor(task));
@@ -1447,6 +2036,53 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       if (taskRecordRemoved) _repository.upsertTask(task);
       _refreshData();
       value = value.copyWith(message: '', errorMessage: '删除生成作品失败：$error');
+    }
+  }
+
+  int get invalidWorkTaskCount {
+    final scriptId = value.selectedScriptId;
+    if (scriptId.isEmpty) return 0;
+    return value.tasks
+        .where((task) => task.scriptId == scriptId)
+        .where(_isMissingCompletedWork)
+        .length;
+  }
+
+  Future<int> cleanInvalidWorks() async {
+    if (value.isBusy) return 0;
+    final scriptId = value.selectedScriptId;
+    final invalidTasks = value.tasks
+        .where((task) => task.scriptId == scriptId)
+        .where(_isMissingCompletedWork)
+        .toList(growable: false);
+    if (invalidTasks.isEmpty) {
+      value = value.copyWith(message: '没有需要清理的失效作品', errorMessage: '');
+      return 0;
+    }
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在清理失效作品…',
+      errorMessage: '',
+    );
+    try {
+      for (final task in invalidTasks) {
+        _repository.deleteTask(task.id);
+      }
+      _refreshData();
+      value = value.copyWith(
+        isBusy: false,
+        message: '已清理 ${invalidTasks.length} 个失效作品',
+        errorMessage: '',
+      );
+      return invalidTasks.length;
+    } catch (error) {
+      _refreshData();
+      value = value.copyWith(
+        isBusy: false,
+        message: '',
+        errorMessage: '清理失效作品失败：$error',
+      );
+      return 0;
     }
   }
 
@@ -1630,7 +2266,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       return const [];
     }
     if (usesLibTv && (value.libTvAccount == null || value.libTvModel == null)) {
-      value = value.copyWith(errorMessage: '请先登录 LibTV 并确认 Seedance 2.0 模型可用');
+      value = value.copyWith(errorMessage: '请先登录 LibTV 并选择可用的视频模型');
       return const [];
     }
     final directories = await _generationDirectories();
@@ -1666,6 +2302,19 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           value.errorMessage != errorBeforeImageReferences) {
         return const [];
       }
+      final libTvParameters = usesLibTv
+          ? _libTvParametersForSubmission(
+              profile?.parameters ?? const <String, String>{},
+              imageInputCount: imageReferences.length + 1,
+            )
+          : null;
+      if (usesLibTv && libTvParameters?['modeType']?.isNotEmpty != true) {
+        value = value.copyWith(
+          errorMessage:
+              '当前 LibTV 模型不支持 ${imageReferences.length + 1} 张图片输入，请切换模型或生成模式。',
+        );
+        return const [];
+      }
       final prompt = usesNonKlingBackend
           ? _videoApiPromptForSubmission(
               draft.selectedPrompt,
@@ -1680,7 +2329,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       final duration = usesVideoApi
           ? desiredDurationFor(shot).round().clamp(1, 15).toInt()
           : usesLibTv
-          ? desiredDurationFor(shot).round().clamp(4, 15).toInt()
+          ? _normalizedLibTvDuration(desiredDurationFor(shot))
           : const KlingDurationMatcher().forModel(
               desiredSeconds: desiredDurationFor(shot),
               model: model!,
@@ -1698,16 +2347,16 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
             scriptId: shot.scriptId,
             shotId: shot.id,
             model: usesNonKlingBackend
-                ? activeVideoGenerationApiModel
+                ? usesLibTv
+                      ? value.libTvModel!.modelName
+                      : activeVideoGenerationApiModel
                 : profile!.model,
             parameters: usesVideoApi
                 ? _miniMaxApiParametersForSubmission(
                     profile?.parameters ?? const <String, String>{},
                   )
                 : usesLibTv
-                ? _libTvParametersForSubmission(
-                    profile?.parameters ?? const <String, String>{},
-                  )
+                ? libTvParameters!
                 : _parametersForSubmission(profile!.parameters, model: model!),
             durationSeconds: duration,
             promptMode: draft.promptMode,
@@ -2031,21 +2680,25 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
 
   void _handleSourcesChanged() => _refreshData();
 
+  void _handleProjectAspectChanged() {
+    value = value.copyWith(message: '项目画幅已切换为 $projectAspectRatioLabel');
+  }
+
   int _removeMissingGeneratedVideoTaskRecords() {
     final missingTasks = _repository
         .listTasks()
-        .where(
-          (task) =>
-              (task.status == VideoGenerationTaskStatus.completed ||
-                  task.status == VideoGenerationTaskStatus.partialCompleted) &&
-              !generatedVideoFileFor(task).existsSync(),
-        )
+        .where(_isMissingCompletedWork)
         .toList(growable: false);
     for (final task in missingTasks) {
       _repository.deleteTask(task.id);
     }
     return missingTasks.length;
   }
+
+  bool _isMissingCompletedWork(VideoGenerationTask task) =>
+      (task.status == VideoGenerationTaskStatus.completed ||
+          task.status == VideoGenerationTaskStatus.partialCompleted) &&
+      !generatedVideoFileFor(task).existsSync();
 
   void _handleSettingsChanged() {
     _syncPromptModeWithActiveApi();
@@ -2059,6 +2712,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         account: null,
         libTvEnvironment: null,
         libTvAccount: null,
+        libTvModels: const [],
         libTvModel: null,
         isLoadingEnvironment: false,
         message: '视频生成 API 已就绪',
@@ -2078,6 +2732,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     value = value.copyWith(
       libTvEnvironment: null,
       libTvAccount: null,
+      libTvModels: const [],
       libTvModel: null,
     );
     unawaited(initializeEnvironment());
@@ -2103,6 +2758,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     }
     final account = value.libTvAccount;
     if (account != null) _cachedLibTvAccount = account;
+    if (value.libTvModels.isNotEmpty) {
+      _cachedLibTvModels = value.libTvModels;
+    }
     final model = value.libTvModel;
     if (model != null) _cachedLibTvModel = model;
   }
@@ -2177,10 +2835,12 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   bool _restoreCachedLibTvState() {
     final environment = _cachedLibTvEnvironment;
     final account = _cachedLibTvAccount;
+    final models = _cachedLibTvModels;
     final model = _cachedLibTvModel;
     if (environment == null ||
         !environment.isReady ||
         account == null ||
+        models.isEmpty ||
         model == null) {
       return false;
     }
@@ -2188,11 +2848,13 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     value = value.copyWith(
       libTvEnvironment: environment,
       libTvAccount: account,
+      libTvModels: models,
       libTvModel: model,
       isLoadingEnvironment: false,
       message: 'LibTV 账号已连接',
       errorMessage: '',
     );
+    _applyLibTvModelProfile(model);
     return true;
   }
 
@@ -2207,6 +2869,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         profile: null,
         drafts: const {},
         tasks: const [],
+        selectedPreviewTaskId: '',
         replicatedImages: const [],
       );
       return;
@@ -2235,9 +2898,19 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     final sequences = const VideoActionSequenceResolver().resolve(
       shooting.shots,
     );
+    final builtPromptsByShotId =
+        _replicateController.value.selectedScriptId == script.id
+        ? <String, String>{
+            for (final prompt in _replicateController.value.prompts)
+              if ((prompt.scriptShotId ?? '').isNotEmpty &&
+                  prompt.status == ProcessingStatus.completed &&
+                  prompt.prompt.trim().isNotEmpty)
+                prompt.scriptShotId!: prompt.prompt,
+          }
+        : const <String, String>{};
     final drafts = <String, VideoGenerationDraft>{};
     for (final shot in shooting.shots) {
-      final sourcePrompt = shot.prompt;
+      final sourcePrompt = builtPromptsByShotId[shot.id] ?? shot.prompt;
       final existing = storedDrafts[shot.id];
       final actionSequence = _actionSequenceForPrompt(shot, sequences);
       final klingPrompt = const KlingVideoPromptAdapter().adapt(
@@ -2260,6 +2933,8 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           existing.sourcePrompt != sourcePrompt ||
           existing.klingPrompt != klingPrompt ||
           existing.h3Prompt != h3Prompt) {
+        final sourcePromptChanged =
+            existing != null && existing.sourcePrompt != sourcePrompt;
         final updated = VideoGenerationDraft(
           id: existing?.id ?? _uuid.v4(),
           scriptId: script.id,
@@ -2268,7 +2943,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           klingPrompt: klingPrompt,
           h3Prompt: h3Prompt,
           editedPrompt: existing?.editedPrompt ?? '',
-          promptMode: existing?.promptMode ?? profile.promptMode,
+          promptMode:
+              sourcePromptChanged &&
+                  existing.promptMode == VideoPromptMode.edited
+              ? _defaultPromptModeForActiveApi
+              : existing?.promptMode ?? profile.promptMode,
           updatedAt: DateTime.now().toUtc(),
         );
         _repository.upsertDraft(updated);
@@ -2278,13 +2957,20 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       }
     }
     final shotIds = shooting.shots.map((shot) => shot.id).toSet();
+    final tasks = _repository.listTasks(scriptId: script.id);
+    final selectedPreviewTaskId =
+        value.selectedScriptId == script.id &&
+            tasks.any((task) => task.id == value.selectedPreviewTaskId)
+        ? value.selectedPreviewTaskId
+        : '';
     value = value.copyWith(
       scripts: shooting.scripts,
       shots: shooting.shots,
       selectedScriptId: script.id,
       profile: profile,
       drafts: drafts,
-      tasks: _repository.listTasks(scriptId: script.id),
+      tasks: tasks,
+      selectedPreviewTaskId: selectedPreviewTaskId,
       replicatedImages: _replicateController.value.replicatedImages
           .where((image) => shotIds.contains(image.scriptShotId))
           .toList(),
@@ -2544,6 +3230,131 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     return models.first;
   }
 
+  LibTvModelSummary _preferredLibTvModel(List<LibTvModelSummary> models) {
+    final preferredNames = [
+      value.profile?.model ?? '',
+      activeVideoGenerationApiConfig?.model ?? '',
+      AppSettings.defaultLibTvCliVideoGenerationModel,
+    ];
+    for (final preferred in preferredNames) {
+      final normalized = preferred.trim().toLowerCase();
+      if (normalized.isEmpty) continue;
+      for (final model in models) {
+        if (model.modelName.toLowerCase() == normalized ||
+            model.modelKey.toLowerCase() == normalized) {
+          return model;
+        }
+      }
+    }
+    return models.first;
+  }
+
+  void _applyLibTvModelProfile(
+    LibTvModelSpec model, {
+    bool resetParameters = false,
+  }) {
+    final profile = value.profile;
+    if (profile == null) return;
+    final changedModel = profile.model != model.modelName;
+    final updated = profile.copyWith(
+      model: model.modelName,
+      parameters: resetParameters || changedModel
+          ? _defaultLibTvParameters(model)
+          : _mergeLibTvParameterDefaults(profile.parameters, model),
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _repository.upsertProfile(updated);
+    value = value.copyWith(profile: updated);
+  }
+
+  Map<String, String> _defaultLibTvParameters(LibTvModelSpec model) {
+    final modeType = _preferredLibTvModeType(model, imageCount: 1);
+    final result = <String, String>{};
+    if (modeType.isNotEmpty) result[_libTvModeTypeKey] = modeType;
+    final count = _preferredLibTvCount(model);
+    result[_libTvCountKey] = count;
+    for (final parameter in model.parametersForMode(modeType)) {
+      if (parameter.key == 'duration') continue;
+      final defaultValue = _preferredLibTvParameterDefault(parameter);
+      if (defaultValue.isNotEmpty) {
+        result[_libTvStoredParameterKey(parameter.key)] = defaultValue;
+      }
+    }
+    return result;
+  }
+
+  Map<String, String> _mergeLibTvParameterDefaults(
+    Map<String, String> parameters,
+    LibTvModelSpec model,
+  ) {
+    final defaults = _defaultLibTvParameters(model);
+    return {
+      ...defaults,
+      for (final entry in parameters.entries)
+        if (defaults.containsKey(entry.key)) entry.key: entry.value,
+    };
+  }
+
+  String _preferredLibTvModeType(
+    LibTvModelSpec model, {
+    required int imageCount,
+  }) {
+    final modes = model.imageInputModeTypes;
+    if (modes.isEmpty) return '';
+    final priorities = imageCount <= 1
+        ? const [
+            'singleImage2video',
+            'image2video',
+            'mixed2video',
+            'frames2video',
+          ]
+        : const [
+            'frames2video',
+            'image2video',
+            'mixed2video',
+            'singleImage2video',
+          ];
+    for (final mode in priorities) {
+      if (!modes.contains(mode)) continue;
+      final range = model.inputRangeForMode(mode);
+      if (range == null ||
+          (imageCount >= range.min && imageCount <= range.max)) {
+        return mode;
+      }
+    }
+    return '';
+  }
+
+  String _preferredLibTvCount(LibTvModelSpec model) {
+    final options = model.countOptions;
+    if (options.isEmpty || options.any((option) => option.value == '1')) {
+      return '1';
+    }
+    return options.first.value;
+  }
+
+  String _preferredLibTvParameterDefault(LibTvModelParameterSpec parameter) {
+    final preferred = switch (parameter.key) {
+      'ratio' => projectAspectRatioLabel,
+      'resolution' => '720p',
+      _ => '',
+    };
+    if (preferred.isNotEmpty &&
+        parameter.options.any((option) => option.value == preferred)) {
+      return preferred;
+    }
+    if (parameter.defaultValue.isNotEmpty &&
+        (parameter.options.isEmpty ||
+            parameter.options.any(
+              (option) => option.value == parameter.defaultValue,
+            ))) {
+      return parameter.defaultValue;
+    }
+    if (parameter.options.isNotEmpty) return parameter.options.first.value;
+    if (parameter.isSwitch) return '1';
+    return parameter.min == null ? '' : '${parameter.min}';
+  }
+
   KlingModelSpec? _model(String name) {
     for (final model in value.identity?.imageToVideoModels ?? const []) {
       if (model.model == name) return model;
@@ -2560,7 +3371,11 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '')
           .toLowerCase();
       if (normalizedName == 'aspectratio' || normalizedName == 'ratio') {
-        parameterValue = _allowedDefault(argument, '16:9', parameterValue);
+        parameterValue = _allowedDefault(
+          argument,
+          projectAspectRatioLabel,
+          parameterValue,
+        );
       } else if (normalizedName == 'resolution') {
         parameterValue = _allowedDefault(argument, '1080p', parameterValue);
       }
@@ -2621,23 +3436,50 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   Map<String, String> _libTvParametersForSubmission(
-    Map<String, String> parameters,
-  ) {
-    final ratio = parameters[_libTvRatioKey] ?? parameters['ratio'];
-    final resolution =
-        parameters[_libTvResolutionKey] ?? parameters['resolution'];
-    final enableSound =
-        parameters[_libTvEnableSoundKey] ?? parameters['enableSound'];
-    final searchEnabled =
-        parameters[_libTvSearchEnabledKey] ?? parameters['search_enabled'];
-    return {
-      'ratio': _libTvAspectRatios.contains(ratio) ? ratio! : '16:9',
-      'resolution': _libTvResolutions.contains(resolution)
-          ? resolution!
-          : '720p',
-      'enableSound': enableSound == 'off' ? 'off' : 'on',
-      'search_enabled': searchEnabled == '0' ? '0' : '1',
+    Map<String, String> parameters, {
+    required int imageInputCount,
+  }) {
+    final model = value.libTvModel;
+    if (model == null) {
+      return {
+        'modeType': 'mixed2video',
+        'count': '1',
+        'ratio': parameters[_libTvRatioKey] ?? projectAspectRatioLabel,
+        'resolution': parameters[_libTvResolutionKey] ?? '720p',
+        'enableSound': parameters[_libTvEnableSoundKey] ?? 'on',
+        'search_enabled': parameters[_libTvSearchEnabledKey] ?? '1',
+      };
+    }
+    final storedMode = parameters[_libTvModeTypeKey] ?? '';
+    final storedRange = model.inputRangeForMode(storedMode);
+    final storedModeFits =
+        model.imageInputModeTypes.contains(storedMode) &&
+        (storedRange == null ||
+            (imageInputCount >= storedRange.min &&
+                imageInputCount <= storedRange.max));
+    final modeType = storedModeFits
+        ? storedMode
+        : _preferredLibTvModeType(model, imageCount: imageInputCount);
+    if (modeType.isEmpty) return const {'modeType': ''};
+    final result = <String, String>{
+      'modeType': modeType,
+      'count':
+          libTvCountOptions.any(
+            (option) => option.value == parameters[_libTvCountKey],
+          )
+          ? parameters[_libTvCountKey]!
+          : _preferredLibTvCount(model),
     };
+    for (final parameter in model.parametersForMode(modeType)) {
+      if (parameter.key == 'duration') continue;
+      final stored = parameters[_libTvStoredParameterKey(parameter.key)];
+      final parameterValue =
+          stored != null && _isValidLibTvParameterValue(parameter, stored)
+          ? stored
+          : _preferredLibTvParameterDefault(parameter);
+      if (parameterValue.isNotEmpty) result[parameter.key] = parameterValue;
+    }
+    return result;
   }
 
   Future<VideoGenerationDirectories> _generationDirectories() async {
@@ -2725,6 +3567,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _shootingScriptController.removeListener(_handleSourcesChanged);
     _replicateController.removeListener(_handleSourcesChanged);
     _settingsController.removeListener(_handleSettingsChanged);
+    _projectAspectController?.removeListener(_handleProjectAspectChanged);
     super.dispose();
   }
 }
@@ -2802,7 +3645,9 @@ const _libTvRatioKey = 'libtv_ratio';
 const _libTvResolutionKey = 'libtv_resolution';
 const _libTvEnableSoundKey = 'libtv_enable_sound';
 const _libTvSearchEnabledKey = 'libtv_search_enabled';
-const _libTvAspectRatios = [
+const _libTvModeTypeKey = 'libtv_mode_type';
+const _libTvCountKey = 'libtv_count';
+const _fallbackLibTvAspectRatios = [
   'adaptive',
   '16:9',
   '4:3',
@@ -2811,7 +3656,15 @@ const _libTvAspectRatios = [
   '9:16',
   '21:9',
 ];
-const _libTvResolutions = ['480p', '720p'];
+const _fallbackLibTvResolutions = ['480p', '720p'];
+
+String _libTvStoredParameterKey(String key) => switch (key) {
+  'ratio' => _libTvRatioKey,
+  'resolution' => _libTvResolutionKey,
+  'enableSound' => _libTvEnableSoundKey,
+  'search_enabled' => _libTvSearchEnabledKey,
+  _ => 'libtv_parameter_$key',
+};
 
 const _fallbackMiniMaxApiDefaultResolution = '0.2MP 16:9 - 608x352';
 const _fallbackMiniMaxApiResolutionPresets = [

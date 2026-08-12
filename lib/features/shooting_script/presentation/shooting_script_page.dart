@@ -1682,7 +1682,7 @@ class _LibraryAssetPreview extends StatelessWidget {
           devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
           maxCacheWidth: 512,
         ),
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         errorBuilder: (_, _, _) => _AssetTypeIcon(item.type),
       );
     }
@@ -1942,7 +1942,7 @@ class _ScriptTableRow extends StatelessWidget {
                                     devicePixelRatio:
                                         MediaQuery.devicePixelRatioOf(context),
                                   ),
-                                  fit: BoxFit.cover,
+                                  fit: BoxFit.contain,
                                 ),
                               )
                             : const Icon(Icons.image_not_supported_outlined),

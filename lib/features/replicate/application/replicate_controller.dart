@@ -21,6 +21,7 @@ import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../../shooting_script/domain/structured_prompt_shot_adapter.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../storyboard/data/vision_storyboard_service.dart';
+import '../../storyboard/domain/cinematic_motion_policy.dart';
 import '../../storyboard/domain/image_generation_provider_resolver.dart';
 import '../../story_design/domain/gemini_storyboard_prompt.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
@@ -31,6 +32,7 @@ import '../data/bundled_video_skill_library.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
+import '../data/free_creation_video_prompt_writing_service.dart';
 import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
 import '../data/video_skill_router.dart';
@@ -171,6 +173,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     VisionStoryboardService? visionService,
     H3PromptWritingService h3PromptWritingService =
         const H3PromptWritingService(),
+    FreeCreationVideoPromptWritingService freeCreationPromptWritingService =
+        const FreeCreationVideoPromptWritingService(),
     H3SkillLibrary? h3SkillLibrary,
     VideoSkillLibrary? videoSkillLibrary,
     bool enforceFreeCreationMode = false,
@@ -188,6 +192,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _visionService = visionService ?? VisionStoryboardService(),
        _ownsVisionService = visionService == null,
        _h3PromptWritingService = h3PromptWritingService,
+       _freeCreationPromptWritingService = freeCreationPromptWritingService,
        _h3SkillLibrary = h3SkillLibrary ?? BundledH3SkillLibrary(),
        _videoSkillLibrary = videoSkillLibrary ?? BundledVideoSkillLibrary(),
        _enforceFreeCreationMode = enforceFreeCreationMode,
@@ -201,7 +206,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   static const promptModel = 'Seedance 2';
   static const _promptRulesVersion = 19;
-  static const _freeCreationPromptRulesVersion = 22;
+  static const _freeCreationPromptRulesVersion = 27;
   static const defaultComposePromptConcurrency = 4;
   static const klingComposePromptConcurrency = 2;
   static const freeCreationVisionRequestTimeout = Duration(minutes: 10);
@@ -220,6 +225,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final VisionStoryboardService _visionService;
   final bool _ownsVisionService;
   final H3PromptWritingService _h3PromptWritingService;
+  final FreeCreationVideoPromptWritingService _freeCreationPromptWritingService;
   final H3SkillLibrary _h3SkillLibrary;
   final VideoSkillLibrary _videoSkillLibrary;
   final bool _enforceFreeCreationMode;
@@ -302,15 +308,30 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     );
   }
 
+  String get resolvedGenerationModel {
+    final run = value.run;
+    return run == null
+        ? _settingsController.value.imageGenerationModel
+        : _resolvedGenerationModel(run);
+  }
+
   String get composePromptModelLabel => _composePromptModelRule.label;
 
   bool get usesOfficialH3PromptWriting =>
       _composePromptModelRule.format == ShotPromptFormat.h3;
 
+  bool get showsH3SkillRoutingPreference =>
+      _settingsController
+          .value
+          .activeVideoGenerationApiConfig
+          ?.supportsLocalH3SkillRouting ==
+      true;
+
   H3PromptStyle get selectedH3PromptStyle =>
       H3PromptStyle.resolve(_settingsController.value.h3PromptStyleId);
 
   Future<void> selectH3PromptStyle(String styleId) async {
+    if (!showsH3SkillRoutingPreference) return;
     final style = H3PromptStyle.resolve(styleId);
     if (_settingsController.value.h3PromptStyleId == style.id) return;
     await _settingsController.setH3PromptStyleId(style.id);
@@ -1460,14 +1481,14 @@ $automaticPrompt
     final scriptId = value.selectedScriptId;
     final run = value.run;
     final shots = List<ScriptShot>.unmodifiable(value.shots);
-    final replicatedImages = List<ReplicatedShotImage>.unmodifiable(
-      value.replicatedImages,
-    );
     final groups = ScriptShotGroup.group(shots);
     if (run == null || !run.freeCreationEnabled || groups.isEmpty) {
       value = value.copyWith(errorMessage: '当前没有可构建的自由创作镜头', message: '');
       return false;
     }
+    final replicatedImages = List<ReplicatedShotImage>.unmodifiable(
+      _restoreReplicatedImages(run.id),
+    );
     if (isBuildActiveFor(scriptId)) {
       value = value.copyWith(errorMessage: '当前脚本已在构建中', message: '');
       return false;
@@ -1669,15 +1690,7 @@ $automaticPrompt
         ),
       );
     }
-    final draft = _freeCreationIntentDraft(group: group, input: input);
-    final references = [
-      for (var index = 0; index < input.references.length; index++)
-        H3PromptReference(
-          pictureNumber: index + 1,
-          role: input.references[index].role,
-          name: input.references[index].name,
-        ),
-    ];
+    final selectedFormat = _composePromptModelRule.format;
     String normalized = '';
     List<String> validationErrors = const [];
     var attempts = 0;
@@ -1685,34 +1698,68 @@ $automaticPrompt
       final fullStyleSkillContext = await _videoSkillContextForInput(input);
       for (var attempt = 0; attempt < 2; attempt++) {
         attempts = attempt + 1;
-        final instruction = _h3PromptWritingService.buildRewriteInstruction(
-          draft: draft,
-          durationSeconds: group.durationSeconds,
-          storyboardImageCount: input.storyboardImageCount,
-          references: references,
-          style: input.skillRoute.promptStyle,
-          chooseDurationFromIntent: true,
-          fullStyleSkillContext: fullStyleSkillContext,
-          repairErrors: attempt == 0 ? const [] : validationErrors,
-          previousInvalidPrompt: attempt == 0 ? '' : normalized,
-        );
+        final instruction = selectedFormat == ShotPromptFormat.h3
+            ? _h3PromptWritingService.buildRewriteInstruction(
+                draft: _freeCreationIntentDraft(group: group, input: input),
+                durationSeconds: group.durationSeconds,
+                storyboardImageCount: input.storyboardImageCount,
+                references: [
+                  for (var index = 0; index < input.references.length; index++)
+                    H3PromptReference(
+                      pictureNumber: index + 1,
+                      role: input.references[index].role,
+                      name: input.references[index].name,
+                    ),
+                ],
+                style: input.skillRoute.promptStyle,
+                chooseDurationFromIntent: true,
+                fullStyleSkillContext: fullStyleSkillContext,
+                repairErrors: attempt == 0 ? const [] : validationErrors,
+                previousInvalidPrompt: attempt == 0 ? '' : normalized,
+                singleContinuousShot: input.singleContinuousShot,
+                allowSlowMotion: input.allowSlowMotion,
+              )
+            : _freeCreationPromptWritingService.buildRewriteInstruction(
+                format: selectedFormat,
+                userDescription: group.shots.first.freeCreationDescription
+                    .trim(),
+                referenceRoles: [
+                  for (final reference in input.references) reference.role,
+                ],
+                singleContinuousShot: input.singleContinuousShot,
+                explicitMultiShotIntent: input.explicitMultiShotIntent,
+                allowSlowMotion: input.allowSlowMotion,
+                backendSkillContext: fullStyleSkillContext,
+                repairErrors: attempt == 0 ? const [] : validationErrors,
+                previousInvalidPrompt: attempt == 0 ? '' : normalized,
+              );
         final response = await _visionService.complete(
           settings: _settingsController.value,
           prompt: instruction,
           imageFiles: [
             for (final reference in input.references) reference.file,
           ],
-          maxTokens: 6500,
+          maxTokens: selectedFormat == ShotPromptFormat.h3 ? 6500 : 2200,
           allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
           responseTimeout: freeCreationVisionRequestTimeout,
           compressOversizedImages: true,
         );
-        normalized = _h3PromptWritingService.normalize(response);
-        validationErrors = _h3PromptWritingService.validationErrors(
-          normalized,
-          referenceImageCount: input.references.length,
-          requireAiDuration: true,
-        );
+        if (selectedFormat == ShotPromptFormat.h3) {
+          normalized = _h3PromptWritingService.normalize(response);
+          validationErrors = _h3PromptWritingService.validationErrors(
+            normalized,
+            referenceImageCount: input.references.length,
+            requireAiDuration: true,
+            singleContinuousShot: input.singleContinuousShot,
+            allowSlowMotion: input.allowSlowMotion,
+          );
+        } else {
+          normalized = _freeCreationPromptWritingService.normalize(response);
+          validationErrors = _freeCreationPromptWritingService.validationErrors(
+            normalized,
+            selectedFormat,
+          );
+        }
         if (validationErrors.isEmpty) break;
       }
       if (validationErrors.isNotEmpty) {
@@ -1726,19 +1773,21 @@ $automaticPrompt
           ),
         );
       }
-      final duration = _h3PromptWritingService.extractDurationSeconds(
-        normalized,
-      );
-      final variants = _freeCreationPromptVariants(
-        normalized,
-        referenceImageCount: input.references.length,
-      );
-      final selectedFormat = _composePromptModelRule.format;
-      final selectedPrompt = variants[selectedFormat]!;
+      final duration = selectedFormat == ShotPromptFormat.h3
+          ? _h3PromptWritingService.extractDurationSeconds(normalized)
+          : _freeCreationPromptWritingService.extractDurationSeconds(
+              normalized,
+            );
+      final variants = <ShotPromptFormat, String>{
+        ShotPromptFormat.sd2: '',
+        ShotPromptFormat.kling: '',
+        ShotPromptFormat.h3: '',
+        selectedFormat: normalized,
+      };
       final raw = <String, Object?>{
         'promptRulesVersion': _freeCreationPromptRulesVersion,
         'promptSource': 'freeCreationReferenceVision',
-        'assemblyMode': 'modelWrittenRef2VA',
+        'assemblyMode': 'modelNativeVisionRewrite',
         'visionModelCalls': attempts,
         'formatRepairCount': attempts - 1,
         'h3PromptStyleId': input.skillRoute.promptStyle.id,
@@ -1748,7 +1797,14 @@ $automaticPrompt
         'referenceImagePaths': [
           for (final reference in input.references) reference.file.path,
         ],
+        'referenceSource': input.referenceSource,
         'referenceImageCount': input.references.length,
+        'shotStructureMode': input.singleContinuousShot
+            ? 'singleContinuousShot'
+            : input.explicitMultiShotIntent
+            ? 'explicitMultiShot'
+            : 'singleReference',
+        'slowMotionAuthorized': input.allowSlowMotion,
         'freeCreationDescription': head.freeCreationDescription,
         'freeCreationContextMode':
             'referenceImagesOptionalUserDescriptionAndSkill',
@@ -1775,7 +1831,7 @@ $automaticPrompt
           shotNumber: head.shotNumber,
           scriptShotId: head.id,
           assetIds: const [],
-          prompt: selectedPrompt,
+          prompt: normalized,
           model: _promptFormatLabel(selectedFormat),
           rawResponse: jsonEncode(raw),
           isUserEdited: false,
@@ -1813,7 +1869,7 @@ $automaticPrompt
                 scriptShotId: shot.id,
                 assetIds: assetIds,
                 prompt: '',
-                model: 'MiniMax H3 Ref2VA',
+                model: _promptFormatLabel(_composePromptModelRule.format),
                 rawResponse: '{}',
                 status: ProcessingStatus.failed,
                 errorMessage: error,
@@ -1833,27 +1889,43 @@ $automaticPrompt
     final references = <_FreeCreationImageReference>[];
     final usedPaths = <String>{};
     var storyboardImageCount = 0;
-    for (var index = 0; index < group.shots.length; index++) {
-      final shot = group.shots[index];
-      final replica = replicatedImages
-          .where((image) => image.scriptShotId == shot.id)
-          .firstOrNull;
-      final replicaPath = replica?.status == ProcessingStatus.completed
+    final explicitMultiShotIntent =
+        H3PromptWritingService.hasExplicitMultiShotIntent(
+          group.shots.first.freeCreationDescription,
+        );
+    final replicatedByShotId = <String, ReplicatedShotImage>{
+      for (final image in replicatedImages) image.scriptShotId: image,
+    };
+    final replicaFiles = <File>[];
+    for (final shot in group.shots) {
+      final replica = replicatedByShotId[shot.id];
+      final path = replica?.status == ProcessingStatus.completed
           ? replica?.generatedFramePath.trim() ?? ''
           : '';
-      final selectedPath =
-          replicaPath.isNotEmpty && File(replicaPath).existsSync()
-          ? replicaPath
-          : shot.framePath.trim();
-      final file = File(selectedPath);
-      if (selectedPath.isEmpty || !file.existsSync()) continue;
+      final file = File(path);
+      if (path.isEmpty || !file.existsSync()) {
+        replicaFiles.clear();
+        break;
+      }
+      replicaFiles.add(file);
+    }
+    final useReplicatedStoryboardGroup =
+        replicaFiles.length == group.shots.length;
+    for (var index = 0; index < group.shots.length; index++) {
+      final shot = group.shots[index];
+      final file = useReplicatedStoryboardGroup
+          ? replicaFiles[index]
+          : File(shot.framePath.trim());
+      if (file.path.isEmpty || !file.existsSync()) continue;
       final normalized = p.normalize(file.absolute.path);
       if (!usedPaths.add(normalized)) continue;
       references.add(
         _FreeCreationImageReference(
           file: file,
-          role: '镜头组内第 ${index + 1} 张参考图，用于定义可见主体、构图、动作阶段和镜头顺序',
-          name: replicaPath.isNotEmpty ? '复刻分镜' : '原始故事板/视频帧',
+          role: explicitMultiShotIntent
+              ? '用户明确多镜头结构中的第 ${index + 1} 张顺序参考图，用于定义可见主体、构图与动作阶段；图片编号不自动等于镜头编号'
+              : '同一物理连续镜头按时间顺序抽取的第 ${index + 1} 个动作阶段帧，用于定义可见主体、构图和阶段变化；不是新镜头首帧',
+          name: useReplicatedStoryboardGroup ? '复刻分镜' : '原始故事板/视频帧',
         ),
       );
       storyboardImageCount++;
@@ -1861,6 +1933,18 @@ $automaticPrompt
     return _FreeCreationPromptInput(
       references: references,
       storyboardImageCount: storyboardImageCount,
+      singleContinuousShot:
+          H3PromptWritingService.shouldUseSingleContinuousShot(
+            description: group.shots.first.freeCreationDescription,
+            storyboardImageCount: storyboardImageCount,
+          ),
+      explicitMultiShotIntent: explicitMultiShotIntent,
+      allowSlowMotion: CinematicMotionPolicy.hasExplicitSlowMotionIntent(
+        group.shots.first.freeCreationDescription,
+      ),
+      referenceSource: useReplicatedStoryboardGroup
+          ? 'replicatedStoryboardGroup'
+          : 'originalFrameGroup',
       videoConfig: _settingsController.value.activeVideoGenerationApiConfig,
       skillRoute: const VideoSkillRouter().resolve(
         config: _settingsController.value.activeVideoGenerationApiConfig,
@@ -1914,6 +1998,14 @@ $automaticPrompt
     final effectiveDescription = description.isEmpty
         ? '用户未提供文字描述。请仅根据参考图自动分析主体、动作、镜头节奏、运镜、声音与最合适的创作方向。'
         : description;
+    final shotStructureBoundary = input.singleContinuousShot
+        ? '''默认且强制按一个连续物理镜头生成：全部 Picture 是 [Shot 1] 的顺序阶段帧，只允许一个 [Shot 1]，不得产生切镜或 [Shot 2+]。'''
+        : input.explicitMultiShotIntent
+        ? '''用户文字已明确要求多镜头结构：按用户写出的切镜关系组织目标镜头，但不得把 Picture 数量机械等同于 Shot 数量。'''
+        : '''当前只有一张画面参考；仅当用户文字明确要求切镜或多个目标镜头时才允许 [Shot 2+]。''';
+    final playbackSpeedBoundary = input.allowSlowMotion
+        ? '用户已在本镜头剧情描述中明确授权慢动作/升格；只按原文指定的动作和范围落实。'
+        : '用户未在本镜头剧情描述中授权慢动作/升格；所有主体、表情、环境和声音按正常时间速度推进，任何 Skill、风格或参考图观感都不得引入慢动作、慢放、升格或变速慢放。缓慢运镜只表示摄影机移动速度。';
     final pictureLines = <String>[];
     for (var index = 0; index < input.references.length; index++) {
       final reference = input.references[index];
@@ -1930,80 +2022,10 @@ ${pictureLines.join('\n')}
 
 输入边界：只使用当前可选用户描述、以上参考图，以及外层提供的所选 Skill 与官方格式规则。
 不得引入全局分镜故事、故事板字幕、相邻镜头描述、人物/产品/场景资产图、全局风格、制作边界、任务补充，或旧画面内容、景别、构图、机位、运镜、摄影备注等字段。
+$shotStructureBoundary
+$playbackSpeedBoundary
 如果用户描述为空，请主动从参考图判断最合理的创作意图；否则综合用户描述与参考图。按所选 Skill 写成最终 Ref2VA 六字段提示词。
 ''';
-  }
-
-  Map<ShotPromptFormat, String> _freeCreationPromptVariants(
-    String h3Prompt, {
-    required int referenceImageCount,
-  }) {
-    final summary = _freeCreationPromptSection(h3Prompt, 'summary');
-    final detailed = _freeCreationPromptSection(
-      h3Prompt,
-      'detailed_description',
-    );
-    final sound = _freeCreationPromptSection(h3Prompt, 'overall_soundscape');
-    final music = _freeCreationPromptSection(h3Prompt, 'non_diegetic_music');
-    final referenceLead = referenceImageCount <= 0
-        ? ''
-        : referenceImageCount == 1
-        ? '<Picture 1>作为主体、构图与起始画面参考。'
-        : '<Picture 1>至<Picture $referenceImageCount>作为同一连续镜头的顺序参考，保持主体、场景、构图与光影连续。';
-    final kling = _compactFreeCreationVariant(
-      [
-        referenceLead,
-        summary,
-        detailed,
-        if (sound.isNotEmpty) '声音：$sound',
-      ].where((part) => part.trim().isNotEmpty).join(' '),
-      maxChars: 500,
-      pictureLabel: '图片',
-    );
-    final jimeng = _compactFreeCreationVariant(
-      [
-        referenceLead,
-        summary,
-        detailed,
-        if (sound.isNotEmpty) '声音：$sound',
-        if (music.isNotEmpty && music.toUpperCase() != 'N/A') '配乐：$music',
-      ].where((part) => part.trim().isNotEmpty).join(' '),
-      maxChars: 1800,
-      pictureLabel: '参考图',
-    );
-    return {
-      ShotPromptFormat.sd2: jimeng.isEmpty ? h3Prompt : jimeng,
-      ShotPromptFormat.kling: kling.isEmpty ? h3Prompt : kling,
-      ShotPromptFormat.h3: h3Prompt,
-    };
-  }
-
-  static String _freeCreationPromptSection(String prompt, String field) {
-    final match = RegExp(
-      '(?:^|\\n)${RegExp.escape(field)}:\\s*([\\s\\S]*?)(?=\\n\\s*\\n[a-z_]+:|\\z)',
-      multiLine: true,
-    ).firstMatch(prompt);
-    return match?.group(1)?.trim() ?? '';
-  }
-
-  static String _compactFreeCreationVariant(
-    String text, {
-    required int maxChars,
-    required String pictureLabel,
-  }) {
-    final normalized = text
-        .replaceAllMapped(
-          RegExp(r'<Picture\s+(\d+)>', caseSensitive: false),
-          (match) => '$pictureLabel${match.group(1)}',
-        )
-        .replaceAll(RegExp(r'\[Shot\s+\d+\]\s*', caseSensitive: false), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (normalized.length <= maxChars) return normalized;
-    return normalized
-        .substring(0, maxChars)
-        .replaceFirst(RegExp(r'[^。！？!?；;，,]*$'), '')
-        .trim();
   }
 
   String _freeCreationInputFingerprint({
@@ -2019,6 +2041,13 @@ ${pictureLines.join('\n')}
     'videoSkillAutomaticallySelected': input.skillRoute.automaticallySelected,
     'videoGenerationConfigId': input.videoConfig?.id ?? '',
     'videoGenerationModel': input.videoConfig?.model ?? '',
+    'referenceSource': input.referenceSource,
+    'shotStructureMode': input.singleContinuousShot
+        ? 'singleContinuousShot'
+        : input.explicitMultiShotIntent
+        ? 'explicitMultiShot'
+        : 'singleReference',
+    'slowMotionAuthorized': input.allowSlowMotion,
     'references': [
       for (final reference in input.references)
         {
@@ -2384,22 +2413,6 @@ ${pictureLines.join('\n')}
     final existing = value.prompts[index];
     final raw = _promptRaw(existing);
     var selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
-    if (selectedText.isEmpty &&
-        run.freeCreationEnabled &&
-        existing.prompt.trim().isNotEmpty) {
-      final referenceImageCount = raw['referenceImageCount'] is num
-          ? (raw['referenceImageCount'] as num).toInt()
-          : 1;
-      final h3Prompt = '${raw['h3Prompt'] ?? existing.prompt}'.trim();
-      final variants = _freeCreationPromptVariants(
-        h3Prompt,
-        referenceImageCount: referenceImageCount,
-      );
-      for (final entry in variants.entries) {
-        raw[_promptKey(entry.key)] = entry.value;
-      }
-      selectedText = variants[format]!;
-    }
     if (selectedText.isEmpty) return;
     raw['selectedPromptFormat'] = format.name;
     final updated = existing.copyWith(
@@ -2424,7 +2437,7 @@ ${pictureLines.join('\n')}
     final prompts = <ShotPrompt>[];
     for (final prompt in value.prompts) {
       final raw = _promptRaw(prompt);
-      final selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
+      var selectedText = '${raw[_promptKey(format)] ?? ''}'.trim();
       if (selectedText.isEmpty || promptFormatFor(prompt) == format) {
         prompts.add(prompt);
         continue;
@@ -2679,7 +2692,7 @@ ${pictureLines.join('\n')}
         generationQuality: _defaultQuality(
           _settingsController.value.imageGenerationModel,
         ),
-        currentStep: ReplicateStep.confirmShots,
+        currentStep: ReplicateStep.prepareAssets,
         status: ProcessingStatus.pending,
         confirmShotsStatus: ProcessingStatus.pending,
         prepareAssetsStatus: ProcessingStatus.pending,
@@ -3882,6 +3895,7 @@ ${pictureLines.join('\n')}
   void _handleSettingsChanged() {
     if (_disposed) return;
     selectPromptFormatForAll(_composePromptModelRule.format);
+    if (!_disposed) _restoreFromShootingScript();
   }
 
   static Map<String, Object?> _promptRaw(ShotPrompt prompt) {
@@ -3959,10 +3973,10 @@ ${pictureLines.join('\n')}
       '$runId-replicated-$shotId';
 
   static String _stepLabel(ReplicateStep step) => switch (step) {
-    ReplicateStep.confirmShots => '步骤 1：确认脚本',
-    ReplicateStep.prepareAssets => '步骤 2：准备素材',
-    ReplicateStep.composePrompts => '步骤 3：生成提示词',
-    ReplicateStep.generateVideos => '步骤 4：生成视频',
+    ReplicateStep.prepareAssets => '步骤 1：准备素材',
+    ReplicateStep.confirmShots => '步骤 2：确认脚本',
+    ReplicateStep.composePrompts => '步骤 2：确认脚本',
+    ReplicateStep.generateVideos => '步骤 3：生成视频',
   };
 
   static String _assetTypeLabel(ReplicateAssetType type) => switch (type) {
@@ -4027,12 +4041,20 @@ class _FreeCreationPromptInput {
   const _FreeCreationPromptInput({
     required this.references,
     required this.storyboardImageCount,
+    required this.singleContinuousShot,
+    required this.explicitMultiShotIntent,
+    required this.allowSlowMotion,
+    required this.referenceSource,
     required this.videoConfig,
     required this.skillRoute,
   });
 
   final List<_FreeCreationImageReference> references;
   final int storyboardImageCount;
+  final bool singleContinuousShot;
+  final bool explicitMultiShotIntent;
+  final bool allowSlowMotion;
+  final String referenceSource;
   final VideoGenerationApiConfig? videoConfig;
   final VideoSkillRoute skillRoute;
 }

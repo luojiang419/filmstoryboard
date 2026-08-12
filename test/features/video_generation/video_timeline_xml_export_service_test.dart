@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
+import 'package:filmstoryboard/features/video_analysis/data/ffmpeg_frame_extractor.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_generation/data/video_timeline_xml_export_service.dart';
 import 'package:filmstoryboard/features/video_generation/domain/video_generation_models.dart';
@@ -8,7 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
-  test('时间线 XML 每个镜头只导出创建时间最新且本地存在的版本', () async {
+  test('时间线 XML 导出每镜最新可用版本及其 I/O 范围', () async {
     final root = await Directory.systemTemp.createTemp('timeline-xml-');
     addTearDown(() async {
       if (root.existsSync()) await root.delete(recursive: true);
@@ -47,6 +48,9 @@ void main() {
         shotId: 'shot-1',
         localPath: latestFile.path,
         durationSeconds: 5,
+        sourceDurationMs: 5200,
+        trimInMs: 400,
+        trimOutMs: 4600,
         status: VideoGenerationTaskStatus.completed,
         createdAt: now.add(const Duration(minutes: 1)),
         completedAt: now.add(const Duration(minutes: 1)),
@@ -101,9 +105,17 @@ void main() {
       fileForTask: (task) => File(task.localPath),
     );
 
-    expect(clips.map((clip) => clip.task.id), ['latest', 'partial']);
-    expect(clips.map((clip) => clip.startFrame), [0, 150]);
-    expect(clips.map((clip) => clip.endFrame), [150, 240]);
+    expect(clips.map((clip) => clip.task.id), [
+      'latest',
+      'partial',
+      'third-old',
+    ]);
+    expect(clips.map((clip) => clip.startFrame), [0, 126, 216]);
+    expect(clips.map((clip) => clip.endFrame), [126, 216, 486]);
+    expect(clips.first.sourceDurationFrames, 156);
+    expect(clips.first.sourceInFrame, 12);
+    expect(clips.first.sourceOutFrame, 138);
+    expect(clips.first.durationFrames, 126);
 
     final file = await service.export(
       script: script,
@@ -111,6 +123,17 @@ void main() {
       tasks: tasks,
       fileForTask: (task) => File(task.localPath),
       outputDirectory: root,
+      metadataProbe: (file) async => VideoMetadata(
+        durationMs: switch (p.basename(file.path)) {
+          '镜头002 成片.mp4' => 3000,
+          'shot003-old.mp4' => 9000,
+          _ => 5200,
+        },
+        frameRate: 30,
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      ),
     );
     final xml = await file.readAsString();
 
@@ -118,15 +141,98 @@ void main() {
     expect(xml, contains('<xmeml version="5">'));
     expect(xml, contains('<name>脚本 &lt;A&gt;&amp;B</name>'));
     expect(xml, contains('<start>0</start>'));
-    expect(xml, contains('<end>150</end>'));
-    expect(xml, contains('<start>150</start>'));
-    expect(xml, contains('<end>240</end>'));
+    expect(xml, contains('<duration>156</duration>'));
+    expect(xml, contains('<in>12</in>'));
+    expect(xml, contains('<out>138</out>'));
+    expect(xml, contains('<end>126</end>'));
+    expect(xml, contains('<start>126</start>'));
+    expect(xml, contains('<end>216</end>'));
+    expect(xml, contains('<start>216</start>'));
+    expect(xml, contains('<end>486</end>'));
     expect(xml, contains(_expectedPremierePathUrl(latestFile)));
     expect(xml, contains(_expectedPremierePathUrl(secondFile)));
     expect(xml, isNot(contains('<pathurl>file:///')));
     expect(xml, isNot(contains('shot001-old.mp4')));
-    expect(xml, isNot(contains('shot003-old.mp4')));
+    expect(xml, contains('shot003-old.mp4'));
     expect(xml, isNot(contains('shot003-missing.mp4')));
+  });
+
+  test('Resolve 快照按真实媒体时长收紧源出点并保持片段连续', () async {
+    final root = await Directory.systemTemp.createTemp('timeline-frame-clamp-');
+    addTearDown(() async {
+      if (root.existsSync()) await root.delete(recursive: true);
+    });
+    final files = [
+      File(p.join(root.path, 'shot-1.mp4'))..writeAsBytesSync([1]),
+      File(p.join(root.path, 'shot-2.mp4'))..writeAsBytesSync([2]),
+      File(p.join(root.path, 'shot-3.mp4'))..writeAsBytesSync([3]),
+    ];
+    final script = _script(id: 'script-clamp', name: '帧边界测试');
+    final shots = [
+      _shot(id: 'shot-1', scriptId: script.id, shotNumber: 1),
+      _shot(id: 'shot-2', scriptId: script.id, shotNumber: 2),
+      _shot(id: 'shot-3', scriptId: script.id, shotNumber: 3),
+    ];
+    final tasks = [
+      _task(
+        id: 'task-1',
+        scriptId: script.id,
+        shotId: 'shot-1',
+        localPath: files[0].path,
+        durationSeconds: 4,
+        sourceDurationMs: 4482,
+        trimInMs: 1023,
+        trimOutMs: 3828,
+      ),
+      _task(
+        id: 'task-2',
+        scriptId: script.id,
+        shotId: 'shot-2',
+        localPath: files[1].path,
+        durationSeconds: 7,
+        sourceDurationMs: 7323,
+        trimOutMs: 7323,
+      ),
+      _task(
+        id: 'task-3',
+        scriptId: script.id,
+        shotId: 'shot-3',
+        localPath: files[2].path,
+        durationSeconds: 3,
+      ),
+    ];
+    final durations = <String, int>{
+      files[0].path: 4458,
+      files[1].path: 7292,
+      files[2].path: 3042,
+    };
+
+    final snapshot = await const VideoTimelineXmlExportService().buildSnapshot(
+      script: script,
+      shots: shots,
+      tasks: tasks,
+      fileForTask: (task) => File(task.localPath),
+      metadataProbe: (file) async => VideoMetadata(
+        durationMs: durations[file.path]!,
+        frameRate: 24,
+        width: 1280,
+        height: 736,
+        hasAudio: true,
+      ),
+    );
+
+    expect(snapshot.clips.map((clip) => clip.recordStartFrame), [0, 67, 242]);
+    expect(snapshot.clips.map((clip) => clip.recordEndFrame), [67, 242, 314]);
+    expect(snapshot.clips[1].trimOutMs, 7292);
+    expect(snapshot.clips[1].sourceDurationFrames, 175);
+    expect(snapshot.clips[1].sourceOutFrame, 175);
+    expect(snapshot.clips[1].sourceFrameCount, 175);
+    for (var index = 1; index < snapshot.clips.length; index++) {
+      expect(
+        snapshot.clips[index].recordStartFrame,
+        snapshot.clips[index - 1].recordEndFrame,
+      );
+    }
   });
 
   test('合并镜头组只导出组首最终视频而不带入组内历史视频', () async {
@@ -202,6 +308,13 @@ void main() {
       tasks: tasks,
       fileForTask: (task) => File(task.localPath),
       outputDirectory: root,
+      metadataProbe: (_) async => const VideoMetadata(
+        durationMs: 15000,
+        frameRate: 30,
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      ),
     );
     final xml = await output.readAsString();
     for (final shotNumber in versionByShot.keys) {
@@ -250,6 +363,75 @@ void main() {
       ),
       throwsA(isA<VideoTimelineXmlExportException>()),
     );
+  });
+
+  test('导出 XML 使用首个有效素材规格并按版本避免覆盖', () async {
+    final root = await Directory.systemTemp.createTemp('timeline-spec-');
+    addTearDown(() async {
+      if (root.existsSync()) await root.delete(recursive: true);
+    });
+    final source = File(p.join(root.path, 'portrait.mp4'))
+      ..writeAsBytesSync([1]);
+    final script = _script(id: 'script-spec', name: '竖屏脚本');
+    final shot = _shot(id: 'shot-spec', scriptId: script.id, shotNumber: 1);
+    final task = _task(
+      id: 'task-spec',
+      scriptId: script.id,
+      shotId: shot.id,
+      localPath: source.path,
+      durationSeconds: 5,
+      sourceDurationMs: 5000,
+      trimInMs: 1000,
+      trimOutMs: 4000,
+    );
+    const metadata = VideoMetadata(
+      durationMs: 5000,
+      frameRate: 24000 / 1001,
+      width: 1920,
+      height: 1080,
+      hasAudio: true,
+      rotationDegrees: 90,
+    );
+    final exportedAt = DateTime(2026, 8, 12, 14, 30, 25);
+    const service = VideoTimelineXmlExportService();
+
+    final first = await service.export(
+      script: script,
+      shots: [shot],
+      tasks: [task],
+      fileForTask: (_) => source,
+      outputDirectory: root,
+      metadataProbe: (_) async => metadata,
+      exportedAt: exportedAt,
+    );
+    final second = await service.export(
+      script: script,
+      shots: [shot],
+      tasks: [task],
+      fileForTask: (_) => source,
+      outputDirectory: root,
+      metadataProbe: (_) async => metadata,
+      exportedAt: exportedAt,
+    );
+    final third = await service.export(
+      script: script,
+      shots: [shot],
+      tasks: [task],
+      fileForTask: (_) => source,
+      outputDirectory: root,
+      metadataProbe: (_) async => metadata,
+      exportedAt: exportedAt,
+    );
+    final xml = await first.readAsString();
+
+    expect(p.basename(first.path), '时间线-竖屏脚本.xml');
+    expect(p.basename(second.path), '时间线-竖屏脚本-V002-20260812-143025.xml');
+    expect(p.basename(third.path), '时间线-竖屏脚本-V003-20260812-143025.xml');
+    expect(xml, contains('<timebase>24</timebase><ntsc>TRUE</ntsc>'));
+    expect(xml, contains('<width>1080</width>'));
+    expect(xml, contains('<height>1920</height>'));
+    expect(xml, contains('<in>24</in>'));
+    expect(xml, contains('<out>96</out>'));
   });
 }
 
@@ -305,6 +487,9 @@ VideoGenerationTask _task({
   required String localPath,
   VideoGenerationTaskStatus status = VideoGenerationTaskStatus.completed,
   int durationSeconds = 4,
+  int sourceDurationMs = 0,
+  int trimInMs = 0,
+  int trimOutMs = 0,
   DateTime? completedAt,
   DateTime? createdAt,
 }) {
@@ -315,6 +500,9 @@ VideoGenerationTask _task({
     shotId: shotId,
     model: 'test-model',
     durationSeconds: durationSeconds,
+    sourceDurationMs: sourceDurationMs,
+    trimInMs: trimInMs,
+    trimOutMs: trimOutMs,
     promptMode: VideoPromptMode.klingOptimized,
     prompt: 'prompt',
     status: status,

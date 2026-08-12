@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
@@ -18,9 +19,15 @@ import '../../shooting_script/domain/shooting_script_models.dart';
 import '../application/video_generation_controller.dart';
 import '../data/cli_dependency_installer.dart';
 import '../data/kling_cli_models.dart';
+import '../data/libtv_cli_models.dart';
 import '../domain/kling_duration_matcher.dart';
+import '../domain/generated_video_trim_range.dart';
 import '../domain/source_video_preview_range.dart';
 import '../domain/video_generation_models.dart';
+import 'widgets/generated_video_trim_editor.dart';
+import 'widgets/generated_video_trim_timeline.dart';
+
+enum _TimelineExportAction { exportXml, sendToDaVinci }
 
 class VideoGenerationPage extends StatelessWidget {
   const VideoGenerationPage({super.key});
@@ -145,8 +152,21 @@ class _VideoGenerationWorkspaceState
                     onGenerateShot: (shot) =>
                         _confirmShot(context, state, controller, shot),
                   );
+                  final previewTask = state.selectedPreviewTask;
+                  final previewFile = previewTask == null
+                      ? null
+                      : controller.generatedVideoFileFor(previewTask);
+                  final workspaceContent =
+                      previewTask != null && previewFile?.existsSync() == true
+                      ? _WorkVideoTrimPreview(
+                          state: state,
+                          controller: controller,
+                          task: previewTask,
+                          file: previewFile!,
+                        )
+                      : table;
                   if (widget.externalizeWorkPanel) {
-                    return table;
+                    return workspaceContent;
                   }
                   final panel = _WorkManagementPanel(
                     state: state,
@@ -162,7 +182,7 @@ class _VideoGenerationWorkspaceState
                   if (constraints.maxWidth < 1040) {
                     return Column(
                       children: [
-                        Expanded(child: table),
+                        Expanded(child: workspaceContent),
                         const Divider(height: 1),
                         SizedBox(height: 300, child: registeredPanel),
                       ],
@@ -179,7 +199,7 @@ class _VideoGenerationWorkspaceState
                       .toDouble();
                   return Row(
                     children: [
-                      Expanded(child: table),
+                      Expanded(child: workspaceContent),
                       _VideoGenerationRightPanelResizeHandle(
                         key: const ValueKey(
                           'video-generation-work-panel-resize-handle',
@@ -817,10 +837,6 @@ class _Toolbar extends StatelessWidget {
       selectedVideoApiAspectRatio,
     );
     final selectedVideoApiSteps = controller.selectedVideoApiSteps;
-    final selectedLibTvAspectRatio = controller.selectedLibTvAspectRatio;
-    final selectedLibTvResolution = controller.selectedLibTvResolution;
-    final selectedLibTvSoundEnabled = controller.selectedLibTvSoundEnabled;
-    final selectedLibTvSearchEnabled = controller.selectedLibTvSearchEnabled;
     final canGenerateAny = controller.generationTargets().isNotEmpty;
     final hasBlockingNonGenerationWork = state.isBusy && !state.isGeneratingAll;
     final usesCli = controller.usesCliVideoGeneration;
@@ -952,113 +968,83 @@ class _Toolbar extends StatelessWidget {
                 icon: Icons.smart_display_outlined,
                 label: controller.activeVideoGenerationApiModel,
               ),
+            if (controller.usesLibTvCli && controller.libTvModels.isNotEmpty)
+              SizedBox(
+                width: 260,
+                child: DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  key: ValueKey(
+                    'libtv-model-${controller.selectedLibTvModelKey}',
+                  ),
+                  initialValue: controller.selectedLibTvModelKey.isEmpty
+                      ? null
+                      : controller.selectedLibTvModelKey,
+                  decoration: const InputDecoration(
+                    labelText: 'LibTV 视频模型',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (final model in controller.libTvModels)
+                      DropdownMenuItem(
+                        value: model.modelKey,
+                        child: Text(
+                          model.modelName,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: state.isBusy || state.isLoadingLibTvModel
+                      ? null
+                      : (modelKey) {
+                          if (modelKey != null) {
+                            unawaited(controller.selectLibTvModel(modelKey));
+                          }
+                        },
+                ),
+              ),
+            if (controller.usesLibTvCli && controller.libTvModeTypes.isNotEmpty)
+              SizedBox(
+                width: 175,
+                child: DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  key: ValueKey(
+                    'libtv-mode-${controller.selectedLibTvModeType}',
+                  ),
+                  initialValue: controller.selectedLibTvModeType.isEmpty
+                      ? null
+                      : controller.selectedLibTvModeType,
+                  decoration: const InputDecoration(
+                    labelText: '生成模式',
+                    isDense: true,
+                  ),
+                  items: [
+                    for (final modeType in controller.libTvModeTypes)
+                      DropdownMenuItem(
+                        value: modeType,
+                        child: Text(controller.libTvModeTypeLabel(modeType)),
+                      ),
+                  ],
+                  onChanged: state.isBusy || state.isLoadingLibTvModel
+                      ? null
+                      : (modeType) {
+                          if (modeType != null) {
+                            controller.updateLibTvModeType(modeType);
+                          }
+                        },
+                ),
+              ),
             if (controller.usesLibTvCli)
+              for (final parameter in controller.libTvParameterSpecs)
+                _LibTvParameterField(
+                  controller: controller,
+                  parameter: parameter,
+                  enabled: !state.isBusy && !state.isLoadingLibTvModel,
+                ),
+            if (controller.usesLibTvCli && state.libTvModel != null)
               _StatusChip(
-                icon: Icons.smart_display_outlined,
+                icon: Icons.timer_outlined,
                 label:
-                    '${state.libTvModel?.modelName ?? controller.activeVideoGenerationApiModel} · 即梦提示词',
-              ),
-            if (controller.usesLibTvCli)
-              SizedBox(
-                width: 130,
-                child: DropdownButtonFormField<String>(
-                  key: ValueKey('libtv-aspect-ratio-$selectedLibTvAspectRatio'),
-                  initialValue: selectedLibTvAspectRatio,
-                  decoration: const InputDecoration(
-                    labelText: '生成比例',
-                    isDense: true,
-                  ),
-                  items: [
-                    for (final ratio in controller.libTvAspectRatios)
-                      DropdownMenuItem(
-                        value: ratio,
-                        child: Text(ratio == 'adaptive' ? '自动' : ratio),
-                      ),
-                  ],
-                  onChanged: state.isBusy
-                      ? null
-                      : (ratio) {
-                          if (ratio != null) {
-                            controller.updateLibTvAspectRatio(ratio);
-                          }
-                        },
-                ),
-              ),
-            if (controller.usesLibTvCli)
-              SizedBox(
-                width: 115,
-                child: DropdownButtonFormField<String>(
-                  key: ValueKey('libtv-resolution-$selectedLibTvResolution'),
-                  initialValue: selectedLibTvResolution,
-                  decoration: const InputDecoration(
-                    labelText: '清晰度',
-                    isDense: true,
-                  ),
-                  items: [
-                    for (final resolution in controller.libTvResolutions)
-                      DropdownMenuItem(
-                        value: resolution,
-                        child: Text(resolution),
-                      ),
-                  ],
-                  onChanged: state.isBusy
-                      ? null
-                      : (resolution) {
-                          if (resolution != null) {
-                            controller.updateLibTvResolution(resolution);
-                          }
-                        },
-                ),
-              ),
-            if (controller.usesLibTvCli)
-              SizedBox(
-                width: 125,
-                child: DropdownButtonFormField<bool>(
-                  key: ValueKey(
-                    'libtv-enable-sound-$selectedLibTvSoundEnabled',
-                  ),
-                  initialValue: selectedLibTvSoundEnabled,
-                  decoration: const InputDecoration(
-                    labelText: '生成音频',
-                    isDense: true,
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: true, child: Text('开启')),
-                    DropdownMenuItem(value: false, child: Text('关闭')),
-                  ],
-                  onChanged: state.isBusy
-                      ? null
-                      : (enabled) {
-                          if (enabled != null) {
-                            controller.updateLibTvSoundEnabled(enabled);
-                          }
-                        },
-                ),
-              ),
-            if (controller.usesLibTvCli)
-              SizedBox(
-                width: 130,
-                child: DropdownButtonFormField<bool>(
-                  key: ValueKey(
-                    'libtv-search-enabled-$selectedLibTvSearchEnabled',
-                  ),
-                  initialValue: selectedLibTvSearchEnabled,
-                  decoration: const InputDecoration(
-                    labelText: '联网增强',
-                    isDense: true,
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: true, child: Text('开启')),
-                    DropdownMenuItem(value: false, child: Text('关闭')),
-                  ],
-                  onChanged: state.isBusy
-                      ? null
-                      : (enabled) {
-                          if (enabled != null) {
-                            controller.updateLibTvSearchEnabled(enabled);
-                          }
-                        },
-                ),
+                    '时长 ${controller.libTvDurationMin}–${controller.libTvDurationMax} 秒（按镜头） · 每镜头 ${controller.selectedLibTvCount} 条',
               ),
             if (controller.usesConfiguredVideoGenerationApi)
               SizedBox(
@@ -1196,13 +1182,55 @@ class _Toolbar extends StatelessWidget {
               icon: const Icon(Icons.movie_creation_outlined),
               label: const Text('一键生成全部'),
             ),
-            OutlinedButton.icon(
-              key: const ValueKey('export-timeline-xml'),
-              onPressed: state.isBusy || !controller.canExportTimelineXml
+            PopupMenuButton<_TimelineExportAction>(
+              key: const ValueKey('export-timeline-menu'),
+              enabled: !state.isBusy && controller.canExportTimelineXml,
+              tooltip: '导出或发送时间线',
+              onSelected: (action) {
+                switch (action) {
+                  case _TimelineExportAction.exportXml:
+                    unawaited(controller.exportTimelineXml());
+                    break;
+                  case _TimelineExportAction.sendToDaVinci:
+                    unawaited(controller.sendTimelineToDaVinci());
+                    break;
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  key: ValueKey('export-timeline-xml'),
+                  value: _TimelineExportAction.exportXml,
+                  child: ListTile(
+                    leading: Icon(Icons.account_tree_outlined),
+                    title: Text('导出 XML 时间线'),
+                  ),
+                ),
+                PopupMenuItem(
+                  key: ValueKey('send-timeline-to-davinci'),
+                  value: _TimelineExportAction.sendToDaVinci,
+                  child: ListTile(
+                    leading: Icon(Icons.send_rounded),
+                    title: Text('发送到达芬奇'),
+                  ),
+                ),
+              ],
+              child: IgnorePointer(
+                child: OutlinedButton.icon(
+                  onPressed: !state.isBusy && controller.canExportTimelineXml
+                      ? () {}
+                      : null,
+                  icon: const Icon(Icons.account_tree_outlined),
+                  label: const Text('导出时间线'),
+                ),
+              ),
+            ),
+            FilledButton.tonalIcon(
+              key: const ValueKey('export-composed-video'),
+              onPressed: state.isBusy || !controller.canExportVideo
                   ? null
-                  : controller.exportTimelineXml,
-              icon: const Icon(Icons.account_tree_outlined),
-              label: const Text('导出时间线'),
+                  : controller.exportVideo,
+              icon: const Icon(Icons.video_file_outlined),
+              label: const Text('导出视频'),
             ),
           ],
         ),
@@ -1380,6 +1408,16 @@ class _WorkManagementPanel extends StatelessWidget {
                           color: colorScheme.onSurfaceVariant,
                         ),
                       ),
+                      const SizedBox(width: 4),
+                      TextButton.icon(
+                        key: const ValueKey('clean-invalid-generated-works'),
+                        onPressed:
+                            state.isBusy || controller.invalidWorkTaskCount == 0
+                            ? null
+                            : controller.cleanInvalidWorks,
+                        icon: const Icon(Icons.cleaning_services_outlined),
+                        label: const Text('清理'),
+                      ),
                       IconButton(
                         key: const ValueKey(
                           'collapse-video-generation-work-management-panel',
@@ -1516,6 +1554,9 @@ class _WorkManagementVideoItem extends StatelessWidget {
     return GestureDetector(
       key: ValueKey('work-management-video-context-menu-${task.id}'),
       behavior: HitTestBehavior.opaque,
+      onTap: hasLocalVideo
+          ? () => controller.selectWorkPreviewTask(task)
+          : null,
       onSecondaryTapDown: (details) =>
           _showContextMenu(context, details, task: task, file: file),
       child: Material(
@@ -1556,9 +1597,12 @@ class _WorkManagementVideoItem extends StatelessWidget {
                           'work-management-generated-video-player-${task.id}',
                         ),
                         file: file,
+                        range: task.trimRange,
+                        onTap: () => controller.selectWorkPreviewTask(task),
                         onFullscreen: () => _showFullscreenGeneratedVideo(
                           context,
                           file,
+                          range: task.trimRange,
                           title:
                               '镜头 ${shot.shotNumber} · 作品版本 ${entry.version}',
                         ),
@@ -1714,6 +1758,125 @@ class _WorkVideoShotGroup {
 
   final ScriptShot shot;
   final List<_WorkVideoTaskEntry> entries;
+}
+
+class _WorkVideoTrimPreview extends StatelessWidget {
+  const _WorkVideoTrimPreview({
+    required this.state,
+    required this.controller,
+    required this.task,
+    required this.file,
+  });
+
+  final VideoGenerationState state;
+  final VideoGenerationController controller;
+  final VideoGenerationTask task;
+  final File file;
+
+  @override
+  Widget build(BuildContext context) {
+    final shot = state.shots
+        .where((shot) => shot.id == task.shotId)
+        .firstOrNull;
+    final canPrevious = controller.canNavigateWorkPreview(-1);
+    final canNext = controller.canNavigateWorkPreview(1);
+    final theme = Theme.of(context);
+    return Focus(
+      key: const ValueKey('work-management-large-preview-focus'),
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        if (event.logicalKey == LogicalKeyboardKey.escape) {
+          controller.closeWorkPreview();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowLeft && canPrevious) {
+          controller.navigateWorkPreview(-1);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight && canNext) {
+          controller.navigateWorkPreview(1);
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: DecoratedBox(
+        key: ValueKey('work-management-large-preview-${task.id}'),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  IconButton.filledTonal(
+                    key: const ValueKey('work-preview-previous-shot'),
+                    tooltip: '上一个镜头（←）',
+                    onPressed: canPrevious
+                        ? () => controller.navigateWorkPreview(-1)
+                        : null,
+                    icon: const Icon(Icons.chevron_left_rounded),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          shot == null
+                              ? '作品预览'
+                              : '镜头 ${shot.shotNumber} · 作品预览',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          '${task.model} · '
+                          '${formatVideoTimecode(task.trimRange.inPoint)}–'
+                          '${formatVideoTimecode(task.trimRange.outPoint)}',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton.filledTonal(
+                    key: const ValueKey('work-preview-next-shot'),
+                    tooltip: '下一个镜头（→）',
+                    onPressed: canNext
+                        ? () => controller.navigateWorkPreview(1)
+                        : null,
+                    icon: const Icon(Icons.chevron_right_rounded),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    key: const ValueKey('close-work-management-large-preview'),
+                    tooltip: '退出预览（Esc）',
+                    onPressed: controller.closeWorkPreview,
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: GeneratedVideoTrimEditor(
+                  key: ValueKey('work-preview-io-editor-${task.id}'),
+                  file: file,
+                  initialRange: task.trimRange,
+                  onChanged: (range) =>
+                      controller.updateTaskTrimRange(task, range),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 List<_WorkVideoShotGroup> _orderedWorkVideoShotGroups(
@@ -2175,7 +2338,7 @@ class _VideoGroupFrameThumbnail extends StatelessWidget {
               child: hasFile
                   ? Image.file(
                       file!,
-                      fit: BoxFit.cover,
+                      fit: BoxFit.contain,
                       errorBuilder: (_, _, _) =>
                           Center(child: Text('$emptyLabel加载失败')),
                     )
@@ -2246,139 +2409,184 @@ class _GeneratedVideoCell extends StatelessWidget {
       child: _VideoShotCellLayout(
         shot: shot,
         slotName: 'generated',
-        child: SizedBox(
-          height: 214,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (isGroupContinuation)
-                _GeneratedVideoPlaceholder(
-                  icon: Icons.join_inner_rounded,
-                  message:
-                      '已并入镜头 ${sequence.head.shotNumber}–${sequence.tail.shotNumber} 的连续动作组\n由镜头 ${sequence.head.shotNumber} 统一生成',
-                )
-              else if (isGenerating)
-                _GeneratingVideoProgress(
-                  key: ValueKey('generated-video-progress-${latest.id}'),
-                  task: latest,
-                )
-              else if (hasLocalVideo)
-                _InlineGeneratedVideoPlayer(
-                  key: ValueKey('generated-video-player-${latest!.id}'),
-                  file: localFile!,
-                  onFullscreen: () => _showFullscreenGeneratedVideo(
-                    context,
-                    localFile,
-                    title: '镜头 ${shot.shotNumber} · 生成视频',
-                  ),
-                )
-              else
-                _GeneratedVideoPlaceholder(
-                  icon: latest == null
-                      ? Icons.movie_creation_outlined
-                      : Icons.hourglass_top_rounded,
-                  message: latest == null ? '尚未生成' : '状态：${latest.status.name}',
-                  action: latest == null
-                      ? FilledButton.icon(
-                          key: ValueKey(
-                            'generated-video-generate-button-${shot.id}',
-                          ),
-                          onPressed: enabled && canGenerate ? onGenerate : null,
-                          icon: const Icon(Icons.movie_creation_outlined),
-                          label: const Text('生成视频'),
-                        )
-                      : null,
-                ),
-              if (!isGroupContinuation &&
-                  latest?.usedWatermarkedFallback == true)
-                const Positioned(
-                  left: 8,
-                  bottom: 8,
-                  child: _VideoNotice('已保存带水印结果'),
-                ),
-              if (!isGroupContinuation &&
-                  !isGenerating &&
-                  latest?.errorMessage.isNotEmpty == true)
-                Positioned(
-                  left: 8,
-                  right: 52,
-                  bottom: 8,
-                  child: _VideoNotice(latest!.errorMessage, isError: true),
-                ),
-              if (latest != null || isGroupContinuation)
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: _GeneratedVideoMenu(
-                    key: ValueKey('generated-video-menu-${shot.id}'),
-                    enabled: enabled,
-                    canGenerate: canGenerate,
-                    hasLocalVideo: hasLocalVideo && !isGroupContinuation,
-                    canCancel: !isGroupContinuation && isGenerating,
-                    canRetryDownload:
-                        !isGroupContinuation &&
-                        latest?.status == VideoGenerationTaskStatus.failed &&
-                        (latest!.resultWithoutWatermarkUrl.isNotEmpty ||
-                            latest.resultUrl.isNotEmpty),
-                    canContinueQuery:
-                        !isGroupContinuation &&
-                        latest?.status == VideoGenerationTaskStatus.timedOut &&
-                        latest!.generationId.isNotEmpty,
-                    hasHistory: tasks.isNotEmpty,
-                    hasGenerated: latest != null,
-                    onSelected: (action) async {
-                      switch (action) {
-                        case 'generate':
-                          onGenerate();
-                          break;
-                        case 'fullscreen':
-                          if (localFile != null) {
-                            await _showFullscreenGeneratedVideo(
-                              context,
-                              localFile,
-                              title: '镜头 ${owner.shotNumber} · 生成视频',
-                            );
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 150,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (isGroupContinuation)
+                    _GeneratedVideoPlaceholder(
+                      icon: Icons.join_inner_rounded,
+                      message:
+                          '已并入镜头 ${sequence.head.shotNumber}–${sequence.tail.shotNumber} 的连续动作组\n由镜头 ${sequence.head.shotNumber} 统一生成',
+                    )
+                  else if (isGenerating)
+                    _GeneratingVideoProgress(
+                      key: ValueKey('generated-video-progress-${latest.id}'),
+                      task: latest,
+                    )
+                  else if (hasLocalVideo)
+                    _InlineGeneratedVideoPlayer(
+                      key: ValueKey('generated-video-player-${latest!.id}'),
+                      file: localFile!,
+                      range: latest.trimRange,
+                      onFullscreen: () => _showFullscreenGeneratedVideo(
+                        context,
+                        localFile,
+                        range: latest.trimRange,
+                        title: '镜头 ${shot.shotNumber} · 生成视频',
+                      ),
+                    )
+                  else
+                    _GeneratedVideoPlaceholder(
+                      icon: latest == null
+                          ? Icons.movie_creation_outlined
+                          : Icons.hourglass_top_rounded,
+                      message: latest == null
+                          ? '尚未生成'
+                          : '状态：${latest.status.name}',
+                      action: latest == null
+                          ? FilledButton.icon(
+                              key: ValueKey(
+                                'generated-video-generate-button-${shot.id}',
+                              ),
+                              onPressed: enabled && canGenerate
+                                  ? onGenerate
+                                  : null,
+                              icon: const Icon(Icons.movie_creation_outlined),
+                              label: const Text('生成视频'),
+                            )
+                          : null,
+                    ),
+                  if (!isGroupContinuation &&
+                      latest?.usedWatermarkedFallback == true)
+                    const Positioned(
+                      left: 8,
+                      bottom: 8,
+                      child: _VideoNotice('已保存带水印结果'),
+                    ),
+                  if (!isGroupContinuation &&
+                      !isGenerating &&
+                      latest?.errorMessage.isNotEmpty == true)
+                    Positioned(
+                      left: 8,
+                      right: 52,
+                      bottom: 8,
+                      child: _VideoNotice(latest!.errorMessage, isError: true),
+                    ),
+                  if (latest != null || isGroupContinuation)
+                    Positioned(
+                      right: 8,
+                      bottom: 8,
+                      child: _GeneratedVideoMenu(
+                        key: ValueKey('generated-video-menu-${shot.id}'),
+                        enabled: enabled,
+                        canGenerate: canGenerate,
+                        hasLocalVideo: hasLocalVideo && !isGroupContinuation,
+                        canCancel: !isGroupContinuation && isGenerating,
+                        canRetryDownload:
+                            !isGroupContinuation &&
+                            latest?.status ==
+                                VideoGenerationTaskStatus.failed &&
+                            (latest!.resultWithoutWatermarkUrl.isNotEmpty ||
+                                latest.resultUrl.isNotEmpty),
+                        canContinueQuery:
+                            !isGroupContinuation &&
+                            latest?.status ==
+                                VideoGenerationTaskStatus.timedOut &&
+                            latest!.generationId.isNotEmpty,
+                        hasHistory: tasks.isNotEmpty,
+                        hasGenerated: latest != null,
+                        onSelected: (action) async {
+                          switch (action) {
+                            case 'generate':
+                              onGenerate();
+                              break;
+                            case 'fullscreen':
+                              if (localFile != null) {
+                                await _showFullscreenGeneratedVideo(
+                                  context,
+                                  localFile,
+                                  range: latest!.trimRange,
+                                  title: '镜头 ${owner.shotNumber} · 生成视频',
+                                );
+                              }
+                              break;
+                            case 'download':
+                              if (latest != null) {
+                                await _download(context, latest);
+                              }
+                              break;
+                            case 'retry':
+                              if (latest != null) {
+                                await controller.retryDownload(latest);
+                              }
+                              break;
+                            case 'continue_query':
+                              if (latest != null) {
+                                await controller.resumeTaskQuery(latest);
+                              }
+                              break;
+                            case 'cancel':
+                              if (latest != null) {
+                                await controller.cancelTask(latest);
+                              }
+                              break;
+                            case 'rename':
+                              if (latest != null) {
+                                await _rename(context, latest);
+                              }
+                              break;
+                            case 'delete':
+                              if (latest != null) {
+                                await _delete(context, latest);
+                              }
+                              break;
+                            case 'history':
+                              await _history(context, tasks);
+                              break;
                           }
-                          break;
-                        case 'download':
-                          if (latest != null) {
-                            await _download(context, latest);
-                          }
-                          break;
-                        case 'retry':
-                          if (latest != null) {
-                            await controller.retryDownload(latest);
-                          }
-                          break;
-                        case 'continue_query':
-                          if (latest != null) {
-                            await controller.resumeTaskQuery(latest);
-                          }
-                          break;
-                        case 'cancel':
-                          if (latest != null) {
-                            await controller.cancelTask(latest);
-                          }
-                          break;
-                        case 'rename':
-                          if (latest != null) await _rename(context, latest);
-                          break;
-                        case 'delete':
-                          if (latest != null) await _delete(context, latest);
-                          break;
-                        case 'history':
-                          await _history(context, tasks);
-                          break;
-                      }
-                    },
-                  ),
-                ),
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (!isGroupContinuation && hasLocalVideo && latest != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                'I ${_formatDuration(latest.trimRange.inPoint)}  ·  '
+                'O ${_formatDuration(latest.trimRange.outPoint)}  ·  '
+                '${_formatDuration(latest.trimRange.duration)}',
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                key: ValueKey('generated-video-io-button-${latest.id}'),
+                onPressed: () => _editTrim(context, latest, localFile!),
+                icon: const Icon(Icons.content_cut_rounded),
+                label: Text(latest.trimRange.isFullRange ? 'I/O' : 'I/O 已裁剪'),
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );
   }
+
+  Future<void> _editTrim(
+    BuildContext context,
+    VideoGenerationTask task,
+    File file,
+  ) => showGeneratedVideoTrimEditor(
+    context,
+    title: '镜头 ${controller.generationOwnerFor(shot).shotNumber} · 设置 I/O 点',
+    file: file,
+    initialRange: task.trimRange,
+    onChanged: (range) => controller.updateTaskTrimRange(task, range),
+  );
 
   Future<void> _download(BuildContext context, VideoGenerationTask task) async {
     final source = File(task.localPath);
@@ -2433,6 +2641,7 @@ class _GeneratedVideoCell extends StatelessWidget {
                   ? () => _showFullscreenGeneratedVideo(
                       context,
                       file,
+                      range: task.trimRange,
                       title: '镜头 ${shot.shotNumber} · 历史版本 ${index + 1}',
                     )
                   : null,
@@ -2643,13 +2852,18 @@ class _HistoryVideoVersionCardState extends State<_HistoryVideoVersionCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
+            AdaptiveVideoViewport(
+              player: _player,
+              maxHeight: 190,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
                   if (hasFile && _thumbnailError.isEmpty)
-                    Video(controller: _videoController, controls: null)
+                    Video(
+                      controller: _videoController,
+                      controls: null,
+                      fit: BoxFit.contain,
+                    )
                   else
                     ColoredBox(
                       color: Colors.black.withValues(alpha: 0.82),
@@ -2734,10 +2948,14 @@ class _InlineGeneratedVideoPlayer extends StatefulWidget {
   const _InlineGeneratedVideoPlayer({
     super.key,
     required this.file,
+    required this.range,
+    this.onTap,
     required this.onFullscreen,
   });
 
   final File file;
+  final GeneratedVideoTrimRange range;
+  final VoidCallback? onTap;
   final VoidCallback onFullscreen;
 
   @override
@@ -2750,6 +2968,8 @@ class _InlineGeneratedVideoPlayerState
   late final Player _player;
   late final VideoController _videoController;
   StreamSubscription<bool>? _playingSubscription;
+  StreamSubscription<Duration>? _positionSubscription;
+  Duration _position = Duration.zero;
   var _playing = false;
   var _error = '';
 
@@ -2761,90 +2981,134 @@ class _InlineGeneratedVideoPlayerState
     _playingSubscription = _player.stream.playing.listen((playing) {
       if (mounted) setState(() => _playing = playing);
     });
+    _positionSubscription = _player.stream.position.listen(_handlePosition);
+    _position = widget.range.inPoint;
     unawaited(_open());
   }
 
   @override
   void didUpdateWidget(covariant _InlineGeneratedVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.file.path != widget.file.path) unawaited(_open());
+    if (oldWidget.file.path != widget.file.path) {
+      unawaited(_open());
+    } else if (oldWidget.range.inPoint != widget.range.inPoint ||
+        oldWidget.range.outPoint != widget.range.outPoint) {
+      unawaited(_applyRange());
+    }
   }
 
   Future<void> _open() async {
     try {
       await _player.open(Media(widget.file.path), play: false);
-      if (mounted) setState(() => _error = '');
+      await _applyRange();
+      if (mounted) {
+        setState(() => _error = '');
+      }
     } catch (error) {
       if (mounted) setState(() => _error = '视频加载失败：$error');
     }
   }
 
-  Future<void> _toggle() => _playing ? _player.pause() : _player.play();
+  Future<void> _applyRange() async {
+    await _player.pause();
+    await _player.seek(widget.range.inPoint);
+    if (mounted) setState(() => _position = widget.range.inPoint);
+  }
+
+  void _handlePosition(Duration position) {
+    if (position >= widget.range.outPoint) {
+      unawaited(_player.pause());
+      unawaited(_player.seek(widget.range.inPoint));
+      if (mounted) setState(() => _position = widget.range.inPoint);
+      return;
+    }
+    if (mounted) setState(() => _position = position);
+  }
+
+  Future<void> _toggle() async {
+    if (_playing) {
+      await _player.pause();
+      return;
+    }
+    if (_position < widget.range.inPoint ||
+        _position >= widget.range.outPoint) {
+      await _player.seek(widget.range.inPoint);
+    }
+    await _player.play();
+  }
 
   @override
   void dispose() {
     unawaited(_playingSubscription?.cancel());
+    unawaited(_positionSubscription?.cancel());
     _player.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(8),
-    child: ColoredBox(
-      color: Colors.black,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (_error.isEmpty)
-            Video(controller: _videoController, controls: null)
-          else
-            Center(
-              child: Text(
-                _error,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white),
+  Widget build(BuildContext context) => AdaptiveVideoViewport(
+    player: _player,
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: ColoredBox(
+        color: Colors.black,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (_error.isEmpty)
+              Video(
+                controller: _videoController,
+                controls: null,
+                fit: BoxFit.contain,
+              )
+            else
+              Center(
+                child: Text(
+                  _error,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white),
+                ),
               ),
-            ),
-          if (_error.isEmpty)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                key: ValueKey('generated-video-play-${widget.file.path}'),
-                onTap: _toggle,
-                child: Center(
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 160),
-                    opacity: _playing ? 0 : 1,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.64),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Padding(
-                        padding: EdgeInsets.all(10),
-                        child: Icon(
-                          Icons.play_arrow_rounded,
-                          color: Colors.white,
-                          size: 34,
+            if (_error.isEmpty)
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: ValueKey('generated-video-play-${widget.file.path}'),
+                  onTap: widget.onTap ?? _toggle,
+                  child: Center(
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      opacity: _playing ? 0 : 1,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.64),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: Icon(
+                            Icons.play_arrow_rounded,
+                            color: Colors.white,
+                            size: 34,
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filledTonal(
+                key: ValueKey('generated-video-fullscreen-${widget.file.path}'),
+                tooltip: '全屏播放',
+                onPressed: widget.onFullscreen,
+                icon: const Icon(Icons.fullscreen_rounded),
+              ),
             ),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: IconButton.filledTonal(
-              key: ValueKey('generated-video-fullscreen-${widget.file.path}'),
-              tooltip: '全屏播放',
-              onPressed: widget.onFullscreen,
-              icon: const Icon(Icons.fullscreen_rounded),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -2967,9 +3231,14 @@ class _GeneratedVideoMenu extends StatelessWidget {
 }
 
 class _FullscreenGeneratedVideo extends StatefulWidget {
-  const _FullscreenGeneratedVideo({required this.file, required this.title});
+  const _FullscreenGeneratedVideo({
+    required this.file,
+    required this.range,
+    required this.title,
+  });
 
   final File file;
+  final GeneratedVideoTrimRange range;
   final String title;
 
   @override
@@ -2980,6 +3249,7 @@ class _FullscreenGeneratedVideo extends StatefulWidget {
 class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
   late final Player _player;
   late final VideoController _videoController;
+  StreamSubscription<Duration>? _positionSubscription;
   var _error = '';
 
   @override
@@ -2987,12 +3257,25 @@ class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
     super.initState();
     _player = Player();
     _videoController = VideoController(_player);
+    _positionSubscription = _player.stream.position.listen((position) {
+      if (position >= widget.range.outPoint) {
+        unawaited(_player.pause());
+        unawaited(_player.seek(widget.range.inPoint));
+      }
+    });
     unawaited(_open());
   }
 
   Future<void> _open() async {
     try {
-      await _player.open(Media(widget.file.path), play: true);
+      await _player.open(
+        Media(
+          widget.file.path,
+          start: widget.range.inPoint,
+          end: widget.range.outPoint,
+        ),
+        play: true,
+      );
     } catch (error) {
       if (mounted) setState(() => _error = '视频播放失败：$error');
     }
@@ -3000,6 +3283,7 @@ class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
 
   @override
   void dispose() {
+    unawaited(_positionSubscription?.cancel());
     _player.dispose();
     super.dispose();
   }
@@ -3023,7 +3307,7 @@ class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
             Positioned.fill(
               child: Center(
                 child: _error.isEmpty
-                    ? Video(controller: _videoController)
+                    ? Video(controller: _videoController, fit: BoxFit.contain)
                     : Text(_error, style: const TextStyle(color: Colors.white)),
               ),
             ),
@@ -3055,13 +3339,14 @@ class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
 Future<void> _showFullscreenGeneratedVideo(
   BuildContext context,
   File file, {
+  required GeneratedVideoTrimRange range,
   required String title,
 }) => showDialog<void>(
   context: context,
   barrierColor: Colors.black,
   builder: (_) => Dialog.fullscreen(
     backgroundColor: Colors.black,
-    child: _FullscreenGeneratedVideo(file: file, title: title),
+    child: _FullscreenGeneratedVideo(file: file, range: range, title: title),
   ),
 );
 
@@ -3160,6 +3445,127 @@ class _Cell extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       Padding(padding: const EdgeInsets.all(12), child: child);
+}
+
+class _LibTvParameterField extends StatelessWidget {
+  const _LibTvParameterField({
+    required this.controller,
+    required this.parameter,
+    required this.enabled,
+  });
+
+  final VideoGenerationController controller;
+  final LibTvModelParameterSpec parameter;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = controller.selectedLibTvParameterValue(parameter);
+    final label = parameter.group == LibTvParameterGroup.advanced
+        ? '高级 · ${parameter.displayName}'
+        : parameter.displayName;
+    if (parameter.isSwitch) {
+      final selected = const {
+        '1',
+        'true',
+        'on',
+        'yes',
+      }.contains(value.toLowerCase());
+      return SizedBox(
+        width: 145,
+        child: DropdownButtonFormField<bool>(
+          key: ValueKey('libtv-parameter-${parameter.key}-$selected'),
+          initialValue: selected,
+          decoration: InputDecoration(labelText: label, isDense: true),
+          items: const [
+            DropdownMenuItem(value: true, child: Text('开启')),
+            DropdownMenuItem(value: false, child: Text('关闭')),
+          ],
+          onChanged: !enabled
+              ? null
+              : (selected) {
+                  if (selected != null) {
+                    controller.updateLibTvSwitchParameter(parameter, selected);
+                  }
+                },
+        ),
+      );
+    }
+    final options = parameter.options.isNotEmpty
+        ? parameter.options
+        : _numericLibTvOptions(parameter);
+    if (options.isNotEmpty) {
+      return SizedBox(
+        width: 155,
+        child: DropdownButtonFormField<String>(
+          isExpanded: true,
+          key: ValueKey('libtv-parameter-${parameter.key}-$value'),
+          initialValue: value,
+          decoration: InputDecoration(labelText: label, isDense: true),
+          items: [
+            for (final option in options)
+              DropdownMenuItem(
+                value: option.value,
+                child: Text(option.label, overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          onChanged: !enabled
+              ? null
+              : (selected) {
+                  if (selected != null) {
+                    controller.updateLibTvParameter(parameter, selected);
+                  }
+                },
+        ),
+      );
+    }
+    return SizedBox(
+      width: 175,
+      child: TextFormField(
+        key: ValueKey('libtv-parameter-${parameter.key}-$value'),
+        initialValue: value,
+        enabled: enabled,
+        keyboardType: parameter.hasNumericRange
+            ? const TextInputType.numberWithOptions(decimal: true)
+            : TextInputType.text,
+        decoration: InputDecoration(
+          labelText: label,
+          isDense: true,
+          helperText: parameter.hasNumericRange
+              ? '${parameter.min}–${parameter.max}'
+              : null,
+        ),
+        onFieldSubmitted: (value) =>
+            controller.updateLibTvParameter(parameter, value),
+      ),
+    );
+  }
+}
+
+List<LibTvParameterOption> _numericLibTvOptions(
+  LibTvModelParameterSpec parameter,
+) {
+  if (!parameter.hasNumericRange) return const [];
+  final min = parameter.min!;
+  final max = parameter.max!;
+  final step = parameter.step ?? 1;
+  if (step <= 0) return const [];
+  final count = ((max - min) / step).floor() + 1;
+  if (count <= 0 || count > 30) return const [];
+  return [
+    for (var index = 0; index < count; index += 1)
+      _numericLibTvOption(min + step * index),
+  ];
+}
+
+LibTvParameterOption _numericLibTvOption(num value) {
+  final text = value == value.roundToDouble()
+      ? '${value.toInt()}'
+      : value
+            .toStringAsFixed(2)
+            .replaceFirst(RegExp(r'0+$'), '')
+            .replaceFirst(RegExp(r'\.$'), '');
+  return LibTvParameterOption(value: text, label: text);
 }
 
 class _StatusChip extends StatelessWidget {
@@ -3268,10 +3674,16 @@ class _SourceRangePreviewDialogState extends State<_SourceRangePreviewDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
+            AdaptiveVideoViewport(
+              player: _player,
+              initialAspectRatio: widget.range.aspectRatio,
+              maxHeight: 520,
               child: _error.isEmpty
-                  ? Video(controller: _videoController, controls: null)
+                  ? Video(
+                      controller: _videoController,
+                      controls: null,
+                      fit: BoxFit.contain,
+                    )
                   : Center(child: Text(_error)),
             ),
             const SizedBox(height: 12),
