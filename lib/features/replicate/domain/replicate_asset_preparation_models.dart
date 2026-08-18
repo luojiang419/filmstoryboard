@@ -57,6 +57,7 @@ class ReplicateFullOutfitAsset {
     required this.name,
     this.views = const [],
     this.primaryViewId = '',
+    this.primaryViewManuallySelected = false,
     this.enabled = true,
   });
 
@@ -65,6 +66,7 @@ class ReplicateFullOutfitAsset {
   final String name;
   final List<ReplicateFullOutfitView> views;
   final String primaryViewId;
+  final bool primaryViewManuallySelected;
   final bool enabled;
 
   ReplicateFullOutfitView? get primaryView {
@@ -81,11 +83,16 @@ class ReplicateFullOutfitAsset {
         roles.contains(ReplicateOutfitViewRole.back);
   }
 
+  bool get hasIndependentThreeViewSet =>
+      hasCompleteThreeViewSet &&
+      views.map((view) => view.scriptAssetId).toSet().length >= 3;
+
   ReplicateFullOutfitAsset copyWith({
     int? personSlotIndex,
     String? name,
     List<ReplicateFullOutfitView>? views,
     String? primaryViewId,
+    bool? primaryViewManuallySelected,
     bool? enabled,
   }) => ReplicateFullOutfitAsset(
     id: id,
@@ -93,6 +100,8 @@ class ReplicateFullOutfitAsset {
     name: name ?? this.name,
     views: views ?? this.views,
     primaryViewId: primaryViewId ?? this.primaryViewId,
+    primaryViewManuallySelected:
+        primaryViewManuallySelected ?? this.primaryViewManuallySelected,
     enabled: enabled ?? this.enabled,
   );
 
@@ -102,6 +111,7 @@ class ReplicateFullOutfitAsset {
     'name': name,
     'views': [for (final view in views) view.toJson()],
     'primaryViewId': primaryViewId,
+    'primaryViewManuallySelected': primaryViewManuallySelected,
     'enabled': enabled,
   };
 
@@ -113,6 +123,10 @@ class ReplicateFullOutfitAsset {
     name: _string(json['name']),
     views: _objectList(json['views'], ReplicateFullOutfitView.fromJson),
     primaryViewId: _string(json['primaryViewId'] ?? json['primary_view_id']),
+    primaryViewManuallySelected: _bool(
+      json['primaryViewManuallySelected'] ??
+          json['primary_view_manually_selected'],
+    ),
     enabled: _bool(json['enabled'], fallback: true),
   );
 }

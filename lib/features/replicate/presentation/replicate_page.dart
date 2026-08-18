@@ -5992,8 +5992,8 @@ class _PrepareAssetsContent extends StatelessWidget {
       onSelectLocalAsset:
           (type, shotId, replaceScriptAssetId, slotSortOrder, slotLabel) async {
             final asset = await onImportLocalAsset(type);
-            if (asset == null) return;
-            await assetBindingController.addStepAssetToShot(
+            if (asset == null) return null;
+            return assetBindingController.addStepAssetToShot(
               asset,
               shotId,
               replaceScriptAssetId: replaceScriptAssetId,
@@ -6021,6 +6021,41 @@ class _PrepareAssetsContent extends StatelessWidget {
       onRemovePose: controller.removeDwPoseForShot,
       onTogglePreservedElement: controller.setPreservedElementSelected,
       onSetSubjectDecision: controller.setDetectedSubjectDecision,
+      onSetFullOutfitView:
+          (shotId, personSlotIndex, role, scriptAssetId, subjectDirection) =>
+              controller.setFullOutfitView(
+                shotId: shotId,
+                personSlotIndex: personSlotIndex,
+                role: role,
+                scriptAssetId: scriptAssetId,
+                subjectDirection: subjectDirection,
+              ),
+      onRemoveFullOutfitView: (shotId, personSlotIndex, role) =>
+          controller.removeFullOutfitView(
+            shotId: shotId,
+            personSlotIndex: personSlotIndex,
+            role: role,
+          ),
+      onSetFullOutfitPrimaryView: (shotId, personSlotIndex, viewId) =>
+          controller.setFullOutfitPrimaryView(
+            shotId: shotId,
+            personSlotIndex: personSlotIndex,
+            viewId: viewId,
+          ),
+      onSplitFullOutfit:
+          (shotId, personSlotIndex, sourceAssetId, subjectDirection) =>
+              controller.splitFullOutfitCollage(
+                shotId: shotId,
+                personSlotIndex: personSlotIndex,
+                sourceScriptAssetId: sourceAssetId,
+                subjectDirection: subjectDirection,
+              ),
+      onSetWearableProductLink: (shotId, slotIndex, linked) =>
+          controller.setWearableProductLinked(
+            shotId: shotId,
+            slotIndex: slotIndex,
+            linked: linked,
+          ),
       onRemoveSubject: controller.removeDetectedSubject,
       onAddPreservedElement: controller.addManualPreservedElement,
       onReplicateShot: controller.replicateShot,
@@ -6075,6 +6110,11 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.onRemovePose,
     required this.onTogglePreservedElement,
     required this.onSetSubjectDecision,
+    required this.onSetFullOutfitView,
+    required this.onRemoveFullOutfitView,
+    required this.onSetFullOutfitPrimaryView,
+    required this.onSplitFullOutfit,
+    required this.onSetWearableProductLink,
     required this.onRemoveSubject,
     required this.onAddPreservedElement,
     required this.onReplicateShot,
@@ -6089,7 +6129,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   final ScriptAnalysisState analysisState;
   final ScriptAssetBindingState bindingState;
   final ShootingAssetLibraryState libraryState;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ShootingAssetLibraryItem item,
     String shotId,
     String? replaceScriptAssetId,
@@ -6097,7 +6137,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     String? slotLabel,
   )
   onDrop;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ReplicateAsset item,
     String shotId,
     String? replaceScriptAssetId,
@@ -6105,7 +6145,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     String? slotLabel,
   )
   onSelectStepAsset;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ShootingAssetLibraryItem item,
     String shotId,
     String? replaceScriptAssetId,
@@ -6113,7 +6153,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     String? slotLabel,
   )
   onSelectLibraryAsset;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ReplicateAssetType type,
     String shotId,
     String? replaceScriptAssetId,
@@ -6138,6 +6178,31 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     ReplicateSubjectDecision decision,
   )
   onSetSubjectDecision;
+  final void Function(
+    String shotId,
+    int personSlotIndex,
+    ReplicateOutfitViewRole role,
+    String scriptAssetId,
+    String subjectDirection,
+  )
+  onSetFullOutfitView;
+  final void Function(
+    String shotId,
+    int personSlotIndex,
+    ReplicateOutfitViewRole role,
+  )
+  onRemoveFullOutfitView;
+  final void Function(String shotId, int personSlotIndex, String viewId)
+  onSetFullOutfitPrimaryView;
+  final Future<bool> Function(
+    String shotId,
+    int personSlotIndex,
+    String sourceAssetId,
+    String subjectDirection,
+  )
+  onSplitFullOutfit;
+  final bool Function(String shotId, int slotIndex, bool linked)
+  onSetWearableProductLink;
   final void Function(String shotId, String subjectId) onRemoveSubject;
   final void Function(String shotId, String label) onAddPreservedElement;
   final Future<bool> Function(String shotId) onReplicateShot;
@@ -6364,6 +6429,37 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                       .onTogglePreservedElement(shot.id, elementId, selected),
                   onSetSubjectDecision: (subjectId, decision) =>
                       widget.onSetSubjectDecision(shot.id, subjectId, decision),
+                  onSetFullOutfitView:
+                      (
+                        personSlotIndex,
+                        role,
+                        scriptAssetId,
+                        subjectDirection,
+                      ) => widget.onSetFullOutfitView(
+                        shot.id,
+                        personSlotIndex,
+                        role,
+                        scriptAssetId,
+                        subjectDirection,
+                      ),
+                  onRemoveFullOutfitView: (personSlotIndex, role) => widget
+                      .onRemoveFullOutfitView(shot.id, personSlotIndex, role),
+                  onSetFullOutfitPrimaryView: (personSlotIndex, viewId) =>
+                      widget.onSetFullOutfitPrimaryView(
+                        shot.id,
+                        personSlotIndex,
+                        viewId,
+                      ),
+                  onSplitFullOutfit:
+                      (personSlotIndex, sourceAssetId, subjectDirection) =>
+                          widget.onSplitFullOutfit(
+                            shot.id,
+                            personSlotIndex,
+                            sourceAssetId,
+                            subjectDirection,
+                          ),
+                  onSetWearableProductLink: (slotIndex, linked) => widget
+                      .onSetWearableProductLink(shot.id, slotIndex, linked),
                   onRemoveSubject: (subjectId) =>
                       widget.onRemoveSubject(shot.id, subjectId),
                   onAddPreservedElement: (label) =>
@@ -6409,6 +6505,11 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onRemovePose,
     required this.onTogglePreservedElement,
     required this.onSetSubjectDecision,
+    required this.onSetFullOutfitView,
+    required this.onRemoveFullOutfitView,
+    required this.onSetFullOutfitPrimaryView,
+    required this.onSplitFullOutfit,
+    required this.onSetWearableProductLink,
     required this.onRemoveSubject,
     required this.onAddPreservedElement,
     required this.replicatedImage,
@@ -6428,28 +6529,28 @@ class _ShotAssetDropRow extends StatelessWidget {
   final List<ReplicateAsset> stepAssets;
   final bool expanded;
   final VoidCallback onToggleExpanded;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ShootingAssetLibraryItem item,
     String? replaceId,
     int? slotSortOrder,
     String? slotLabel,
   )
   onDrop;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ReplicateAsset item,
     String? replaceId,
     int? slotSortOrder,
     String? slotLabel,
   )
   onSelectStepAsset;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ShootingAssetLibraryItem item,
     String? replaceId,
     int? slotSortOrder,
     String? slotLabel,
   )
   onSelectLibraryAsset;
-  final Future<void> Function(
+  final Future<ScriptAsset?> Function(
     ReplicateAssetType type,
     String? replaceId,
     int? slotSortOrder,
@@ -6467,6 +6568,24 @@ class _ShotAssetDropRow extends StatelessWidget {
   final void Function(String elementId, bool selected) onTogglePreservedElement;
   final void Function(String subjectId, ReplicateSubjectDecision decision)
   onSetSubjectDecision;
+  final void Function(
+    int personSlotIndex,
+    ReplicateOutfitViewRole role,
+    String scriptAssetId,
+    String subjectDirection,
+  )
+  onSetFullOutfitView;
+  final void Function(int personSlotIndex, ReplicateOutfitViewRole role)
+  onRemoveFullOutfitView;
+  final void Function(int personSlotIndex, String viewId)
+  onSetFullOutfitPrimaryView;
+  final Future<bool> Function(
+    int personSlotIndex,
+    String sourceAssetId,
+    String subjectDirection,
+  )
+  onSplitFullOutfit;
+  final bool Function(int slotIndex, bool linked) onSetWearableProductLink;
   final ValueChanged<String> onRemoveSubject;
   final ValueChanged<String> onAddPreservedElement;
   final ReplicatedShotImage? replicatedImage;
@@ -6816,6 +6935,19 @@ class _ShotAssetDropRow extends StatelessWidget {
         if (assetsByLink.containsKey(link) && !assignedLinks.contains(link))
           link,
     ];
+    final fullOutfitByPersonSlot = {
+      for (final asset
+          in guide?.fullOutfitAssets ?? const <ReplicateFullOutfitAsset>[])
+        asset.personSlotIndex: asset,
+    };
+    final wearableLinkBySlot = {
+      for (final link
+          in guide?.wearableProductLinks ??
+              const <ReplicateWearableProductLink>[])
+        if (link.linked) link.productSlotIndex: link,
+    };
+    final subjectDirection =
+        analysis?.promptContext.scene['subjectDirection'] ?? '';
 
     return Wrap(
       spacing: 8,
@@ -6826,7 +6958,7 @@ class _ShotAssetDropRow extends StatelessWidget {
             guideIsCurrent: guideIsCurrent,
             analysisStatus: guide?.analysisStatus,
           ),
-        for (final subject in subjects)
+        for (final subject in subjects) ...[
           _DetectedSubjectAssetSlot(
             key: ValueKey(
               'detected-subject-asset-slot-${shot.id}-${subject.id}',
@@ -6845,27 +6977,40 @@ class _ShotAssetDropRow extends StatelessWidget {
                 ? null
                 : assetsByLink[assignments[subject.id]!],
             link: assignments[subject.id],
-            accepts: (item) => slotFor(subject).acceptsAsset(
-              type: item.type,
-              name: item.name,
-              description: item.description,
-              aliases: item.aliases,
-            ),
-            onTap: () => _openAssetPicker(
-              context,
-              replaceScriptAssetId: assignments[subject.id]?.scriptAssetId,
-              presetSlot: slotFor(subject),
-              bindingLabel: _detectedSubjectBindingLabel(
-                subject,
-                characterCount: characterCount,
-                productCount: productCount,
-              ),
-              pickerTitle: '选择“${subject.label}”的替换资产',
-              onAssetSelected: () => onSetSubjectDecision(
-                subject.id,
-                ReplicateSubjectDecision.replace,
-              ),
-            ),
+            linkedOutfitLabel:
+                subject.type == ReplicateSubjectType.product &&
+                    wearableLinkBySlot.containsKey(subject.slotIndex)
+                ? '随模特${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}完整造型联动替换'
+                : '',
+            accepts: (item) =>
+                (subject.type != ReplicateSubjectType.product ||
+                    !wearableLinkBySlot.containsKey(subject.slotIndex)) &&
+                slotFor(subject).acceptsAsset(
+                  type: item.type,
+                  name: item.name,
+                  description: item.description,
+                  aliases: item.aliases,
+                ),
+            onTap:
+                subject.type == ReplicateSubjectType.product &&
+                    wearableLinkBySlot.containsKey(subject.slotIndex)
+                ? null
+                : () => _openAssetPicker(
+                    context,
+                    replaceScriptAssetId:
+                        assignments[subject.id]?.scriptAssetId,
+                    presetSlot: slotFor(subject),
+                    bindingLabel: _detectedSubjectBindingLabel(
+                      subject,
+                      characterCount: characterCount,
+                      productCount: productCount,
+                    ),
+                    pickerTitle: '选择“${subject.label}”的替换资产',
+                    onAssetSelected: (_) => onSetSubjectDecision(
+                      subject.id,
+                      ReplicateSubjectDecision.replace,
+                    ),
+                  ),
             onDrop: (item) async {
               final slot = slotFor(subject);
               await onDrop(
@@ -6891,9 +7036,59 @@ class _ShotAssetDropRow extends StatelessWidget {
               if (assignment != null) onRemove(assignment.scriptAssetId);
               onRemoveSubject(subject.id);
             },
+            onUnlink: wearableLinkBySlot.containsKey(subject.slotIndex)
+                ? () => onSetWearableProductLink(subject.slotIndex, false)
+                : null,
             onDecisionChanged: (decision) =>
-                onSetSubjectDecision(subject.id, decision),
+                _changeSubjectDecision(context, subject, decision),
           ),
+          if (subject.type == ReplicateSubjectType.person &&
+              subject.decision == ReplicateSubjectDecision.replace)
+            _FullOutfitPanel(
+              key: ValueKey(
+                'full-outfit-panel-${shot.id}-${subject.slotIndex}',
+              ),
+              personSlotIndex: subject.slotIndex,
+              outfit: fullOutfitByPersonSlot[subject.slotIndex],
+              assetsById: {
+                for (final asset in bindingState.assets) asset.id: asset,
+              },
+              sourceAsset: assignments[subject.id] == null
+                  ? null
+                  : assetsByLink[assignments[subject.id]!],
+              productSubject: subjects
+                  .where(
+                    (candidate) =>
+                        candidate.type == ReplicateSubjectType.product &&
+                        candidate.slotIndex == subject.slotIndex,
+                  )
+                  .firstOrNull,
+              wearableLink: wearableLinkBySlot[subject.slotIndex],
+              subjectDirection: subjectDirection,
+              onSelectView: (role, currentAssetId) => _selectFullOutfitView(
+                context,
+                subject: subject,
+                role: role,
+                currentAssetId: currentAssetId,
+                subjectDirection: subjectDirection,
+              ),
+              onRemoveView: (role) => _confirmRemoveFullOutfitView(
+                context,
+                subject: subject,
+                role: role,
+              ),
+              onSetPrimary: (viewId) =>
+                  onSetFullOutfitPrimaryView(subject.slotIndex, viewId),
+              onSplit: (sourceAssetId) => _confirmAndSplitFullOutfit(
+                context,
+                subject: subject,
+                sourceAssetId: sourceAssetId,
+                subjectDirection: subjectDirection,
+              ),
+              onSetLinked: (linked) =>
+                  onSetWearableProductLink(subject.slotIndex, linked),
+            ),
+        ],
         for (final link in remainingLinks)
           _AssetBindingSlot(
             key: ValueKey(
@@ -6935,13 +7130,165 @@ class _ShotAssetDropRow extends StatelessWidget {
     );
   }
 
-  Future<void> _openAssetPicker(
+  Future<void> _changeSubjectDecision(
+    BuildContext context,
+    ReplicateDetectedSubject subject,
+    ReplicateSubjectDecision decision,
+  ) async {
+    final link = guide?.wearableProductLinks
+        .where(
+          (candidate) =>
+              candidate.linked &&
+              (subject.type == ReplicateSubjectType.person
+                  ? candidate.personSlotIndex == subject.slotIndex
+                  : candidate.productSlotIndex == subject.slotIndex),
+        )
+        .firstOrNull;
+    if (link != null && decision != ReplicateSubjectDecision.replace) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('解除完整穿搭联动？'),
+          content: Text(
+            subject.type == ReplicateSubjectType.person &&
+                    decision == ReplicateSubjectDecision.remove
+                ? '该人物与同槽穿戴产品正在联动。继续后会解除联动，并将人物和对应穿戴产品一起设为移除。'
+                : '该主体与完整穿搭正在联动。继续后会先解除联动，再应用新的处理方式；独立产品资产流程会恢复。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: ValueKey(
+                'confirm-unlink-full-outfit-${shot.id}-${subject.id}',
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('解除并继续'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      onSetWearableProductLink(link.productSlotIndex, false);
+      if (subject.type == ReplicateSubjectType.person &&
+          decision == ReplicateSubjectDecision.remove) {
+        final product = guide?.subjects
+            .where(
+              (candidate) =>
+                  candidate.type == ReplicateSubjectType.product &&
+                  candidate.slotIndex == link.productSlotIndex,
+            )
+            .firstOrNull;
+        if (product != null) {
+          onSetSubjectDecision(product.id, ReplicateSubjectDecision.remove);
+        }
+      }
+    }
+    onSetSubjectDecision(subject.id, decision);
+  }
+
+  Future<void> _selectFullOutfitView(
+    BuildContext context, {
+    required ReplicateDetectedSubject subject,
+    required ReplicateOutfitViewRole role,
+    required String? currentAssetId,
+    required String subjectDirection,
+  }) async {
+    final roleLabel = _fullOutfitRoleLabel(role);
+    final selected = await _openAssetPicker(
+      context,
+      replaceScriptAssetId: currentAssetId,
+      presetSlot: ScriptAssetPresetSlot.character(subject.slotIndex),
+      bindingLabel:
+          '模特${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}完整穿搭$roleLabel',
+      pickerTitle: '选择“${subject.label}”的$roleLabel完整穿搭视图',
+    );
+    if (selected == null) return;
+    onSetFullOutfitView(subject.slotIndex, role, selected.id, subjectDirection);
+  }
+
+  Future<void> _confirmRemoveFullOutfitView(
+    BuildContext context, {
+    required ReplicateDetectedSubject subject,
+    required ReplicateOutfitViewRole role,
+  }) async {
+    final link = guide?.wearableProductLinks
+        .where(
+          (candidate) =>
+              candidate.linked &&
+              candidate.personSlotIndex == subject.slotIndex,
+        )
+        .firstOrNull;
+    if (link != null) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('解除完整穿搭联动？'),
+          content: Text(
+            '删除${_fullOutfitRoleLabel(role)}视图后，完整三视图将不再满足联动条件。继续后会先解除同槽穿戴产品联动，再删除该视图。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: ValueKey(
+                'confirm-remove-linked-outfit-view-${shot.id}-${subject.slotIndex}-${role.name}',
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('解除并删除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      onSetWearableProductLink(link.productSlotIndex, false);
+    }
+    onRemoveFullOutfitView(subject.slotIndex, role);
+  }
+
+  Future<void> _confirmAndSplitFullOutfit(
+    BuildContext context, {
+    required ReplicateDetectedSubject subject,
+    required String sourceAssetId,
+    required String subjectDirection,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('本地拆分横向三视图'),
+        content: const Text(
+          '将按等宽三栏在本地拆分，不调用视觉模型。默认从左到右标记为正面、侧面、背面；拆分后请逐格复核，并在需要时手动点击星标调整主视图。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: ValueKey(
+              'confirm-split-full-outfit-${shot.id}-${subject.slotIndex}',
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('确认拆分'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await onSplitFullOutfit(subject.slotIndex, sourceAssetId, subjectDirection);
+  }
+
+  Future<ScriptAsset?> _openAssetPicker(
     BuildContext context, {
     String? replaceScriptAssetId,
     ScriptAssetPresetSlot? presetSlot,
     String? bindingLabel,
     String? pickerTitle,
-    VoidCallback? onAssetSelected,
+    ValueChanged<ScriptAsset>? onAssetSelected,
   }) async {
     final choices = [
       for (final asset in stepAssets)
@@ -7036,30 +7383,32 @@ class _ShotAssetDropRow extends StatelessWidget {
         ),
       ),
     );
-    if (selected == null) return;
+    if (selected == null) return null;
+    ScriptAsset? selectedAsset;
     if (selected.isLocalFile) {
-      await onSelectLocalAsset(
+      selectedAsset = await onSelectLocalAsset(
         presetSlot?.preferredAssetType ?? ReplicateAssetType.reference,
         replaceScriptAssetId,
         presetSlot?.sortOrder,
         slotLabel,
       );
     } else if (selected.stepAsset != null) {
-      await onSelectStepAsset(
+      selectedAsset = await onSelectStepAsset(
         selected.stepAsset!,
         replaceScriptAssetId,
         presetSlot?.sortOrder,
         slotLabel,
       );
     } else if (selected.libraryItem != null) {
-      await onSelectLibraryAsset(
+      selectedAsset = await onSelectLibraryAsset(
         selected.libraryItem!,
         replaceScriptAssetId,
         presetSlot?.sortOrder,
         slotLabel,
       );
     }
-    onAssetSelected?.call();
+    if (selectedAsset != null) onAssetSelected?.call(selectedAsset);
+    return selectedAsset;
   }
 }
 
@@ -7281,6 +7630,292 @@ class _DetectedSubjectAssetEmptyState extends StatelessWidget {
   }
 }
 
+class _FullOutfitPanel extends StatelessWidget {
+  const _FullOutfitPanel({
+    super.key,
+    required this.personSlotIndex,
+    required this.outfit,
+    required this.assetsById,
+    required this.sourceAsset,
+    required this.productSubject,
+    required this.wearableLink,
+    required this.subjectDirection,
+    required this.onSelectView,
+    required this.onRemoveView,
+    required this.onSetPrimary,
+    required this.onSplit,
+    required this.onSetLinked,
+  });
+
+  final int personSlotIndex;
+  final ReplicateFullOutfitAsset? outfit;
+  final Map<String, ScriptAsset> assetsById;
+  final ScriptAsset? sourceAsset;
+  final ReplicateDetectedSubject? productSubject;
+  final ReplicateWearableProductLink? wearableLink;
+  final String subjectDirection;
+  final Future<void> Function(
+    ReplicateOutfitViewRole role,
+    String? currentAssetId,
+  )
+  onSelectView;
+  final ValueChanged<ReplicateOutfitViewRole> onRemoveView;
+  final ValueChanged<String> onSetPrimary;
+  final Future<void> Function(String sourceAssetId) onSplit;
+  final ValueChanged<bool> onSetLinked;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final modelLabel =
+        '模特${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}';
+    final complete = outfit?.hasIndependentThreeViewSet ?? false;
+    final primary = outfit?.primaryView;
+    final linked = wearableLink?.linked ?? false;
+    final productCanLink =
+        productSubject?.decision == ReplicateSubjectDecision.replace;
+    final canLink = complete && primary != null && productCanLink;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 440, maxWidth: 650),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.secondaryContainer.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(9),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$modelLabel · 完整穿搭三视图',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  if (sourceAsset != null)
+                    TextButton.icon(
+                      key: ValueKey('split-full-outfit-$personSlotIndex'),
+                      onPressed: () => unawaited(onSplit(sourceAsset!.id)),
+                      icon: const Icon(Icons.view_column_rounded, size: 16),
+                      label: const Text('拆分横向拼图'),
+                    ),
+                ],
+              ),
+              Text(
+                subjectDirection.trim().isEmpty
+                    ? '原帧朝向未知；三视图齐全后请手动点击星标选择主视图。'
+                    : '原帧朝向：$subjectDirection。系统仅用已保存分析结果匹配主视图。',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+              const SizedBox(height: 7),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final role in const [
+                    ReplicateOutfitViewRole.front,
+                    ReplicateOutfitViewRole.side,
+                    ReplicateOutfitViewRole.back,
+                  ]) ...[
+                    Expanded(
+                      child: _FullOutfitViewCell(
+                        role: role,
+                        view: outfit?.views
+                            .where((view) => view.role == role)
+                            .firstOrNull,
+                        asset: outfit?.views
+                            .where((view) => view.role == role)
+                            .map((view) => assetsById[view.scriptAssetId])
+                            .firstOrNull,
+                        isPrimary: outfit?.primaryView?.role == role,
+                        onSelect: (assetId) =>
+                            unawaited(onSelectView(role, assetId)),
+                        onRemove: () => onRemoveView(role),
+                        onSetPrimary: onSetPrimary,
+                      ),
+                    ),
+                    if (role != ReplicateOutfitViewRole.back)
+                      const SizedBox(width: 7),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 7),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      !complete
+                          ? '请补齐正面、侧面、背面三个独立视图。'
+                          : primary == null
+                          ? '三视图已齐全，但主视图尚未确定。'
+                          : '主视图：${_fullOutfitRoleLabel(primary.role)}${outfit?.primaryViewManuallySelected == true ? '（手动）' : '（按原帧朝向）'}',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: complete && primary != null
+                            ? scheme.primary
+                            : scheme.error,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (productSubject != null)
+                    OutlinedButton.icon(
+                      key: ValueKey('toggle-full-outfit-link-$personSlotIndex'),
+                      onPressed: linked || canLink
+                          ? () => onSetLinked(!linked)
+                          : null,
+                      icon: Icon(
+                        linked ? Icons.link_off_rounded : Icons.link_rounded,
+                        size: 16,
+                      ),
+                      label: Text(
+                        linked
+                            ? '解除产品${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}联动'
+                            : '联动产品${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}',
+                      ),
+                    ),
+                ],
+              ),
+              if (productSubject != null && !productCanLink && !linked)
+                Text(
+                  '产品${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}选择“替换”后才可与完整穿搭联动。',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FullOutfitViewCell extends StatelessWidget {
+  const _FullOutfitViewCell({
+    required this.role,
+    required this.view,
+    required this.asset,
+    required this.isPrimary,
+    required this.onSelect,
+    required this.onRemove,
+    required this.onSetPrimary,
+  });
+
+  final ReplicateOutfitViewRole role;
+  final ReplicateFullOutfitView? view;
+  final ScriptAsset? asset;
+  final bool isPrimary;
+  final ValueChanged<String?> onSelect;
+  final VoidCallback onRemove;
+  final ValueChanged<String> onSetPrimary;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(
+          color: isPrimary ? scheme.primary : scheme.outlineVariant,
+          width: isPrimary ? 1.5 : 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _fullOutfitRoleLabel(role),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                if (view != null)
+                  IconButton(
+                    key: ValueKey('set-primary-full-outfit-${view!.id}'),
+                    tooltip: isPrimary ? '当前主视图' : '设为主视图',
+                    onPressed: isPrimary ? null : () => onSetPrimary(view!.id),
+                    icon: Icon(
+                      isPrimary
+                          ? Icons.star_rounded
+                          : Icons.star_border_rounded,
+                      size: 17,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 24,
+                      minHeight: 24,
+                    ),
+                  ),
+              ],
+            ),
+            SizedBox(
+              height: 70,
+              child: Material(
+                color: scheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(5),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  key: ValueKey('select-full-outfit-${role.name}'),
+                  onTap: () => onSelect(view?.scriptAssetId),
+                  child: asset == null
+                      ? const Center(child: Icon(Icons.add_photo_alternate))
+                      : _BindingAssetPreview(
+                          path: asset!.path,
+                          label: asset!.name,
+                        ),
+                ),
+              ),
+            ),
+            if (asset != null)
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      asset!.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 10),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '移除该视图',
+                    onPressed: onRemove,
+                    icon: const Icon(Icons.close_rounded, size: 14),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 22,
+                      minHeight: 22,
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _fullOutfitRoleLabel(ReplicateOutfitViewRole role) => switch (role) {
+  ReplicateOutfitViewRole.front => '正面',
+  ReplicateOutfitViewRole.side => '侧面',
+  ReplicateOutfitViewRole.back => '背面',
+  ReplicateOutfitViewRole.other => '其他',
+};
+
 class _DetectedSubjectAssetSlot extends StatelessWidget {
   const _DetectedSubjectAssetSlot({
     super.key,
@@ -7290,11 +7925,13 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
     required this.subject,
     required this.asset,
     required this.link,
+    required this.linkedOutfitLabel,
     required this.accepts,
     required this.onTap,
     required this.onDrop,
     required this.onRemove,
     required this.onRemoveSlot,
+    required this.onUnlink,
     required this.onDecisionChanged,
   });
 
@@ -7304,11 +7941,13 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
   final ReplicateDetectedSubject subject;
   final ScriptAsset? asset;
   final ScriptShotAssetLink? link;
+  final String linkedOutfitLabel;
   final bool Function(ShootingAssetLibraryItem item) accepts;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final Future<void> Function(ShootingAssetLibraryItem item) onDrop;
   final VoidCallback? onRemove;
   final VoidCallback onRemoveSlot;
+  final VoidCallback? onUnlink;
   final ValueChanged<ReplicateSubjectDecision> onDecisionChanged;
 
   @override
@@ -7381,6 +8020,29 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                  ],
+                  if (linkedOutfitLabel.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 5,
+                        ),
+                        child: Text(
+                          linkedOutfitLabel,
+                          key: ValueKey(
+                            'linked-full-outfit-product-${subject.id}',
+                          ),
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                      ),
                     ),
                   ],
                   const SizedBox(height: 6),
@@ -7507,6 +8169,15 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
                       ),
                     ),
                   ),
+                  if (onUnlink != null)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        key: ValueKey('unlink-full-outfit-${subject.id}'),
+                        onPressed: onUnlink,
+                        child: const Text('解除联动'),
+                      ),
+                    ),
                 ],
               ),
             ),

@@ -36,9 +36,9 @@ import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/bundled_video_skill_library.dart';
 import '../data/dwpose_model_manager.dart';
 import '../data/dwpose_service.dart';
+import '../data/full_outfit_collage_splitter.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
-import '../data/replication_asset_view_selection_service.dart';
 import '../data/replication_frame_analysis_service.dart';
 import '../data/replication_generation_review_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
@@ -47,6 +47,7 @@ import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
 import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
+import '../domain/full_outfit_view_policy.dart';
 import '../domain/nano_banana_asset_manifest.dart';
 import '../domain/nano_banana_replication_prompt_compiler.dart';
 import '../domain/replicate_models.dart';
@@ -193,7 +194,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     VisionStoryboardService? visionService,
     ReplicationFrameAnalysisService? frameAnalysisService,
     ReplicationGenerationReviewService? generationReviewService,
-    ReplicationAssetViewSelectionService? assetViewSelectionService,
+    FullOutfitCollageSplitter fullOutfitCollageSplitter =
+        const FullOutfitCollageSplitter(),
     DwPoseModelManager? dwPoseModelManager,
     DwPoseService? dwPoseService,
     H3PromptWritingService h3PromptWritingService =
@@ -216,6 +218,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _ownsImageGenerationService = imageGenerationService == null,
        _visionService = visionService ?? VisionStoryboardService(),
        _ownsVisionService = visionService == null,
+       _fullOutfitCollageSplitter = fullOutfitCollageSplitter,
        _h3PromptWritingService = h3PromptWritingService,
        _freeCreationPromptWritingService = freeCreationPromptWritingService,
        _h3SkillLibrary = h3SkillLibrary ?? BundledH3SkillLibrary(),
@@ -260,6 +263,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsVisionService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
+  final FullOutfitCollageSplitter _fullOutfitCollageSplitter;
   late final DwPoseModelManager _dwPoseModelManager;
   late final DwPoseService _dwPoseService;
   late final bool _ownsDwPoseService;
@@ -681,6 +685,21 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   ) {
     final guide = _repository.getShotGuide(shotId);
     if (guide == null) return;
+    final subject = guide.subjects
+        .where((candidate) => candidate.id == subjectId)
+        .firstOrNull;
+    if (subject != null &&
+        decision != ReplicateSubjectDecision.replace &&
+        guide.wearableProductLinks.any(
+          (link) =>
+              link.linked &&
+              (subject.type == ReplicateSubjectType.person
+                  ? link.personSlotIndex == subject.slotIndex
+                  : link.productSlotIndex == subject.slotIndex),
+        )) {
+      value = value.copyWith(errorMessage: '该主体仍与完整穿搭联动，请先确认并解除联动后再修改处理方式');
+      return;
+    }
     final subjects = [
       for (final subject in guide.subjects)
         if (subject.id == subjectId)
@@ -701,10 +720,299 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         .where((subject) => subject.id != subjectId)
         .toList(growable: false);
     if (subjects.length == guide.subjects.length) return;
+    final removed = guide.subjects
+        .where((subject) => subject.id == subjectId)
+        .firstOrNull;
+    final fullOutfitAssets = removed?.type == ReplicateSubjectType.person
+        ? guide.fullOutfitAssets
+              .where((asset) => asset.personSlotIndex != removed!.slotIndex)
+              .toList(growable: false)
+        : guide.fullOutfitAssets;
+    final wearableProductLinks = removed == null
+        ? guide.wearableProductLinks
+        : guide.wearableProductLinks
+              .where(
+                (link) => removed.type == ReplicateSubjectType.person
+                    ? link.personSlotIndex != removed.slotIndex
+                    : link.productSlotIndex != removed.slotIndex,
+              )
+              .toList(growable: false);
     _repository.upsertShotGuide(
-      guide.copyWith(subjects: subjects, updatedAt: DateTime.now().toUtc()),
+      guide.copyWith(
+        subjects: subjects,
+        fullOutfitAssets: fullOutfitAssets,
+        wearableProductLinks: wearableProductLinks,
+        updatedAt: DateTime.now().toUtc(),
+      ),
     );
     _reloadShotGuides(value.selectedScriptId);
+  }
+
+  ReplicateFullOutfitAsset? fullOutfitAssetFor(
+    String shotId,
+    int personSlotIndex,
+  ) => _repository
+      .getShotGuide(shotId)
+      ?.fullOutfitAssets
+      .where((asset) => asset.personSlotIndex == personSlotIndex)
+      .firstOrNull;
+
+  void setFullOutfitView({
+    required String shotId,
+    required int personSlotIndex,
+    required ReplicateOutfitViewRole role,
+    required String scriptAssetId,
+    String subjectDirection = '',
+  }) {
+    final guide = _repository.getShotGuide(shotId);
+    if (guide == null || scriptAssetId.trim().isEmpty) return;
+    final outfitId = 'full-outfit:$personSlotIndex';
+    final existing = guide.fullOutfitAssets
+        .where((asset) => asset.personSlotIndex == personSlotIndex)
+        .firstOrNull;
+    final view = ReplicateFullOutfitView(
+      id: '$outfitId:${role.name}',
+      scriptAssetId: scriptAssetId,
+      role: role,
+      order: role.index,
+    );
+    final views = [
+      for (final candidate
+          in existing?.views ?? const <ReplicateFullOutfitView>[])
+        if (candidate.role != role) candidate,
+      view,
+    ]..sort((a, b) => a.order.compareTo(b.order));
+    final inferredPrimaryViewId = FullOutfitViewPolicy.selectPrimaryViewId(
+      views: views,
+      subjectDirection: subjectDirection,
+    );
+    final keepManualPrimary =
+        existing?.primaryViewManuallySelected == true &&
+        views.any((candidate) => candidate.id == existing?.primaryViewId);
+    final updated = ReplicateFullOutfitAsset(
+      id: existing?.id ?? outfitId,
+      personSlotIndex: personSlotIndex,
+      name:
+          existing?.name ??
+          '模特${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}完整穿搭',
+      views: views,
+      primaryViewId: keepManualPrimary
+          ? existing!.primaryViewId
+          : inferredPrimaryViewId,
+      primaryViewManuallySelected: keepManualPrimary,
+      enabled: existing?.enabled ?? true,
+    );
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        fullOutfitAssets: [
+          for (final asset in guide.fullOutfitAssets)
+            if (asset.personSlotIndex != personSlotIndex) asset,
+          updated,
+        ],
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
+
+  void removeFullOutfitView({
+    required String shotId,
+    required int personSlotIndex,
+    required ReplicateOutfitViewRole role,
+  }) {
+    final guide = _repository.getShotGuide(shotId);
+    final existing = guide?.fullOutfitAssets
+        .where((asset) => asset.personSlotIndex == personSlotIndex)
+        .firstOrNull;
+    if (guide == null || existing == null) return;
+    final views = existing.views
+        .where((view) => view.role != role)
+        .toList(growable: false);
+    final removedPrimary = existing.primaryView?.role == role;
+    final updatedAssets = [
+      for (final asset in guide.fullOutfitAssets)
+        if (asset.personSlotIndex != personSlotIndex)
+          asset
+        else if (views.isNotEmpty)
+          asset.copyWith(
+            views: views,
+            primaryViewId: removedPrimary ? '' : asset.primaryViewId,
+            primaryViewManuallySelected: removedPrimary
+                ? false
+                : asset.primaryViewManuallySelected,
+          ),
+    ];
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        fullOutfitAssets: updatedAssets,
+        wearableProductLinks: views.length < 3
+            ? guide.wearableProductLinks
+                  .where((link) => link.personSlotIndex != personSlotIndex)
+                  .toList(growable: false)
+            : guide.wearableProductLinks,
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
+
+  void setFullOutfitPrimaryView({
+    required String shotId,
+    required int personSlotIndex,
+    required String viewId,
+  }) {
+    final guide = _repository.getShotGuide(shotId);
+    final existing = guide?.fullOutfitAssets
+        .where((asset) => asset.personSlotIndex == personSlotIndex)
+        .firstOrNull;
+    if (guide == null ||
+        existing == null ||
+        !existing.views.any((view) => view.id == viewId)) {
+      return;
+    }
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        fullOutfitAssets: [
+          for (final asset in guide.fullOutfitAssets)
+            asset.personSlotIndex == personSlotIndex
+                ? asset.copyWith(
+                    primaryViewId: viewId,
+                    primaryViewManuallySelected: true,
+                  )
+                : asset,
+        ],
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
+
+  bool setWearableProductLinked({
+    required String shotId,
+    required int slotIndex,
+    required bool linked,
+  }) {
+    final guide = _repository.getShotGuide(shotId);
+    if (guide == null) return false;
+    final remaining = guide.wearableProductLinks
+        .where(
+          (item) =>
+              item.personSlotIndex != slotIndex &&
+              item.productSlotIndex != slotIndex,
+        )
+        .toList(growable: true);
+    if (linked) {
+      final outfit = guide.fullOutfitAssets
+          .where((asset) => asset.personSlotIndex == slotIndex)
+          .firstOrNull;
+      final person = guide.subjects
+          .where(
+            (subject) =>
+                subject.type == ReplicateSubjectType.person &&
+                subject.slotIndex == slotIndex,
+          )
+          .firstOrNull;
+      final product = guide.subjects
+          .where(
+            (subject) =>
+                subject.type == ReplicateSubjectType.product &&
+                subject.slotIndex == slotIndex,
+          )
+          .firstOrNull;
+      if (outfit == null ||
+          !outfit.hasIndependentThreeViewSet ||
+          outfit.primaryView == null ||
+          person?.decision != ReplicateSubjectDecision.replace ||
+          product?.decision != ReplicateSubjectDecision.replace) {
+        value = value.copyWith(errorMessage: '完整三视图、主视图以及同槽人物/产品“替换”状态齐全后才能联动');
+        return false;
+      }
+      remaining.add(
+        ReplicateWearableProductLink(
+          personSlotIndex: slotIndex,
+          productSlotIndex: slotIndex,
+          fullOutfitAssetId: outfit.id,
+        ),
+      );
+    }
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        wearableProductLinks: remaining,
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    _reloadShotGuides(
+      value.selectedScriptId,
+      message: linked ? '已联动同槽模特与穿戴产品' : '已解除完整穿搭产品联动',
+    );
+    return true;
+  }
+
+  Future<bool> splitFullOutfitCollage({
+    required String shotId,
+    required int personSlotIndex,
+    required String sourceScriptAssetId,
+    String subjectDirection = '',
+  }) async {
+    final bindingController = _assetBindingController;
+    final source = bindingController?.value.assetById(sourceScriptAssetId);
+    final scriptId = value.selectedScriptId;
+    if (bindingController == null || source == null || scriptId.isEmpty) {
+      value = value.copyWith(errorMessage: '请先为模特槽绑定横向三视图拼图');
+      return false;
+    }
+    try {
+      final outputDirectory = Directory(
+        p.join(
+          _directories.analyses.path,
+          'full_outfit_views',
+          _safeFileName(scriptId),
+          _safeFileName(shotId),
+        ),
+      );
+      final splitViews = await _fullOutfitCollageSplitter
+          .splitHorizontalThreeView(
+            source: File(source.path),
+            outputDirectory: outputDirectory,
+            outputStem: 'model_${personSlotIndex + 1}',
+          );
+      for (final splitView in splitViews) {
+        final roleLabel = switch (splitView.role) {
+          ReplicateOutfitViewRole.front => '正面',
+          ReplicateOutfitViewRole.side => '侧面',
+          ReplicateOutfitViewRole.back => '背面',
+          ReplicateOutfitViewRole.other => '其他',
+        };
+        final asset = bindingController.registerDerivedAssetToShot(
+          shotId: shotId,
+          path: splitView.path,
+          name: '${source.name} · $roleLabel',
+          description: '由横向完整穿搭三视图本地拆分；默认顺序为正面、侧面、背面',
+          type: ReplicateAssetType.character,
+          slotSortOrder: ScriptAssetPresetSlot.character(
+            personSlotIndex,
+          ).sortOrder,
+          slotLabel:
+              '模特${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}完整穿搭$roleLabel',
+        );
+        if (asset == null) throw StateError('无法保存$roleLabel拆分资产');
+        setFullOutfitView(
+          shotId: shotId,
+          personSlotIndex: personSlotIndex,
+          role: splitView.role,
+          scriptAssetId: asset.id,
+          subjectDirection: subjectDirection,
+        );
+      }
+      value = value.copyWith(
+        message: '横向三视图已在本地拆为正面、侧面和背面，请复核角色与主视图',
+        errorMessage: '',
+      );
+      return true;
+    } catch (error) {
+      value = value.copyWith(errorMessage: '$error');
+      return false;
+    }
   }
 
   void addManualPreservedElement(String shotId, String label) {

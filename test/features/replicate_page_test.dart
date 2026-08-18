@@ -1392,6 +1392,211 @@ void main() {
     );
   });
 
+  testWidgets('完整穿搭联动显示在产品槽且改为保留前必须确认解除', (tester) async {
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    late final Directory root;
+    late final AppDirectories directories;
+    late final AppDatabase database;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('full_outfit_link_page_');
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+    });
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '完整穿搭联动页面测试');
+    final shot = shootingController.addShot()!;
+    final originalFrame = File('assets/branding/app_icon_512.png').absolute;
+    shootingController.updateShot(
+      shot.copyWith(content: '模特 A 穿着产品 A', framePath: originalFrame.path),
+    );
+    final repository = ReplicateRepository(database);
+    final now = DateTime.now().toUtc();
+    repository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        sourceFrameFingerprint: sha256
+            .convert(originalFrame.readAsBytesSync())
+            .toString(),
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '模特 A',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '产品 A',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+        ],
+        fullOutfitAssets: const [
+          ReplicateFullOutfitAsset(
+            id: 'full-outfit:0',
+            personSlotIndex: 0,
+            name: '模特 A 完整穿搭',
+            primaryViewId: 'full-outfit:0:side',
+            views: [
+              ReplicateFullOutfitView(
+                id: 'full-outfit:0:front',
+                scriptAssetId: 'asset-front',
+                role: ReplicateOutfitViewRole.front,
+              ),
+              ReplicateFullOutfitView(
+                id: 'full-outfit:0:side',
+                scriptAssetId: 'asset-side',
+                role: ReplicateOutfitViewRole.side,
+              ),
+              ReplicateFullOutfitView(
+                id: 'full-outfit:0:back',
+                scriptAssetId: 'asset-back',
+                role: ReplicateOutfitViewRole.back,
+              ),
+            ],
+          ),
+        ],
+        wearableProductLinks: const [
+          ReplicateWearableProductLink(
+            personSlotIndex: 0,
+            productSlotIndex: 0,
+            fullOutfitAssetId: 'full-outfit:0',
+          ),
+        ],
+        analysisStatus: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final replicateController = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    )..moveToStep(ReplicateStep.prepareAssets);
+    final analysisController = ShootingScriptAnalysisController(
+      shootingScriptController: shootingController,
+      repository: workflowRepository,
+      settingsController: settingsController,
+    );
+    final libraryController = ShootingAssetLibraryController(
+      repository: ShootingAssetLibraryRepository(
+        database: database,
+        directories: directories,
+      ),
+      directories: directories,
+    );
+    final bindingController = ShootingScriptAssetBindingController(
+      shootingScriptController: shootingController,
+      libraryController: libraryController,
+      repository: workflowRepository,
+      settingsController: settingsController,
+    );
+    final videoGenerationController = VideoGenerationController(
+      repository: VideoGenerationRepository(database),
+      videoRepository: VideoAnalysisRepository(database),
+      shootingScriptController: shootingController,
+      replicateController: replicateController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      videoGenerationController.dispose();
+      bindingController.dispose();
+      libraryController.dispose();
+      analysisController.dispose();
+      replicateController.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appDatabaseProvider.overrideWithValue(database),
+          settingsControllerProvider.overrideWithValue(settingsController),
+          replicateControllerProvider.overrideWithValue(replicateController),
+          videoGenerationControllerProvider.overrideWithValue(
+            videoGenerationController,
+          ),
+          scriptAnalysisControllerProvider.overrideWithValue(
+            analysisController,
+          ),
+          shootingAssetLibraryControllerProvider.overrideWithValue(
+            libraryController,
+          ),
+          scriptAssetBindingControllerProvider.overrideWithValue(
+            bindingController,
+          ),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.dark(),
+          home: const Scaffold(body: ReplicatePage()),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 220));
+
+    expect(
+      find.byKey(const ValueKey('full-outfit-panel-shot-placeholder')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(ValueKey('full-outfit-panel-${shot.id}-0')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('随模特A完整造型联动替换'), findsOneWidget);
+
+    final decision = find.byKey(
+      ValueKey('replicate-subject-decision-${shot.id}-product:0'),
+    );
+    await tester.scrollUntilVisible(
+      decision,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(
+        of: decision,
+        matching: find.byType(DropdownButton<ReplicateSubjectDecision>),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保留（沿用原视频帧）').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('解除完整穿搭联动？'), findsOneWidget);
+    expect(
+      repository.getShotGuide(shot.id)?.subjects.last.decision,
+      ReplicateSubjectDecision.replace,
+    );
+    await tester.tap(
+      find.byKey(ValueKey('confirm-unlink-full-outfit-${shot.id}-product:0')),
+    );
+    await tester.pumpAndSettle();
+
+    final restored = repository.getShotGuide(shot.id)!;
+    expect(restored.wearableProductLinks, isEmpty);
+    expect(restored.subjects.last.decision, ReplicateSubjectDecision.keep);
+  });
+
   testWidgets('准备资产步骤改为匹配资产图并移除全局规则入口', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
@@ -1785,11 +1990,16 @@ void main() {
     );
     expect(productBLink.matchReason, contains('产品B'));
 
-    await tester.tap(
-      find.byKey(
-        ValueKey('remove-detected-subject-asset-slot-${shot.id}-product:1'),
-      ),
+    final removeProductB = find.byKey(
+      ValueKey('remove-detected-subject-asset-slot-${shot.id}-product:1'),
     );
+    await tester.scrollUntilVisible(
+      removeProductB,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+    await tester.tap(removeProductB);
     await tester.pump();
     expect(productBSlot, findsNothing);
     expect(

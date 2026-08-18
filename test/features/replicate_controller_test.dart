@@ -17,6 +17,9 @@ import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
 import 'package:filmstoryboard/features/settings/domain/video_generation_api_config.dart';
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
+import 'package:filmstoryboard/features/shooting_script/application/script_asset_binding_controller.dart';
+import 'package:filmstoryboard/features/shooting_script/application/shooting_asset_library_controller.dart';
+import 'package:filmstoryboard/features/shooting_script/data/shooting_asset_library_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/script_asset_slot_policy.dart';
@@ -215,6 +218,267 @@ void main() {
     expect(analysisService.previousSelections.last, isEmpty);
     expect(analysisService.previousSubjects.last, isEmpty);
     expect(controller.isShotGuideCurrent(shot.id), isTrue);
+  });
+
+  test('完整穿搭三视图按原帧朝向选主视图并保护同槽产品联动', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_full_outfit_controller_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '完整穿搭控制器测试');
+    final shot = shootingController.addShot()!;
+    final repository = ReplicateRepository(database);
+    final now = DateTime.now().toUtc();
+    repository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '模特 A',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '产品 A',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+        ],
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    for (final entry in const [
+      (ReplicateOutfitViewRole.front, 'asset-front'),
+      (ReplicateOutfitViewRole.side, 'asset-side'),
+      (ReplicateOutfitViewRole.back, 'asset-back'),
+    ]) {
+      controller.setFullOutfitView(
+        shotId: shot.id,
+        personSlotIndex: 0,
+        role: entry.$1,
+        scriptAssetId: entry.$2,
+        subjectDirection: '身体面向画面右侧',
+      );
+    }
+
+    var guide = repository.getShotGuide(shot.id)!;
+    expect(guide.fullOutfitAssets.single.hasIndependentThreeViewSet, isTrue);
+    expect(
+      guide.fullOutfitAssets.single.primaryView?.role,
+      ReplicateOutfitViewRole.side,
+    );
+    expect(guide.fullOutfitAssets.single.primaryViewManuallySelected, isFalse);
+
+    controller.setFullOutfitPrimaryView(
+      shotId: shot.id,
+      personSlotIndex: 0,
+      viewId: 'full-outfit:0:back',
+    );
+    expect(
+      repository
+          .getShotGuide(shot.id)
+          ?.fullOutfitAssets
+          .single
+          .primaryViewManuallySelected,
+      isTrue,
+    );
+    expect(
+      controller.setWearableProductLinked(
+        shotId: shot.id,
+        slotIndex: 0,
+        linked: true,
+      ),
+      isTrue,
+    );
+
+    controller.setDetectedSubjectDecision(
+      shot.id,
+      'product:0',
+      ReplicateSubjectDecision.keep,
+    );
+    guide = repository.getShotGuide(shot.id)!;
+    expect(
+      guide.subjects.last.decision,
+      ReplicateSubjectDecision.replace,
+      reason: '联动未确认解除前，控制器层必须拒绝静默改为保留',
+    );
+    expect(controller.value.errorMessage, contains('请先确认并解除联动'));
+
+    expect(
+      controller.setWearableProductLinked(
+        shotId: shot.id,
+        slotIndex: 0,
+        linked: false,
+      ),
+      isTrue,
+    );
+    controller.setDetectedSubjectDecision(
+      shot.id,
+      'product:0',
+      ReplicateSubjectDecision.keep,
+    );
+    expect(
+      repository.getShotGuide(shot.id)?.subjects.last.decision,
+      ReplicateSubjectDecision.keep,
+    );
+  });
+
+  test('横向三视图本地拆分后注册三个独立脚本资产', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_full_outfit_split_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '三视图本地拆分测试');
+    final shot = shootingController.addShot()!;
+    final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final libraryController = ShootingAssetLibraryController(
+      repository: ShootingAssetLibraryRepository(
+        database: database,
+        directories: directories,
+      ),
+      directories: directories,
+    );
+    final bindingController = ShootingScriptAssetBindingController(
+      shootingScriptController: shootingController,
+      libraryController: libraryController,
+      repository: workflowRepository,
+      settingsController: settingsController,
+    );
+    final collage = File(p.join(root.path, 'model-a-three-view.png'));
+    final image = img.Image(width: 300, height: 100);
+    for (var y = 0; y < image.height; y++) {
+      for (var x = 0; x < image.width; x++) {
+        image.setPixelRgb(x, y, x < 100 ? 255 : 0, x < 200 ? 255 : 0, 255);
+      }
+    }
+    await collage.writeAsBytes(img.encodePng(image));
+    final now = DateTime.now().toUtc();
+    workflowRepository.upsertScriptAsset(
+      ScriptAsset(
+        id: 'source-collage',
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.character,
+        name: '模特 A 横向三视图',
+        description: '正面、侧面、背面',
+        path: collage.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    workflowRepository.upsertLink(
+      ScriptShotAssetLink(
+        shotId: shot.id,
+        scriptAssetId: 'source-collage',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试横向三视图',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.characterSortOrderBase,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    final repository = ReplicateRepository(database);
+    repository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '模特 A',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+        ],
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    bindingController.refresh();
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      workflowRepository: workflowRepository,
+      assetBindingController: bindingController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      bindingController.dispose();
+      libraryController.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    expect(
+      await controller.splitFullOutfitCollage(
+        shotId: shot.id,
+        personSlotIndex: 0,
+        sourceScriptAssetId: 'source-collage',
+        subjectDirection: '人物侧身朝右',
+      ),
+      isTrue,
+    );
+
+    final outfit = repository.getShotGuide(shot.id)!.fullOutfitAssets.single;
+    expect(outfit.hasIndependentThreeViewSet, isTrue);
+    expect(outfit.primaryView?.role, ReplicateOutfitViewRole.side);
+    expect(
+      outfit.views.map((view) => view.scriptAssetId).toSet(),
+      hasLength(3),
+    );
+    expect(workflowRepository.listScriptAssets(shot.scriptId), hasLength(4));
+    expect(workflowRepository.listLinksForShot(shot.id), hasLength(4));
+    for (final view in outfit.views) {
+      final asset = workflowRepository
+          .listScriptAssets(shot.scriptId)
+          .singleWhere((item) => item.id == view.scriptAssetId);
+      expect(File(asset.path).existsSync(), isTrue);
+    }
   });
 
   test('移除动作骨架会清空提交状态并只删除项目内生成文件', () async {

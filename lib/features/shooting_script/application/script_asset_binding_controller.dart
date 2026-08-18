@@ -141,7 +141,7 @@ class ShootingScriptAssetBindingController
     );
   }
 
-  Future<void> addLibraryAssetToShot(
+  Future<ScriptAsset?> addLibraryAssetToShot(
     ShootingAssetLibraryItem item,
     String shotId, {
     int? slotSortOrder,
@@ -153,7 +153,7 @@ class ShootingScriptAssetBindingController
     slotLabel: slotLabel,
   );
 
-  Future<void> replaceLibraryAssetOnShot(
+  Future<ScriptAsset?> replaceLibraryAssetOnShot(
     ShootingAssetLibraryItem item,
     String shotId, {
     String? replaceScriptAssetId,
@@ -167,7 +167,7 @@ class ShootingScriptAssetBindingController
     slotLabel: slotLabel,
   );
 
-  Future<void> addStepAssetToShot(
+  Future<ScriptAsset?> addStepAssetToShot(
     ReplicateAsset item,
     String shotId, {
     String? replaceScriptAssetId,
@@ -181,7 +181,7 @@ class ShootingScriptAssetBindingController
     slotLabel: slotLabel,
   );
 
-  Future<void> _bindAssetToShot(
+  Future<ScriptAsset?> _bindAssetToShot(
     ShootingAssetLibraryItem item,
     String shotId, {
     String? replaceScriptAssetId,
@@ -194,7 +194,7 @@ class ShootingScriptAssetBindingController
           (shot) => shot.id == shotId,
         )) {
       value = value.copyWith(errorMessage: '请先选择有效的拍摄脚本和镜头');
-      return;
+      return null;
     }
     final asset = _ensureScriptAsset(script.id, item);
     final links = value.linksForShot(shotId);
@@ -245,6 +245,57 @@ class ShootingScriptAssetBindingController
           ? '已将“${item.name}”绑定到镜头'
           : '已将“${item.name}”替换到镜头',
     );
+    return asset;
+  }
+
+  ScriptAsset? registerDerivedAssetToShot({
+    required String shotId,
+    required String path,
+    required String name,
+    required String description,
+    required ReplicateAssetType type,
+    required int slotSortOrder,
+    required String slotLabel,
+  }) {
+    final script = _shootingScriptController.value.selectedScript;
+    if (script == null ||
+        path.trim().isEmpty ||
+        !_shootingScriptController.value.shots.any(
+          (shot) => shot.id == shotId,
+        )) {
+      value = value.copyWith(errorMessage: '无法注册完整穿搭拆分资产');
+      return null;
+    }
+    final now = DateTime.now().toUtc();
+    final asset = ScriptAsset(
+      id: _uuid.v4(),
+      scriptId: script.id,
+      type: type,
+      name: name,
+      description: description,
+      path: path,
+      referenceNumber: _nextReferenceNumber(type),
+      status: ProcessingStatus.completed,
+      createdAt: now,
+      updatedAt: now,
+    );
+    _repository.upsertScriptAsset(asset);
+    _repository.upsertLink(
+      ScriptShotAssetLink(
+        shotId: shotId,
+        scriptAssetId: asset.id,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '用户将横向三视图拆分并绑定至“$slotLabel”',
+        confirmed: true,
+        locked: true,
+        sortOrder: slotSortOrder,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    refresh();
+    return asset;
   }
 
   void removeAssetFromShot(String shotId, String scriptAssetId) {
