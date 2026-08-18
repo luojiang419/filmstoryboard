@@ -74,6 +74,78 @@ void main() {
     );
   });
 
+  test('完整穿搭只接管联动槽且其他模特产品仍保持独立权威', () {
+    const context = ReplicationAuthorityContext(
+      fullOutfitProductSlotByPersonSlot: {1: 2},
+      productDetailSlots: {0},
+    );
+
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personIdentity,
+        context: context,
+        slotIndex: 1,
+      ),
+      ReplicationAuthoritySource.fullOutfitAsset,
+    );
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personWardrobeAppearance,
+        context: context,
+        slotIndex: 1,
+      ),
+      ReplicationAuthoritySource.fullOutfitAsset,
+    );
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.productStructure,
+        context: context,
+        slotIndex: 2,
+      ),
+      ReplicationAuthoritySource.fullOutfitAsset,
+    );
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personIdentity,
+        context: context,
+        slotIndex: 0,
+      ),
+      ReplicationAuthoritySource.modelAsset,
+    );
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.productLocalDetail,
+        context: context,
+        slotIndex: 0,
+      ),
+      ReplicationAuthoritySource.productDetailAsset,
+    );
+  });
+
+  test('解除完整穿搭联动后同槽独立产品恢复穿搭外观权威', () {
+    const context = ReplicationAuthorityContext(
+      fullOutfitPersonSlots: {0},
+      wearableProductSlots: {0},
+    );
+
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personIdentity,
+        context: context,
+        slotIndex: 0,
+      ),
+      ReplicationAuthoritySource.fullOutfitAsset,
+    );
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personWardrobeAppearance,
+        context: context,
+        slotIndex: 0,
+      ),
+      ReplicationAuthoritySource.productAsset,
+    );
+  });
+
   test('原帧元素只有勾选后才获得外观与接触关系权限', () {
     expect(
       ReplicationAuthorityPolicy.authorityFor(

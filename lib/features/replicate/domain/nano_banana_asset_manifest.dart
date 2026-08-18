@@ -2,7 +2,23 @@ import 'dart:collection';
 
 import 'replication_authority_policy.dart';
 
-enum NanoBananaAssetKind { sourceFrame, model, product, productDetail, scene }
+enum NanoBananaAssetKind {
+  sourceFrame,
+  model,
+  fullOutfit,
+  product,
+  productDetail,
+  scene,
+}
+
+enum NanoBananaAssetViewRole {
+  primary,
+  front,
+  side,
+  back,
+  detail,
+  supplemental,
+}
 
 class NanoBananaAssetInput {
   const NanoBananaAssetInput._({
@@ -10,7 +26,10 @@ class NanoBananaAssetInput {
     required this.path,
     required this.kind,
     required this.slotIndex,
+    required this.linkedProductSlotIndex,
     required this.viewOrder,
+    required this.viewRole,
+    required this.isPrimaryView,
   });
 
   const NanoBananaAssetInput.model({
@@ -18,12 +37,36 @@ class NanoBananaAssetInput {
     required String path,
     required int slotIndex,
     int viewOrder = 0,
+    NanoBananaAssetViewRole? viewRole,
+    bool? isPrimaryView,
   }) : this._(
          assetId: assetId,
          path: path,
          kind: NanoBananaAssetKind.model,
          slotIndex: slotIndex,
+         linkedProductSlotIndex: null,
          viewOrder: viewOrder,
+         viewRole: viewRole,
+         isPrimaryView: isPrimaryView,
+       );
+
+  const NanoBananaAssetInput.fullOutfit({
+    required String assetId,
+    required String path,
+    required int personSlotIndex,
+    int? productSlotIndex,
+    required int viewOrder,
+    required NanoBananaAssetViewRole viewRole,
+    required bool isPrimaryView,
+  }) : this._(
+         assetId: assetId,
+         path: path,
+         kind: NanoBananaAssetKind.fullOutfit,
+         slotIndex: personSlotIndex,
+         linkedProductSlotIndex: productSlotIndex,
+         viewOrder: viewOrder,
+         viewRole: viewRole,
+         isPrimaryView: isPrimaryView,
        );
 
   const NanoBananaAssetInput.product({
@@ -31,12 +74,17 @@ class NanoBananaAssetInput {
     required String path,
     required int slotIndex,
     int viewOrder = 0,
+    NanoBananaAssetViewRole? viewRole,
+    bool? isPrimaryView,
   }) : this._(
          assetId: assetId,
          path: path,
          kind: NanoBananaAssetKind.product,
          slotIndex: slotIndex,
+         linkedProductSlotIndex: null,
          viewOrder: viewOrder,
+         viewRole: viewRole,
+         isPrimaryView: isPrimaryView,
        );
 
   const NanoBananaAssetInput.productDetail({
@@ -49,7 +97,10 @@ class NanoBananaAssetInput {
          path: path,
          kind: NanoBananaAssetKind.productDetail,
          slotIndex: productSlotIndex,
+         linkedProductSlotIndex: null,
          viewOrder: viewOrder,
+         viewRole: NanoBananaAssetViewRole.detail,
+         isPrimaryView: false,
        );
 
   const NanoBananaAssetInput.scene({
@@ -61,14 +112,22 @@ class NanoBananaAssetInput {
          path: path,
          kind: NanoBananaAssetKind.scene,
          slotIndex: null,
+         linkedProductSlotIndex: null,
          viewOrder: viewOrder,
+         viewRole: viewOrder == 0
+             ? NanoBananaAssetViewRole.primary
+             : NanoBananaAssetViewRole.supplemental,
+         isPrimaryView: viewOrder == 0,
        );
 
   final String assetId;
   final String path;
   final NanoBananaAssetKind kind;
   final int? slotIndex;
+  final int? linkedProductSlotIndex;
   final int viewOrder;
+  final NanoBananaAssetViewRole? viewRole;
+  final bool? isPrimaryView;
 }
 
 class NanoBananaAssetEntry {
@@ -79,7 +138,10 @@ class NanoBananaAssetEntry {
     required this.kind,
     required this.authoritySource,
     required this.slotIndex,
+    required this.linkedProductSlotIndex,
     required this.viewOrder,
+    required this.viewRole,
+    required this.isPrimaryView,
   });
 
   final int imageNumber;
@@ -88,7 +150,10 @@ class NanoBananaAssetEntry {
   final NanoBananaAssetKind kind;
   final ReplicationAuthoritySource authoritySource;
   final int? slotIndex;
+  final int? linkedProductSlotIndex;
   final int viewOrder;
+  final NanoBananaAssetViewRole viewRole;
+  final bool isPrimaryView;
 
   String get imageLabel => '图片$imageNumber';
 }
@@ -101,6 +166,7 @@ class NanoBananaAssetManifest {
     required String sourceFrameId,
     required String sourceFramePath,
     Iterable<NanoBananaAssetInput> modelAssets = const [],
+    Iterable<NanoBananaAssetInput> fullOutfitAssets = const [],
     Iterable<NanoBananaAssetInput> productAssets = const [],
     Iterable<NanoBananaAssetInput> productDetailAssets = const [],
     Iterable<NanoBananaAssetInput> sceneAssets = const [],
@@ -113,6 +179,7 @@ class NanoBananaAssetManifest {
 
     final inputs = [
       ...modelAssets,
+      ...fullOutfitAssets,
       ...productAssets,
       ...productDetailAssets,
       ...sceneAssets,
@@ -120,11 +187,12 @@ class NanoBananaAssetManifest {
     _validateInputs(inputs, sourceFrameId: sourceId);
 
     final models = _sorted(inputs, NanoBananaAssetKind.model);
+    final fullOutfits = _sorted(inputs, NanoBananaAssetKind.fullOutfit);
     final products = _sorted(inputs, NanoBananaAssetKind.product);
     final details = _sorted(inputs, NanoBananaAssetKind.productDetail);
     final scenes = _sorted(inputs, NanoBananaAssetKind.scene);
     final slotIndexes = {
-      for (final input in [...models, ...products, ...details])
+      for (final input in [...models, ...fullOutfits, ...products, ...details])
         input.slotIndex!,
     }.toList()..sort();
 
@@ -132,6 +200,7 @@ class NanoBananaAssetManifest {
     for (final slotIndex in slotIndexes) {
       ordered
         ..addAll(models.where((input) => input.slotIndex == slotIndex))
+        ..addAll(fullOutfits.where((input) => input.slotIndex == slotIndex))
         ..addAll(products.where((input) => input.slotIndex == slotIndex))
         ..addAll(details.where((input) => input.slotIndex == slotIndex));
     }
@@ -145,7 +214,10 @@ class NanoBananaAssetManifest {
         kind: NanoBananaAssetKind.sourceFrame,
         authoritySource: ReplicationAuthoritySource.sourceFrame,
         slotIndex: null,
+        linkedProductSlotIndex: null,
         viewOrder: 0,
+        viewRole: NanoBananaAssetViewRole.primary,
+        isPrimaryView: true,
       ),
     ];
     for (final input in ordered) {
@@ -157,7 +229,14 @@ class NanoBananaAssetManifest {
           kind: input.kind,
           authoritySource: _authoritySourceFor(input.kind),
           slotIndex: input.slotIndex,
+          linkedProductSlotIndex: input.linkedProductSlotIndex,
           viewOrder: input.viewOrder,
+          viewRole:
+              input.viewRole ??
+              (input.viewOrder == 0
+                  ? NanoBananaAssetViewRole.primary
+                  : NanoBananaAssetViewRole.supplemental),
+          isPrimaryView: input.isPrimaryView ?? input.viewOrder == 0,
         ),
       );
     }
@@ -186,6 +265,14 @@ class NanoBananaAssetManifest {
       ]..sort((left, right) {
         final slotOrder = (left.slotIndex ?? 0).compareTo(right.slotIndex ?? 0);
         if (slotOrder != 0) return slotOrder;
+        final leftPrimaryOrder = (left.isPrimaryView ?? left.viewOrder == 0)
+            ? 0
+            : 1;
+        final rightPrimaryOrder = (right.isPrimaryView ?? right.viewOrder == 0)
+            ? 0
+            : 1;
+        final primaryOrder = leftPrimaryOrder.compareTo(rightPrimaryOrder);
+        if (primaryOrder != 0) return primaryOrder;
         final viewOrder = left.viewOrder.compareTo(right.viewOrder);
         if (viewOrder != 0) return viewOrder;
         return left.assetId.compareTo(right.assetId);
@@ -195,7 +282,7 @@ class NanoBananaAssetManifest {
     List<NanoBananaAssetInput> inputs, {
     required String sourceFrameId,
   }) {
-    final identityByAssetId = <String, (NanoBananaAssetKind, int?)>{};
+    final identityByAssetId = <String, (NanoBananaAssetKind, int?, int?)>{};
     final viewKeys = <(NanoBananaAssetKind, int?, String, int)>{};
     final mainAssetIdsBySlot = <(NanoBananaAssetKind, int), Set<String>>{};
     final productSlots = <int>{};
@@ -225,7 +312,11 @@ class NanoBananaAssetManifest {
         throw ArgumentError('模特、产品和产品细节必须绑定非负槽位：$assetId');
       }
 
-      final identity = (input.kind, input.slotIndex);
+      final identity = (
+        input.kind,
+        input.slotIndex,
+        input.linkedProductSlotIndex,
+      );
       final previousIdentity = identityByAssetId[assetId];
       if (previousIdentity != null && previousIdentity != identity) {
         throw ArgumentError('同一资产 ID 不能跨角色或槽位使用：$assetId');
@@ -238,12 +329,18 @@ class NanoBananaAssetManifest {
       }
 
       if (input.kind == NanoBananaAssetKind.model ||
+          input.kind == NanoBananaAssetKind.fullOutfit ||
           input.kind == NanoBananaAssetKind.product) {
         final key = (input.kind, input.slotIndex!);
         mainAssetIdsBySlot.putIfAbsent(key, () => <String>{}).add(assetId);
       }
       if (input.kind == NanoBananaAssetKind.product) {
         productSlots.add(input.slotIndex!);
+      }
+      if (input.kind == NanoBananaAssetKind.fullOutfit &&
+          input.linkedProductSlotIndex != null &&
+          input.linkedProductSlotIndex! < 0) {
+        throw ArgumentError('完整穿搭资产绑定的产品槽位不能小于 0：$assetId');
       }
     }
 
@@ -254,6 +351,25 @@ class NanoBananaAssetManifest {
     }
     if (sceneAssetIds.length > 1) {
       throw ArgumentError('一次请求只能绑定一个逻辑场景资产');
+    }
+    final fullOutfitGroups = <String, List<NanoBananaAssetInput>>{};
+    for (final input in inputs.where(
+      (input) => input.kind == NanoBananaAssetKind.fullOutfit,
+    )) {
+      fullOutfitGroups.putIfAbsent(input.assetId.trim(), () => []).add(input);
+    }
+    for (final entry in fullOutfitGroups.entries) {
+      final views = entry.value;
+      final roles = views.map((view) => view.viewRole).toSet();
+      if (views.length != 3 ||
+          !roles.contains(NanoBananaAssetViewRole.front) ||
+          !roles.contains(NanoBananaAssetViewRole.side) ||
+          !roles.contains(NanoBananaAssetViewRole.back)) {
+        throw ArgumentError('完整穿搭资产必须提供互不重复的正面、侧面、背面三视图：${entry.key}');
+      }
+      if (views.where((view) => view.isPrimaryView == true).length != 1) {
+        throw ArgumentError('完整穿搭资产必须且只能指定一个主视图：${entry.key}');
+      }
     }
     for (final detail in inputs.where(
       (input) => input.kind == NanoBananaAssetKind.productDetail,
@@ -269,9 +385,118 @@ class NanoBananaAssetManifest {
   ) => switch (kind) {
     NanoBananaAssetKind.sourceFrame => ReplicationAuthoritySource.sourceFrame,
     NanoBananaAssetKind.model => ReplicationAuthoritySource.modelAsset,
+    NanoBananaAssetKind.fullOutfit =>
+      ReplicationAuthoritySource.fullOutfitAsset,
     NanoBananaAssetKind.product => ReplicationAuthoritySource.productAsset,
     NanoBananaAssetKind.productDetail =>
       ReplicationAuthoritySource.productDetailAsset,
     NanoBananaAssetKind.scene => ReplicationAuthoritySource.sceneAsset,
   };
+}
+
+class NanoBananaStructuralReference {
+  const NanoBananaStructuralReference({
+    required this.id,
+    required this.path,
+    required this.description,
+  });
+
+  final String id;
+  final String path;
+  final String description;
+}
+
+class NanoBananaFirstRoundImage {
+  const NanoBananaFirstRoundImage({
+    required this.imageNumber,
+    required this.path,
+    this.assetEntry,
+    this.structuralReference,
+  });
+
+  final int imageNumber;
+  final String path;
+  final NanoBananaAssetEntry? assetEntry;
+  final NanoBananaStructuralReference? structuralReference;
+
+  bool get isStructural => structuralReference != null;
+}
+
+class NanoBananaFirstRoundProtocol {
+  NanoBananaFirstRoundProtocol._({
+    required this.manifest,
+    required List<NanoBananaFirstRoundImage> images,
+  }) : images = UnmodifiableListView(images);
+
+  factory NanoBananaFirstRoundProtocol.build({
+    required NanoBananaAssetManifest manifest,
+    Iterable<NanoBananaStructuralReference> structuralReferences = const [],
+  }) {
+    if (manifest.entries.isEmpty ||
+        manifest.entries.first.kind != NanoBananaAssetKind.sourceFrame) {
+      throw ArgumentError('第一轮协议的图片1必须是原帧');
+    }
+    final structural = structuralReferences.toList(growable: false);
+    final images = <NanoBananaFirstRoundImage>[
+      NanoBananaFirstRoundImage(
+        imageNumber: 1,
+        path: manifest.entries.first.path,
+        assetEntry: manifest.entries.first,
+      ),
+      for (var index = 0; index < structural.length; index++)
+        NanoBananaFirstRoundImage(
+          imageNumber: index + 2,
+          path: structural[index].path.trim(),
+          structuralReference: structural[index],
+        ),
+      for (final entry in manifest.entries.skip(1))
+        NanoBananaFirstRoundImage(
+          imageNumber:
+              imagesLengthBeforeAssets(structural.length) +
+              entry.imageNumber -
+              1,
+          path: entry.path,
+          assetEntry: entry,
+        ),
+    ];
+    final identities = <String>{};
+    for (final image in images) {
+      if (image.path.trim().isEmpty) {
+        throw ArgumentError('第一轮协议的图片${image.imageNumber}路径不能为空');
+      }
+      final identity = image.path.trim().replaceAll('\\', '/').toLowerCase();
+      if (!identities.add(identity)) {
+        throw ArgumentError('第一轮协议不能重复提交同一路径：${image.path}');
+      }
+    }
+    return NanoBananaFirstRoundProtocol._(manifest: manifest, images: images);
+  }
+
+  final NanoBananaAssetManifest manifest;
+  final List<NanoBananaFirstRoundImage> images;
+
+  List<String> get inputPaths =>
+      UnmodifiableListView(images.map((image) => image.path));
+
+  NanoBananaFirstRoundImage imageForAsset(NanoBananaAssetEntry entry) =>
+      images.singleWhere((image) => identical(image.assetEntry, entry));
+
+  void validateSubmissionPaths(Iterable<String> submittedPaths) {
+    final actual = submittedPaths.toList(growable: false);
+    if (actual.length != images.length) {
+      throw StateError(
+        '第一轮提交图片数量与权威协议不一致：协议 ${images.length} 张，提交 ${actual.length} 张',
+      );
+    }
+    for (var index = 0; index < images.length; index++) {
+      if (actual[index] != images[index].path) {
+        throw StateError(
+          '第一轮提交图片${index + 1}与权威协议不一致：期望 ${images[index].path}，实际 ${actual[index]}',
+        );
+      }
+    }
+  }
+
+  static int imagesLengthBeforeAssets(int structuralCount) =>
+      1 + structuralCount;
 }

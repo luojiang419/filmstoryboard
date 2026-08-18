@@ -147,4 +147,113 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('完整穿搭以选定主视图优先并形成一次提交的三视图权威组', () {
+    final manifest = NanoBananaAssetManifest.build(
+      sourceFrameId: 'frame',
+      sourceFramePath: 'frame.png',
+      fullOutfitAssets: const [
+        NanoBananaAssetInput.fullOutfit(
+          assetId: 'outfit-a',
+          path: 'front.png',
+          personSlotIndex: 0,
+          productSlotIndex: 0,
+          viewOrder: 0,
+          viewRole: NanoBananaAssetViewRole.front,
+          isPrimaryView: false,
+        ),
+        NanoBananaAssetInput.fullOutfit(
+          assetId: 'outfit-a',
+          path: 'side.png',
+          personSlotIndex: 0,
+          productSlotIndex: 0,
+          viewOrder: 1,
+          viewRole: NanoBananaAssetViewRole.side,
+          isPrimaryView: false,
+        ),
+        NanoBananaAssetInput.fullOutfit(
+          assetId: 'outfit-a',
+          path: 'back.png',
+          personSlotIndex: 0,
+          productSlotIndex: 0,
+          viewOrder: 2,
+          viewRole: NanoBananaAssetViewRole.back,
+          isPrimaryView: true,
+        ),
+      ],
+    );
+
+    expect(manifest.inputPaths, [
+      'frame.png',
+      'back.png',
+      'front.png',
+      'side.png',
+    ]);
+    expect(manifest.image(2).isPrimaryView, isTrue);
+    expect(manifest.image(2).viewRole, NanoBananaAssetViewRole.back);
+    expect(manifest.entries.skip(1).map((entry) => entry.assetId).toSet(), {
+      'outfit-a',
+    });
+    expect(
+      manifest.image(2).authoritySource,
+      ReplicationAuthoritySource.fullOutfitAsset,
+    );
+  });
+
+  test('第一轮协议冻结骨架插入位置并在提交错序时阻断', () {
+    final manifest = NanoBananaAssetManifest.build(
+      sourceFrameId: 'frame',
+      sourceFramePath: 'frame.png',
+      modelAssets: const [
+        NanoBananaAssetInput.model(
+          assetId: 'model-a',
+          path: 'model.png',
+          slotIndex: 0,
+        ),
+      ],
+    );
+    final protocol = NanoBananaFirstRoundProtocol.build(
+      manifest: manifest,
+      structuralReferences: const [
+        NanoBananaStructuralReference(
+          id: 'pose',
+          path: 'pose.png',
+          description: 'DWPose 骨架',
+        ),
+      ],
+    );
+
+    expect(protocol.inputPaths, ['frame.png', 'pose.png', 'model.png']);
+    expect(protocol.imageForAsset(manifest.image(2)).imageNumber, 3);
+    expect(
+      () => protocol.validateSubmissionPaths([
+        'frame.png',
+        'model.png',
+        'pose.png',
+      ]),
+      throwsStateError,
+    );
+    protocol.validateSubmissionPaths(protocol.inputPaths);
+  });
+
+  test('完整穿搭缺视图或多主视图会在建协议前被拒绝', () {
+    expect(
+      () => NanoBananaAssetManifest.build(
+        sourceFrameId: 'frame',
+        sourceFramePath: 'frame.png',
+        fullOutfitAssets: const [
+          NanoBananaAssetInput.fullOutfit(
+            assetId: 'outfit-a',
+            path: 'front.png',
+            personSlotIndex: 0,
+            productSlotIndex: 0,
+            viewOrder: 0,
+            viewRole: NanoBananaAssetViewRole.front,
+            isPrimaryView: true,
+          ),
+        ],
+      ),
+      throwsArgumentError,
+    );
+  });
 }

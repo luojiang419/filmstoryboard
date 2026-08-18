@@ -2083,18 +2083,33 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         guide,
       );
       var preparedReferences = decisionReferences;
+      NanoBananaAssetManifest? nanoBananaManifest;
+      NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol;
       if (NanoBananaProModelCapability.supports(model)) {
-        preparedReferences = _referencesInNanoBananaManifestOrder(
+        nanoBananaManifest = _nanoBananaAssetManifest(
           shot: shot,
           original: original,
           references: preparedReferences,
         );
+        preparedReferences = _referencesInNanoBananaManifestOrder(
+          manifest: nanoBananaManifest,
+          references: preparedReferences,
+        );
+        nanoBananaFirstRoundProtocol = NanoBananaFirstRoundProtocol.build(
+          manifest: nanoBananaManifest,
+          structuralReferences: [
+            if (skeleton != null)
+              NanoBananaStructuralReference(
+                id: '${shot.id}:dwpose',
+                path: skeleton.path,
+                description: 'DWPose 高精度人物姿势骨架，只锁定关节位置、肢体方向、身体重心和动作轮廓',
+              ),
+          ],
+        );
       }
       final prompt = _finalizeGenerationPrompt(
         shot: shot,
-        references: preparedReferences,
         model: model,
-        original: original,
         automaticPrompt: _generationPrompt(
           shot,
           preparedReferences,
@@ -2103,6 +2118,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           hasPoseSkeleton: skeleton != null,
         ),
         hasPoseSkeleton: skeleton != null,
+        nanoBananaManifest: nanoBananaManifest,
+        nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
       );
       record = record.copyWith(
         assetIds: preparedReferences
@@ -2150,6 +2167,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         ),
       );
       await outputDirectory.create(recursive: true);
+      final referenceImagePaths =
+          nanoBananaFirstRoundProtocol?.inputPaths ??
+          [
+            original.path,
+            if (skeleton != null) skeleton.path,
+            for (final reference in preparedReferences) reference.path,
+          ];
+      nanoBananaFirstRoundProtocol?.validateSubmissionPaths(
+        referenceImagePaths,
+      );
       final generationRequest = ImageGenerationRequest(
         provider: ImageGenerationProviderResolver.resolve(
           settings: _settingsController.value,
@@ -2160,11 +2187,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         aspectRatio: aspectRatio,
         imageSize: imageSize,
         quality: quality,
-        referenceImagePaths: [
-          original.path,
-          if (skeleton != null) skeleton.path,
-          for (final reference in preparedReferences) reference.path,
-        ],
+        referenceImagePaths: referenceImagePaths,
         outputDirectory: outputDirectory,
       );
       final result = await _imageGenerationService.generateEditedImage(
@@ -2627,26 +2650,27 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   String _finalizeGenerationPrompt({
     required ScriptShot shot,
-    required List<_ReplacementReference> references,
     required String model,
-    required File original,
     required String automaticPrompt,
     required bool hasPoseSkeleton,
+    NanoBananaAssetManifest? nanoBananaManifest,
+    NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol,
   }) {
     if (NanoBananaProModelCapability.supports(model)) {
+      final manifest = nanoBananaManifest;
+      if (manifest == null || nanoBananaFirstRoundProtocol == null) {
+        throw StateError('Nano Banana Pro 第一轮生成缺少已冻结的多图权威协议');
+      }
       return const NanoBananaReplicationPromptCompiler().compile(
         NanoBananaReplicationPromptInput(
           model: model,
           automaticPrompt: automaticPrompt,
-          manifest: _nanoBananaAssetManifest(
-            shot: shot,
-            original: original,
-            references: references,
-          ),
+          manifest: manifest,
           userInstructions: shot.replicationInstructions,
           structuralReferenceDescriptions: hasPoseSkeleton
               ? const ['DWPose 高精度人物姿势骨架，只锁定关节位置、肢体方向、身体重心和动作轮廓']
               : const [],
+          firstRoundProtocol: nanoBananaFirstRoundProtocol,
         ),
       );
     }
@@ -4633,6 +4657,7 @@ $playbackSpeedBoundary
     required List<_ReplacementReference> references,
   }) {
     final modelAssets = <NanoBananaAssetInput>[];
+    final fullOutfitAssets = <NanoBananaAssetInput>[];
     final productAssets = <NanoBananaAssetInput>[];
     final productDetailAssets = <NanoBananaAssetInput>[];
     final sceneAssets = <NanoBananaAssetInput>[];
@@ -4657,11 +4682,29 @@ $playbackSpeedBoundary
     }
 
     for (final reference in references) {
-      final assetId = _logicalReferenceAssetId(reference.id);
-      final viewOrder = _referenceViewOrder(reference.id);
+      final assetId = reference.manifestAssetId.isEmpty
+          ? _logicalReferenceAssetId(reference.id)
+          : reference.manifestAssetId;
+      final viewOrder = reference.manifestAssetId.isEmpty
+          ? _referenceViewOrder(reference.id)
+          : reference.viewOrder;
       final characterSlot = _characterSlotIndex(reference.slotLabel);
       final productSlot = _productSlotIndex(reference.slotLabel);
       final detailSlot = _productDetailSlotIndex(reference.slotLabel);
+      if (reference.manifestKind == NanoBananaAssetKind.fullOutfit) {
+        fullOutfitAssets.add(
+          NanoBananaAssetInput.fullOutfit(
+            assetId: assetId,
+            path: reference.path,
+            personSlotIndex: reference.manifestSlotIndex ?? characterSlot ?? 0,
+            productSlotIndex: reference.linkedProductSlotIndex,
+            viewOrder: viewOrder,
+            viewRole: reference.viewRole,
+            isPrimaryView: reference.isPrimaryView,
+          ),
+        );
+        continue;
+      }
       if (reference.type == ReplicateAssetType.character) {
         final slot =
             characterSlot ??
@@ -4714,6 +4757,7 @@ $playbackSpeedBoundary
       sourceFrameId: '${shot.id}:source-frame',
       sourceFramePath: original.path,
       modelAssets: modelAssets,
+      fullOutfitAssets: fullOutfitAssets,
       productAssets: productAssets,
       productDetailAssets: productDetailAssets,
       sceneAssets: sceneAssets,
@@ -4721,22 +4765,19 @@ $playbackSpeedBoundary
   }
 
   static List<_ReplacementReference> _referencesInNanoBananaManifestOrder({
-    required ScriptShot shot,
-    required File original,
+    required NanoBananaAssetManifest manifest,
     required List<_ReplacementReference> references,
   }) {
     if (references.length < 2) return references;
-    final manifest = _nanoBananaAssetManifest(
-      shot: shot,
-      original: original,
-      references: references,
-    );
     final remaining = [...references];
     final ordered = <_ReplacementReference>[];
     for (final entry in manifest.entries.skip(1)) {
       final index = remaining.indexWhere(
         (reference) =>
-            _logicalReferenceAssetId(reference.id) == entry.assetId &&
+            (reference.manifestAssetId.isEmpty
+                    ? _logicalReferenceAssetId(reference.id)
+                    : reference.manifestAssetId) ==
+                entry.assetId &&
             reference.path == entry.path,
       );
       if (index < 0) {
@@ -4756,6 +4797,25 @@ $playbackSpeedBoundary
   static int _referenceViewOrder(String id) =>
       int.tryParse(RegExp(r':view:(\d+)$').firstMatch(id)?.group(1) ?? '') ?? 0;
 
+  static NanoBananaAssetViewRole _nanoBananaViewRole(
+    ReplicateOutfitViewRole role,
+  ) => switch (role) {
+    ReplicateOutfitViewRole.front => NanoBananaAssetViewRole.front,
+    ReplicateOutfitViewRole.side => NanoBananaAssetViewRole.side,
+    ReplicateOutfitViewRole.back => NanoBananaAssetViewRole.back,
+    ReplicateOutfitViewRole.other => NanoBananaAssetViewRole.supplemental,
+  };
+
+  static String _nanoBananaViewRoleLabel(NanoBananaAssetViewRole role) =>
+      switch (role) {
+        NanoBananaAssetViewRole.primary => '',
+        NanoBananaAssetViewRole.front => '正面',
+        NanoBananaAssetViewRole.side => '侧面',
+        NanoBananaAssetViewRole.back => '背面',
+        NanoBananaAssetViewRole.detail => '细节',
+        NanoBananaAssetViewRole.supplemental => '补充',
+      };
+
   String? _replicationInputReadinessError({
     required ScriptShot shot,
     required ReplicateShotGuide? guide,
@@ -4772,6 +4832,32 @@ $playbackSpeedBoundary
           .join('、');
       return '请先为以下原帧主体选择“保留、替换或移除”：$labels';
     }
+    for (final outfit in guide.fullOutfitAssets.where(
+      (asset) => asset.enabled,
+    )) {
+      final personMustReplace = guide.subjects.any(
+        (subject) =>
+            subject.type == ReplicateSubjectType.person &&
+            subject.slotIndex == outfit.personSlotIndex &&
+            subject.decision == ReplicateSubjectDecision.replace,
+      );
+      if (!personMustReplace) continue;
+      if (!outfit.hasIndependentThreeViewSet || outfit.primaryView == null) {
+        return '${outfit.name}尚未形成可提交的正面、侧面、背面独立三视图，或缺少主视图';
+      }
+      final submittedViews = references
+          .where(
+            (reference) =>
+                reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
+                reference.manifestAssetId == outfit.id,
+          )
+          .toList(growable: false);
+      if (submittedViews.length != 3 ||
+          submittedViews.where((reference) => reference.isPrimaryView).length !=
+              1) {
+        return '${outfit.name}的三视图文件或镜头绑定已失效，请重新选择后再生成';
+      }
+    }
     for (final subject in guide.subjects) {
       if (subject.decision != ReplicateSubjectDecision.replace) continue;
       final hasReplacement = references.any((reference) {
@@ -4779,7 +4865,9 @@ $playbackSpeedBoundary
           ReplicateSubjectType.person =>
             _characterSlotIndex(reference.slotLabel) == subject.slotIndex,
           ReplicateSubjectType.product =>
-            _productSlotIndex(reference.slotLabel) == subject.slotIndex,
+            _productSlotIndex(reference.slotLabel) == subject.slotIndex ||
+                (reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
+                    reference.linkedProductSlotIndex == subject.slotIndex),
         };
       });
       if (!hasReplacement) {
@@ -4823,12 +4911,53 @@ $playbackSpeedBoundary
     }
     if (bindings.isEmpty) return const [];
 
+    final guide = _repository.getShotGuide(shotId);
+    final configuredOutfits = [
+      for (final outfit
+          in guide?.fullOutfitAssets ?? const <ReplicateFullOutfitAsset>[])
+        if (outfit.enabled) outfit,
+    ];
+    final outfitViewAssetIds = {
+      for (final outfit in configuredOutfits)
+        for (final view in outfit.views) view.scriptAssetId,
+    };
+    final confirmedAssetIds = {
+      for (final binding in bindings) binding.asset.id,
+    };
+    final usableOutfits = [
+      for (final outfit in configuredOutfits)
+        if (outfit.hasIndependentThreeViewSet &&
+            outfit.primaryView != null &&
+            outfit.views.every(
+              (view) =>
+                  confirmedAssetIds.contains(view.scriptAssetId) &&
+                  assetsById[view.scriptAssetId] != null,
+            ))
+          outfit,
+    ];
+    final configuredOutfitSlots = {
+      for (final outfit in configuredOutfits) outfit.personSlotIndex,
+    };
+    final linkedProductSlotByPersonSlot = {
+      for (final link
+          in guide?.wearableProductLinks ??
+              const <ReplicateWearableProductLink>[])
+        if (link.linked &&
+            usableOutfits.any(
+              (outfit) =>
+                  outfit.id == link.fullOutfitAssetId &&
+                  outfit.personSlotIndex == link.personSlotIndex,
+            ))
+          link.personSlotIndex: link.productSlotIndex,
+    };
+    final linkedProductSlots = linkedProductSlotByPersonSlot.values.toSet();
+
     final characterBindings = [
       for (final binding in bindings)
         if (binding.asset.type == ReplicateAssetType.character) binding,
     ];
     final participantCount = math.max(
-      characterBindings.length,
+      characterBindings.map((binding) => binding.link.sortOrder).toSet().length,
       bindings.fold<int>(0, (count, binding) {
         final slot = ScriptAssetSlotPolicy.presetSlotForSortOrder(
           binding.link.sortOrder,
@@ -4911,6 +5040,16 @@ $playbackSpeedBoundary
       ({ScriptShotAssetLink link, ScriptAsset asset}) binding,
       String slotLabel,
     ) {
+      final characterSlot = _characterSlotIndex(slotLabel);
+      final productSlot = _productSlotIndex(slotLabel);
+      final detailSlot = _productDetailSlotIndex(slotLabel);
+      if (outfitViewAssetIds.contains(binding.asset.id) ||
+          (characterSlot != null &&
+              configuredOutfitSlots.contains(characterSlot)) ||
+          (productSlot != null && linkedProductSlots.contains(productSlot)) ||
+          (detailSlot != null && linkedProductSlots.contains(detailSlot))) {
+        return;
+      }
       if (!usedAssetIds.add(binding.asset.id)) return;
       references.add(
         _ReplacementReference(
@@ -4932,6 +5071,45 @@ $playbackSpeedBoundary
 
     for (final binding in remainingBindings) {
       addBinding(binding, '');
+    }
+    final orderedOutfits = [...usableOutfits]
+      ..sort(
+        (left, right) => left.personSlotIndex.compareTo(right.personSlotIndex),
+      );
+    for (final outfit in orderedOutfits) {
+      final views = [...outfit.views]
+        ..sort((left, right) {
+          final leftPrimary = left.id == outfit.primaryViewId ? 0 : 1;
+          final rightPrimary = right.id == outfit.primaryViewId ? 0 : 1;
+          final primaryOrder = leftPrimary.compareTo(rightPrimary);
+          if (primaryOrder != 0) return primaryOrder;
+          final order = left.order.compareTo(right.order);
+          if (order != 0) return order;
+          return left.id.compareTo(right.id);
+        });
+      for (final view in views) {
+        final asset = assetsById[view.scriptAssetId]!;
+        if (!usedAssetIds.add(asset.id)) continue;
+        references.add(
+          _ReplacementReference(
+            id: asset.id,
+            type: ReplicateAssetType.character,
+            name: outfit.name,
+            description: asset.description,
+            path: asset.path,
+            slotLabel:
+                '模特${ScriptAssetSlotPolicy.characterSuffix(outfit.personSlotIndex)}',
+            manifestAssetId: outfit.id,
+            manifestKind: NanoBananaAssetKind.fullOutfit,
+            manifestSlotIndex: outfit.personSlotIndex,
+            linkedProductSlotIndex:
+                linkedProductSlotByPersonSlot[outfit.personSlotIndex],
+            viewOrder: view.order,
+            viewRole: _nanoBananaViewRole(view.role),
+            isPrimaryView: view.id == outfit.primaryViewId,
+          ),
+        );
+      }
     }
     return references;
   }
@@ -4957,6 +5135,14 @@ $playbackSpeedBoundary
       if (productIndex != null) {
         productSlotLabelsByIndex[productIndex] = reference.slotLabel;
       }
+      if (reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
+          reference.linkedProductSlotIndex != null) {
+        productSlotLabelsByIndex.putIfAbsent(
+          reference.linkedProductSlotIndex!,
+          () =>
+              '产品${ScriptAssetSlotPolicy.characterSuffix(reference.linkedProductSlotIndex!)}',
+        );
+      }
     }
     final characterSlotLabels = characterSlotLabelsByIndex.values.toList(
       growable: false,
@@ -4974,7 +5160,9 @@ $playbackSpeedBoundary
           ? ''
           : '，特征：${reference.description.trim()}';
       final roleLabel = reference.slotLabel.isNotEmpty
-          ? _productDetailSlotIndex(reference.slotLabel) != null
+          ? reference.manifestKind == NanoBananaAssetKind.fullOutfit
+                ? '${reference.slotLabel}完整穿搭${_nanoBananaViewRoleLabel(reference.viewRole)}${reference.isPrimaryView ? '主视图' : '补充视图'}'
+                : _productDetailSlotIndex(reference.slotLabel) != null
                 ? '产品细节参考'
                 : '${reference.slotLabel}参考'
           : _replacementTypeLabel(reference.type);
@@ -4990,15 +5178,35 @@ $playbackSpeedBoundary
           ? null
           : characterSlotLabelsByIndex[productSlotIndex];
       if (characterSlotIndex != null) {
-        characterImageBySlot.putIfAbsent(characterSlotIndex, () => imageLabel);
+        if (reference.manifestKind != NanoBananaAssetKind.fullOutfit ||
+            reference.isPrimaryView) {
+          characterImageBySlot.putIfAbsent(
+            characterSlotIndex,
+            () => imageLabel,
+          );
+        }
       }
       if (productSlotIndex != null) {
         productImageBySlot.putIfAbsent(productSlotIndex, () => imageLabel);
+      }
+      if (reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
+          reference.isPrimaryView &&
+          reference.linkedProductSlotIndex != null) {
+        productImageBySlot.putIfAbsent(
+          reference.linkedProductSlotIndex!,
+          () => imageLabel,
+        );
       }
       definitions.add(
         '$imageLabel 是$roleLabel“${reference.name}”$description。',
       );
       assetRequirements.add(switch ((reference.type, reference.slotLabel)) {
+        (_, _)
+            when reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
+                reference.isPrimaryView =>
+          '${reference.slotLabel}以$imageLabel 为完整穿搭主视图：人物身份、脸部、发型、体型和整套服装必须整体使用${reference.linkedProductSlotIndex == null ? '' : '，并同时替换${productSlotLabelsByIndex[reference.linkedProductSlotIndex!] ?? '联动产品槽'}'}；其余正面、侧面、背面视图只补充不可见证据，不得拆分、混搭或覆盖主视图。',
+        (_, _) when reference.manifestKind == NanoBananaAssetKind.fullOutfit =>
+          '$imageLabel 是同组${_nanoBananaViewRoleLabel(reference.viewRole)}补充证据，只补充主视图不可见的衣物结构、材质和穿着关系；不得改变整体身份、轮廓、比例或颜色。',
         (_, _) when productDetailSlotIndex != null =>
           '$imageLabel 只补充“${reference.name}”的局部结构、接缝、边缘、材质和纹理；不得替代${productSlotLabelsByIndex[productDetailSlotIndex] ?? '对应产品主视图'}定义的整体外形与比例。',
         (_, final slotLabel)
@@ -5915,6 +6123,13 @@ class _ReplacementReference {
     required this.description,
     required this.path,
     this.slotLabel = '',
+    this.manifestAssetId = '',
+    this.manifestKind,
+    this.manifestSlotIndex,
+    this.linkedProductSlotIndex,
+    this.viewOrder = 0,
+    this.viewRole = NanoBananaAssetViewRole.primary,
+    this.isPrimaryView = true,
   });
 
   final String id;
@@ -5923,4 +6138,11 @@ class _ReplacementReference {
   final String description;
   final String path;
   final String slotLabel;
+  final String manifestAssetId;
+  final NanoBananaAssetKind? manifestKind;
+  final int? manifestSlotIndex;
+  final int? linkedProductSlotIndex;
+  final int viewOrder;
+  final NanoBananaAssetViewRole viewRole;
+  final bool isPrimaryView;
 }

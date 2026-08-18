@@ -3,6 +3,7 @@ import 'dart:collection';
 enum ReplicationAuthoritySource {
   sourceFrame,
   modelAsset,
+  fullOutfitAsset,
   productAsset,
   productDetailAsset,
   sceneAsset,
@@ -37,12 +38,29 @@ class ReplicationAuthorityContext {
     this.hasWearableProductAsset = false,
     this.hasProductDetailAsset = false,
     this.isSourceElementSelected = false,
+    this.wearableProductSlots = const {},
+    this.productDetailSlots = const {},
+    this.fullOutfitPersonSlots = const {},
+    this.fullOutfitProductSlotByPersonSlot = const {},
   });
 
   final bool hasSceneAsset;
   final bool hasWearableProductAsset;
   final bool hasProductDetailAsset;
   final bool isSourceElementSelected;
+  final Set<int> wearableProductSlots;
+  final Set<int> productDetailSlots;
+  final Set<int> fullOutfitPersonSlots;
+  final Map<int, int> fullOutfitProductSlotByPersonSlot;
+
+  bool isFullOutfitPersonSlot(int? slotIndex) =>
+      slotIndex != null &&
+      (fullOutfitPersonSlots.contains(slotIndex) ||
+          fullOutfitProductSlotByPersonSlot.containsKey(slotIndex));
+
+  bool isFullOutfitProductSlot(int? slotIndex) =>
+      slotIndex != null &&
+      fullOutfitProductSlotByPersonSlot.values.contains(slotIndex);
 }
 
 class ReplicationAuthorityPolicy {
@@ -51,6 +69,7 @@ class ReplicationAuthorityPolicy {
   static ReplicationAuthoritySource? authorityFor(
     ReplicationAuthorityScope scope, {
     ReplicationAuthorityContext context = const ReplicationAuthorityContext(),
+    int? slotIndex,
   }) => switch (scope) {
     ReplicationAuthorityScope.canvasAndAspectRatio ||
     ReplicationAuthorityScope.shotSizeAndCamera ||
@@ -68,17 +87,27 @@ class ReplicationAuthorityPolicy {
     ReplicationAuthorityScope.personFace ||
     ReplicationAuthorityScope.personHair ||
     ReplicationAuthorityScope.personBodyShape =>
-      ReplicationAuthoritySource.modelAsset,
+      context.isFullOutfitPersonSlot(slotIndex)
+          ? ReplicationAuthoritySource.fullOutfitAsset
+          : ReplicationAuthoritySource.modelAsset,
     ReplicationAuthorityScope.personWardrobeAppearance =>
-      context.hasWearableProductAsset
+      context.wearableProductSlots.contains(slotIndex) ||
+              (slotIndex == null && context.hasWearableProductAsset)
           ? ReplicationAuthoritySource.productAsset
+          : context.isFullOutfitPersonSlot(slotIndex)
+          ? ReplicationAuthoritySource.fullOutfitAsset
           : ReplicationAuthoritySource.modelAsset,
     ReplicationAuthorityScope.productSilhouetteAndProportion ||
     ReplicationAuthorityScope.productStructure ||
     ReplicationAuthorityScope.productColorAndMaterial =>
-      ReplicationAuthoritySource.productAsset,
+      context.isFullOutfitProductSlot(slotIndex)
+          ? ReplicationAuthoritySource.fullOutfitAsset
+          : ReplicationAuthoritySource.productAsset,
     ReplicationAuthorityScope.productLocalDetail =>
-      context.hasProductDetailAsset
+      context.isFullOutfitProductSlot(slotIndex)
+          ? ReplicationAuthoritySource.fullOutfitAsset
+          : context.productDetailSlots.contains(slotIndex) ||
+                (slotIndex == null && context.hasProductDetailAsset)
           ? ReplicationAuthoritySource.productDetailAsset
           : ReplicationAuthoritySource.productAsset,
     ReplicationAuthorityScope.sourceElementAppearance ||
@@ -92,13 +121,16 @@ class ReplicationAuthorityPolicy {
     ReplicationAuthoritySource source,
     ReplicationAuthorityScope scope, {
     ReplicationAuthorityContext context = const ReplicationAuthorityContext(),
-  }) => authorityFor(scope, context: context) == source;
+    int? slotIndex,
+  }) => authorityFor(scope, context: context, slotIndex: slotIndex) == source;
 
   static Set<ReplicationAuthorityScope> scopesFor(
     ReplicationAuthoritySource source, {
     ReplicationAuthorityContext context = const ReplicationAuthorityContext(),
+    int? slotIndex,
   }) => UnmodifiableSetView({
     for (final scope in ReplicationAuthorityScope.values)
-      if (authorityFor(scope, context: context) == source) scope,
+      if (authorityFor(scope, context: context, slotIndex: slotIndex) == source)
+        scope,
   });
 }

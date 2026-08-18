@@ -113,4 +113,68 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('完整穿搭主视图独占整体权威且补充视图不能反向覆盖', () {
+    final manifest = NanoBananaAssetManifest.build(
+      sourceFrameId: 'source',
+      sourceFramePath: 'source.png',
+      fullOutfitAssets: const [
+        NanoBananaAssetInput.fullOutfit(
+          assetId: 'outfit-a',
+          path: 'front.png',
+          personSlotIndex: 0,
+          productSlotIndex: 1,
+          viewOrder: 0,
+          viewRole: NanoBananaAssetViewRole.front,
+          isPrimaryView: false,
+        ),
+        NanoBananaAssetInput.fullOutfit(
+          assetId: 'outfit-a',
+          path: 'side.png',
+          personSlotIndex: 0,
+          productSlotIndex: 1,
+          viewOrder: 1,
+          viewRole: NanoBananaAssetViewRole.side,
+          isPrimaryView: true,
+        ),
+        NanoBananaAssetInput.fullOutfit(
+          assetId: 'outfit-a',
+          path: 'back.png',
+          personSlotIndex: 0,
+          productSlotIndex: 1,
+          viewOrder: 2,
+          viewRole: NanoBananaAssetViewRole.back,
+          isPrimaryView: false,
+        ),
+      ],
+    );
+    final protocol = NanoBananaFirstRoundProtocol.build(
+      manifest: manifest,
+      structuralReferences: const [
+        NanoBananaStructuralReference(
+          id: 'pose',
+          path: 'pose.png',
+          description: 'DWPose 姿势骨架',
+        ),
+      ],
+    );
+
+    final prompt = const NanoBananaReplicationPromptCompiler().compile(
+      NanoBananaReplicationPromptInput(
+        model: 'nano-banana-pro-vip',
+        automaticPrompt: '严格替换人物与联动服装。',
+        manifest: manifest,
+        firstRoundProtocol: protocol,
+      ),
+    );
+
+    expect(prompt, contains('图片2是结构辅助图：DWPose 姿势骨架'));
+    expect(prompt, contains('图片3是完整穿搭资产，槽位A（侧面视图）'));
+    expect(prompt, contains('与产品槽位B联动'));
+    expect(prompt, contains('人物身份、脸部、发型、体型、人物穿搭外观'));
+    expect(prompt, contains('产品轮廓与比例、产品结构、产品颜色与材质、产品局部细节'));
+    expect(prompt, contains('图片4是正面视图，与图片3共同属于同一完整穿搭资产，槽位A'));
+    expect(prompt, contains('图片5是背面视图，与图片3共同属于同一完整穿搭资产，槽位A'));
+    expect(prompt, contains('不得覆盖主视图锁定的整体身份、轮廓、比例、颜色'));
+  });
 }

@@ -527,13 +527,20 @@ void main() {
     final settingsRepository = SettingsRepository(database, directories);
     final settingsController = SettingsController(
       repository: settingsRepository,
-      initialSettings: settingsRepository.load(),
+      initialSettings: settingsRepository.load().copyWith(
+        imageGenerationModel: 'nano-banana-pro-vip',
+        imageGenerationApiConfigs: const [],
+        activeImageGenerationApiConfigId: '',
+      ),
     );
     final shootingController = ShootingScriptController(
       repository: ShootingScriptRepository(database),
       directories: directories,
     )..createEmpty(name: '三视图本地拆分测试');
     final shot = shootingController.addShot()!;
+    final frame = File(p.join(root.path, 'source-frame.png'))
+      ..writeAsBytesSync(img.encodePng(img.Image(width: 300, height: 200)));
+    shootingController.updateShot(shot.copyWith(framePath: frame.path));
     final workflowRepository = ShootingScriptWorkflowRepository(database);
     final libraryController = ShootingAssetLibraryController(
       repository: ShootingAssetLibraryRepository(
@@ -549,6 +556,8 @@ void main() {
       settingsController: settingsController,
     );
     final collage = File(p.join(root.path, 'model-a-three-view.png'));
+    final independentProduct = File(p.join(root.path, 'old-product.png'))
+      ..writeAsBytesSync([137, 80, 78, 71, 22]);
     final image = img.Image(width: 300, height: 100);
     for (var y = 0; y < image.height; y++) {
       for (var x = 0; x < image.width; x++) {
@@ -571,6 +580,20 @@ void main() {
         updatedAt: now,
       ),
     );
+    workflowRepository.upsertScriptAsset(
+      ScriptAsset(
+        id: 'independent-product',
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '旧独立穿戴产品',
+        description: '联动后不应再单独提交',
+        path: independentProduct.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
     workflowRepository.upsertLink(
       ScriptShotAssetLink(
         shotId: shot.id,
@@ -581,6 +604,20 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.characterSortOrderBase,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    workflowRepository.upsertLink(
+      ScriptShotAssetLink(
+        shotId: shot.id,
+        scriptAssetId: 'independent-product',
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试完整穿搭联动替换',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.productSortOrder,
         createdAt: now,
         updatedAt: now,
       ),
@@ -597,12 +634,24 @@ void main() {
             slotIndex: 0,
             decision: ReplicateSubjectDecision.replace,
           ),
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '穿戴产品 A',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
         ],
+        sourceFrameFingerprint: sha256
+            .convert(frame.readAsBytesSync())
+            .toString(),
+        analysisStatus: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
       ),
     );
     bindingController.refresh();
+    final imageService = _RecordingImageGenerationService();
     final controller = ReplicateController(
       repository: repository,
       shootingScriptController: shootingController,
@@ -610,6 +659,7 @@ void main() {
       settingsController: settingsController,
       workflowRepository: workflowRepository,
       assetBindingController: bindingController,
+      imageGenerationService: imageService,
     );
     addTearDown(() async {
       controller.dispose();
@@ -617,6 +667,7 @@ void main() {
       libraryController.dispose();
       shootingController.dispose();
       settingsController.dispose();
+      imageService.close();
       database.dispose();
       await root.delete(recursive: true);
     });
@@ -638,14 +689,77 @@ void main() {
       outfit.views.map((view) => view.scriptAssetId).toSet(),
       hasLength(3),
     );
-    expect(workflowRepository.listScriptAssets(shot.scriptId), hasLength(4));
-    expect(workflowRepository.listLinksForShot(shot.id), hasLength(4));
+    expect(workflowRepository.listScriptAssets(shot.scriptId), hasLength(5));
+    expect(workflowRepository.listLinksForShot(shot.id), hasLength(5));
     for (final view in outfit.views) {
       final asset = workflowRepository
           .listScriptAssets(shot.scriptId)
           .singleWhere((item) => item.id == view.scriptAssetId);
       expect(File(asset.path).existsSync(), isTrue);
     }
+    expect(await controller.replicateShot(shot.id), isTrue);
+    final unlinkedRequest = imageService.requests.single;
+    final unlinkedOutfit = repository
+        .getShotGuide(shot.id)!
+        .fullOutfitAssets
+        .single;
+    final unlinkedPathByRole = {
+      for (final view in unlinkedOutfit.views)
+        view.role: workflowRepository
+            .listScriptAssets(shot.scriptId)
+            .singleWhere((asset) => asset.id == view.scriptAssetId)
+            .path,
+    };
+    expect(unlinkedRequest.referenceImagePaths, [
+      frame.path,
+      unlinkedPathByRole[ReplicateOutfitViewRole.side],
+      unlinkedPathByRole[ReplicateOutfitViewRole.front],
+      unlinkedPathByRole[ReplicateOutfitViewRole.back],
+      independentProduct.path,
+    ]);
+    expect(unlinkedRequest.prompt, contains('图片5是产品资产，槽位A'));
+    expect(unlinkedRequest.prompt, contains('人物穿搭外观'));
+    expect(unlinkedRequest.prompt, isNot(contains('与产品槽位A联动')));
+    imageService.requests.clear();
+    expect(
+      controller.setWearableProductLinked(
+        shotId: shot.id,
+        slotIndex: 0,
+        linked: true,
+      ),
+      isTrue,
+    );
+    expect(await controller.replicateShot(shot.id), isTrue);
+    final request = imageService.requests.single;
+    final refreshedOutfit = repository
+        .getShotGuide(shot.id)!
+        .fullOutfitAssets
+        .single;
+    final pathByRole = {
+      for (final view in refreshedOutfit.views)
+        view.role: workflowRepository
+            .listScriptAssets(shot.scriptId)
+            .singleWhere((asset) => asset.id == view.scriptAssetId)
+            .path,
+    };
+    expect(request.referenceImagePaths, [
+      frame.path,
+      pathByRole[ReplicateOutfitViewRole.side],
+      pathByRole[ReplicateOutfitViewRole.front],
+      pathByRole[ReplicateOutfitViewRole.back],
+    ]);
+    expect(request.referenceImagePaths, isNot(contains(collage.path)));
+    expect(
+      request.referenceImagePaths,
+      isNot(contains(independentProduct.path)),
+      reason: '联动完整穿搭已同时接管产品槽，独立产品图不得重复提交',
+    );
+    expect(request.prompt, contains('图片2是完整穿搭资产，槽位A（侧面视图）'));
+    expect(request.prompt, contains('与产品槽位A联动'));
+    expect(request.prompt, contains('图片3是正面视图，与图片2共同属于同一完整穿搭资产，槽位A'));
+    expect(request.prompt, contains('图片4是背面视图，与图片2共同属于同一完整穿搭资产，槽位A'));
+    expect(request.prompt, contains('穿戴产品 A（产品槽位1）：替换'));
+    expect(request.prompt, contains('外观只使用图片2'));
   });
 
   test('移除动作骨架会清空提交状态并只删除项目内生成文件', () async {
