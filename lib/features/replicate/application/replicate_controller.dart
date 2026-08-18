@@ -34,6 +34,7 @@ import '../../video_generation/domain/video_action_sequence.dart';
 import '../../video_generation/domain/h3_video_prompt_adapter.dart';
 import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/bundled_video_skill_library.dart';
+import '../data/dwpose_editable_pose_mapper.dart';
 import '../data/dwpose_model_manager.dart';
 import '../data/dwpose_service.dart';
 import '../data/full_outfit_collage_splitter.dart';
@@ -588,9 +589,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         ),
         models: models,
       );
+      final editablePose = DwPoseEditablePoseMapper.fromExtraction(
+        result,
+        previous: running.editablePose,
+      );
       _repository.upsertShotGuide(
         running.copyWith(
           skeletonPath: result.skeletonFile.path,
+          editablePose: editablePose,
           personCount: math.max(running.personCount, result.personCount),
           poseStatus: ProcessingStatus.completed,
           errorMessage: '',
@@ -646,6 +652,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _repository.upsertShotGuide(
       guide.copyWith(
         skeletonPath: '',
+        editablePose: ReplicateEditablePoseData.empty,
         poseStatus: ProcessingStatus.pending,
         errorMessage: '',
         updatedAt: DateTime.now().toUtc(),
@@ -658,6 +665,115 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           '${shotNumber == null ? '当前镜头' : '镜头 $shotNumber'}的动作骨架已移除$cleanupWarning',
     );
   }
+
+  Future<void> saveEditablePoseForShot(
+    String shotId,
+    ReplicateEditablePoseData editablePose,
+  ) async {
+    final guide = _repository.getShotGuide(shotId);
+    final scriptId = value.selectedScriptId;
+    if (guide == null || scriptId.isEmpty || !isShotGuideCurrent(shotId)) {
+      return;
+    }
+    final validationError = _editablePoseValidationError(
+      current: guide.editablePose,
+      candidate: editablePose,
+    );
+    if (validationError != null) {
+      value = value.copyWith(errorMessage: validationError);
+      return;
+    }
+    final normalized = _normalizeManualPose(editablePose);
+    final outputDirectory = Directory(
+      p.join(_directories.analyses.path, 'dwpose', _safeFileName(scriptId)),
+    );
+    final outputFile = DwPoseService.outputFileFor(
+      directory: outputDirectory,
+      shotId: shotId,
+    );
+    final canvas = DwPoseService.renderSkeleton(
+      width: normalized.sourceWidth,
+      height: normalized.sourceHeight,
+      people: [
+        for (final person in normalized.peopleFromLeftToRight)
+          [
+            for (final point in person.keypoints)
+              DwPosePoint(point.x, point.y, point.confidence),
+          ],
+      ],
+    );
+    await outputFile.parent.create(recursive: true);
+    await outputFile.writeAsBytes(img.encodePng(canvas), flush: true);
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        editablePose: normalized,
+        skeletonPath: outputFile.path,
+        personCount: normalized.people.length,
+        poseStatus: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    _reloadShotGuides(scriptId, message: '人工关节调整已保存，动作骨架已同步更新');
+  }
+
+  static String? _editablePoseValidationError({
+    required ReplicateEditablePoseData current,
+    required ReplicateEditablePoseData candidate,
+  }) {
+    if (current.isEmpty || candidate.isEmpty) return '当前镜头没有可编辑的结构化姿势';
+    if (candidate.sourceWidth <= 0 ||
+        candidate.sourceHeight <= 0 ||
+        candidate.sourceWidth != current.sourceWidth ||
+        candidate.sourceHeight != current.sourceHeight) {
+      return '关节编辑画布与原始 DWPose 画布不一致';
+    }
+    final currentById = {
+      for (final person in current.people) person.id: person,
+    };
+    if (candidate.people.length != current.people.length ||
+        candidate.people.any((person) {
+          final original = currentById[person.id];
+          return original == null ||
+              original.modelSlotIndex != person.modelSlotIndex ||
+              original.leftToRightOrder != person.leftToRightOrder ||
+              person.keypoints.length != DwPoseService.wholeBodyKeypointCount ||
+              person.keypoints.asMap().entries.any(
+                (entry) => entry.value.index != entry.key,
+              );
+        })) {
+      return '关节编辑数据的人物绑定或 133 点结构无效';
+    }
+    return null;
+  }
+
+  static ReplicateEditablePoseData _normalizeManualPose(
+    ReplicateEditablePoseData pose,
+  ) => ReplicateEditablePoseData(
+    sourceWidth: pose.sourceWidth,
+    sourceHeight: pose.sourceHeight,
+    people: [
+      for (final person in pose.people)
+        person.copyWith(
+          keypoints: [
+            for (final point in person.keypoints)
+              if (point.manuallyAdjusted)
+                point.copyWith(
+                  x: point.x.isFinite
+                      ? point.x.clamp(0, pose.sourceWidth - 1).toDouble()
+                      : 0,
+                  y: point.y.isFinite
+                      ? point.y.clamp(0, pose.sourceHeight - 1).toDouble()
+                      : 0,
+                  confidence: 1,
+                  manuallyAdjusted: true,
+                )
+              else
+                point,
+          ],
+        ),
+    ],
+  );
 
   void setPreservedElementSelected(
     String shotId,

@@ -25,18 +25,34 @@ class DwPoseBox {
   final double bottom;
   final double score;
 
+  double get centerX => (left + right) / 2;
+  double get centerY => (top + bottom) / 2;
+
   double get area =>
       math.max(0, right - left + 1) * math.max(0, bottom - top + 1);
+}
+
+class DwPosePerson {
+  const DwPosePerson({required this.box, required this.keypoints});
+
+  final DwPoseBox box;
+  final List<DwPosePoint> keypoints;
 }
 
 class DwPoseExtractionResult {
   const DwPoseExtractionResult({
     required this.skeletonFile,
-    required this.personCount,
+    required this.sourceWidth,
+    required this.sourceHeight,
+    required this.people,
   });
 
   final File skeletonFile;
-  final int personCount;
+  final int sourceWidth;
+  final int sourceHeight;
+  final List<DwPosePerson> people;
+
+  int get personCount => people.length;
 }
 
 class DwPoseService {
@@ -47,6 +63,8 @@ class DwPoseService {
   static const poseHeight = 384;
   static const simccSplitRatio = 2.0;
   static const keypointThreshold = 0.3;
+  static const wholeBodyKeypointCount = 133;
+  static const minimumVisibleBodyKeypoints = 4;
 
   final OnnxRuntime _runtime;
   OrtSession? _detectorSession;
@@ -63,34 +81,93 @@ class DwPoseService {
     }
     final source = img.bakeOrientation(decoded);
     await _ensureSessions(models);
-    final boxes = await _detectPeople(source);
-    final effectiveBoxes = boxes.isEmpty
-        ? [
-            DwPoseBox(
-              0,
-              0,
-              source.width.toDouble(),
-              source.height.toDouble(),
-              1,
-            ),
-          ]
-        : boxes;
-    final people = <List<DwPosePoint>>[];
-    for (final box in effectiveBoxes) {
-      people.add(await _estimatePose(source, box));
+    final boxes = _sanitizeBoxes(
+      await _detectPeople(source),
+      width: source.width,
+      height: source.height,
+    );
+    final people = <DwPosePerson>[];
+    for (final box in boxes) {
+      final keypoints = sanitizeKeypoints(
+        await _estimatePose(source, box),
+        width: source.width,
+        height: source.height,
+      );
+      if (!hasValidBody(keypoints)) continue;
+      people.add(DwPosePerson(box: box, keypoints: keypoints));
     }
+    people.sort(_comparePeopleLeftToRight);
     final canvas = renderSkeleton(
       width: source.width,
       height: source.height,
-      people: people,
+      people: [for (final person in people) person.keypoints],
     );
     await outputFile.parent.create(recursive: true);
     await outputFile.writeAsBytes(img.encodePng(canvas), flush: true);
     return DwPoseExtractionResult(
       skeletonFile: outputFile,
-      personCount: people.length,
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      people: List.unmodifiable(people),
     );
   }
+
+  static List<DwPoseBox> _sanitizeBoxes(
+    List<DwPoseBox> boxes, {
+    required int width,
+    required int height,
+  }) {
+    if (width <= 1 || height <= 1) return const [];
+    final sanitized = <DwPoseBox>[];
+    for (final box in boxes) {
+      if (![
+        box.left,
+        box.top,
+        box.right,
+        box.bottom,
+        box.score,
+      ].every((value) => value.isFinite)) {
+        continue;
+      }
+      final left = box.left.clamp(0, width - 1).toDouble();
+      final top = box.top.clamp(0, height - 1).toDouble();
+      final right = box.right.clamp(0, width - 1).toDouble();
+      final bottom = box.bottom.clamp(0, height - 1).toDouble();
+      if (right - left < 2 || bottom - top < 2) continue;
+      sanitized.add(DwPoseBox(left, top, right, bottom, box.score));
+    }
+    return sanitized;
+  }
+
+  static int _comparePeopleLeftToRight(DwPosePerson a, DwPosePerson b) {
+    final horizontal = a.box.centerX.compareTo(b.box.centerX);
+    if (horizontal != 0) return horizontal;
+    final vertical = a.box.centerY.compareTo(b.box.centerY);
+    if (vertical != 0) return vertical;
+    return b.box.score.compareTo(a.box.score);
+  }
+
+  static List<DwPosePoint> sanitizeKeypoints(
+    List<DwPosePoint> points, {
+    required int width,
+    required int height,
+  }) => List.unmodifiable([
+    for (var index = 0; index < wholeBodyKeypointCount; index++)
+      if (index >= points.length ||
+          !points[index].x.isFinite ||
+          !points[index].y.isFinite ||
+          !points[index].score.isFinite ||
+          points[index].x < 0 ||
+          points[index].y < 0 ||
+          points[index].x >= width ||
+          points[index].y >= height)
+        const DwPosePoint(-1, -1, 0)
+      else
+        points[index],
+  ]);
+
+  static bool hasValidBody(List<DwPosePoint> points) =>
+      points.take(17).where(_visible).length >= minimumVisibleBodyKeypoints;
 
   Future<void> _ensureSessions(DwPoseModelFiles models) async {
     final options = OrtSessionOptions(
@@ -341,7 +418,11 @@ class DwPoseService {
         ),
       );
     }
-    if (original.length < 133) return original;
+    return original;
+  }
+
+  static List<DwPosePoint> _toOpenPosePoints(List<DwPosePoint> original) {
+    if (original.length < wholeBodyKeypointCount) return const [];
     final neck = DwPosePoint(
       (original[5].x + original[6].x) / 2,
       (original[5].y + original[6].y) / 2,
@@ -427,12 +508,16 @@ class DwPoseService {
       [19, 20],
     ];
     final thickness = math.max(2, math.min(width, height) ~/ 240);
-    for (final points in people) {
+    for (final canonicalPoints in people) {
+      final points = _toOpenPosePoints(canonicalPoints);
       if (points.length < 134) continue;
       for (var index = 0; index < bodyEdges.length; index++) {
         final first = points[bodyEdges[index][0]];
         final second = points[bodyEdges[index][1]];
-        if (!_visible(first) || !_visible(second)) continue;
+        if (!_visibleWithin(first, width, height) ||
+            !_visibleWithin(second, width, height)) {
+          continue;
+        }
         final color = colors[index % colors.length];
         img.drawLine(
           canvas,
@@ -447,7 +532,7 @@ class DwPoseService {
       }
       for (var index = 0; index < 18; index++) {
         final point = points[index];
-        if (!_visible(point)) continue;
+        if (!_visibleWithin(point, width, height)) continue;
         final color = colors[index % colors.length];
         img.fillCircle(
           canvas,
@@ -461,7 +546,10 @@ class DwPoseService {
         for (var index = 0; index < handEdges.length; index++) {
           final first = points[handStart + handEdges[index][0]];
           final second = points[handStart + handEdges[index][1]];
-          if (!_visible(first) || !_visible(second)) continue;
+          if (!_visibleWithin(first, width, height) ||
+              !_visibleWithin(second, width, height)) {
+            continue;
+          }
           final color = _hsvColor(index / handEdges.length);
           img.drawLine(
             canvas,
@@ -476,7 +564,7 @@ class DwPoseService {
         }
         for (var index = 0; index < 21; index++) {
           final point = points[handStart + index];
-          if (!_visible(point)) continue;
+          if (!_visibleWithin(point, width, height)) continue;
           img.fillCircle(
             canvas,
             x: point.x.round(),
@@ -488,7 +576,7 @@ class DwPoseService {
       }
       for (var index = 24; index < 92; index++) {
         final point = points[index];
-        if (!_visible(point)) continue;
+        if (!_visibleWithin(point, width, height)) continue;
         img.fillCircle(
           canvas,
           x: point.x.round(),
@@ -503,6 +591,9 @@ class DwPoseService {
 
   static bool _visible(DwPosePoint point) =>
       point.score > keypointThreshold && point.x >= 0 && point.y >= 0;
+
+  static bool _visibleWithin(DwPosePoint point, int width, int height) =>
+      _visible(point) && point.x < width && point.y < height;
 
   static img.ColorRgb8 _hsvColor(double hue) {
     final h = hue * 6;

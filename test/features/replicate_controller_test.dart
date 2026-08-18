@@ -7,6 +7,8 @@ import 'package:crypto/crypto.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
+import 'package:filmstoryboard/features/replicate/data/dwpose_model_manager.dart';
+import 'package:filmstoryboard/features/replicate/data/dwpose_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
 import 'package:filmstoryboard/features/replicate/data/replication_frame_analysis_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replication_generation_review_service.dart';
@@ -35,6 +37,171 @@ import 'package:path/path.dart' as p;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('人工关节调整持久化并重绘项目内骨架文件', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_pose_edit_save_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '关节编辑保存测试');
+    final frame = File(p.join(root.path, 'frame.jpg'))
+      ..writeAsBytesSync([1, 2, 3, 4]);
+    final shot = shootingController.addShot()!;
+    shootingController.updateShot(shot.copyWith(framePath: frame.path));
+    final repository = ReplicateRepository(database);
+    final now = DateTime.now().toUtc();
+    final originalPose = ReplicateEditablePoseData(
+      sourceWidth: 100,
+      sourceHeight: 80,
+      people: [
+        ReplicatePosePerson(
+          id: 'pose-person-0',
+          leftToRightOrder: 0,
+          modelSlotIndex: 0,
+          bounds: const ReplicatePoseBounds(x: 10, y: 5, width: 70, height: 70),
+          keypoints: [
+            for (var index = 0; index < 133; index++)
+              ReplicatePoseKeypoint(
+                index: index,
+                x: 20 + (index % 8).toDouble(),
+                y: 20 + (index ~/ 8).toDouble(),
+                confidence: 0.9,
+              ),
+          ],
+        ),
+      ],
+    );
+    repository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        sourceFrameFingerprint: sha256
+            .convert(frame.readAsBytesSync())
+            .toString(),
+        editablePose: originalPose,
+        personCount: 1,
+        skeletonPath: p.join(root.path, 'external-skeleton.png'),
+        poseStatus: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    controller.refresh();
+    final adjustedPose = ReplicateEditablePoseData(
+      sourceWidth: originalPose.sourceWidth,
+      sourceHeight: originalPose.sourceHeight,
+      people: [
+        originalPose.people.single.copyWith(
+          keypoints: [
+            for (final point in originalPose.people.single.keypoints)
+              point.index == 10
+                  ? point.copyWith(x: 999, y: -20, manuallyAdjusted: true)
+                  : point,
+          ],
+        ),
+      ],
+    );
+
+    await controller.saveEditablePoseForShot(shot.id, adjustedPose);
+
+    final restored = repository.getShotGuide(shot.id)!;
+    final changed = restored.editablePose.people.single.keypoints[10];
+    expect(changed.x, 99);
+    expect(changed.y, 0);
+    expect(changed.confidence, 1);
+    expect(changed.manuallyAdjusted, isTrue);
+    expect(File(restored.skeletonPath).existsSync(), isTrue);
+    expect(
+      p.isWithin(
+        p.absolute(p.join(directories.analyses.path, 'dwpose')),
+        p.absolute(restored.skeletonPath),
+      ),
+      isTrue,
+      reason: '不得覆盖外部参考骨架文件',
+    );
+  });
+
+  test('DWPose 提取结构化数据按左到右持久化 133 点与模特槽', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_pose_extract_structured_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: 'DWPose 结构化提取测试');
+    final frame = File(p.join(root.path, 'frame.png'))
+      ..writeAsBytesSync(img.encodePng(img.Image(width: 100, height: 80)));
+    final shot = shootingController.addShot()!;
+    shootingController.updateShot(shot.copyWith(framePath: frame.path));
+    final repository = ReplicateRepository(database);
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      dwPoseModelManager: _FakeDwPoseModelManager(root),
+      dwPoseService: _FakeDwPoseService(
+        people: [
+          _dwPosePerson(left: 60, score: 0.99),
+          _dwPosePerson(left: 5, score: 0.8),
+        ],
+      ),
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await controller.extractDwPoseForShot(shot.id);
+
+    final guide = repository.getShotGuide(shot.id)!;
+    expect(guide.poseStatus, ProcessingStatus.completed);
+    expect(guide.editablePose.sourceWidth, 100);
+    expect(guide.editablePose.sourceHeight, 80);
+    expect(guide.editablePose.people, hasLength(2));
+    expect(guide.editablePose.people.map((person) => person.bounds.x), [5, 60]);
+    expect(guide.editablePose.people.map((person) => person.modelSlotIndex), [
+      0,
+      1,
+    ]);
+    expect(
+      guide.editablePose.people.every(
+        (person) => person.keypoints.length == 133,
+      ),
+      isTrue,
+    );
+  });
 
   test('从故事板生成新脚本后复刻工作区跟随新脚本', () async {
     final root = await Directory.systemTemp.createTemp(
@@ -508,6 +675,18 @@ void main() {
       ReplicateShotGuide(
         shotId: shot.id,
         personCount: 2,
+        editablePose: const ReplicateEditablePoseData(
+          sourceWidth: 100,
+          sourceHeight: 80,
+          people: [
+            ReplicatePosePerson(
+              id: 'pose-person-0',
+              leftToRightOrder: 0,
+              modelSlotIndex: 0,
+              bounds: ReplicatePoseBounds(x: 10, y: 5, width: 70, height: 70),
+            ),
+          ],
+        ),
         skeletonPath: generatedSkeleton.path,
         poseStatus: ProcessingStatus.completed,
         createdAt: now,
@@ -533,6 +712,7 @@ void main() {
     expect(generatedSkeleton.existsSync(), isFalse);
     final guide = repository.getShotGuide(shot.id);
     expect(guide?.skeletonPath, isEmpty);
+    expect(guide?.editablePose.isEmpty, isTrue);
     expect(guide?.poseStatus, ProcessingStatus.pending);
     expect(guide?.personCount, 2, reason: '移除骨架不应丢失已经识别的人数');
   });
@@ -3672,6 +3852,55 @@ ReplicationGenerationReviewResult _generationReviewPassed() =>
     const ReplicationGenerationReviewResult(
       passed: true,
       rawResponse: '{"passed":true,"issue":null}',
+    );
+
+class _FakeDwPoseModelManager extends DwPoseModelManager {
+  _FakeDwPoseModelManager(this.root);
+
+  final Directory root;
+
+  @override
+  Future<DwPoseModelFiles> loadBundledModels() async => DwPoseModelFiles(
+    detector: File(p.join(root.path, 'detector.onnx')),
+    pose: File(p.join(root.path, 'pose.onnx')),
+  );
+}
+
+class _FakeDwPoseService extends DwPoseService {
+  _FakeDwPoseService({required this.people});
+
+  final List<DwPosePerson> people;
+
+  @override
+  Future<DwPoseExtractionResult> extract({
+    required File imageFile,
+    required File outputFile,
+    required DwPoseModelFiles models,
+  }) async {
+    await outputFile.parent.create(recursive: true);
+    await outputFile.writeAsBytes(
+      img.encodePng(img.Image(width: 100, height: 80)),
+    );
+    return DwPoseExtractionResult(
+      skeletonFile: outputFile,
+      sourceWidth: 100,
+      sourceHeight: 80,
+      people: people,
+    );
+  }
+}
+
+DwPosePerson _dwPosePerson({required double left, required double score}) =>
+    DwPosePerson(
+      box: DwPoseBox(left, 5, left + 30, 75, score),
+      keypoints: [
+        for (var index = 0; index < 133; index++)
+          DwPosePoint(
+            left + (index % 5),
+            (10 + index ~/ 5).clamp(0, 79).toDouble(),
+            0.9,
+          ),
+      ],
     );
 
 class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {

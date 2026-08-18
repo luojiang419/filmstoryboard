@@ -137,6 +137,7 @@ void main() {
           ),
         ],
         personCount: 1,
+        editablePose: _editablePoseFixture(),
         actionDescription: '人物侧身并抬起右手拿产品',
         poseConstraints: '锁定头肩夹角、右肘与右腕位置',
         skeletonPath: fixtureImage.absolute.path,
@@ -790,6 +791,12 @@ void main() {
     );
     await tester.ensureVisible(skeletonAsset);
     await tester.pump();
+    expect(find.byTooltip('编辑动作关节'), findsOneWidget);
+    await tester.tap(find.byTooltip('编辑动作关节'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('pose-editor-canvas')), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
     await tester.tap(skeletonAsset);
     await tester.pump(const Duration(milliseconds: 300));
     expect(
@@ -2786,6 +2793,28 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   });
 }
+
+ReplicateEditablePoseData _editablePoseFixture() => ReplicateEditablePoseData(
+  sourceWidth: 512,
+  sourceHeight: 512,
+  people: [
+    ReplicatePosePerson(
+      id: 'pose-person-0',
+      leftToRightOrder: 0,
+      modelSlotIndex: 0,
+      bounds: const ReplicatePoseBounds(x: 80, y: 30, width: 350, height: 450),
+      keypoints: [
+        for (var index = 0; index < 133; index++)
+          ReplicatePoseKeypoint(
+            index: index,
+            x: 120 + (index % 12) * 18,
+            y: 80 + (index ~/ 12) * 28,
+            confidence: 0.9,
+          ),
+      ],
+    ),
+  ],
+);
 
 class _SuccessfulBuildScriptAnalysisController
     extends ShootingScriptAnalysisController {

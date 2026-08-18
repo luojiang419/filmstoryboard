@@ -113,7 +113,7 @@ void main() {
     expect(boxes.single.score, closeTo(0.81, 0.001));
   });
 
-  test('SimCC 解码生成 133 点并插入颈部映射为 OpenPose 顺序', () {
+  test('SimCC 解码保留 COCO-WholeBody 原生 133 点', () {
     const keypoints = 133;
     const xBins = 576;
     const yBins = 768;
@@ -136,14 +136,38 @@ void main() {
       scaleHeight: 384,
     );
 
-    expect(decoded, hasLength(134));
-    expect(decoded[1].score, greaterThan(0.3), reason: '颈部应由左右肩联合生成');
-    expect(decoded[2].x, isNot(decoded[3].x), reason: '肩肘腕映射后不应坍缩');
+    expect(decoded, hasLength(133));
+    expect(decoded[5].score, greaterThan(0.3));
+    expect(decoded[5].x, isNot(decoded[6].x), reason: '左右肩原生点不应坍缩');
+  });
+
+  test('越界和非有限关键点被置为不可见且不足四个身体点时拒绝人物', () {
+    final points = List.generate(
+      133,
+      (index) => switch (index) {
+        0 => const DwPosePoint(10, 10, 0.9),
+        1 => const DwPosePoint(double.nan, 10, 0.9),
+        2 => const DwPosePoint(200, 10, 0.9),
+        _ => const DwPosePoint(-1, -1, 0),
+      },
+    );
+
+    final sanitized = DwPoseService.sanitizeKeypoints(
+      points,
+      width: 100,
+      height: 80,
+    );
+
+    expect(sanitized, hasLength(133));
+    expect(sanitized[0].score, 0.9);
+    expect(sanitized[1].score, 0);
+    expect(sanitized[2].score, 0);
+    expect(DwPoseService.hasValidBody(sanitized), isFalse);
   });
 
   test('骨架渲染输出黑底彩色身体、手部与面部关键点', () {
     final points = List.generate(
-      134,
+      133,
       (index) =>
           DwPosePoint(20 + (index % 20) * 4, 20 + (index ~/ 20) * 12, 0.9),
     );

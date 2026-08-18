@@ -30,6 +30,7 @@ import '../application/replicate_controller.dart';
 import '../data/seedance_prompt_generation_service.dart';
 import '../domain/h3_prompt_style.dart';
 import '../domain/replicate_models.dart';
+import 'replicate_pose_editor_dialog.dart';
 import 'replicate_shot_navigation_controller.dart';
 
 bool _hasActiveComposing(TextEditingController controller) {
@@ -6019,6 +6020,7 @@ class _PrepareAssetsContent extends StatelessWidget {
       onAnalyzeFrame: controller.analyzeReplicationFrame,
       onExtractPose: controller.extractDwPoseForShot,
       onRemovePose: controller.removeDwPoseForShot,
+      onSaveEditablePose: controller.saveEditablePoseForShot,
       onTogglePreservedElement: controller.setPreservedElementSelected,
       onSetSubjectDecision: controller.setDetectedSubjectDecision,
       onSetFullOutfitView:
@@ -6108,6 +6110,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.onAnalyzeFrame,
     required this.onExtractPose,
     required this.onRemovePose,
+    required this.onSaveEditablePose,
     required this.onTogglePreservedElement,
     required this.onSetSubjectDecision,
     required this.onSetFullOutfitView,
@@ -6170,6 +6173,11 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   final Future<void> Function(String shotId) onAnalyzeFrame;
   final Future<void> Function(String shotId) onExtractPose;
   final Future<void> Function(String shotId) onRemovePose;
+  final Future<void> Function(
+    String shotId,
+    ReplicateEditablePoseData editablePose,
+  )
+  onSaveEditablePose;
   final void Function(String shotId, String elementId, bool selected)
   onTogglePreservedElement;
   final void Function(
@@ -6425,6 +6433,8 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                   onAnalyzeFrame: () => widget.onAnalyzeFrame(shot.id),
                   onExtractPose: () => widget.onExtractPose(shot.id),
                   onRemovePose: () => widget.onRemovePose(shot.id),
+                  onSaveEditablePose: (editablePose) =>
+                      widget.onSaveEditablePose(shot.id, editablePose),
                   onTogglePreservedElement: (elementId, selected) => widget
                       .onTogglePreservedElement(shot.id, elementId, selected),
                   onSetSubjectDecision: (subjectId, decision) =>
@@ -6503,6 +6513,7 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onAnalyzeFrame,
     required this.onExtractPose,
     required this.onRemovePose,
+    required this.onSaveEditablePose,
     required this.onTogglePreservedElement,
     required this.onSetSubjectDecision,
     required this.onSetFullOutfitView,
@@ -6565,6 +6576,8 @@ class _ShotAssetDropRow extends StatelessWidget {
   final Future<void> Function() onAnalyzeFrame;
   final Future<void> Function() onExtractPose;
   final Future<void> Function() onRemovePose;
+  final Future<void> Function(ReplicateEditablePoseData editablePose)
+  onSaveEditablePose;
   final void Function(String elementId, bool selected) onTogglePreservedElement;
   final void Function(String subjectId, ReplicateSubjectDecision decision)
   onSetSubjectDecision;
@@ -7116,6 +7129,15 @@ class _ShotAssetDropRow extends StatelessWidget {
                   '镜头 ${shot.shotNumber.toString().padLeft(2, '0')} · DWPose 骨架',
               imageKey: ValueKey('dwpose-gallery-image-${shot.id}'),
             ),
+            onEdit:
+                guide!.editablePose.isEmpty ||
+                    guide!.editablePose.sourceWidth <= 0 ||
+                    guide!.editablePose.sourceHeight <= 0 ||
+                    guide!.editablePose.people.any(
+                      (person) => person.keypoints.length != 133,
+                    )
+                ? null
+                : () => _openPoseEditor(context),
             onRemove: onRemovePose,
           ),
         _EmptyAssetBindingSlot(
@@ -7128,6 +7150,16 @@ class _ShotAssetDropRow extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _openPoseEditor(BuildContext context) async {
+    final pose = guide?.editablePose ?? ReplicateEditablePoseData.empty;
+    if (pose.isEmpty) return;
+    final edited = await showReplicatePoseEditorDialog(
+      context: context,
+      initialPose: pose,
+    );
+    if (edited != null) await onSaveEditablePose(edited);
   }
 
   Future<void> _changeSubjectDecision(
@@ -8530,11 +8562,13 @@ class _SkeletonAssetSlot extends StatelessWidget {
     super.key,
     required this.path,
     required this.onTap,
+    this.onEdit,
     required this.onRemove,
   });
 
   final String path;
   final VoidCallback onTap;
+  final VoidCallback? onEdit;
   final VoidCallback onRemove;
 
   @override
@@ -8600,6 +8634,19 @@ class _SkeletonAssetSlot extends StatelessWidget {
                   ),
                 ),
               ),
+            ),
+          ),
+          Positioned(
+            bottom: 0,
+            right: 0,
+            child: IconButton(
+              key: const ValueKey('edit-pose-joints'),
+              tooltip: onEdit == null ? '暂无可编辑关节数据' : '编辑动作关节',
+              onPressed: onEdit,
+              icon: const Icon(Icons.edit_location_alt_outlined, size: 16),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              visualDensity: VisualDensity.compact,
             ),
           ),
           Positioned(
