@@ -201,18 +201,20 @@ void main() {
     );
 
     await controller.analyzeReplicationFrame(shot.id);
+    expect(analysisService.previousSelections, hasLength(1));
     expect(
       controller.shotGuideFor(shot.id)?.selectedElements.single.label,
       '细金属框眼镜',
     );
-    expect(analysisService.previousSelections.last.single.selected, isTrue);
-    expect(
-      analysisService.previousSubjects.last.single.decision,
-      ReplicateSubjectDecision.replace,
-    );
+    expect(controller.value.message, contains('不会重复请求视觉模型'));
 
     frame.writeAsBytesSync([4, 5, 6]);
     expect(controller.isShotGuideCurrent(shot.id), isFalse);
+    await controller.analyzeReplicationFrame(shot.id);
+    expect(analysisService.previousSelections, hasLength(2));
+    expect(analysisService.previousSelections.last, isEmpty);
+    expect(analysisService.previousSubjects.last, isEmpty);
+    expect(controller.isShotGuideCurrent(shot.id), isTrue);
   });
 
   test('移除动作骨架会清空提交状态并只删除项目内生成文件', () async {
@@ -1676,8 +1678,13 @@ void main() {
     );
     expect(imageService.requests[0].prompt, contains('图片1'));
     expect(imageService.requests[0].prompt, contains('替换'));
-    expect(visionService.analyzeCount, 2);
-    expect(imageService.requests[0].prompt, contains('【视觉模型对原帧的结构维度解析】'));
+    expect(visionService.analyzeCount, 0);
+    expect(visionService.completionPrompts, isEmpty);
+    expect(
+      imageService.requests[0].prompt,
+      isNot(contains('【视觉模型对原帧的结构维度解析】')),
+    );
+    expect(imageService.requests[0].prompt, contains('人物三分之二侧身'));
     expect(imageService.requests[0].prompt, isNot(contains('女模特在窗边展示产品')));
     expect(imageService.requests[0].prompt, isNot(contains('蓝色包装瓶')));
     expect(imageService.requests[0].prompt, isNot(contains('叙事画面')));

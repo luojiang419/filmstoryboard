@@ -636,12 +636,10 @@ void main() {
     );
     expect(find.text('分辨率'), findsOneWidget);
     expect(find.text('跟随原帧画幅'), findsOneWidget);
-    expect(find.text('多视图裁切增强（可选）'), findsOneWidget);
-    expect(find.textContaining('默认关闭并直接上传原图'), findsOneWidget);
-    await tester.tap(
+    expect(
       find.byKey(const ValueKey('replicate-multi-view-enhancement-enabled')),
+      findsNothing,
     );
-    await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const ValueKey('replicate-inherit-source-aspect-ratio')),
     );
@@ -658,7 +656,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(replicateController.value.run?.generationAspectRatio, '1:1');
     expect(replicateController.value.run?.inheritSourceAspectRatio, isFalse);
-    expect(replicateController.value.run?.multiViewEnhancementEnabled, isTrue);
+    expect(replicateController.value.run?.multiViewEnhancementEnabled, isFalse);
     expect(
       replicateRepository
           .getRun(replicateController.value.run!.id)
@@ -670,8 +668,8 @@ void main() {
       replicateRepository
           .getRun(replicateController.value.run!.id)
           ?.multiViewEnhancementEnabled,
-      isTrue,
-      reason: '可选多视图增强开关必须随当前复刻任务持久化',
+      isFalse,
+      reason: '复刻阶段不得再启用会调用视觉模型的多视图分析',
     );
     expect(find.text('资产库'), findsOneWidget);
     expect(

@@ -49,7 +49,7 @@ class ReplicationFrameAnalysisService {
       settings: settings,
       prompt: buildPrompt(shotNumber: shotNumber),
       imageFiles: [imageFile],
-      maxTokens: 2400,
+      maxTokens: 1800,
       allowThinking: allowThinking,
       compressOversizedImages: true,
     );

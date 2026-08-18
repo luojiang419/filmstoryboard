@@ -1075,12 +1075,16 @@ class VisionStoryboardService {
     for (final imageFile in imageFiles) {
       if (!imageFile.existsSync()) continue;
       final bytes = await imageFile.readAsBytes();
-      if (compressOversizedImages &&
-          bytes.length > _oversizedImageThresholdBytes) {
+      if (compressOversizedImages) {
         final transferable = TransferableTypedData.fromList([bytes]);
+        final mimeType = _mimeTypeForPath(imageFile.path);
         imageDataUrls.add(
           await Isolate.run(
-            () => _compressVisionImageInWorker(transferable, imageFile.path),
+            () => _compressVisionImageInWorker(
+              transferable,
+              imageFile.path,
+              mimeType,
+            ),
           ),
         );
       } else {
@@ -2383,11 +2387,21 @@ String _normalizedChatPath(String path) {
 String _compressVisionImageInWorker(
   TransferableTypedData transferable,
   String sourcePath,
+  String sourceMimeType,
 ) {
   final bytes = transferable.materialize().asUint8List();
   final decoded = img.decodeImage(bytes);
   if (decoded == null) {
+    if (bytes.length <= VisionStoryboardService._oversizedImageThresholdBytes) {
+      return 'data:$sourceMimeType;base64,${base64Encode(bytes)}';
+    }
     throw FormatException('超限视觉图片无法解码压缩：$sourcePath');
+  }
+
+  if (bytes.length <= VisionStoryboardService._oversizedImageThresholdBytes &&
+      decoded.width <= 1280 &&
+      decoded.height <= 1280) {
+    return 'data:$sourceMimeType;base64,${base64Encode(bytes)}';
   }
 
   var current = decoded;

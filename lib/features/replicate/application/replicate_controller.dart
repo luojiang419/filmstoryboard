@@ -229,9 +229,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _generationReviewService =
         generationReviewService ??
         ReplicationGenerationReviewService(visionService: _visionService);
-    _assetViewSelectionService =
-        assetViewSelectionService ??
-        ReplicationAssetViewSelectionService(visionService: _visionService);
     _dwPoseModelManager = dwPoseModelManager ?? DwPoseModelManager();
     _dwPoseService = dwPoseService ?? DwPoseService();
     _ownsDwPoseService = dwPoseService == null;
@@ -263,7 +260,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsVisionService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
-  late final ReplicationAssetViewSelectionService _assetViewSelectionService;
   late final DwPoseModelManager _dwPoseModelManager;
   late final DwPoseService _dwPoseService;
   late final bool _ownsDwPoseService;
@@ -429,6 +425,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final stored = _repository.getShotGuide(shot.id);
     final now = DateTime.now().toUtc();
     final fingerprint = _sourceFrameFingerprint(shot);
+    if (stored?.sourceFrameFingerprint == fingerprint &&
+        stored?.analysisStatus == ProcessingStatus.completed) {
+      _reloadShotGuides(
+        scriptId,
+        message: '镜头 ${shot.shotNumber} 原帧已分析，直接绑定资产后即可复刻，不会重复请求视觉模型',
+      );
+      return;
+    }
     final previous = stored?.sourceFrameFingerprint == fingerprint
         ? stored
         : null;
@@ -480,16 +484,17 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         message: '镜头 ${shot.shotNumber} 原帧分析完成，请选择主体替换/移除，并勾选唯一允许保留的配饰和道具',
       );
     } catch (error) {
+      final friendlyError = _frameAnalysisErrorMessage(error);
       _repository.upsertShotGuide(
         running.copyWith(
           analysisStatus: ProcessingStatus.failed,
-          errorMessage: '$error',
+          errorMessage: friendlyError,
           updatedAt: DateTime.now().toUtc(),
         ),
       );
       _reloadShotGuides(
         scriptId,
-        errorMessage: '镜头 ${shot.shotNumber} 原帧分析失败：$error',
+        errorMessage: '镜头 ${shot.shotNumber} 原帧分析失败：$friendlyError',
       );
     } finally {
       _finishFrameAnalysis(scriptId);
@@ -498,7 +503,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }
 
   Future<void> analyzeAllReplicationFrames() async {
-    final shotIds = [for (final shot in value.confirmedShots) shot.id];
+    final shotIds = [
+      for (final shot in value.confirmedShots)
+        if (!isShotGuideCurrent(shot.id) ||
+            shotGuideFor(shot.id)?.analysisStatus != ProcessingStatus.completed)
+          shot.id,
+    ];
+    if (shotIds.isEmpty) {
+      value = value.copyWith(message: '所有原帧均已分析，请绑定资产后直接复刻', errorMessage: '');
+      return;
+    }
     for (var offset = 0; offset < shotIds.length; offset += 4) {
       final end = (offset + 4).clamp(0, shotIds.length).toInt();
       await Future.wait([
@@ -506,6 +520,17 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           analyzeReplicationFrame(shotId),
       ]);
     }
+  }
+
+  static String _frameAnalysisErrorMessage(Object error) {
+    final message = '$error';
+    final normalized = message.toLowerCase();
+    if (normalized.contains('context size has been exceeded') ||
+        normalized.contains('context length') ||
+        normalized.contains('maximum context')) {
+      return '视觉模型上下文超限。已停止本次请求，请重试分析原帧；分析成功后绑定资产并复刻时不会再调用视觉模型。';
+    }
+    return message;
   }
 
   Future<void> extractDwPoseForShot(String shotId) async {
@@ -1633,14 +1658,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         references,
         guide,
       );
-      var preparedReferences = await _prepareSelectedAssetViews(
-        shot: shot,
-        run: run,
-        original: original,
-        references: decisionReferences,
-        maximumReferenceCount:
-            descriptor.maxReferenceImages - 1 - (skeleton == null ? 0 : 1),
-      );
+      var preparedReferences = decisionReferences;
       if (NanoBananaProModelCapability.supports(model)) {
         preparedReferences = _referencesInNanoBananaManifestOrder(
           shot: shot,
@@ -1648,18 +1666,18 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           references: preparedReferences,
         );
       }
-      if (!_disposed) {
-        _setReplicationMessage(
-          context.scriptId,
-          '正在用视觉模型解析镜头 ${shot.shotNumber} 的画面维度…',
-        );
-      }
-      final prompt = await _buildVisionEnhancedGenerationPrompt(
+      final prompt = _finalizeGenerationPrompt(
         shot: shot,
         references: preparedReferences,
         model: model,
         original: original,
-        guide: guide,
+        automaticPrompt: _generationPrompt(
+          shot,
+          preparedReferences,
+          model,
+          guide: guide,
+          hasPoseSkeleton: skeleton != null,
+        ),
         hasPoseSkeleton: skeleton != null,
       );
       record = record.copyWith(
@@ -2183,65 +2201,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     },
   });
 
-  Future<String> _buildVisionEnhancedGenerationPrompt({
-    required ScriptShot shot,
-    required List<_ReplacementReference> references,
-    required String model,
-    required File original,
-    required ReplicateShotGuide? guide,
-    required bool hasPoseSkeleton,
-  }) async {
-    try {
-      final analysis = await _visionService.analyzeImage(
-        settings: _settingsController.value,
-        imageFile: original,
-        sequenceNo: shot.shotNumber,
-        rowIndex: 0,
-        columnIndex: shot.shotNumber - 1,
-        allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
-      );
-      return _finalizeGenerationPrompt(
-        shot: shot,
-        references: references,
-        model: model,
-        original: original,
-        automaticPrompt: _generationPrompt(
-          shot,
-          references,
-          model,
-          analysis: analysis,
-          guide: guide,
-          hasPoseSkeleton: hasPoseSkeleton,
-        ),
-        hasPoseSkeleton: hasPoseSkeleton,
-      );
-    } catch (_) {
-      // 视觉模型不可用、超时或返回格式异常时，保留原有一键生成能力。
-      return _finalizeGenerationPrompt(
-        shot: shot,
-        references: references,
-        model: model,
-        original: original,
-        automaticPrompt: _generationPrompt(
-          shot,
-          references,
-          model,
-          guide: guide,
-          hasPoseSkeleton: hasPoseSkeleton,
-        ),
-        hasPoseSkeleton: hasPoseSkeleton,
-      );
-    }
-  }
-
-  Future<String> _finalizeGenerationPrompt({
+  String _finalizeGenerationPrompt({
     required ScriptShot shot,
     required List<_ReplacementReference> references,
     required String model,
     required File original,
     required String automaticPrompt,
     required bool hasPoseSkeleton,
-  }) async {
+  }) {
     if (NanoBananaProModelCapability.supports(model)) {
       return const NanoBananaReplicationPromptCompiler().compile(
         NanoBananaReplicationPromptInput(
@@ -2259,81 +2226,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         ),
       );
     }
-    final prompt = await _resolveUserPriorityGenerationPrompt(
-      shot: shot,
-      references: references,
-      original: original,
-      automaticPrompt: automaticPrompt,
-    );
-    return _appendFinalTextSafetyCheck(prompt);
-  }
-
-  Future<String> _resolveUserPriorityGenerationPrompt({
-    required ScriptShot shot,
-    required List<_ReplacementReference> references,
-    required File original,
-    required String automaticPrompt,
-  }) async {
     final instructions = shot.replicationInstructions.trim();
-    if (instructions.isEmpty) return automaticPrompt;
-    final fallback = _userPriorityFallbackPrompt(
-      automaticPrompt: automaticPrompt,
-      instructions: instructions,
-    );
-    try {
-      final resolved = await _visionService.complete(
-        settings: _settingsController.value,
-        imageFiles: [original],
-        maxTokens: 1800,
-        allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
-        prompt: _userPriorityResolutionPrompt(
-          shot: shot,
-          references: references,
-          automaticPrompt: automaticPrompt,
-          instructions: instructions,
-        ),
-      );
-      final normalized = resolved
-          .trim()
-          .replaceFirst(
-            RegExp(r'^```(?:text|markdown)?\s*', multiLine: true),
-            '',
-          )
-          .replaceFirst(RegExp(r'\s*```$', multiLine: true), '')
-          .trim();
-      return normalized.isEmpty ||
-              !_retainsAutomaticReplicationConstraints(
-                automaticPrompt: automaticPrompt,
-                resolvedPrompt: normalized,
-              )
-          ? fallback
-          : normalized;
-    } catch (_) {
-      // 解析服务异常时仍把用户要求明确置于末尾最高优先级，避免静默丢失。
-      return fallback;
-    }
-  }
-
-  static bool _retainsAutomaticReplicationConstraints({
-    required String automaticPrompt,
-    required String resolvedPrompt,
-  }) {
-    const coreMarkers = ['图片1是原视频镜头', '绑定资产硬约束', '画面文字与标识零容忍硬约束'];
-    const conditionalMarkers = [
-      'Gemini 3 精确多图复刻执行协议',
-      'DWPose 高精度人物姿势骨架图',
-      '多模特身份与位置绑定硬约束',
-      '多模特产品一一绑定硬约束',
-      '用户已勾选保留元素',
-      '未勾选元素：必须移除',
-    ];
-    for (final marker in [...coreMarkers, ...conditionalMarkers]) {
-      if (automaticPrompt.contains(marker) &&
-          !resolvedPrompt.contains(marker)) {
-        return false;
-      }
-    }
-    return true;
+    final prompt = instructions.isEmpty
+        ? automaticPrompt
+        : _userPriorityFallbackPrompt(
+            automaticPrompt: automaticPrompt,
+            instructions: instructions,
+          );
+    return _appendFinalTextSafetyCheck(prompt);
   }
 
   static String _userPriorityFallbackPrompt({
@@ -2344,34 +2244,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       '【用户补充说明：最高优先级】$instructions\n'
       '冲突处理：用户补充说明可覆盖自动解析和资产描述，但不得取消或改写“原帧主体处理计划”的逐项决策；只有计划中明确标记保留的原人物或原产品可以沿用，其他主体不得改为保留，也不得改变图片1的光线与调色。原帧配饰和道具只有用户已勾选的白名单元素可以继承；未勾选项即使在补充说明中被提及也必须移除。\n'
       '文字例外判定：只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才可开放该段指定文本；其他情况仍必须执行无文字、无 Logo 硬约束。';
-
-  static String _userPriorityResolutionPrompt({
-    required ScriptShot shot,
-    required List<_ReplacementReference> references,
-    required String automaticPrompt,
-    required String instructions,
-  }) =>
-      '''
-你是图像生成提示词编辑器。请根据图片1和以下文本，输出一份可直接提交给图片生成 API 的中文最终提示词。
-
-最高优先级规则：用户补充说明高于自动解析、镜头脚本和固定复刻规则；但图片1原视频帧的色彩风格、色温、明暗关系、对比度、光影层次和电影调色不可被任何文本覆盖。若用户说明涉及调色，只能将新实体融入图片1调色，不得另行换色或重调。
-
-镜头：${shot.shotNumber}
-当前绑定素材：${references.map((item) => '${_replacementTypeLabel(item.type)}「${item.name}」').join('、')}
-
-用户补充说明（最高优先级）：
-$instructions
-
-自动解析的提示词（仅作待清理草稿）：
-$automaticPrompt
-
-编辑要求：
-1. 保留与用户说明不冲突的镜头叙事、构图、动作、光影和已绑定素材要求；色彩与调色必须完整沿用图片1。
-2. 用户要求替换、移除或不要出现的元素，必须明确写为“不出现/替换为”并移除原有相反表述；人物配饰包括首饰、眼镜、帽子、包、手表、发饰等。
-3. 必须完整保留并逐项执行“原帧主体处理计划”。保留项完整沿用图片1中的对应主体；替换项不得继承图片1外观；移除项不得残留。不得改写任何一项处理方式。原帧配饰和道具只有“用户已勾选保留元素”可以继承；“未勾选元素：必须移除”中的每一项都必须消失并自然补全，即使用户补充说明提及也不得恢复。
-4. 必须完整保留自动提示词中的“画面文字与标识零容忍硬约束”。只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才允许该段指定文本；不得把参考图中的其他文字或 Logo 带入成图。
-5. 只输出最终提示词正文，不要解释、标题、Markdown、JSON 或分析过程。
-''';
 
   static const _textAndLogoExclusionConstraint =
       '【画面文字与标识零容忍硬约束】默认输出必须是纯净无字画面。图片1及其他参考图中出现的所有文字、数字、字母、符号组合、底部字幕、标题、贴纸文字、界面文字、水印、品牌 Logo、商标、台标、角标、二维码和条形码，都只能用于理解画面，严禁复制、临摹、变体重绘、替换或新增；必须将相关区域重建为符合场景的自然无字纹理或无标识造型。即使镜头脚本、视觉解析、资产名称、资产描述或产品包装提到了这些内容，也不得出现在成图中。唯一例外：用户在“复刻补充说明”中明确要求画面出现文本，并给出需要逐字呈现的具体内容；此时只允许生成该段指定文本，仍禁止参考图中的其他任何文字或 Logo。';
@@ -2384,14 +2256,12 @@ $automaticPrompt
     ScriptShot shot,
     List<_ReplacementReference> references,
     String model, {
-    VisionImageAnalysis? analysis,
     ReplicateShotGuide? guide,
     bool hasPoseSkeleton = false,
   }) {
     final base = _replacementPrompt(
       shot,
       references,
-      analysis: analysis,
       guide: guide,
       hasPoseSkeleton: hasPoseSkeleton,
     );
@@ -4285,91 +4155,6 @@ $playbackSpeedBoundary
     ];
   }
 
-  Future<List<_ReplacementReference>> _prepareSelectedAssetViews({
-    required ScriptShot shot,
-    required ReplicateRun run,
-    required File original,
-    required List<_ReplacementReference> references,
-    required int maximumReferenceCount,
-  }) async {
-    if (!run.multiViewEnhancementEnabled ||
-        references.isEmpty ||
-        maximumReferenceCount <= references.length) {
-      return references;
-    }
-    final outputDirectory = Directory(
-      p.join(
-        _directories.analyses.path,
-        'replicate_asset_views',
-        _safeFileName(run.id),
-        _safeFileName(shot.id),
-      ),
-    );
-    final result = <_ReplacementReference>[];
-    for (var index = 0; index < references.length; index++) {
-      final reference = references[index];
-      final remainingAssets = references.length - index - 1;
-      final remainingBudget = maximumReferenceCount - result.length;
-      final maximumOutputCount = math.min(
-        3,
-        math.max(1, remainingBudget - remainingAssets),
-      );
-      if (maximumOutputCount <= 1 ||
-          !const {
-            ReplicateAssetType.character,
-            ReplicateAssetType.product,
-          }.contains(reference.type)) {
-        result.add(reference);
-        continue;
-      }
-      try {
-        if (!_disposed) {
-          _setReplicationMessage(
-            run.scriptId ?? value.selectedScriptId,
-            '正在为镜头 ${shot.shotNumber} 分析“${reference.name}”的多视图并选择最佳裁切…',
-          );
-        }
-        final prepared = await _assetViewSelectionService.prepare(
-          settings: _settingsController.value,
-          originalFrame: original,
-          assetImage: File(reference.path),
-          outputDirectory: outputDirectory,
-          shotNumber: shot.shotNumber,
-          assetId: reference.id,
-          assetName: reference.name,
-          assetType: reference.type,
-          slotLabel: reference.slotLabel,
-          maximumOutputCount: maximumOutputCount,
-        );
-        for (var viewIndex = 0; viewIndex < prepared.length; viewIndex++) {
-          final view = prepared[viewIndex];
-          result.add(
-            _ReplacementReference(
-              id: viewIndex == 0
-                  ? reference.id
-                  : '${reference.id}:view:$viewIndex',
-              type: reference.type,
-              name: reference.name,
-              description: [
-                reference.description,
-                if (view.description.isNotEmpty)
-                  view.isDetail
-                      ? '视觉模型选择的局部细节：${view.description}'
-                      : '视觉模型选择的镜头匹配主视图：${view.description}',
-              ].where((value) => value.trim().isNotEmpty).join('；'),
-              path: view.path,
-              slotLabel: reference.slotLabel,
-              isDetailCrop: view.isDetail,
-            ),
-          );
-        }
-      } catch (_) {
-        result.add(reference);
-      }
-    }
-    return result;
-  }
-
   List<_ReplacementReference> _referencesForSubjectDecisions(
     List<_ReplacementReference> references,
     ReplicateShotGuide? guide,
@@ -4730,7 +4515,6 @@ $playbackSpeedBoundary
   String _replacementPrompt(
     ScriptShot shot,
     List<_ReplacementReference> references, {
-    VisionImageAnalysis? analysis,
     ReplicateShotGuide? guide,
     bool hasPoseSkeleton = false,
   }) {
@@ -4766,9 +4550,7 @@ $playbackSpeedBoundary
           ? ''
           : '，特征：${reference.description.trim()}';
       final roleLabel = reference.slotLabel.isNotEmpty
-          ? reference.isDetailCrop
-                ? '${reference.slotLabel}局部细节裁切'
-                : _productDetailSlotIndex(reference.slotLabel) != null
+          ? _productDetailSlotIndex(reference.slotLabel) != null
                 ? '产品细节参考'
                 : '${reference.slotLabel}参考'
           : _replacementTypeLabel(reference.type);
@@ -4783,22 +4565,15 @@ $playbackSpeedBoundary
       final pairedCharacterLabel = productSlotIndex == null
           ? null
           : characterSlotLabelsByIndex[productSlotIndex];
-      if (!reference.isDetailCrop && characterSlotIndex != null) {
+      if (characterSlotIndex != null) {
         characterImageBySlot.putIfAbsent(characterSlotIndex, () => imageLabel);
       }
-      if (!reference.isDetailCrop && productSlotIndex != null) {
+      if (productSlotIndex != null) {
         productImageBySlot.putIfAbsent(productSlotIndex, () => imageLabel);
       }
       definitions.add(
         '$imageLabel 是$roleLabel“${reference.name}”$description。',
       );
-      if (reference.isDetailCrop) {
-        assetRequirements.add(
-          '$imageLabel 是视觉模型根据当前镜头选择的局部细节裁切，只用于补充“${reference.name}”在主视图中不可见的结构、接缝、边缘、材质或五官；'
-          '不得把局部裁切误当成完整主体，不得改变对应${reference.slotLabel.isEmpty ? '资产' : reference.slotLabel}主视图定义的整体轮廓、比例和朝向。',
-        );
-        continue;
-      }
       assetRequirements.add(switch ((reference.type, reference.slotLabel)) {
         (_, _) when productDetailSlotIndex != null =>
           '$imageLabel 只补充“${reference.name}”的局部结构、接缝、边缘、材质和纹理；不得替代${productSlotLabelsByIndex[productDetailSlotIndex] ?? '对应产品主视图'}定义的整体外形与比例。',
@@ -4882,7 +4657,6 @@ $playbackSpeedBoundary
       '质量执行：产品轮廓、比例、接缝、口袋、边缘、材质和反光应可辨；人物面部、手指与手物接触自然；不得出现新旧身份或产品特征融合、重复主体、残影和低清纹理。',
       _textAndLogoExclusionConstraint,
       ..._shotStructureInstructions(shot),
-      if (analysis != null) ..._visualStructureInstructions(analysis),
       '最终交付：一张自然真实、专业清晰、严格执行主体处理计划的复刻分镜图。',
     ].join('\n');
   }
@@ -4897,50 +4671,10 @@ $playbackSpeedBoundary
     _visionInstruction('摄影备注', shot.cameraNotes),
   ].where((instruction) => instruction.isNotEmpty).toList(growable: false);
 
-  List<String> _visualStructureInstructions(VisionImageAnalysis analysis) => [
-    '【视觉模型对原帧的结构维度解析】以下内容只用于锁定镜头语言、空间关系和运动趋势；主体外观是否沿用只服从“原帧主体处理计划”，不得根据解析文字额外恢复原人物服装、产品款式、道具外观或品牌包装。',
-    _visionInstruction(
-      '镜头与构图',
-      _joinVisionValues([
-        analysis.shotSize,
-        analysis.cameraAngle,
-        analysis.cameraMovement,
-        analysis.composition,
-      ]),
-    ),
-    _visionInstruction(
-      '朝向、视线与遮挡关系',
-      _joinVisionValues([
-        analysis.subjectDirection,
-        analysis.gazeDirection,
-        analysis.spatialRelation,
-      ]),
-    ),
-    _visionInstruction(
-      '动作阶段与运动趋势',
-      _joinVisionValues([analysis.actionStage, analysis.movementTrend]),
-    ),
-    _visionInstruction('光影（色彩以图片1实际画面为准）', analysis.lightingMood),
-    _visionInstruction(
-      '叙事时刻与镜头承接',
-      _joinVisionValues([
-        analysis.narrativeFunction,
-        analysis.chronologyCue,
-        analysis.transitionHint,
-      ]),
-    ),
-  ].where((instruction) => instruction.isNotEmpty).toList(growable: false);
-
   static String _visionInstruction(String label, String value) {
     final normalized = value.trim();
     return normalized.isEmpty ? '' : '$label：$normalized。';
   }
-
-  static String _joinVisionValues(Iterable<String> values) => values
-      .map((value) => value.trim())
-      .where((value) => value.isNotEmpty)
-      .toSet()
-      .join('；');
 
   static String _replacementTypeLabel(ReplicateAssetType type) =>
       switch (type) {
@@ -5757,7 +5491,6 @@ class _ReplacementReference {
     required this.description,
     required this.path,
     this.slotLabel = '',
-    this.isDetailCrop = false,
   });
 
   final String id;
@@ -5766,5 +5499,4 @@ class _ReplacementReference {
   final String description;
   final String path;
   final String slotLabel;
-  final bool isDetailCrop;
 }

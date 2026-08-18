@@ -5400,6 +5400,11 @@ class _NewPrepareAssetsStep extends StatelessWidget {
     final isExtractingDwPose = state.shotGuides.any(
       (guide) => guide.poseStatus == ProcessingStatus.running,
     );
+    final unanalyzedFrameCount = state.confirmedShots.where((shot) {
+      final guide = controller.shotGuideFor(shot.id);
+      return !controller.isShotGuideCurrent(shot.id) ||
+          guide?.analysisStatus != ProcessingStatus.completed;
+    }).length;
     final content = ListView(
       key: const ValueKey('replicate-asset-library-scroll'),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 20),
@@ -5420,11 +5425,14 @@ class _NewPrepareAssetsStep extends StatelessWidget {
         children: [
           _StepToolbar(
             title: '步骤 1 · 匹配资产图',
-            subtitle: '按当前脚本镜头顺序匹配参考资产图，核对后可继续复刻分镜。',
+            subtitle: '原帧只分析一次；资产格生成后直接添加参考资产，复刻时复用已保存结果，不再调用视觉模型。',
             actions: [
               OutlinedButton.icon(
                 key: const ValueKey('analyze-all-replication-frames'),
-                onPressed: state.shots.isEmpty || state.isAnalyzingFrames
+                onPressed:
+                    state.shots.isEmpty ||
+                        state.isAnalyzingFrames ||
+                        unanalyzedFrameCount == 0
                     ? null
                     : controller.analyzeAllReplicationFrames,
                 icon: state.isAnalyzingFrames
@@ -5434,7 +5442,13 @@ class _NewPrepareAssetsStep extends StatelessWidget {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.center_focus_strong_rounded),
-                label: Text(state.isAnalyzingFrames ? '解析原帧中…' : '解析原帧动作与配饰'),
+                label: Text(
+                  state.isAnalyzingFrames
+                      ? '分析原帧中…'
+                      : unanalyzedFrameCount == 0 && state.shots.isNotEmpty
+                      ? '原帧均已分析'
+                      : '分析全部原帧',
+                ),
               ),
               OutlinedButton.icon(
                 key: const ValueKey('extract-all-dwpose'),
@@ -5561,7 +5575,6 @@ class _ReplicateGenerationParametersDialogState
   late final String _model;
   late String _aspectRatio;
   late bool _inheritSourceAspectRatio;
-  late bool _multiViewEnhancementEnabled;
   late String _imageSize;
   late String _quality;
 
@@ -5582,7 +5595,6 @@ class _ReplicateGenerationParametersDialogState
     super.initState();
     _model = widget.controller.resolvedGenerationModel;
     _inheritSourceAspectRatio = widget.run.inheritSourceAspectRatio;
-    _multiViewEnhancementEnabled = widget.run.multiViewEnhancementEnabled;
     _aspectRatio = _normalizedOption(
       widget.run.generationAspectRatio,
       _aspectRatioOptions,
@@ -5619,15 +5631,6 @@ class _ReplicateGenerationParametersDialogState
               value: _inheritSourceAspectRatio,
               onChanged: (value) =>
                   setState(() => _inheritSourceAspectRatio = value),
-            ),
-            SwitchListTile.adaptive(
-              key: const ValueKey('replicate-multi-view-enhancement-enabled'),
-              contentPadding: EdgeInsets.zero,
-              title: const Text('多视图裁切增强（可选）'),
-              subtitle: const Text('默认关闭并直接上传原图；仅当资产图本身是多视图拼图时开启'),
-              value: _multiViewEnhancementEnabled,
-              onChanged: (value) =>
-                  setState(() => _multiViewEnhancementEnabled = value),
             ),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
@@ -5724,7 +5727,7 @@ class _ReplicateGenerationParametersDialogState
             widget.controller.updateGenerationDefaults(
               aspectRatio: _aspectRatio,
               inheritSourceAspectRatio: _inheritSourceAspectRatio,
-              multiViewEnhancementEnabled: _multiViewEnhancementEnabled,
+              multiViewEnhancementEnabled: false,
               imageSize: _imageSize,
               quality: _quality,
             );
@@ -6477,6 +6480,7 @@ class _ShotAssetDropRow extends StatelessWidget {
     final analysisRunning = guide?.analysisStatus == ProcessingStatus.running;
     final hasAnalysisResult =
         guide?.analysisStatus == ProcessingStatus.completed;
+    final analysisReady = hasAnalysisResult && guideIsCurrent;
     final poseRunning = guide?.poseStatus == ProcessingStatus.running;
     final poseReady =
         guide?.poseStatus == ProcessingStatus.completed &&
@@ -6570,7 +6574,9 @@ class _ShotAssetDropRow extends StatelessWidget {
                     if (replicationStatus != null) replicationStatus,
                     OutlinedButton.icon(
                       key: ValueKey('analyze-replication-frame-${shot.id}'),
-                      onPressed: analysisRunning ? null : onAnalyzeFrame,
+                      onPressed: analysisRunning || analysisReady
+                          ? null
+                          : onAnalyzeFrame,
                       icon: analysisRunning
                           ? const SizedBox(
                               width: 14,
@@ -6581,7 +6587,13 @@ class _ShotAssetDropRow extends StatelessWidget {
                               Icons.center_focus_strong_rounded,
                               size: 16,
                             ),
-                      label: Text(hasAnalysisResult ? '重新解析' : '分析原帧'),
+                      label: Text(
+                        analysisReady
+                            ? '原帧已分析'
+                            : guide?.analysisStatus == ProcessingStatus.failed
+                            ? '重试分析原帧'
+                            : '分析原帧',
+                      ),
                     ),
                     const SizedBox(width: 6),
                     OutlinedButton.icon(

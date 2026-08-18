@@ -90,6 +90,47 @@ void main() {
     expect(await source.readAsBytes(), orderedEquals(originalBytes));
   });
 
+  test('完整视觉请求会缩小体积未超限的高分辨率图片', () async {
+    Map<String, dynamic>? requestBody;
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return _chatResponse('高分辨率图片已接收');
+      }),
+    );
+    addTearDown(service.close);
+    final root = await Directory.systemTemp.createTemp(
+      'vision_high_resolution_payload_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final source = File('${root.path}${Platform.pathSeparator}high-res.png');
+    final originalBytes = img.encodePng(img.Image(width: 2400, height: 1600));
+    expect(originalBytes.length, lessThan(3 * 1024 * 1024));
+    await source.writeAsBytes(originalBytes);
+
+    final result = await service.complete(
+      settings: _settings(),
+      prompt: '分析高分辨率图片',
+      imageFiles: [source],
+      compressOversizedImages: true,
+    );
+
+    expect(result, '高分辨率图片已接收');
+    final messages = requestBody!['messages'] as List<dynamic>;
+    final content =
+        (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+    final imagePart = content[1] as Map<String, dynamic>;
+    final imageUrl =
+        (imagePart['image_url'] as Map<String, dynamic>)['url'] as String;
+    expect(imageUrl, startsWith('data:image/jpeg;base64,'));
+    final payload = base64Decode(imageUrl.substring(imageUrl.indexOf(',') + 1));
+    final decoded = img.decodeJpg(payload);
+    expect(decoded, isNotNull);
+    expect(decoded!.width, lessThanOrEqualTo(1280));
+    expect(decoded.height, lessThanOrEqualTo(1280));
+    expect(await source.readAsBytes(), orderedEquals(originalBytes));
+  });
+
   test('视觉服务以 Base64 图片调用 chat completions 并解析 JSON 文本', () async {
     final requests = <Map<String, dynamic>>[];
     final service = VisionStoryboardService(
