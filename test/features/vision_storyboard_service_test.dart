@@ -85,12 +85,12 @@ void main() {
         (imagePart['image_url'] as Map<String, dynamic>)['url'] as String;
     expect(imageUrl, startsWith('data:image/jpeg;base64,'));
     final payload = base64Decode(imageUrl.substring(imageUrl.indexOf(',') + 1));
-    expect(payload.length, lessThanOrEqualTo(2 * 1024 * 1024));
+    expect(payload.length, lessThanOrEqualTo(8 * 1024 * 1024));
     expect(img.decodeJpg(payload), isNotNull);
     expect(await source.readAsBytes(), orderedEquals(originalBytes));
   });
 
-  test('完整视觉请求会缩小体积未超限的高分辨率图片', () async {
+  test('完整视觉请求保留 4096 以内的小体积高分辨率图片', () async {
     Map<String, dynamic>? requestBody;
     final service = VisionStoryboardService(
       client: MockClient((request) async {
@@ -122,12 +122,56 @@ void main() {
     final imagePart = content[1] as Map<String, dynamic>;
     final imageUrl =
         (imagePart['image_url'] as Map<String, dynamic>)['url'] as String;
+    expect(imageUrl, startsWith('data:image/png;base64,'));
+    final payload = base64Decode(imageUrl.substring(imageUrl.indexOf(',') + 1));
+    final decoded = img.decodePng(payload);
+    expect(decoded, isNotNull);
+    expect(decoded!.width, 2400);
+    expect(decoded.height, 1600);
+    expect(payload, orderedEquals(originalBytes));
+    expect(await source.readAsBytes(), orderedEquals(originalBytes));
+  });
+
+  test('完整视觉请求将超高分辨率上传副本缩至最长边 4096', () async {
+    Map<String, dynamic>? requestBody;
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return _chatResponse('超高分辨率图片已接收');
+      }),
+    );
+    addTearDown(service.close);
+    final root = await Directory.systemTemp.createTemp(
+      'vision_ultra_high_resolution_payload_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final source = File(
+      '${root.path}${Platform.pathSeparator}ultra-high-res.png',
+    );
+    final originalBytes = img.encodePng(img.Image(width: 5000, height: 3200));
+    expect(originalBytes.length, lessThan(3 * 1024 * 1024));
+    await source.writeAsBytes(originalBytes);
+
+    final result = await service.complete(
+      settings: _settings(),
+      prompt: '分析超高分辨率图片',
+      imageFiles: [source],
+      compressOversizedImages: true,
+    );
+
+    expect(result, '超高分辨率图片已接收');
+    final messages = requestBody!['messages'] as List<dynamic>;
+    final content =
+        (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+    final imagePart = content[1] as Map<String, dynamic>;
+    final imageUrl =
+        (imagePart['image_url'] as Map<String, dynamic>)['url'] as String;
     expect(imageUrl, startsWith('data:image/jpeg;base64,'));
     final payload = base64Decode(imageUrl.substring(imageUrl.indexOf(',') + 1));
     final decoded = img.decodeJpg(payload);
     expect(decoded, isNotNull);
-    expect(decoded!.width, lessThanOrEqualTo(1280));
-    expect(decoded.height, lessThanOrEqualTo(1280));
+    expect(decoded!.width, 4096);
+    expect(decoded.height, lessThanOrEqualTo(4096));
     expect(await source.readAsBytes(), orderedEquals(originalBytes));
   });
 

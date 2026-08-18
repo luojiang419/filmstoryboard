@@ -294,7 +294,9 @@ class VisionStoryboardService {
 
   static const requestTimeout = Duration(seconds: 120);
   static const _oversizedImageThresholdBytes = 3 * 1024 * 1024;
-  static const _compressedImageTargetBytes = 2 * 1024 * 1024;
+  static const _compressedImageTargetBytes = 8 * 1024 * 1024;
+  static const _maximumVisionImageDimension = 4096;
+  static const _fallbackVisionImageDimension = 3072;
 
   static const _cameraMovementGuide = '''
 运镜判断必须先比较同一镜头的起始/当前/结束帧构图变化，再选择一个主导运镜；不要只看当前帧主体大小。
@@ -2399,16 +2401,23 @@ String _compressVisionImageInWorker(
   }
 
   if (bytes.length <= VisionStoryboardService._oversizedImageThresholdBytes &&
-      decoded.width <= 1280 &&
-      decoded.height <= 1280) {
+      decoded.width <= VisionStoryboardService._maximumVisionImageDimension &&
+      decoded.height <= VisionStoryboardService._maximumVisionImageDimension) {
     return 'data:$sourceMimeType;base64,${base64Encode(bytes)}';
   }
 
   var current = decoded;
-  if (current.width > 1280 || current.height > 1280) {
+  if (current.width > VisionStoryboardService._maximumVisionImageDimension ||
+      current.height > VisionStoryboardService._maximumVisionImageDimension) {
     current = current.width >= current.height
-        ? img.copyResize(current, width: 1280)
-        : img.copyResize(current, height: 1280);
+        ? img.copyResize(
+            current,
+            width: VisionStoryboardService._maximumVisionImageDimension,
+          )
+        : img.copyResize(
+            current,
+            height: VisionStoryboardService._maximumVisionImageDimension,
+          );
   }
 
   var quality = 84;
@@ -2419,10 +2428,18 @@ String _compressVisionImageInWorker(
     encoded = img.encodeJpg(current, quality: quality);
   }
   if (encoded.length > VisionStoryboardService._compressedImageTargetBytes &&
-      (current.width > 960 || current.height > 960)) {
+      (current.width > VisionStoryboardService._fallbackVisionImageDimension ||
+          current.height >
+              VisionStoryboardService._fallbackVisionImageDimension)) {
     current = current.width >= current.height
-        ? img.copyResize(current, width: 960)
-        : img.copyResize(current, height: 960);
+        ? img.copyResize(
+            current,
+            width: VisionStoryboardService._fallbackVisionImageDimension,
+          )
+        : img.copyResize(
+            current,
+            height: VisionStoryboardService._fallbackVisionImageDimension,
+          );
     quality = 76;
     encoded = img.encodeJpg(current, quality: quality);
     while (encoded.length >
