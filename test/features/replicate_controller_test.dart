@@ -2707,6 +2707,12 @@ void main() {
       ReplicatedShotRecoveryStage.awaitingInitialReview,
     );
     expect(File(failedReviewRecord.generatedFramePath).existsSync(), isTrue);
+    expect(
+      (jsonDecode(failedReviewRecord.rawResponse)
+          as Map<String, dynamic>)['productDetailRefillRawResponse'],
+      '{"ok":true}',
+      reason: '姿势审核失败时仍必须保留已经完成的产品局部回填审计响应',
+    );
 
     controller.dispose();
     generationReviewService.error = null;
@@ -2734,6 +2740,12 @@ void main() {
     );
     expect(resumedRecord.status, ProcessingStatus.completed);
     expect(resumedRecord.generationRecovery.isEmpty, isTrue);
+    expect(
+      (jsonDecode(resumedRecord.rawResponse)
+          as Map<String, dynamic>)['productDetailRefillRawResponse'],
+      '{"ok":true}',
+      reason: '跨进程恢复姿势审核后不得丢失前一阶段产品局部回填审计响应',
+    );
 
     controller.setDetectedSubjectDecision(
       first.id,

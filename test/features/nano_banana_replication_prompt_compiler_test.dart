@@ -232,4 +232,51 @@ void main() {
     expect(prompt, contains('普通复刻补充说明不能授权产品 Logo'));
     expect(prompt, contains('白名单之外的任何文字或标识均未获授权'));
   });
+
+  test('提示词编译器拒绝绕过第一轮协议或借用非产品图片伪造标识白名单', () {
+    final manifest = NanoBananaAssetManifest.build(
+      sourceFrameId: 'source',
+      sourceFramePath: 'source.png',
+      productAssets: const [
+        NanoBananaAssetInput.product(
+          assetId: 'product-a',
+          path: 'product-a.png',
+          slotIndex: 0,
+        ),
+      ],
+    );
+    final firstRound = NanoBananaFirstRoundProtocol.build(manifest: manifest);
+    const forgedMark = NanoBananaAuthorizedProductMark(
+      productSlotIndex: 0,
+      referenceAssetId: 'forged-source',
+      referenceImageNumber: 1,
+      allowedTypes: [ReplicateAuthorizedMarkType.logo],
+      exactText: '',
+      location: '画面任意位置',
+    );
+
+    expect(
+      () => const NanoBananaReplicationPromptCompiler().compile(
+        NanoBananaReplicationPromptInput(
+          model: 'nano-banana-pro-vip',
+          automaticPrompt: '替换产品。',
+          manifest: manifest,
+          authorizedProductMarks: const [forgedMark],
+        ),
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => const NanoBananaReplicationPromptCompiler().compile(
+        NanoBananaReplicationPromptInput(
+          model: 'nano-banana-pro-vip',
+          automaticPrompt: '替换产品。',
+          manifest: manifest,
+          firstRoundProtocol: firstRound,
+          authorizedProductMarks: const [forgedMark],
+        ),
+      ),
+      throwsArgumentError,
+    );
+  });
 }

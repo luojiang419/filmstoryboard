@@ -62,6 +62,7 @@ class NanoBananaReplicationPromptCompiler {
     if (protocol != null && !identical(protocol.manifest, input.manifest)) {
       throw ArgumentError('提示词编译器与第一轮协议必须共享同一个资产清单实例');
     }
+    _validateAuthorizedProductMarks(input.authorizedProductMarks, protocol);
 
     final context = ReplicationAuthorityContext(
       hasSceneAsset: input.manifest.entries.any(
@@ -185,6 +186,47 @@ class NanoBananaReplicationPromptCompiler {
       '【最终输出复核】产品文字与标识只服从“授权标识白名单”；普通复刻补充说明不能授权产品 Logo、产品名称、型号或包装文字。非产品场景中，只有用户补充说明明确给出需要逐字出现的具体文本时才允许该段文本。除此之外，成图必须完全不含任何文字、数字、字母、符号组合、字幕、水印、Logo、商标、台标、角标、二维码或条形码。',
       '最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。',
     ].join('\n');
+  }
+
+  static void _validateAuthorizedProductMarks(
+    List<NanoBananaAuthorizedProductMark> marks,
+    NanoBananaFirstRoundProtocol? protocol,
+  ) {
+    if (marks.isEmpty) return;
+    if (protocol == null) {
+      throw ArgumentError('产品标识白名单必须由当前第一轮权威协议验证后才能进入提示词');
+    }
+    final seenSlots = <int>{};
+    for (final mark in marks) {
+      final requiresExactText = mark.allowedTypes.any(
+        (type) => type != ReplicateAuthorizedMarkType.logo,
+      );
+      if (mark.productSlotIndex < 0 ||
+          mark.referenceAssetId.trim().isEmpty ||
+          mark.allowedTypes.isEmpty ||
+          mark.location.trim().isEmpty ||
+          (requiresExactText && mark.exactText.trim().isEmpty)) {
+        throw ArgumentError('产品标识白名单缺少合法槽位、参考资产、标识类型、准确位置或逐字文本');
+      }
+      if (!seenSlots.add(mark.productSlotIndex)) {
+        throw ArgumentError('同一产品槽位不能重复注入多份标识白名单');
+      }
+      final matchingImages = [
+        for (final image in protocol.images)
+          if (image.imageNumber == mark.referenceImageNumber) image,
+      ];
+      final entry = matchingImages.length == 1
+          ? matchingImages.single.assetEntry
+          : null;
+      if (entry == null ||
+          entry.slotIndex != mark.productSlotIndex ||
+          (entry.kind != NanoBananaAssetKind.product &&
+              entry.kind != NanoBananaAssetKind.productDetail)) {
+        throw ArgumentError(
+          '产品槽位${_slotLabel(mark.productSlotIndex)}的标识白名单没有绑定本槽位的权威产品图片',
+        );
+      }
+    }
   }
 
   static String _authorityLine(
