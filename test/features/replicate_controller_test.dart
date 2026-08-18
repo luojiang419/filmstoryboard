@@ -2460,46 +2460,136 @@ void main() {
       reason: '用户指定文本时只开放该段文本，参考图中的其他文字与 Logo 仍必须禁止',
     );
 
-    final directDisplayRequestStart = imageService.requests.length;
-    final backgroundReviewStart = generationReviewService.inputs.length;
-    generationReviewService.error = const FormatException(
-      '生成后审核失败：待审核图未返回可解析的 JSON',
-    );
+    final conditionalCorrectionRequestStart = imageService.requests.length;
+    final conditionalReviewStart = generationReviewService.inputs.length;
+    generationReviewService.results.addAll([
+      const ReplicationGenerationReviewResult(
+        decision: ReplicationPoseReviewDecision.correctionRequired,
+        issue: ReplicationGenerationReviewIssue(
+          code: 'pose_contact',
+          priority: 1,
+          summary: '右手没有握住产品',
+          evidence: '待审核图右手与瓶身之间存在明显空隙',
+          correction: '只让右手手指贴合瓶身并恢复握持关系',
+        ),
+        rawResponse: '{"decision":"correction_required"}',
+      ),
+      _generationReviewPassed(),
+    ]);
 
     expect(await controller.replicateShot(first.id), isTrue);
     expect(
-      imageService.requests.length - directDisplayRequestStart,
-      1,
-      reason: '生成完成后只允许一次首轮图片请求，不得后台续轮纠错',
+      imageService.requests.length - conditionalCorrectionRequestStart,
+      2,
+      reason: '有效 DWPose 明确反证姿势偏差时只能追加一次续轮校正',
     );
     expect(
-      generationReviewService.inputs.length,
-      backgroundReviewStart,
-      reason: '成图必须立即交给用户查阅，不得发起生成后后台审核',
+      generationReviewService.inputs.length - conditionalReviewStart,
+      2,
+      reason: '姿势偏差应首审一次，并在唯一一次校正后复核一次',
     );
-    final directDisplayRecord = controller.value.replicatedImages.firstWhere(
+    final correctionRequest = imageService.requests.last;
+    expect(correctionRequest.referenceImagePaths, isEmpty);
+    expect(correctionRequest.geminiContinuation, isNotNull);
+    expect(correctionRequest.prompt, contains('这是一次姿势保护校正，不是重新生成'));
+    expect(correctionRequest.prompt, contains('不得修补产品局部细节'));
+    expect(correctionRequest.prompt, contains('不得新增、删除或顺带改动其他元素'));
+    expect(generationReviewService.inputs.last.poseReferenceImageNumber, 2);
+    expect(
+      generationReviewService.inputs.last.orderedReferenceImages[1].path,
+      skeleton.path,
+    );
+    final correctedRecord = controller.value.replicatedImages.firstWhere(
       (image) => image.scriptShotId == first.id,
     );
-    expect(directDisplayRecord.status, ProcessingStatus.completed);
-    expect(directDisplayRecord.errorMessage, isEmpty);
-    expect(directDisplayRecord.generationRecovery.isEmpty, isTrue);
-    expect(File(directDisplayRecord.generatedFramePath).existsSync(), isTrue);
+    expect(correctedRecord.status, ProcessingStatus.completed);
+    expect(correctedRecord.generationRecovery.isEmpty, isTrue);
     expect(
-      directDisplayRecord.rawResponse,
-      isNot(contains('postGenerationReview')),
+      correctedRecord.rawResponse,
+      contains('passed_after_single_correction'),
     );
 
-    ReplicateRepository(database).upsertReplicatedShotImage(
-      directDisplayRecord.copyWith(
-        generationRecovery: const ReplicatedShotGenerationRecovery(
-          stage: ReplicatedShotRecoveryStage.awaitingInitialReview,
-        ),
-        status: ProcessingStatus.failed,
-        errorMessage: '生成结果已保留，但生成后审核失败：FormatException: 待审核图未返回可解析的 JSON',
-        updatedAt: DateTime.now().toUtc(),
+    final failedAfterCorrectionRequestStart = imageService.requests.length;
+    final failedAfterCorrectionReviewStart =
+        generationReviewService.inputs.length;
+    const repeatedPoseIssue = ReplicationGenerationReviewResult(
+      decision: ReplicationPoseReviewDecision.correctionRequired,
+      issue: ReplicationGenerationReviewIssue(
+        code: 'pose_contact',
+        priority: 1,
+        summary: '右腕仍偏离骨架',
+        evidence: '待审核图右腕仍高于 DWPose 目标位置',
+        correction: '只把右腕恢复到骨架目标位置',
+      ),
+      rawResponse: '{"decision":"correction_required"}',
+    );
+    generationReviewService.results.addAll(const [
+      repeatedPoseIssue,
+      repeatedPoseIssue,
+    ]);
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(
+      imageService.requests.length - failedAfterCorrectionRequestStart,
+      2,
+      reason: '第二次审核仍失败时也只能有首轮和唯一一次校正两次图片请求',
+    );
+    expect(
+      generationReviewService.inputs.length - failedAfterCorrectionReviewStart,
+      2,
+    );
+    final terminalCorrectionRecord = controller.value.replicatedImages
+        .firstWhere((image) => image.scriptShotId == first.id);
+    expect(terminalCorrectionRecord.status, ProcessingStatus.failed);
+    expect(terminalCorrectionRecord.generationRecovery.isEmpty, isTrue);
+    expect(terminalCorrectionRecord.errorMessage, contains('已停止继续付费校正'));
+
+    final noPoseReviewStart = generationReviewService.inputs.length;
+    expect(await controller.replicateShot(second.id), isTrue);
+    expect(
+      generationReviewService.inputs.length,
+      noPoseReviewStart,
+      reason: '没有有效 DWPose 的镜头不得调用姿势审核或续轮校正',
+    );
+
+    final inconclusiveRequestStart = imageService.requests.length;
+    final inconclusiveReviewStart = generationReviewService.inputs.length;
+    generationReviewService.results.add(
+      const ReplicationGenerationReviewResult(
+        decision: ReplicationPoseReviewDecision.inconclusive,
+        diagnostic: '右臂被前景完全遮挡，无法可靠比较',
+        rawResponse: '{"decision":"inconclusive","reason":"右臂被前景完全遮挡，无法可靠比较"}',
       ),
     );
+    expect(await controller.replicateShot(first.id), isTrue);
+    expect(imageService.requests.length - inconclusiveRequestStart, 1);
+    expect(generationReviewService.inputs.length - inconclusiveReviewStart, 1);
+    final inconclusiveRecord = controller.value.replicatedImages.firstWhere(
+      (image) => image.scriptShotId == first.id,
+    );
+    expect(inconclusiveRecord.status, ProcessingStatus.completed);
+    expect(
+      inconclusiveRecord.rawResponse,
+      contains('pose_review_inconclusive'),
+    );
+
+    final failedReviewRequestStart = imageService.requests.length;
+    final failedReviewStart = generationReviewService.inputs.length;
+    generationReviewService.error = const FormatException('姿势审核未返回可解析的 JSON');
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(imageService.requests.length - failedReviewRequestStart, 1);
+    expect(generationReviewService.inputs.length - failedReviewStart, 1);
+    final failedReviewRecord = controller.value.replicatedImages.firstWhere(
+      (image) => image.scriptShotId == first.id,
+    );
+    expect(failedReviewRecord.status, ProcessingStatus.failed);
+    expect(
+      failedReviewRecord.generationRecovery.stage,
+      ReplicatedShotRecoveryStage.awaitingInitialReview,
+    );
+    expect(File(failedReviewRecord.generatedFramePath).existsSync(), isTrue);
+
     controller.dispose();
+    generationReviewService.error = null;
     controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
@@ -2510,15 +2600,80 @@ void main() {
       visionService: visionService,
       generationReviewService: generationReviewService,
     );
-    final restoredDirectDisplayRecord = controller.value.replicatedImages
-        .firstWhere((image) => image.scriptShotId == first.id);
-    expect(restoredDirectDisplayRecord.status, ProcessingStatus.completed);
-    expect(restoredDirectDisplayRecord.errorMessage, isEmpty);
-    expect(restoredDirectDisplayRecord.generationRecovery.isEmpty, isTrue);
+    final resumedRequestStart = imageService.requests.length;
+    final resumedReviewStart = generationReviewService.inputs.length;
+    expect(await controller.replicateShot(first.id), isTrue);
     expect(
-      generationReviewService.inputs.length,
-      backgroundReviewStart,
-      reason: '旧审核失败记录有可用成图时应直接恢复显示，不得重新审核',
+      imageService.requests.length,
+      resumedRequestStart,
+      reason: '审核异常后的跨进程恢复不得重复首轮图片生成',
+    );
+    expect(generationReviewService.inputs.length - resumedReviewStart, 1);
+    final resumedRecord = controller.value.replicatedImages.firstWhere(
+      (image) => image.scriptShotId == first.id,
+    );
+    expect(resumedRecord.status, ProcessingStatus.completed);
+    expect(resumedRecord.generationRecovery.isEmpty, isTrue);
+
+    imageService.includeGeminiContinuation = false;
+    generationReviewService.results.add(
+      const ReplicationGenerationReviewResult(
+        decision: ReplicationPoseReviewDecision.correctionRequired,
+        issue: ReplicationGenerationReviewIssue(
+          code: 'pose_contact',
+          priority: 1,
+          summary: '左肘角度偏离骨架',
+          evidence: '待审核图左肘伸直，而 DWPose 明确弯曲',
+          correction: '只恢复左肘弯曲角度',
+        ),
+        rawResponse: '{"decision":"correction_required"}',
+      ),
+    );
+    final missingContinuationRequestStart = imageService.requests.length;
+    final missingContinuationReviewStart =
+        generationReviewService.inputs.length;
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(imageService.requests.length - missingContinuationRequestStart, 1);
+    expect(
+      generationReviewService.inputs.length - missingContinuationReviewStart,
+      1,
+    );
+    final missingContinuationRecord = controller.value.replicatedImages
+        .firstWhere((image) => image.scriptShotId == first.id);
+    expect(
+      missingContinuationRecord.generationRecovery.stage,
+      ReplicatedShotRecoveryStage.awaitingCorrection,
+    );
+    expect(missingContinuationRecord.errorMessage, contains('没有返回可用续轮状态'));
+
+    final blockedRetryRequestStart = imageService.requests.length;
+    final blockedRetryReviewStart = generationReviewService.inputs.length;
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(imageService.requests.length, blockedRetryRequestStart);
+    expect(generationReviewService.inputs.length, blockedRetryReviewStart);
+
+    final inFlightRecord = missingContinuationRecord.copyWith(
+      generationRecovery: missingContinuationRecord.generationRecovery.copyWith(
+        stage: ReplicatedShotRecoveryStage.correctionInFlight,
+      ),
+      status: ProcessingStatus.running,
+      errorMessage: '',
+      updatedAt: DateTime.now().toUtc(),
+    );
+    ReplicateRepository(database).upsertReplicatedShotImage(inFlightRecord);
+    controller.refresh();
+    final inFlightRetryRequestStart = imageService.requests.length;
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(
+      imageService.requests.length,
+      inFlightRetryRequestStart,
+      reason: '校正请求已发出但未安全落盘时必须禁止重发以避免重复计费',
+    );
+    expect(
+      controller.value.replicatedImages
+          .firstWhere((image) => image.scriptShotId == first.id)
+          .errorMessage,
+      contains('无法确认该请求是否已执行或计费'),
     );
   });
 
@@ -3964,8 +4119,8 @@ class _QueuedGenerationReviewService
 
 ReplicationGenerationReviewResult _generationReviewPassed() =>
     const ReplicationGenerationReviewResult(
-      passed: true,
-      rawResponse: '{"passed":true,"issue":null}',
+      decision: ReplicationPoseReviewDecision.passed,
+      rawResponse: '{"decision":"passed","issue":null}',
     );
 
 class _FakeDwPoseModelManager extends DwPoseModelManager {

@@ -283,7 +283,7 @@ class ReplicatedShotGenerationRecovery {
     this.continuationDiagnostic = '',
   });
 
-  static const schemaVersion = 1;
+  static const schemaVersion = 2;
   static const empty = ReplicatedShotGenerationRecovery();
 
   final ReplicatedShotRecoveryStage stage;
@@ -300,8 +300,7 @@ class ReplicatedShotGenerationRecovery {
 
   bool get isEmpty => stage == ReplicatedShotRecoveryStage.none;
 
-  bool get canResumeCorrection =>
-      stage == ReplicatedShotRecoveryStage.awaitingCorrection &&
+  bool get hasResumableContinuation =>
       continuationTransport ==
           ReplicatedShotContinuationTransport.interactions &&
       continuationResumable &&

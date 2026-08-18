@@ -9,6 +9,7 @@ class ReplicationGenerationReviewInput {
     required this.shotNumber,
     required this.originalFrame,
     required this.orderedReferenceImages,
+    required this.poseReferenceImageNumber,
     required this.generatedImage,
     required this.structuredConstraints,
   });
@@ -18,6 +19,9 @@ class ReplicationGenerationReviewInput {
 
   /// 与图片生成请求完全相同的稳定顺序；图片 1 必须是原帧。
   final List<File> orderedReferenceImages;
+
+  /// DWPose 结构图在 [orderedReferenceImages] 中使用的一基图片编号。
+  final int poseReferenceImageNumber;
   final File generatedImage;
 
   /// 已由确定性编译器冻结的资产权威边界、白名单和结构约束。
@@ -56,39 +60,65 @@ class ReplicationGenerationReviewIssue {
   }
 }
 
+enum ReplicationPoseReviewDecision { passed, correctionRequired, inconclusive }
+
 class ReplicationGenerationReviewResult {
   const ReplicationGenerationReviewResult({
-    required this.passed,
+    required this.decision,
     required this.rawResponse,
     this.issue,
+    this.diagnostic = '',
   });
 
-  final bool passed;
+  final ReplicationPoseReviewDecision decision;
   final ReplicationGenerationReviewIssue? issue;
   final String rawResponse;
+  final String diagnostic;
+
+  bool get passed => decision == ReplicationPoseReviewDecision.passed;
+
+  bool get requiresCorrection =>
+      decision == ReplicationPoseReviewDecision.correctionRequired;
+
+  bool get isInconclusive =>
+      decision == ReplicationPoseReviewDecision.inconclusive;
 
   Map<String, Object?> toJson() => {
+    'decision': decision.name,
     'passed': passed,
     if (issue != null) 'issue': issue!.toJson(),
+    if (diagnostic.isNotEmpty) 'diagnostic': diagnostic,
     'rawResponse': rawResponse,
   };
 
   factory ReplicationGenerationReviewResult.fromJson(
     Map<String, Object?> json,
   ) {
-    final passed = json['passed'] == true;
     final rawIssue = json['issue'];
     final issue = rawIssue is Map
         ? ReplicationGenerationReviewIssue.fromJson(
             rawIssue.map((key, value) => MapEntry('$key', value)),
           )
         : null;
-    if (!passed && issue == null) {
-      throw const FormatException('持久化的生成后审核结果缺少问题');
+    final storedDecision = json['decision']?.toString().trim() ?? '';
+    final decision = ReplicationPoseReviewDecision.values
+        .where((value) => value.name == storedDecision)
+        .firstOrNull;
+    final resolvedDecision =
+        decision ??
+        (json['passed'] == true
+            ? ReplicationPoseReviewDecision.passed
+            : issue != null
+            ? ReplicationPoseReviewDecision.correctionRequired
+            : ReplicationPoseReviewDecision.inconclusive);
+    if (resolvedDecision == ReplicationPoseReviewDecision.correctionRequired &&
+        issue == null) {
+      throw const FormatException('持久化的姿势审核结果缺少校正问题');
     }
     return ReplicationGenerationReviewResult(
-      passed: passed,
+      decision: resolvedDecision,
       issue: issue,
+      diagnostic: json['diagnostic']?.toString() ?? '',
       rawResponse: json['rawResponse']?.toString() ?? '',
     );
   }
@@ -132,71 +162,64 @@ class ReplicationGenerationReviewService {
         ? '- 图片2至图片${input.orderedReferenceImages.length}与生成请求中的编号和顺序完全相同，只能按下方冻结约束中声明的职责提供证据。'
         : '- 本次除图片1原帧外没有额外参考图。';
     return '''
-你是镜头 ${input.shotNumber} 的生成后质量审核器。本次只做逐项核验，不创作、不改写提示词，也不得重新解释任何资产的权威边界。
+你是镜头 ${input.shotNumber} 的姿势保护审核器。本次只核验姿势与接触关系，不做通用质量审核，不创作、不改写提示词，也不得重新解释任何资产的权威边界。
 
 图片编号：
 - 图片1是原帧编辑底图。
 $additionalReferenceDescription
+- 图片${input.poseReferenceImageNumber}是本次唯一 DWPose 结构证据，只定义关节位置、肢体方向、身体重心和动作轮廓，不定义人物、服装、产品、文字、Logo、材质、颜色、光影或背景外观。
 - 图片$generatedImageNumber 是唯一待审核的生成结果。
 
 【已冻结结构化约束】
 ${input.structuredConstraints.trim()}
 
 审核规则：
-1. 必须以已冻结约束为唯一判定标准；不得推断新资产职责，不得交换人物或产品槽位，不得把原帧未授权元素改判为可保留。
-2. 按固定优先级检查：
-   P1 composition_geometry：原帧画幅、机位、透视、构图、槽位、方向或遮挡被明显改变。
-   P2 asset_authority：人物身份、产品整体/细节或场景没有使用其唯一权威资产，发生融合、串位、漏用或多余副本。
-   P3 subject_decision：替换/移除计划或原帧元素白名单执行错误，出现未授权残留。
-   P4 pose_contact：姿态、动作阶段、视线、手物接触或结构辅助约束明显错误。
-   P5 forbidden_text：出现未授权文字、数字、字幕、水印、Logo、二维码或条形码。
-   P6 integration_quality：仅在前五项都合格时，检查明显破损、畸形、低清纹理或光影融合错误。
-3. 若存在多个问题，只返回优先级最高的一项；同级只返回证据最清晰、可在图片$generatedImageNumber 中直接定位的一项。禁止返回问题列表。
-4. evidence 必须描述图片$generatedImageNumber 中可直接观察和定位的证据；不能验证的问题不得报告。
-5. correction 只描述如何修正这一项，不得顺带改变任何其他内容。
+1. 只检查图片$generatedImageNumber 相对图片${input.poseReferenceImageNumber}与冻结姿势约束是否存在明确的 pose_contact 偏差：关节位置、肢体方向、身体重心、动作阶段、人物视线或手物接触明显错误。
+2. 不得检查或报告画幅、机位、构图、人物身份、服装或产品外观、产品局部细节、场景、文字、Logo、二维码、条形码、材质、清晰度、光影、调色或融合质量；这些均不属于本模块。
+3. 只有偏差能够在图片$generatedImageNumber 中直接定位，并能由图片${input.poseReferenceImageNumber}或冻结约束明确反证时，才返回 correction_required；轻微像素差异、透视投影差异、服装轮廓差异或遮挡造成的不可见关节不得判错。
+4. 多人物时必须按冻结槽位逐一核验，禁止交换人物；若证据不足、关键肢体被遮挡或无法可靠比较，返回 inconclusive，禁止猜测。
+5. correction 只能修正一个证据最明确的姿势或接触偏差，不得顺带改变任何其他内容。
 
 只返回一个 JSON 对象，不要 Markdown、解释或额外字段：
 通过时：
-{"passed":true,"issue":null}
+{"decision":"passed","issue":null}
 
-不通过时：
-{"passed":false,"issue":{"code":"composition_geometry|asset_authority|subject_decision|pose_contact|forbidden_text|integration_quality","summary":"一个简短问题","evidence":"待审核图中可定位的证据","correction":"只修正该问题的明确要求"}}
+需要校正时：
+{"decision":"correction_required","issue":{"code":"pose_contact","summary":"一个简短姿势问题","evidence":"待审核图中可定位且能由姿势证据反证的事实","correction":"只修正该姿势或接触问题的明确要求"}}
+
+无法可靠判断时：
+{"decision":"inconclusive","reason":"无法可靠比较的简短原因"}
 ''';
   }
 
   ReplicationGenerationReviewResult parseResponse(String response) {
     final json = _extractJsonObject(response);
-    final passed =
-        _bool(json['passed']) ??
-        (_normalizedText(json['status']) == 'pass' ||
-            _normalizedText(json['status']) == 'passed');
-    if (passed) {
+    final decision = _reviewDecision(json);
+    if (decision == ReplicationPoseReviewDecision.passed) {
       return ReplicationGenerationReviewResult(
-        passed: true,
+        decision: decision,
         rawResponse: response,
       );
     }
-    final candidates = <ReplicationGenerationReviewIssue>[];
-    final rawIssue = json['issue'];
-    if (rawIssue is Map) {
-      final issue = _issue(rawIssue);
-      if (issue != null) candidates.add(issue);
-    }
-    final rawIssues = json['issues'];
-    if (rawIssues is List) {
-      for (final raw in rawIssues) {
-        if (raw is! Map) continue;
-        final issue = _issue(raw);
-        if (issue != null) candidates.add(issue);
+    if (decision == ReplicationPoseReviewDecision.inconclusive) {
+      final diagnostic = _text(json, const ['reason', 'diagnostic', 'summary']);
+      if (diagnostic.isEmpty) {
+        throw const FormatException('姿势审核无法判断，但没有返回原因');
       }
+      return ReplicationGenerationReviewResult(
+        decision: decision,
+        rawResponse: response,
+        diagnostic: diagnostic,
+      );
     }
-    if (candidates.isEmpty) {
-      throw const FormatException('生成后审核未通过，但没有返回可验证的单一问题');
+    final rawIssue = json['issue'];
+    final issue = rawIssue is Map ? _issue(rawIssue) : null;
+    if (issue == null) {
+      throw const FormatException('姿势审核要求校正，但没有返回可验证的单一姿势问题');
     }
-    candidates.sort((left, right) => left.priority.compareTo(right.priority));
     return ReplicationGenerationReviewResult(
-      passed: false,
-      issue: candidates.first,
+      decision: decision,
+      issue: issue,
       rawResponse: response,
     );
   }
@@ -209,7 +232,9 @@ ${input.structuredConstraints.trim()}
 可验证证据：${issue.evidence}
 修正要求：${issue.correction}
 
-必须保持上一轮中除此问题之外的全部内容不变，包括画幅、机位、透视、构图、人物与产品槽位、资产唯一权威来源、原帧元素白名单、姿态、接触、遮挡、光影、调色、景深和已经正确的细节。不得新增、删除或顺带改动其他元素。最终只输出一张修正后的完整图片，不要输出解释或文字说明。
+这是一次姿势保护校正，不是重新生成。只能调整上述证据明确指定的关节、肢体方向、身体重心、视线或手物接触；其余姿势细节保持不变。
+
+必须保持上一轮中除此问题之外的全部内容不变，包括画幅、机位、透视、构图、人物与产品槽位、资产唯一权威来源、原帧元素白名单、人物身份、完整穿搭、产品整体与局部外观、文字与标识、遮挡、光影、调色、景深和已经正确的细节。不得新增、删除或顺带改动其他元素，不得修补产品局部细节或改动任何 Logo/文字。最终只输出一张修正后的完整图片，不要输出解释或文字说明。
 ''';
 
   static void _validateInput(ReplicationGenerationReviewInput input) {
@@ -219,6 +244,10 @@ ${input.structuredConstraints.trim()}
     final first = input.orderedReferenceImages.first.absolute.path;
     if (first != input.originalFrame.absolute.path) {
       throw const FormatException('生成后审核的图片1必须是原帧');
+    }
+    if (input.poseReferenceImageNumber < 2 ||
+        input.poseReferenceImageNumber > input.orderedReferenceImages.length) {
+      throw const FormatException('姿势审核缺少有效的 DWPose 图片编号');
     }
     for (final file in [
       ...input.orderedReferenceImages,
@@ -243,7 +272,7 @@ ${input.structuredConstraints.trim()}
       'correction_instruction',
       'fix',
     ]);
-    if (!_priorityByCode.containsKey(code) ||
+    if (code != 'pose_contact' ||
         summary.isEmpty ||
         evidence.isEmpty ||
         correction.isEmpty) {
@@ -251,28 +280,43 @@ ${input.structuredConstraints.trim()}
     }
     return ReplicationGenerationReviewIssue(
       code: code,
-      priority: _priorityByCode[code] ?? 99,
+      priority: 1,
       summary: summary,
       evidence: evidence,
       correction: correction,
     );
   }
 
-  static const _priorityByCode = <String, int>{
-    'composition_geometry': 1,
-    'asset_authority': 2,
-    'subject_decision': 3,
-    'pose_contact': 4,
-    'forbidden_text': 5,
-    'integration_quality': 6,
-  };
-
   static String _normalizedCode(String value) {
     final normalized = value.trim().toLowerCase().replaceAll(
       RegExp(r'[\s-]+'),
       '_',
     );
-    return _priorityByCode.containsKey(normalized) ? normalized : 'unknown';
+    return normalized == 'pose_contact' ? normalized : 'unknown';
+  }
+
+  static ReplicationPoseReviewDecision _reviewDecision(
+    Map<String, dynamic> json,
+  ) {
+    final normalized = _normalizedText(json['decision'] ?? json['status']);
+    if (normalized == 'passed' ||
+        normalized == 'pass' ||
+        _bool(json['passed']) == true) {
+      return ReplicationPoseReviewDecision.passed;
+    }
+    if (normalized == 'correction_required' ||
+        normalized == 'needs_correction' ||
+        normalized == 'failed' ||
+        normalized == 'fail' ||
+        _bool(json['passed']) == false && json['issue'] is Map) {
+      return ReplicationPoseReviewDecision.correctionRequired;
+    }
+    if (normalized == 'inconclusive' ||
+        normalized == 'uncertain' ||
+        normalized == 'unverifiable') {
+      return ReplicationPoseReviewDecision.inconclusive;
+    }
+    throw const FormatException('姿势审核未返回有效 decision');
   }
 
   static Map<String, dynamic> _extractJsonObject(String response) {

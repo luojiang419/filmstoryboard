@@ -1977,21 +1977,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
     final model = _resolvedGenerationModel(run);
-    if (existing != null &&
-        existing.status == ProcessingStatus.running &&
-        !existing.generationRecovery.isEmpty) {
-      final generatedPath = existing.generatedFramePath.trim();
-      if (generatedPath.isNotEmpty && File(generatedPath).existsSync()) {
-        _saveReplicatedImage(
-          existing.copyWith(
-            generationRecovery: ReplicatedShotGenerationRecovery.empty,
-            status: ProcessingStatus.completed,
-            errorMessage: '',
-            updatedAt: DateTime.now().toUtc(),
-          ),
-        );
-        return true;
-      }
+    if (existing != null && !existing.generationRecovery.isEmpty) {
       try {
         return await _resumeInterruptedReplicatedShot(
           shot: shot,
@@ -2199,6 +2185,32 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         shot: shot,
         previousPath: existing?.generatedFramePath ?? '',
       );
+      final shouldProtectPose =
+          skeleton != null && nanoBananaFirstRoundProtocol != null;
+      if (shouldProtectPose) {
+        record = record.copyWith(
+          generatedFramePath: persistedPath,
+          rawResponse: result.rawResponse,
+          generationRecovery: _initialPoseReviewRecovery(
+            generationRequest: generationRequest,
+            continuation: result.geminiContinuation,
+          ),
+          status: ProcessingStatus.running,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+        return _reviewAndCorrectReplicatedShot(
+          shot: shot,
+          context: context,
+          original: original,
+          generationRequest: generationRequest,
+          initialResult: result,
+          initialPersistedPath: persistedPath,
+          outputDirectory: outputDirectory,
+          record: record,
+        );
+      }
       record = record.copyWith(
         generatedFramePath: persistedPath,
         rawResponse: result.rawResponse,
@@ -2258,6 +2270,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               for (final path in generationRequest.referenceImagePaths)
                 File(path),
             ],
+            poseReferenceImageNumber: 2,
             generatedImage: File(persistedPath),
             structuredConstraints: record.prompt,
           ),
@@ -2267,6 +2280,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     Future<bool> fail({
       required String diagnostic,
       required String stoppedReason,
+      bool clearRecovery = false,
     }) async {
       record = record.copyWith(
         generatedFramePath: persistedPath,
@@ -2277,6 +2291,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           correctionAttempted: correctionAttempted,
           stoppedReason: stoppedReason,
         ),
+        generationRecovery: clearRecovery
+            ? ReplicatedShotGenerationRecovery.empty
+            : record.generationRecovery,
         status: ProcessingStatus.failed,
         errorMessage: diagnostic,
         updatedAt: DateTime.now().toUtc(),
@@ -2299,7 +2316,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         reviews.add(firstReview);
       } catch (error) {
         return fail(
-          diagnostic: '生成结果已保留，但生成后审核失败：$error',
+          diagnostic: '首轮成图已保留，但姿势保护审核失败：$error',
           stoppedReason: 'initial_review_error',
         );
       }
@@ -2319,10 +2336,26 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         _saveReplicatedImage(record);
         return true;
       }
+      if (firstReview.isInconclusive) {
+        record = record.copyWith(
+          rawResponse: _replicationAuditRawResponse(
+            initialRawResponse: initialResult.rawResponse,
+            reviews: reviews,
+            correctionAttempted: false,
+            stoppedReason: 'pose_review_inconclusive',
+          ),
+          generationRecovery: ReplicatedShotGenerationRecovery.empty,
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+        return true;
+      }
       issue = firstReview.issue;
       if (issue == null) {
         return fail(
-          diagnostic: '生成结果已保留，但审核未返回可验证的单一问题',
+          diagnostic: '首轮成图已保留，但姿势审核未返回可验证的单一问题',
           stoppedReason: 'missing_review_issue',
         );
       }
@@ -2362,7 +2395,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         final unavailableReason = recovery.continuationDiagnostic.trim();
         return fail(
           diagnostic:
-              '生成后审核未通过：${_replicationReviewDiagnostic(issue!)}；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，已停止付费纠错并保留生成结果。',
+              '姿势保护审核未通过：${_replicationReviewDiagnostic(issue!)}；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，已停止付费纠错并保留生成结果。',
           stoppedReason:
               recovery.continuationTransport ==
                   ReplicatedShotContinuationTransport.generateContent
@@ -2374,7 +2407,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       if (!_disposed) {
         _setReplicationMessage(
           context.scriptId,
-          '镜头 ${shot.shotNumber} 审核发现一个问题，正在执行唯一一次续轮纠错…',
+          '镜头 ${shot.shotNumber} 姿势审核确认一个问题，正在执行唯一一次续轮校正…',
         );
       }
       recovery = recovery.copyWith(
@@ -2437,7 +2470,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         _saveReplicatedImage(record);
       } catch (error) {
         return fail(
-          diagnostic: '生成结果已保留；唯一一次 Gemini 续轮纠错失败，已停止付费循环：$error',
+          diagnostic: '首轮成图已保留；唯一一次 Gemini 姿势校正失败，已停止付费循环：$error',
           stoppedReason: 'correction_error',
         );
       }
@@ -2446,7 +2479,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (!_disposed) {
       _setReplicationMessage(
         context.scriptId,
-        '正在复核镜头 ${shot.shotNumber} 的纠错结果…',
+        '正在复核镜头 ${shot.shotNumber} 的姿势校正结果…',
       );
     }
     ReplicationGenerationReviewResult secondReview;
@@ -2455,17 +2488,36 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       reviews.add(secondReview);
     } catch (error) {
       return fail(
-        diagnostic: '纠错结果已保留，但第二次审核失败；已停止继续付费纠错：$error',
+        diagnostic: '姿势校正结果已保留，但第二次审核失败；已停止继续付费校正：$error',
         stoppedReason: 'corrected_review_error',
       );
     }
     if (!secondReview.passed) {
+      if (secondReview.isInconclusive) {
+        record = record.copyWith(
+          rawResponse: _replicationAuditRawResponse(
+            initialRawResponse: initialResult.rawResponse,
+            correctionRawResponse:
+                correctionResult?.rawResponse ?? restoredCorrectionRawResponse,
+            reviews: reviews,
+            correctionAttempted: true,
+            stoppedReason: 'corrected_pose_review_inconclusive',
+          ),
+          generationRecovery: ReplicatedShotGenerationRecovery.empty,
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+        return true;
+      }
       final remainingIssue = secondReview.issue;
       return fail(
         diagnostic: remainingIssue == null
-            ? '纠错后审核仍未通过，且未返回可验证问题；已停止继续付费纠错并保留结果。'
-            : '纠错后审核仍未通过：${_replicationReviewDiagnostic(remainingIssue)}；已停止继续付费纠错并保留结果。',
+            ? '姿势校正后审核仍未通过，且未返回可验证问题；已停止继续付费校正并保留结果。'
+            : '姿势校正后审核仍未通过：${_replicationReviewDiagnostic(remainingIssue)}；已停止继续付费校正并保留结果。',
         stoppedReason: 'failed_after_single_correction',
+        clearRecovery: true,
       );
     }
 
@@ -2492,10 +2544,49 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     ReplicationGenerationReviewIssue issue,
   ) => '${issue.summary}（证据：${issue.evidence}）';
 
+  static ReplicatedShotGenerationRecovery _initialPoseReviewRecovery({
+    required ImageGenerationRequest generationRequest,
+    required GeminiImageContinuation? continuation,
+  }) {
+    final transport = switch (continuation?.transport) {
+      GeminiImageContinuationTransport.interactions =>
+        ReplicatedShotContinuationTransport.interactions,
+      GeminiImageContinuationTransport.generateContent =>
+        ReplicatedShotContinuationTransport.generateContent,
+      null => ReplicatedShotContinuationTransport.none,
+    };
+    final hasResumableInteraction =
+        continuation?.transport ==
+            GeminiImageContinuationTransport.interactions &&
+        continuation!.apiModel.trim().isNotEmpty &&
+        continuation.previousInteractionId.trim().isNotEmpty;
+    final diagnostic = switch (continuation?.transport) {
+      GeminiImageContinuationTransport.interactions
+          when !hasResumableInteraction =>
+        'Gemini Interactions 续轮状态缺少模型或 previousInteractionId',
+      GeminiImageContinuationTransport.generateContent =>
+        'Gemini generateContent 续轮历史仅在当前进程内可用，中断后不可安全恢复',
+      null => '首轮 Gemini 响应没有返回可用续轮状态',
+      _ => '',
+    };
+    return ReplicatedShotGenerationRecovery(
+      stage: ReplicatedShotRecoveryStage.awaitingInitialReview,
+      orderedReferencePaths: [...generationRequest.referenceImagePaths],
+      aspectRatio: generationRequest.aspectRatio,
+      imageSize: generationRequest.imageSize,
+      quality: generationRequest.quality,
+      continuationTransport: transport,
+      continuationApiModel: continuation?.apiModel ?? '',
+      previousInteractionId: continuation?.previousInteractionId ?? '',
+      continuationResumable: hasResumableInteraction,
+      continuationDiagnostic: diagnostic,
+    );
+  }
+
   static GeminiImageContinuation? _restoredGeminiContinuation(
     ReplicatedShotGenerationRecovery recovery,
   ) {
-    if (!recovery.canResumeCorrection) return null;
+    if (!recovery.hasResumableContinuation) return null;
     return GeminiImageContinuation(
       transport: GeminiImageContinuationTransport.interactions,
       apiModel: recovery.continuationApiModel,
@@ -4501,31 +4592,7 @@ $playbackSpeedBoundary
   }
 
   List<ReplicatedShotImage> _restoreReplicatedImages(String runId) {
-    final migratedIds = <String>{};
-    ReplicatedShotImage completeLegacyReviewRecord(ReplicatedShotImage image) {
-      if (image.generationRecovery.isEmpty ||
-          image.generatedFramePath.trim().isEmpty ||
-          !File(image.generatedFramePath.trim()).existsSync()) {
-        return image;
-      }
-      migratedIds.add(image.id);
-      return image.copyWith(
-        generationRecovery: ReplicatedShotGenerationRecovery.empty,
-        status: ProcessingStatus.completed,
-        errorMessage: '',
-        updatedAt: DateTime.now().toUtc(),
-      );
-    }
-
-    final images = [
-      for (final image in _repository.listReplicatedShotImages(runId))
-        completeLegacyReviewRecord(image),
-    ];
-    for (final image in images) {
-      if (migratedIds.contains(image.id)) {
-        _repository.upsertReplicatedShotImage(image);
-      }
-    }
+    final images = _repository.listReplicatedShotImages(runId);
     final missingBasenames = <String>{
       for (final image in images)
         if (image.generatedFramePath.trim().isNotEmpty &&
