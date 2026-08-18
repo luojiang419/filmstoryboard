@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 21;
+  static const currentSchemaVersion = 26;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -580,6 +580,8 @@ class AppDatabase {
           replication_instructions TEXT NOT NULL DEFAULT '',
           free_creation_enabled INTEGER NOT NULL DEFAULT 0,
           free_creation_story_override TEXT NOT NULL DEFAULT '',
+          inherit_source_aspect_ratio INTEGER NOT NULL DEFAULT 1,
+          multi_view_enhancement_enabled INTEGER NOT NULL DEFAULT 0,
           confirmed_shot_ids_json TEXT NOT NULL DEFAULT '[]',
           start_end_pairs_json TEXT NOT NULL DEFAULT '[]',
           image_reference_count INTEGER NOT NULL DEFAULT 0,
@@ -755,9 +757,10 @@ class AppDatabase {
           generated_frame_path TEXT NOT NULL DEFAULT '',
           asset_ids_json TEXT NOT NULL DEFAULT '[]',
           prompt TEXT NOT NULL DEFAULT '',
-          model TEXT NOT NULL DEFAULT '',
-          raw_response TEXT NOT NULL DEFAULT '',
-          status TEXT NOT NULL DEFAULT 'pending',
+           model TEXT NOT NULL DEFAULT '',
+           raw_response TEXT NOT NULL DEFAULT '',
+           generation_recovery_json TEXT NOT NULL DEFAULT '{}',
+           status TEXT NOT NULL DEFAULT 'pending',
           error_message TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -990,6 +993,78 @@ class AppDatabase {
         _ensureIntegerColumn('video_generation_tasks', 'trim_out_ms');
       }
       _database.execute('PRAGMA user_version = 21;');
+    }
+    if (version < 22) {
+      _database
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS replicate_shot_guides (
+            shot_id TEXT PRIMARY KEY REFERENCES script_shots(id) ON DELETE CASCADE,
+            source_frame_fingerprint TEXT NOT NULL DEFAULT '',
+            elements_json TEXT NOT NULL DEFAULT '[]',
+            subjects_json TEXT NOT NULL DEFAULT '[]',
+            action_description TEXT NOT NULL DEFAULT '',
+            pose_constraints TEXT NOT NULL DEFAULT '',
+            skeleton_path TEXT NOT NULL DEFAULT '',
+            analysis_model TEXT NOT NULL DEFAULT '',
+            analysis_status TEXT NOT NULL DEFAULT 'pending',
+            pose_status TEXT NOT NULL DEFAULT 'pending',
+            raw_response TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+        ''')
+        ..execute('PRAGMA user_version = 22;');
+    }
+    if (version < 23) {
+      if (_tableExists('replicate_shot_guides') &&
+          !_columnExists('replicate_shot_guides', 'person_count')) {
+        _database.execute(
+          'ALTER TABLE replicate_shot_guides '
+          'ADD COLUMN person_count INTEGER NOT NULL DEFAULT 0;',
+        );
+      }
+      _database.execute('PRAGMA user_version = 23;');
+    }
+    if (version < 24) {
+      if (_tableExists('replicate_shot_guides') &&
+          !_columnExists('replicate_shot_guides', 'subjects_json')) {
+        _database.execute(
+          'ALTER TABLE replicate_shot_guides '
+          "ADD COLUMN subjects_json TEXT NOT NULL DEFAULT '[]';",
+        );
+      }
+      if (_tableExists('replicate_runs') &&
+          !_columnExists('replicate_runs', 'inherit_source_aspect_ratio')) {
+        _database.execute(
+          'ALTER TABLE replicate_runs '
+          'ADD COLUMN inherit_source_aspect_ratio INTEGER NOT NULL DEFAULT 1;',
+        );
+      }
+      _database.execute('PRAGMA user_version = 24;');
+    }
+    if (version < 25) {
+      if (_tableExists('replicate_runs') &&
+          !_columnExists('replicate_runs', 'multi_view_enhancement_enabled')) {
+        _database.execute(
+          'ALTER TABLE replicate_runs '
+          'ADD COLUMN multi_view_enhancement_enabled INTEGER NOT NULL DEFAULT 0;',
+        );
+      }
+      _database.execute('PRAGMA user_version = 25;');
+    }
+    if (version < 26) {
+      if (_tableExists('replicated_shot_images') &&
+          !_columnExists(
+            'replicated_shot_images',
+            'generation_recovery_json',
+          )) {
+        _database.execute(
+          'ALTER TABLE replicated_shot_images '
+          "ADD COLUMN generation_recovery_json TEXT NOT NULL DEFAULT '{}';",
+        );
+      }
+      _database.execute('PRAGMA user_version = 26;');
     }
   }
 
@@ -1359,6 +1434,7 @@ class AppDatabase {
       'generated_frame_path',
       transform,
     );
+    _rewriteTextColumn('replicate_shot_guides', 'skeleton_path', transform);
     _rewriteJsonColumn(
       'image_generation_records',
       'reference_paths_json',

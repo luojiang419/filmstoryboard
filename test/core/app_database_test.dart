@@ -900,4 +900,43 @@ void main() {
       AppDatabase.currentSchemaVersion,
     );
   });
+
+  test('版本25复刻图片记录无损迁移结构化生成恢复字段', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_recovery_v25_',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final databaseFile = File(p.join(root.path, 'legacy.sqlite'));
+    final legacy = sqlite3.open(databaseFile.path);
+    legacy
+      ..execute('''
+        CREATE TABLE replicated_shot_images (
+          id TEXT PRIMARY KEY,
+          raw_response TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending'
+        );
+      ''')
+      ..execute(
+        'INSERT INTO replicated_shot_images(id, raw_response, status) '
+        'VALUES(?, ?, ?);',
+        ['image-1', '{"kept":true}', 'running'],
+      )
+      ..execute('PRAGMA user_version = 25;')
+      ..close();
+
+    final database = await AppDatabase.open(databaseFile);
+    addTearDown(database.dispose);
+
+    final row = database
+        .selectRows('SELECT * FROM replicated_shot_images;')
+        .single;
+    expect(row['id'], 'image-1');
+    expect(row['raw_response'], '{"kept":true}');
+    expect(row['status'], 'running');
+    expect(row['generation_recovery_json'], '{}');
+    expect(
+      database.selectRows('PRAGMA user_version;').single['user_version'],
+      26,
+    );
+  });
 }

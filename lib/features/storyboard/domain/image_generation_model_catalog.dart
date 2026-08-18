@@ -683,6 +683,23 @@ class ImageGenerationCatalog {
     return descriptorFor(modelId)?.isApiMart ?? false;
   }
 
+  static bool isNanoBananaProModel(String modelId) {
+    final normalizedSelection = modelId.trim().toLowerCase();
+    if (normalizedSelection == 'nano-banana-pro' ||
+        normalizedSelection.startsWith('nano-banana-pro-')) {
+      return true;
+    }
+    final descriptor = descriptorFor(modelId);
+    final apiModel = descriptor?.apiModel.trim().toLowerCase() ?? '';
+    if (apiModel == 'gemini-3-pro-image' ||
+        apiModel.startsWith('gemini-3-pro-image-')) {
+      return true;
+    }
+    return descriptor?.providerId == 'grsai' &&
+        (apiModel == 'nano-banana-pro' ||
+            apiModel.startsWith('nano-banana-pro-'));
+  }
+
   static String apiModelFor(String modelId, {required bool hasReferences}) {
     final descriptor = descriptorFor(modelId);
     if (descriptor == null) {

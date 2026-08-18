@@ -15,6 +15,7 @@ import 'package:path/path.dart' as p;
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
+import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/image_file_context_menu.dart';
 import '../../../core/widgets/preview_file_image.dart';
@@ -583,9 +584,13 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     StoryboardItem item,
   ) async {
     try {
-      final file = await openFile(
-        acceptedTypeGroups: const [_replacementImageTypeGroup],
-      );
+      final file = await ref
+          .read(desktopFileDialogServiceProvider)
+          .openFile(
+            source: 'storyboard.replace_image',
+            acceptedTypeGroups: const [_replacementImageTypeGroup],
+            initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
+          );
       if (file != null) {
         await controller.replaceItemImage(item: item, imagePath: file.path);
       }
@@ -1356,6 +1361,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
               child: DropTarget(
+                enable: DesktopDropTargetScope.enabledOf(context),
                 key: const ValueKey('storyboard-asset-panel-drop-target'),
                 onDragEntered: (_) {
                   if (!_externalPanelDragging) {
@@ -3386,6 +3392,7 @@ class _AssetFolderGroupState extends State<_AssetFolderGroup> {
       child: KeyedSubtree(
         key: _canvasDropTargetKey,
         child: DropTarget(
+          enable: DesktopDropTargetScope.enabledOf(context),
           onDragEntered: (_) => setState(() => _externalDragging = true),
           onDragExited: (_) => setState(() => _externalDragging = false),
           onDragDone: (details) {
@@ -5741,6 +5748,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
           return canvas;
         }
         return DropTarget(
+          enable: DesktopDropTargetScope.enabledOf(context),
           key: const ValueKey('storyboard-canvas-file-drop-target'),
           onDragEntered: (details) =>
               _updateExternalHoverSlot(details.localPosition, slotRects),
@@ -5878,6 +5886,7 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       return target;
     }
     return DropTarget(
+      enable: DesktopDropTargetScope.enabledOf(context),
       key: ValueKey('storyboard-replacement-drop-${item.asset.id}'),
       onDragEntered: (_) {
         if (_externalHoverSlot != displaySlot) {
@@ -6597,6 +6606,58 @@ class _StoryboardReplacementDropGlowState
   }
 }
 
+class _ReferenceImageDropGlow extends StatefulWidget {
+  const _ReferenceImageDropGlow({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ReferenceImageDropGlow> createState() =>
+      _ReferenceImageDropGlowState();
+}
+
+class _ReferenceImageDropGlowState extends State<_ReferenceImageDropGlow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedBuilder(
+      animation: _controller,
+      child: widget.child,
+      builder: (context, child) {
+        final pulse = Curves.easeInOut.transform(_controller.value);
+        return Transform.scale(
+          scale: 1 + pulse * 0.004,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.16 + pulse * 0.16),
+                  blurRadius: 12 + pulse * 12,
+                  spreadRadius: pulse * 1.5,
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _SelectedImageToolbarPositioner extends StatelessWidget {
   const _SelectedImageToolbarPositioner({
     required this.rect,
@@ -6766,6 +6827,7 @@ class _ImageEditDialogState extends State<_ImageEditDialog> {
   String _quality = 'auto';
   final _referenceImagePaths = <String>[];
   bool _isSuggesting = false;
+  bool _isReferenceDragging = false;
   String _statusText = '';
 
   @override
@@ -6867,15 +6929,17 @@ class _ImageEditDialogState extends State<_ImageEditDialog> {
                     child: SizedBox(
                       width: 150,
                       height: 104,
-                      child: sourceFile.existsSync()
-                          ? Image.file(sourceFile, fit: BoxFit.contain)
-                          : ColoredBox(
-                              color: scheme.surfaceContainerHighest,
-                              child: Icon(
-                                Icons.broken_image_rounded,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
+                      child: Image.file(
+                        sourceFile,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) => ColoredBox(
+                          color: scheme.surfaceContainerHighest,
+                          child: Icon(
+                            Icons.broken_image_rounded,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -6946,46 +7010,30 @@ class _ImageEditDialogState extends State<_ImageEditDialog> {
                 ],
               ),
               const SizedBox(height: 14),
-              Row(
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : _pickReferenceImages,
-                    icon: const Icon(Icons.add_photo_alternate_rounded),
-                    label: const Text('上传参考图'),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : _suggestPrompt,
-                    icon: _isSuggesting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.auto_awesome_rounded),
-                    label: Text(_isSuggesting ? '分析中...' : '自动提示词'),
-                  ),
-                ],
-              ),
-              if (_referenceImagePaths.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (
-                      var index = 0;
-                      index < _referenceImagePaths.length;
-                      index++
-                    )
-                      _buildReferenceThumbnail(
-                        context,
-                        _referenceImagePaths[index],
-                        index,
-                      ),
-                  ],
+              DropTarget(
+                key: const ValueKey(
+                  'storyboard-image-edit-reference-drop-target',
                 ),
-              ],
+                enable: DesktopDropTargetScope.enabledOf(context) && !_busy,
+                onDragEntered: (_) {
+                  if (!_isReferenceDragging) {
+                    setState(() => _isReferenceDragging = true);
+                  }
+                },
+                onDragExited: (_) {
+                  if (_isReferenceDragging) {
+                    setState(() => _isReferenceDragging = false);
+                  }
+                },
+                onDragDone: (details) {
+                  setState(() => _isReferenceDragging = false);
+                  _addReferenceImagePaths(
+                    details.files.map((file) => file.path),
+                    fromDrop: true,
+                  );
+                },
+                child: _buildReferenceDropArea(context),
+              ),
               if (_statusText.isNotEmpty || _isSuggesting) ...[
                 const SizedBox(height: 12),
                 ValueListenableBuilder<StoryboardState>(
@@ -7025,17 +7073,142 @@ class _ImageEditDialogState extends State<_ImageEditDialog> {
   }
 
   Future<void> _pickReferenceImages() async {
-    final files = await openFiles(acceptedTypeGroups: const [_imageTypeGroup]);
+    final container = ProviderScope.containerOf(context, listen: false);
+    final files = await container
+        .read(desktopFileDialogServiceProvider)
+        .openFiles(
+          source: 'storyboard.image_edit_reference',
+          acceptedTypeGroups: const [_imageTypeGroup],
+          initialDirectory: container
+              .read(projectDirectoriesProvider)
+              .imports
+              .path,
+        );
     if (!mounted || files.isEmpty) {
       return;
     }
+    _addReferenceImagePaths(files.map((file) => file.path));
+  }
+
+  void _addReferenceImagePaths(
+    Iterable<String> paths, {
+    bool fromDrop = false,
+  }) {
+    final validPaths = paths
+        .map((path) => path.trim())
+        .where(
+          (path) =>
+              path.isNotEmpty &&
+              _isReplacementImagePath(path) &&
+              File(path).existsSync(),
+        )
+        .toList(growable: false);
+    final addedPaths = validPaths
+        .where((path) => !_referenceImagePaths.contains(path))
+        .toList(growable: false);
     setState(() {
-      for (final file in files) {
-        if (!_referenceImagePaths.contains(file.path)) {
-          _referenceImagePaths.add(file.path);
-        }
+      _referenceImagePaths.addAll(addedPaths);
+      if (fromDrop) {
+        _statusText = addedPaths.isNotEmpty
+            ? '已拖入 ${addedPaths.length} 张参考图'
+            : validPaths.isNotEmpty
+            ? '参考图已存在，无需重复添加'
+            : '请拖入 PNG、JPG、WEBP 或 BMP 图片';
       }
     });
+  }
+
+  Widget _buildReferenceDropArea(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    Widget content = AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOutCubic,
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: _isReferenceDragging
+            ? scheme.primaryContainer.withValues(alpha: 0.42)
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.24),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: _isReferenceDragging
+              ? scheme.primary.withValues(alpha: 0.9)
+              : scheme.outlineVariant.withValues(alpha: 0.7),
+          width: _isReferenceDragging ? 1.5 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _pickReferenceImages,
+                icon: const Icon(Icons.add_photo_alternate_rounded),
+                label: const Text('上传参考图'),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  child: Text(
+                    _isReferenceDragging ? '松开即可添加为参考图' : '或从资源管理器直接拖入图片',
+                    key: ValueKey(_isReferenceDragging),
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: _isReferenceDragging
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
+                      fontWeight: _isReferenceDragging
+                          ? FontWeight.w600
+                          : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _suggestPrompt,
+                icon: _isSuggesting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_awesome_rounded),
+                label: Text(_isSuggesting ? '分析中...' : '自动提示词'),
+              ),
+            ],
+          ),
+          if (_referenceImagePaths.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (
+                  var index = 0;
+                  index < _referenceImagePaths.length;
+                  index++
+                )
+                  _buildReferenceThumbnail(
+                    context,
+                    _referenceImagePaths[index],
+                    index,
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+    if (_isReferenceDragging) {
+      content = _ReferenceImageDropGlow(
+        key: const ValueKey('storyboard-image-edit-reference-drop-glow'),
+        child: content,
+      );
+    }
+    return content;
   }
 
   Widget _buildReferenceThumbnail(

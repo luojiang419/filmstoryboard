@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
@@ -76,6 +77,17 @@ void main() {
 
     expect(find.text('设计分镜图'), findsOneWidget);
     expect(find.byKey(const ValueKey('video-analysis-page')), findsOneWidget);
+    expect(
+      tester
+          .widget<DropTarget>(
+            find.byKey(
+              const ValueKey('video-analysis-drop-target'),
+              skipOffstage: false,
+            ),
+          )
+          .enable,
+      isTrue,
+    );
     expect(find.text('多宫格裁切'), findsNothing);
     expect(find.byKey(const ValueKey('app-shell-bottom-tabs')), findsOneWidget);
     final bottomTabsCenter = tester.getCenter(
@@ -103,6 +115,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);
+    expect(
+      tester
+          .widget<DropTarget>(
+            find.byKey(
+              const ValueKey('video-analysis-drop-target'),
+              skipOffstage: false,
+            ),
+          )
+          .enable,
+      isFalse,
+    );
     expect(
       find.byKey(const ValueKey('create-empty-shooting-script')),
       findsOneWidget,

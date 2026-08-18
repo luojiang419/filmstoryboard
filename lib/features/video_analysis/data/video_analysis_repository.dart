@@ -525,7 +525,8 @@ class VideoAnalysisRepository {
       INSERT INTO replicate_runs(
         id, video_id, script_id, global_style, constraints_text,
         replication_instructions, free_creation_enabled, free_creation_story_override,
-        generation_model, generation_aspect_ratio, generation_image_size,
+        generation_model, generation_aspect_ratio, inherit_source_aspect_ratio,
+        multi_view_enhancement_enabled, generation_image_size,
         generation_quality,
         confirmed_shot_ids_json,
         image_reference_count, video_reference_count,
@@ -533,7 +534,7 @@ class VideoAnalysisRepository {
         prepare_assets_status, compose_prompts_status, completed_count,
         generate_videos_status,
         total_count, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         script_id = excluded.script_id,
@@ -544,6 +545,8 @@ class VideoAnalysisRepository {
         free_creation_story_override = excluded.free_creation_story_override,
         generation_model = excluded.generation_model,
         generation_aspect_ratio = excluded.generation_aspect_ratio,
+        inherit_source_aspect_ratio = excluded.inherit_source_aspect_ratio,
+        multi_view_enhancement_enabled = excluded.multi_view_enhancement_enabled,
         generation_image_size = excluded.generation_image_size,
         generation_quality = excluded.generation_quality,
         confirmed_shot_ids_json = excluded.confirmed_shot_ids_json,
@@ -572,6 +575,8 @@ class VideoAnalysisRepository {
         run.freeCreationStoryOverride,
         run.generationModel,
         run.generationAspectRatio,
+        run.inheritSourceAspectRatio ? 1 : 0,
+        run.multiViewEnhancementEnabled ? 1 : 0,
         run.generationImageSize,
         run.generationQuality,
         jsonEncode(run.confirmedShotIds),
@@ -883,6 +888,10 @@ class VideoAnalysisRepository {
       generationModel: row['generation_model'] as String? ?? '',
       generationAspectRatio:
           row['generation_aspect_ratio'] as String? ?? '16:9',
+      inheritSourceAspectRatio:
+          (row['inherit_source_aspect_ratio'] as int? ?? 1) != 0,
+      multiViewEnhancementEnabled:
+          (row['multi_view_enhancement_enabled'] as int? ?? 0) != 0,
       generationImageSize: row['generation_image_size'] as String? ?? '',
       generationQuality: row['generation_quality'] as String? ?? '',
       confirmedShotIds: confirmedJson is List

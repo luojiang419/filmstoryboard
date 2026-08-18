@@ -94,7 +94,8 @@ class ScriptAnalysisState {
 
 class ShootingScriptAnalysisController
     extends ValueNotifier<ScriptAnalysisState> {
-  static const _analysisRuleVersion = 8;
+  static const _analysisRuleVersion = 9;
+  static const _maximumLegacyAutoDurationSeconds = 5.0;
 
   ShootingScriptAnalysisController({
     required ShootingScriptController shootingScriptController,
@@ -449,7 +450,7 @@ class ShootingScriptAnalysisController
 
       final patch = await _analysisService.analyzeShot(
         settings: _settingsController.value,
-        shot: shot,
+        shot: _shotForDurationAnalysis(shot, existing),
         imageFile: imageFile,
         previousImageFile: adjacentFile(shotIndex - 1),
         nextImageFile: adjacentFile(shotIndex + 1),
@@ -556,7 +557,7 @@ class ShootingScriptAnalysisController
       final creativeBrief = await _creativeBrief(shots);
       final patch = await _analysisService.analyzeShotGroup(
         settings: _settingsController.value,
-        shots: shots,
+        shots: _shotsForDurationAnalysis(shots, existing),
         imageFiles: files,
         creativeBrief: _creativeBriefForRevision(head, creativeBrief),
         storyContext: _storyContextForRange(
@@ -904,6 +905,38 @@ class ShootingScriptAnalysisController
     }
     return 'sha256:${sha256.convert(utf8.encode(componentDigests.join('|')))}';
   }
+
+  static ScriptShot _shotForDurationAnalysis(
+    ScriptShot shot,
+    ScriptShotAnalysisRecord? existing,
+  ) {
+    if (!_shouldRecalculateLegacyAutoDuration(shot, existing)) return shot;
+    return shot.copyWith(durationSeconds: 0);
+  }
+
+  static List<ScriptShot> _shotsForDurationAnalysis(
+    List<ScriptShot> shots,
+    ScriptShotAnalysisRecord? existing,
+  ) {
+    if (shots.isEmpty) return shots;
+    final durationTarget = shots.last;
+    if (!_shouldRecalculateLegacyAutoDuration(durationTarget, existing)) {
+      return shots;
+    }
+    return [
+      ...shots.take(shots.length - 1),
+      durationTarget.copyWith(durationSeconds: 0),
+    ];
+  }
+
+  static bool _shouldRecalculateLegacyAutoDuration(
+    ScriptShot shot,
+    ScriptShotAnalysisRecord? existing,
+  ) =>
+      shot.durationSeconds > _maximumLegacyAutoDurationSeconds &&
+      existing != null &&
+      existing.analysisRuleVersion < _analysisRuleVersion &&
+      existing.fieldSources['durationSeconds'] == 'model';
 
   static String _sourceForField({
     required String field,

@@ -1,5 +1,5 @@
 #define MyAppName "filmstoryboard"
-#define MyAppVersion "1.0.0.290"
+#define MyAppVersion "1.0.0.309"
 #define MyAppPublisher "Jiang"
 #define MyAppExeName "filmstoryboard.exe"
 
@@ -33,6 +33,7 @@ Source: "..\build\windows\x64\runner\Release\{#MyAppExeName}"; DestDir: "{app}";
 Source: "..\build\windows\x64\runner\Release\data\app.so"; DestDir: "{app}\data"; Flags: ignoreversion
 Source: "..\build\windows\x64\runner\Release\data\icudtl.dat"; DestDir: "{app}\data"; Flags: ignoreversion
 Source: "..\build\windows\x64\runner\Release\data\flutter_assets\*"; DestDir: "{app}\data\flutter_assets"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\build\windows\x64\runner\Release\data\dwpose\models\*.onnx"; DestDir: "{app}\data\dwpose\models"; Flags: ignoreversion
 Source: "..\build\windows\x64\runner\Release\ffmpeg\bin\*.exe"; DestDir: "{app}\ffmpeg\bin"; Flags: ignoreversion
 Source: "..\website\app\build\web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\resolve_plugin\com.filmstoryboard.timelinebridge\*"; DestDir: "{app}\data\resolve_plugin\com.filmstoryboard.timelinebridge"; Excludes: "WorkflowIntegration.node"; Flags: ignoreversion

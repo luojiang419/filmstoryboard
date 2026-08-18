@@ -1066,7 +1066,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   Future<void> _openDirectory(String path) async {
     final directory = Directory(path);
-    if (!directory.existsSync()) {
+    if (!await directory.exists()) {
       await directory.create(recursive: true);
     }
     await Process.start('explorer.exe', [directory.path]);

@@ -4,6 +4,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "flutter/standard_method_codec.h"
+#include "native_file_dialog.h"
 #include "resolve_plugin_launcher.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -27,6 +28,9 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  native_file_dialog_channel_ =
+      std::make_unique<filmstoryboard::NativeFileDialogChannel>(
+          flutter_controller_->engine()->messenger(), GetHandle());
   resolve_automation_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(),
@@ -66,6 +70,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  native_file_dialog_channel_.reset();
   resolve_automation_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
@@ -78,6 +83,10 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (native_file_dialog_channel_ &&
+      native_file_dialog_channel_->HandleWindowMessage(message)) {
+    return 0;
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

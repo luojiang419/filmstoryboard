@@ -3,10 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:crypto/crypto.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
+import 'package:filmstoryboard/features/replicate/data/replication_frame_analysis_service.dart';
+import 'package:filmstoryboard/features/replicate/data/replication_generation_review_service.dart';
 import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
 import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
@@ -16,6 +19,7 @@ import 'package:filmstoryboard/features/settings/domain/video_generation_api_con
 import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/script_asset_slot_policy.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:filmstoryboard/features/storyboard/data/image_generation_service.dart';
@@ -89,6 +93,182 @@ void main() {
     expect(controller.value.selectedScriptId, generated.id);
     expect(controller.value.shots, hasLength(1));
     expect(controller.value.shots.single.content, '人物拿起产品');
+  });
+
+  test('原帧指导分析可保存勾选并在原帧内容改变后标记失效', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_frame_guide_controller_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '原帧指导测试');
+    final frame = File(p.join(root.path, 'frame.jpg'))
+      ..writeAsBytesSync([1, 2, 3]);
+    final shot = shootingController.addShot()!;
+    shootingController.updateShot(shot.copyWith(framePath: frame.path));
+    final analysisService = _QueuedFrameAnalysisService([
+      const ReplicationFrameAnalysisResult(
+        elements: [
+          ReplicatePreservedElement(
+            id: '眼镜:细金属框眼镜',
+            category: '眼镜',
+            label: '细金属框眼镜',
+          ),
+        ],
+        subjects: [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '画面人物1',
+            slotIndex: 0,
+          ),
+        ],
+        actionDescription: '人物侧身站立',
+        poseConstraints: '锁定头肩夹角和双肘位置',
+        rawResponse: '{}',
+      ),
+      const ReplicationFrameAnalysisResult(
+        elements: [
+          ReplicatePreservedElement(
+            id: '眼镜:细金属框眼镜',
+            category: '眼镜',
+            label: '细金属框眼镜',
+            selected: true,
+          ),
+          ReplicatePreservedElement(
+            id: '包:原帧黑色手提包',
+            category: '包',
+            label: '原帧黑色手提包',
+            description: '短提手亮面皮包',
+            location: '画面右下方',
+            relationship: '右侧人物手持',
+          ),
+        ],
+        subjects: [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '画面人物1',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+        ],
+        actionDescription: '人物侧身站立',
+        poseConstraints: '锁定头肩夹角和双肘位置',
+        rawResponse: '{}',
+      ),
+    ]);
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      frameAnalysisService: analysisService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await controller.analyzeReplicationFrame(shot.id);
+    expect(
+      controller.shotGuideFor(shot.id)?.analysisStatus,
+      ProcessingStatus.completed,
+    );
+    expect(controller.isShotGuideCurrent(shot.id), isTrue);
+
+    controller.setPreservedElementSelected(shot.id, '眼镜:细金属框眼镜', true);
+    controller.setDetectedSubjectDecision(
+      shot.id,
+      'person:0',
+      ReplicateSubjectDecision.replace,
+    );
+    expect(controller.shotGuideFor(shot.id)?.selectedElements, hasLength(1));
+    expect(
+      controller.shotGuideFor(shot.id)?.subjects.single.decision,
+      ReplicateSubjectDecision.replace,
+    );
+
+    await controller.analyzeReplicationFrame(shot.id);
+    expect(
+      controller.shotGuideFor(shot.id)?.selectedElements.single.label,
+      '细金属框眼镜',
+    );
+    expect(analysisService.previousSelections.last.single.selected, isTrue);
+    expect(
+      analysisService.previousSubjects.last.single.decision,
+      ReplicateSubjectDecision.replace,
+    );
+
+    frame.writeAsBytesSync([4, 5, 6]);
+    expect(controller.isShotGuideCurrent(shot.id), isFalse);
+  });
+
+  test('移除动作骨架会清空提交状态并只删除项目内生成文件', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'replicate_remove_dwpose_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '移除动作骨架测试');
+    final shot = shootingController.addShot()!;
+    final generatedSkeleton = File(
+      p.join(directories.analyses.path, 'dwpose', 'script', 'shot.png'),
+    );
+    generatedSkeleton.parent.createSync(recursive: true);
+    generatedSkeleton.writeAsBytesSync([137, 80, 78, 71]);
+    final repository = ReplicateRepository(database);
+    final now = DateTime.now().toUtc();
+    repository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        personCount: 2,
+        skeletonPath: generatedSkeleton.path,
+        poseStatus: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    final controller = ReplicateController(
+      repository: repository,
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await controller.removeDwPoseForShot(shot.id);
+
+    expect(generatedSkeleton.existsSync(), isFalse);
+    final guide = repository.getShotGuide(shot.id);
+    expect(guide?.skeletonPath, isEmpty);
+    expect(guide?.poseStatus, ProcessingStatus.pending);
+    expect(guide?.personCount, 2, reason: '移除骨架不应丢失已经识别的人数');
   });
 
   test('合成提示词规则跟随当前视频模型切换格式和并发额度', () async {
@@ -281,7 +461,6 @@ void main() {
     ]) {
       workflowRepository.upsertLink(link);
     }
-
     final controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
@@ -382,12 +561,14 @@ void main() {
     final changedQuality = initialDescriptor.qualities.last;
     controller.updateGenerationDefaults(
       aspectRatio: changedAspectRatio,
+      multiViewEnhancementEnabled: true,
       imageSize: changedImageSize,
       quality: changedQuality,
     );
     expect(controller.value.run?.generationAspectRatio, changedAspectRatio);
     expect(controller.value.run?.generationImageSize, changedImageSize);
     expect(controller.value.run?.generationQuality, changedQuality);
+    expect(controller.value.run?.multiViewEnhancementEnabled, isTrue);
     expect(controller.value.selectedScriptId, script.id);
     expect(
       controller.moveToStep(ReplicateStep.prepareAssets),
@@ -417,6 +598,7 @@ void main() {
     expect(controller.value.run?.generationAspectRatio, changedAspectRatio);
     expect(controller.value.run?.generationImageSize, changedImageSize);
     expect(controller.value.run?.generationQuality, changedQuality);
+    expect(controller.value.run?.multiViewEnhancementEnabled, isTrue);
 
     final secondSource = File('${root.path}/second.png');
     await secondSource.writeAsBytes([137, 80, 78, 71, 13], flush: true);
@@ -1000,9 +1182,9 @@ void main() {
     );
     shootingController.createEmpty(name: '批量复刻脚本');
     final frame1 = File('${root.path}/frame-1.png')
-      ..writeAsBytesSync([137, 80, 78, 71, 1]);
+      ..writeAsBytesSync(img.encodePng(img.Image(width: 400, height: 300)));
     final frame2 = File('${root.path}/frame-2.png')
-      ..writeAsBytesSync([137, 80, 78, 71, 2]);
+      ..writeAsBytesSync(img.encodePng(img.Image(width: 300, height: 400)));
     final first = shootingController.addShot()!;
     shootingController.updateShot(
       first.copyWith(framePath: frame1.path, content: '人物手持原产品'),
@@ -1013,14 +1195,29 @@ void main() {
     );
     final character = File('${root.path}/new-character.png')
       ..writeAsBytesSync([137, 80, 78, 71, 3]);
+    final characterB = File('${root.path}/new-character-b.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 6]);
     final product = File('${root.path}/new-product.png')
       ..writeAsBytesSync([137, 80, 78, 71, 4]);
+    final productB = File('${root.path}/new-product-b.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 8]);
+    final productDetail = File('${root.path}/new-product-detail.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 7]);
+    final productDetailB = File('${root.path}/new-product-detail-b.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 10]);
+    final scene = File('${root.path}/new-scene.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 11]);
     final unboundProp = File('${root.path}/unbound-prop.png')
       ..writeAsBytesSync([137, 80, 78, 71, 5]);
     final workflowRepository = ShootingScriptWorkflowRepository(database);
     final now = DateTime.now().toUtc();
     const characterAssetId = 'bound-character';
+    const characterBAssetId = 'bound-character-b';
     const productAssetId = 'bound-product';
+    const productBAssetId = 'bound-product-b';
+    const productDetailAssetId = 'bound-product-detail';
+    const productDetailBAssetId = 'bound-product-detail-b';
+    const sceneAssetId = 'bound-scene';
     const unboundPropAssetId = 'unbound-prop';
     for (final asset in [
       ScriptAsset(
@@ -1036,12 +1233,72 @@ void main() {
         updatedAt: now,
       ),
       ScriptAsset(
+        id: characterBAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.character,
+        name: '新模特B',
+        description: '长发、黑色外套',
+        path: characterB.path,
+        referenceNumber: 2,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
         id: productAssetId,
         scriptId: shootingController.value.selectedScriptId,
         type: ReplicateAssetType.product,
-        name: '新产品',
-        description: '白色瓶身，蓝色标签',
+        name: '白色套装',
+        description: '模特A穿着的白色西装套装',
         path: product.path,
+        referenceNumber: 1,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: productBAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '红色连衣裙',
+        description: '模特B穿着的红色连衣裙',
+        path: productB.path,
+        referenceNumber: 2,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: productDetailAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '新产品瓶口细节',
+        description: '透明旋盖与金属接缝',
+        path: productDetail.path,
+        referenceNumber: 2,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: productDetailBAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.product,
+        name: '红色连衣裙细节',
+        description: '模特B服装的针脚与面料纹理',
+        path: productDetailB.path,
+        referenceNumber: 3,
+        status: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptAsset(
+        id: sceneAssetId,
+        scriptId: shootingController.value.selectedScriptId,
+        type: ReplicateAssetType.scene,
+        name: '白色摄影棚',
+        description: '柔和顶光的无缝白色摄影棚',
+        path: scene.path,
         referenceNumber: 1,
         status: ProcessingStatus.completed,
         createdAt: now,
@@ -1071,7 +1328,19 @@ void main() {
         matchReason: '测试绑定模特',
         confirmed: true,
         locked: true,
-        sortOrder: 0,
+        sortOrder: ScriptAssetSlotPolicy.characterSortOrderBase,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: characterBAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定模特B',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.characterSortOrderBase + 1,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1083,7 +1352,55 @@ void main() {
         matchReason: '测试绑定产品',
         confirmed: true,
         locked: true,
-        sortOrder: 1,
+        sortOrder: ScriptAssetSlotPolicy.productSortOrder,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: productBAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定产品B',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.productSortOrderForIndex(1),
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: productDetailAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定产品细节',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.productDetailSortOrder,
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: productDetailBAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定产品B细节',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.productDetailSortOrderForIndex(1),
+        createdAt: now,
+        updatedAt: now,
+      ),
+      ScriptShotAssetLink(
+        shotId: first.id,
+        scriptAssetId: sceneAssetId,
+        matchSource: ScriptAssetMatchSource.manual,
+        confidence: 1,
+        matchReason: '测试绑定可选场景',
+        confirmed: true,
+        locked: true,
+        sortOrder: ScriptAssetSlotPolicy.sceneSortOrder,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1095,15 +1412,109 @@ void main() {
         matchReason: '测试绑定产品特写',
         confirmed: true,
         locked: true,
-        sortOrder: 0,
+        sortOrder: ScriptAssetSlotPolicy.productSortOrder,
         createdAt: now,
         updatedAt: now,
       ),
     ]) {
       workflowRepository.upsertLink(link);
     }
+    final skeleton = File('${root.path}/frame-1-dwpose.png')
+      ..writeAsBytesSync([137, 80, 78, 71, 9]);
+    ReplicateRepository(database).upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: first.id,
+        sourceFrameFingerprint: sha256
+            .convert(frame1.readAsBytesSync())
+            .toString(),
+        elements: const [
+          ReplicatePreservedElement(
+            id: '眼镜:细金属框眼镜',
+            category: '眼镜',
+            label: '细金属框眼镜',
+            description: '银色细框透明镜片',
+            location: '人物眼前',
+            relationship: '佩戴在双眼前方',
+            selected: true,
+          ),
+          ReplicatePreservedElement(
+            id: '包:原帧黑色手提包',
+            category: '包',
+            label: '原帧黑色手提包',
+            description: '短提手亮面皮包',
+            location: '画面右下方',
+            relationship: '右侧人物手持',
+          ),
+        ],
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '左侧人物',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+          ReplicateDetectedSubject(
+            id: 'person:1',
+            type: ReplicateSubjectType.person,
+            label: '右侧人物',
+            slotIndex: 1,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '左侧产品',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:1',
+            type: ReplicateSubjectType.product,
+            label: '右侧产品',
+            slotIndex: 1,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:2',
+            type: ReplicateSubjectType.product,
+            label: '下装牛仔裤',
+            slotIndex: 2,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+        ],
+        actionDescription: '人物三分之二侧身，右手在胸前持产品',
+        poseConstraints: '锁定头肩夹角、右肘角度和右腕位置',
+        skeletonPath: skeleton.path,
+        analysisStatus: ProcessingStatus.completed,
+        poseStatus: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    ReplicateRepository(database).upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: second.id,
+        sourceFrameFingerprint: sha256
+            .convert(frame2.readAsBytesSync())
+            .toString(),
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '特写产品',
+            slotIndex: 0,
+            decision: ReplicateSubjectDecision.replace,
+          ),
+        ],
+        analysisStatus: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
     final imageService = _RecordingImageGenerationService();
     final visionService = _RecordingVisionStoryboardService();
+    final generationReviewService = _QueuedGenerationReviewService();
     var controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
@@ -1112,8 +1523,68 @@ void main() {
       workflowRepository: workflowRepository,
       imageGenerationService: imageService,
       visionService: visionService,
+      generationReviewService: generationReviewService,
     );
+    expect(controller.value.run?.multiViewEnhancementEnabled, isFalse);
     final generationModel = controller.resolvedGenerationModel;
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:1',
+      ReplicateSubjectDecision.undecided,
+    );
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(imageService.requests, isEmpty);
+    expect(
+      controller.value.replicatedImages
+          .firstWhere((image) => image.scriptShotId == first.id)
+          .errorMessage,
+      contains('保留、替换或移除'),
+    );
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:1',
+      ReplicateSubjectDecision.replace,
+    );
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(
+      controller.value.replicatedImages
+          .firstWhere((image) => image.scriptShotId == first.id)
+          .errorMessage,
+      contains('请先为产品C绑定对应资产'),
+    );
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:2',
+      ReplicateSubjectDecision.keep,
+    );
+    expect(controller.value.run?.inheritSourceAspectRatio, isTrue);
+    expect(await controller.replicateShot(first.id), isTrue);
+    expect(imageService.requests.single.aspectRatio, '4:3');
+    expect(
+      imageService.requests.single.referenceImagePaths,
+      [
+        frame1.path,
+        skeleton.path,
+        character.path,
+        product.path,
+        productDetail.path,
+        characterB.path,
+        productB.path,
+        productDetailB.path,
+        scene.path,
+      ],
+      reason: '默认关闭多视图增强时必须逐字传递用户原始资产路径',
+    );
+    expect(visionService.completionPrompts, isEmpty);
+    expect(
+      Directory(
+        p.join(directories.analyses.path, 'replicate_asset_views'),
+      ).existsSync(),
+      isFalse,
+      reason: '默认原图直传不得创建裁切缓存目录',
+    );
+    imageService.requests.clear();
+    visionService.analyzeCount = 0;
     final generationDescriptor = ImageGenerationCatalog.descriptorFor(
       generationModel,
     )!;
@@ -1128,9 +1599,11 @@ void main() {
     final generationQuality = generationDescriptor.qualities.last;
     controller.updateGenerationDefaults(
       aspectRatio: generationAspectRatio,
+      inheritSourceAspectRatio: false,
       imageSize: generationImageSize,
       quality: generationQuality,
     );
+    expect(controller.value.run?.inheritSourceAspectRatio, isFalse);
     addTearDown(() async {
       controller.dispose();
       shootingController.dispose();
@@ -1184,8 +1657,14 @@ void main() {
     expect(imageService.requests[1].referenceImagePaths.first, frame2.path);
     expect(imageService.requests[0].referenceImagePaths, [
       frame1.path,
+      skeleton.path,
       character.path,
       product.path,
+      productDetail.path,
+      characterB.path,
+      productB.path,
+      productDetailB.path,
+      scene.path,
     ]);
     expect(imageService.requests[1].referenceImagePaths, [
       frame2.path,
@@ -1203,39 +1682,107 @@ void main() {
     expect(imageService.requests[0].prompt, isNot(contains('蓝色包装瓶')));
     expect(imageService.requests[0].prompt, isNot(contains('叙事画面')));
     expect(imageService.requests[0].prompt, isNot(contains('画面细节')));
-    expect(imageService.requests[0].prompt, contains('【Gemini 3 分镜图像指令】'));
-    expect(imageService.requests[0].prompt, contains('图片1是本镜头唯一的构图母版'));
     expect(
       imageService.requests[0].prompt,
-      contains('屏幕方向硬约束：以查看图片1时的画面左/右为唯一坐标系'),
+      contains('【Nano Banana Pro 确定性精准复刻协议】'),
     );
+    expect(imageService.requests[0].prompt, contains('图片1是原帧编辑底图'));
+    expect(imageService.requests[0].prompt, contains('【原帧主体处理计划】'));
+    expect(imageService.requests[0].prompt, contains('左侧人物（人物槽位1）：替换'));
     expect(
       imageService.requests[0].prompt,
-      contains('严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图'),
+      contains('不是自由创作、风格迁移、相似画面重做或素材平均融合'),
     );
-    expect(imageService.requests[0].prompt, contains('色彩锁定硬约束：以图片1可见的色彩风格'));
-    expect(
-      imageService.requests[0].prompt,
-      contains('严禁根据图片2起的资产图、资产文字、镜头色彩字段'),
-    );
-    expect(imageService.requests[0].prompt, contains('产品主体必须清晰可辨'));
+    expect(imageService.requests[0].prompt, isNot(contains('补全合理的前景、中景、背景')));
+    expect(imageService.requests[0].prompt, contains('屏幕左/右以查看图片1时为准'));
+    expect(imageService.requests[0].prompt, contains('严禁镜像'));
+    expect(imageService.requests[0].prompt, contains('调色执行：新实体必须融入图片1'));
+    expect(imageService.requests[0].prompt, contains('资产图自身背景、构图、光照与调色不进入成图'));
+    expect(imageService.requests[0].prompt, contains('产品轮廓、比例、接缝、口袋'));
     expect(imageService.requests[0].prompt, contains('画面文字与标识零容忍硬约束'));
     expect(imageService.requests[0].prompt, contains('默认输出必须是纯净无字画面'));
     expect(imageService.requests[0].prompt, contains('底部字幕'));
     expect(imageService.requests[0].prompt, contains('严禁复制、临摹、变体重绘、替换或新增'));
-    expect(
-      imageService.requests[0].prompt,
-      contains('所有文字、Logo、商标及可识别品牌标记必须移除'),
-    );
+    expect(imageService.requests[0].prompt, contains('不得使用原产品外观、交叉分配或生成品牌文字'));
     expect(imageService.requests[0].prompt, isNot(contains('额外 Logo 或无关文字')));
     expect(
       imageService.requests[0].prompt,
-      endsWith('若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。'),
+      endsWith('最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。'),
     );
-    expect(imageService.requests[0].prompt, contains('严禁复用其身份或外观'));
+    expect(imageService.requests[0].prompt, contains('禁止继承其身份或外观'));
     expect(imageService.requests[0].prompt, contains('绑定资产硬约束'));
+    expect(imageService.requests[0].prompt, contains('图片2是 DWPose 姿势骨架'));
+    expect(imageService.requests[0].prompt, contains('只定义关节位置、肢体方向'));
+    expect(imageService.requests[0].prompt, contains('模特A 使用图片3'));
+    expect(imageService.requests[0].prompt, contains('模特B 使用图片6'));
+    expect(imageService.requests[0].prompt, contains('对应图片1从左到右第1个人物槽位'));
+    expect(imageService.requests[0].prompt, contains('对应图片1从左到右第2个人物槽位'));
+    expect(imageService.requests[0].prompt, contains('按图片1人物中心点从左到右'));
+    expect(imageService.requests[0].prompt, contains('产品A 使用图片4'));
+    expect(imageService.requests[0].prompt, contains('产品B 使用图片7'));
+    expect(imageService.requests[0].prompt, contains('图片5 只补充'));
+    expect(imageService.requests[0].prompt, contains('图片8 只补充'));
+    expect(imageService.requests[0].prompt, contains('图片9 是场景（可选）参考'));
+    expect(imageService.requests[0].prompt, contains('模特A与产品A一一绑定'));
+    expect(imageService.requests[0].prompt, contains('模特B与产品B一一绑定'));
+    expect(imageService.requests[0].prompt, contains('可穿戴商品须完整穿着'));
+    expect(imageService.requests[0].prompt, contains('不得交叉套用、互换、串穿或混搭'));
+    expect(imageService.requests[0].prompt, contains('不得替代产品A定义'));
+    expect(imageService.requests[0].prompt, contains('【用户已勾选保留元素】'));
+    expect(imageService.requests[0].prompt, contains('细金属框眼镜'));
+    expect(imageService.requests[0].prompt, contains('【未勾选元素：必须移除】'));
+    expect(imageService.requests[0].prompt, contains('原帧黑色手提包'));
+    expect(imageService.requests[0].prompt, contains('不得出现本体、残影或可识别特征'));
+    expect(
+      imageService.requests[0].prompt,
+      contains('按周围透视、纹理、材质、遮挡关系和光影自然补全'),
+    );
+    expect(imageService.requests[0].prompt, contains('【原帧精确动作硬约束】'));
+    expect(imageService.requests[0].prompt, contains('【逐关节姿态硬约束】'));
+    expect(imageService.requests[0].prompt, contains('下装牛仔裤（产品槽位3）：保留'));
+    expect(
+      imageService.requests[0].prompt,
+      contains('完整沿用图片1中该产品或服装的轮廓、结构、颜色、材质、细节与穿着/接触关系'),
+    );
     expect(imageService.requests[1].prompt, isNot(contains('人物必须使用图片2')));
     expect(imageService.requests[0].prompt, isNot(contains('不要机械拼贴或照抄参考图版式')));
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'person:1',
+      ReplicateSubjectDecision.remove,
+    );
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:1',
+      ReplicateSubjectDecision.keep,
+    );
+    expect(await controller.replicateShot(first.id), isTrue);
+    final mixedDecisionRequest = imageService.requests.last;
+    expect(mixedDecisionRequest.prompt, contains('右侧人物（人物槽位2）：移除'));
+    expect(mixedDecisionRequest.prompt, contains('右侧产品（产品槽位2）：保留'));
+    expect(
+      mixedDecisionRequest.referenceImagePaths,
+      isNot(contains(characterB.path)),
+    );
+    expect(
+      mixedDecisionRequest.referenceImagePaths,
+      isNot(contains(productB.path)),
+    );
+    expect(
+      mixedDecisionRequest.referenceImagePaths,
+      isNot(contains(productDetailB.path)),
+      reason: '选择保留后，已绑定的替换产品及其细节图都不得提交',
+    );
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'person:1',
+      ReplicateSubjectDecision.replace,
+    );
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:1',
+      ReplicateSubjectDecision.replace,
+    );
     expect(controller.value.replicatedImages, hasLength(2));
     expect(
       controller.value.replicatedImages.map((image) => image.status).toSet(),
@@ -1290,7 +1837,7 @@ void main() {
       ..requestGate = null;
     expect(controller.value.isBusy, isFalse);
 
-    visionService.resolvedPrompt = '清理后的最终提示词：使用新模特，不出现原人物的耳环、眼镜和帽子。';
+    visionService.resolvedPrompt = '此内容不得进入 Nano Banana Pro 最终提示词';
     final firstShotForInstructions = shootingController.value.shots.firstWhere(
       (item) => item.id == first.id,
     );
@@ -1311,23 +1858,28 @@ void main() {
       isTrue,
       reason: controller.value.errorMessage,
     );
-    expect(visionService.completionPrompts, hasLength(1));
-    expect(visionService.completionPrompts.single, contains('最高优先级'));
     expect(
-      visionService.completionPrompts.single,
-      contains('必须完整保留自动提示词中的“画面文字与标识零容忍硬约束”'),
+      visionService.completionPrompts,
+      isEmpty,
+      reason: 'Nano Banana Pro 最终提示词必须由确定性编译器合并，不得调用视觉模型自由改写',
     );
     expect(
       imageService.requests.last.prompt,
-      startsWith(visionService.resolvedPrompt),
+      isNot(contains(visionService.resolvedPrompt)),
     );
+    expect(
+      imageService.requests.last.prompt,
+      contains('【Nano Banana Pro 确定性精准复刻协议】'),
+    );
+    expect(imageService.requests.last.prompt, contains('【用户补充说明：确定性合并】'));
+    expect(imageService.requests.last.prompt, contains('移除原人物的耳环、眼镜和帽子'));
     expect(imageService.requests.last.prompt, contains('【最终输出复核】'));
     expect(
       imageService.requests.last.prompt,
-      endsWith('若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。'),
+      endsWith('最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。'),
     );
 
-    visionService.resolvedPrompt = '使用新模特，画面标题仅写“夏日新品”。';
+    visionService.resolvedPrompt = '此内容同样不得进入最终提示词';
     final textSpecifiedShot = shootingController.value.shots.firstWhere(
       (item) => item.id == first.id,
     );
@@ -1335,27 +1887,74 @@ void main() {
       textSpecifiedShot.copyWith(replicationInstructions: '在画面顶部写“夏日新品”'),
     );
     expect(await controller.replicateShot(first.id), isTrue);
-    expect(visionService.completionPrompts.last, contains('在画面顶部写“夏日新品”'));
-    expect(imageService.requests.last.prompt, contains('画面标题仅写“夏日新品”'));
+    expect(visionService.completionPrompts, isEmpty);
+    expect(imageService.requests.last.prompt, contains('在画面顶部写“夏日新品”'));
     expect(
       imageService.requests.last.prompt,
-      endsWith('若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。'),
+      endsWith('最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。'),
       reason: '用户指定文本时只开放该段文本，参考图中的其他文字与 Logo 仍必须禁止',
     );
 
+    final directDisplayRequestStart = imageService.requests.length;
+    final backgroundReviewStart = generationReviewService.inputs.length;
+    generationReviewService.error = const FormatException(
+      '生成后审核失败：待审核图未返回可解析的 JSON',
+    );
+
+    expect(await controller.replicateShot(first.id), isTrue);
+    expect(
+      imageService.requests.length - directDisplayRequestStart,
+      1,
+      reason: '生成完成后只允许一次首轮图片请求，不得后台续轮纠错',
+    );
+    expect(
+      generationReviewService.inputs.length,
+      backgroundReviewStart,
+      reason: '成图必须立即交给用户查阅，不得发起生成后后台审核',
+    );
+    final directDisplayRecord = controller.value.replicatedImages.firstWhere(
+      (image) => image.scriptShotId == first.id,
+    );
+    expect(directDisplayRecord.status, ProcessingStatus.completed);
+    expect(directDisplayRecord.errorMessage, isEmpty);
+    expect(directDisplayRecord.generationRecovery.isEmpty, isTrue);
+    expect(File(directDisplayRecord.generatedFramePath).existsSync(), isTrue);
+    expect(
+      directDisplayRecord.rawResponse,
+      isNot(contains('postGenerationReview')),
+    );
+
+    ReplicateRepository(database).upsertReplicatedShotImage(
+      directDisplayRecord.copyWith(
+        generationRecovery: const ReplicatedShotGenerationRecovery(
+          stage: ReplicatedShotRecoveryStage.awaitingInitialReview,
+        ),
+        status: ProcessingStatus.failed,
+        errorMessage: '生成结果已保留，但生成后审核失败：FormatException: 待审核图未返回可解析的 JSON',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
     controller.dispose();
     controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
+      workflowRepository: workflowRepository,
       imageGenerationService: imageService,
+      visionService: visionService,
+      generationReviewService: generationReviewService,
     );
-    expect(controller.value.replicatedImages, hasLength(2));
-    expect(controller.value.replicatedImages.map((image) => image.shotNumber), [
-      1,
-      2,
-    ]);
+    final restoredDirectDisplayRecord = controller.value.replicatedImages
+        .firstWhere((image) => image.scriptShotId == first.id);
+    expect(restoredDirectDisplayRecord.status, ProcessingStatus.completed);
+    expect(restoredDirectDisplayRecord.errorMessage, isEmpty);
+    expect(restoredDirectDisplayRecord.generationRecovery.isEmpty, isTrue);
+    expect(
+      generationReviewService.inputs.length,
+      backgroundReviewStart,
+      reason: '旧审核失败记录有可用成图时应直接恢复显示，不得重新审核',
+    );
   });
 
   test('不同脚本的一键复刻互不阻塞', () async {
@@ -1380,6 +1979,7 @@ void main() {
     final workflowRepository = ShootingScriptWorkflowRepository(database);
     final imageService = _RecordingImageGenerationService();
     final visionService = _RecordingVisionStoryboardService();
+    final generationReviewService = _QueuedGenerationReviewService();
     final controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
@@ -1388,6 +1988,7 @@ void main() {
       workflowRepository: workflowRepository,
       imageGenerationService: imageService,
       visionService: visionService,
+      generationReviewService: generationReviewService,
     );
     addTearDown(() async {
       controller.dispose();
@@ -1443,7 +2044,7 @@ void main() {
           matchReason: '测试绑定',
           confirmed: true,
           locked: true,
-          sortOrder: 0,
+          sortOrder: ScriptAssetSlotPolicy.productSortOrder,
           createdAt: now,
           updatedAt: now,
         ),
@@ -1466,6 +2067,32 @@ void main() {
       assetId: 'asset-b',
       path: assetB.path,
     );
+    final guideRepository = ReplicateRepository(database);
+    for (final entry in [
+      (shot: shotA, frame: frameA),
+      (shot: shotB, frame: frameB),
+    ]) {
+      guideRepository.upsertShotGuide(
+        ReplicateShotGuide(
+          shotId: entry.shot.id,
+          sourceFrameFingerprint: sha256
+              .convert(entry.frame.readAsBytesSync())
+              .toString(),
+          subjects: const [
+            ReplicateDetectedSubject(
+              id: 'product:0',
+              type: ReplicateSubjectType.product,
+              label: '测试产品',
+              slotIndex: 0,
+              decision: ReplicateSubjectDecision.replace,
+            ),
+          ],
+          analysisStatus: ProcessingStatus.completed,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    }
 
     controller.selectScript(scriptA.id);
     final runAId = controller.value.run!.id;
@@ -1584,6 +2211,37 @@ void main() {
     });
 
     controller.setFreeCreationEnabled(true);
+    expect(
+      controller.automaticFreeCreationStory,
+      isEmpty,
+      reason: '未关联故事板的自由创作脚本不得回填项目内其他故事板的旧摘要',
+    );
+    final selectedScript = shootingController.value.selectedScript!;
+    ShootingScriptRepository(database).upsertScript(
+      selectedScript.copyWith(
+        sourceStoryboardId: 'missing-board',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    shootingController.refresh(
+      selectScriptId: selectedScript.id,
+      selectShotId: shot.id,
+    );
+    expect(
+      controller.automaticFreeCreationStory,
+      isEmpty,
+      reason: '关联故事板没有摘要时不得回退到另一块故事板',
+    );
+    ShootingScriptRepository(database).upsertScript(
+      selectedScript.copyWith(
+        sourceStoryboardId: 'free-board',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    shootingController.refresh(
+      selectScriptId: selectedScript.id,
+      selectShotId: shot.id,
+    );
     expect(controller.automaticFreeCreationStory, contains('人物进入咖啡馆'));
     expect(controller.effectiveFreeCreationStory, contains('产品特写'));
     expect(controller.validateFreeCreationDescriptions(), isTrue);
@@ -2687,6 +3345,7 @@ class _RecordingImageGenerationService extends ImageGenerationService {
   final requests = <ImageGenerationRequest>[];
   Completer<void>? requestStarted;
   Future<void>? requestGate;
+  bool includeGeminiContinuation = true;
 
   @override
   Future<ImageGenerationResult> generateEditedImage(
@@ -2709,7 +3368,60 @@ class _RecordingImageGenerationService extends ImageGenerationService {
       localPath: output.path,
       remoteUrl: '',
       rawResponse: '{"ok":true}',
+      geminiContinuation: includeGeminiContinuation
+          ? const GeminiImageContinuation(
+              transport: GeminiImageContinuationTransport.interactions,
+              apiModel: 'gemini-3-pro-image',
+              previousInteractionId: 'interaction-for-review-correction',
+            )
+          : null,
     );
+  }
+}
+
+class _QueuedGenerationReviewService
+    extends ReplicationGenerationReviewService {
+  final results = <ReplicationGenerationReviewResult>[];
+  final inputs = <ReplicationGenerationReviewInput>[];
+  Object? error;
+
+  @override
+  Future<ReplicationGenerationReviewResult> review({
+    required AppSettings settings,
+    required ReplicationGenerationReviewInput input,
+    bool allowThinking = false,
+  }) async {
+    inputs.add(input);
+    if (error case final error?) throw error;
+    return results.isEmpty ? _generationReviewPassed() : results.removeAt(0);
+  }
+}
+
+ReplicationGenerationReviewResult _generationReviewPassed() =>
+    const ReplicationGenerationReviewResult(
+      passed: true,
+      rawResponse: '{"passed":true,"issue":null}',
+    );
+
+class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {
+  _QueuedFrameAnalysisService(this.results);
+
+  final List<ReplicationFrameAnalysisResult> results;
+  final previousSelections = <List<ReplicatePreservedElement>>[];
+  final previousSubjects = <List<ReplicateDetectedSubject>>[];
+
+  @override
+  Future<ReplicationFrameAnalysisResult> analyze({
+    required AppSettings settings,
+    required File imageFile,
+    required int shotNumber,
+    List<ReplicatePreservedElement> previousElements = const [],
+    List<ReplicateDetectedSubject> previousSubjects = const [],
+    bool allowThinking = false,
+  }) async {
+    previousSelections.add([...previousElements]);
+    this.previousSubjects.add([...previousSubjects]);
+    return results.removeAt(0);
   }
 }
 

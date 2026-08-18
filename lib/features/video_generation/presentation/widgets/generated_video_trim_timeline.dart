@@ -50,20 +50,29 @@ class GeneratedVideoTrimTimeline extends StatelessWidget {
             top: 0,
             height: 66,
             child: LayoutBuilder(
-              builder: (context, constraints) => GestureDetector(
-                key: const ValueKey('generated-video-io-seek-area'),
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (details) {
+              builder: (context, constraints) {
+                void seekToLocalPosition(Offset localPosition) {
                   final width = math.max(1.0, constraints.maxWidth);
-                  final fraction = (details.localPosition.dx / width).clamp(
-                    0.0,
-                    1.0,
-                  );
+                  final fraction = (localPosition.dx / width).clamp(0.0, 1.0);
                   onSeek(
                     Duration(milliseconds: (durationMs * fraction).round()),
                   );
-                },
-              ),
+                }
+
+                return MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    key: const ValueKey('generated-video-io-seek-area'),
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: (details) =>
+                        seekToLocalPosition(details.localPosition),
+                    onHorizontalDragStart: (details) =>
+                        seekToLocalPosition(details.localPosition),
+                    onHorizontalDragUpdate: (details) =>
+                        seekToLocalPosition(details.localPosition),
+                  ),
+                );
+              },
             ),
           ),
           Positioned(

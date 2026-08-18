@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -15,6 +19,7 @@ import '../../shooting_script/application/script_asset_binding_controller.dart';
 import '../../shooting_script/data/script_multimodal_analysis_service.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
+import '../../shooting_script/domain/script_asset_slot_policy.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../../shooting_script/data/shooting_script_workflow_repository.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
@@ -29,14 +34,21 @@ import '../../video_generation/domain/video_action_sequence.dart';
 import '../../video_generation/domain/h3_video_prompt_adapter.dart';
 import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/bundled_video_skill_library.dart';
+import '../data/dwpose_model_manager.dart';
+import '../data/dwpose_service.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
+import '../data/replication_asset_view_selection_service.dart';
+import '../data/replication_frame_analysis_service.dart';
+import '../data/replication_generation_review_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
 import '../data/free_creation_video_prompt_writing_service.dart';
 import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
 import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
+import '../domain/nano_banana_asset_manifest.dart';
+import '../domain/nano_banana_replication_prompt_compiler.dart';
 import '../domain/replicate_models.dart';
 
 final replicateControllerProvider = Provider<ReplicateController>(
@@ -73,7 +85,9 @@ class ReplicateState {
     this.assets = const [],
     this.replicatedImages = const [],
     this.prompts = const [],
+    this.shotGuides = const [],
     this.isBusy = false,
+    this.isAnalyzingFrames = false,
     this.message = '',
     this.errorMessage = '',
   });
@@ -85,7 +99,9 @@ class ReplicateState {
   final List<ReplicateAsset> assets;
   final List<ReplicatedShotImage> replicatedImages;
   final List<ShotPrompt> prompts;
+  final List<ReplicateShotGuide> shotGuides;
   final bool isBusy;
+  final bool isAnalyzingFrames;
   final String message;
   final String errorMessage;
 
@@ -112,7 +128,9 @@ class ReplicateState {
     List<ReplicateAsset>? assets,
     List<ReplicatedShotImage>? replicatedImages,
     List<ShotPrompt>? prompts,
+    List<ReplicateShotGuide>? shotGuides,
     bool? isBusy,
+    bool? isAnalyzingFrames,
     String? message,
     String? errorMessage,
   }) => ReplicateState(
@@ -123,7 +141,9 @@ class ReplicateState {
     assets: assets ?? this.assets,
     replicatedImages: replicatedImages ?? this.replicatedImages,
     prompts: prompts ?? this.prompts,
+    shotGuides: shotGuides ?? this.shotGuides,
     isBusy: isBusy ?? this.isBusy,
+    isAnalyzingFrames: isAnalyzingFrames ?? this.isAnalyzingFrames,
     message: message ?? this.message,
     errorMessage: errorMessage ?? this.errorMessage,
   );
@@ -171,6 +191,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         const SeedancePromptGenerationService(),
     ImageGenerationService? imageGenerationService,
     VisionStoryboardService? visionService,
+    ReplicationFrameAnalysisService? frameAnalysisService,
+    ReplicationGenerationReviewService? generationReviewService,
+    ReplicationAssetViewSelectionService? assetViewSelectionService,
+    DwPoseModelManager? dwPoseModelManager,
+    DwPoseService? dwPoseService,
     H3PromptWritingService h3PromptWritingService =
         const H3PromptWritingService(),
     FreeCreationVideoPromptWritingService freeCreationPromptWritingService =
@@ -198,6 +223,18 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _enforceFreeCreationMode = enforceFreeCreationMode,
        _uuid = uuid,
        super(const ReplicateState()) {
+    _frameAnalysisService =
+        frameAnalysisService ??
+        ReplicationFrameAnalysisService(visionService: _visionService);
+    _generationReviewService =
+        generationReviewService ??
+        ReplicationGenerationReviewService(visionService: _visionService);
+    _assetViewSelectionService =
+        assetViewSelectionService ??
+        ReplicationAssetViewSelectionService(visionService: _visionService);
+    _dwPoseModelManager = dwPoseModelManager ?? DwPoseModelManager();
+    _dwPoseService = dwPoseService ?? DwPoseService();
+    _ownsDwPoseService = dwPoseService == null;
     _shootingScriptController.addListener(_handleShootingScriptChanged);
     _assetBindingController?.addListener(_handleWorkflowChanged);
     _settingsController.addListener(_handleSettingsChanged);
@@ -224,6 +261,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsImageGenerationService;
   final VisionStoryboardService _visionService;
   final bool _ownsVisionService;
+  late final ReplicationFrameAnalysisService _frameAnalysisService;
+  late final ReplicationGenerationReviewService _generationReviewService;
+  late final ReplicationAssetViewSelectionService _assetViewSelectionService;
+  late final DwPoseModelManager _dwPoseModelManager;
+  late final DwPoseService _dwPoseService;
+  late final bool _ownsDwPoseService;
   final H3PromptWritingService _h3PromptWritingService;
   final FreeCreationVideoPromptWritingService _freeCreationPromptWritingService;
   final H3SkillLibrary _h3SkillLibrary;
@@ -238,6 +281,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final _activeBuildCountsByScriptId = <String, int>{};
   final _buildMessagesByScriptId = <String, String>{};
   final _buildErrorsByScriptId = <String, String>{};
+  final _activeFrameAnalysisCountsByScriptId = <String, int>{};
   var _replicatedImageRecoveryScanCount = 0;
 
   @visibleForTesting
@@ -255,6 +299,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (_ownsVisionService) {
       _visionService.close();
     }
+    if (_ownsDwPoseService) unawaited(_dwPoseService.close());
     super.dispose();
   }
 
@@ -270,6 +315,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   void updateGenerationDefaults({
     String? model,
     String? aspectRatio,
+    bool? inheritSourceAspectRatio,
+    bool? multiViewEnhancementEnabled,
     String? imageSize,
     String? quality,
   }) {
@@ -300,6 +347,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       run.copyWith(
         generationModel: selectedModel,
         generationAspectRatio: selectedAspectRatio,
+        inheritSourceAspectRatio:
+            inheritSourceAspectRatio ?? run.inheritSourceAspectRatio,
+        multiViewEnhancementEnabled:
+            multiViewEnhancementEnabled ?? run.multiViewEnhancementEnabled,
         generationImageSize: selectedImageSize,
         generationQuality: selectedQuality,
         updatedAt: DateTime.now().toUtc(),
@@ -349,6 +400,320 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       structuredPromptContextReadyCount;
 
   void refresh() => _restoreFromShootingScript();
+
+  ReplicateShotGuide? shotGuideFor(String shotId) {
+    for (final guide in value.shotGuides) {
+      if (guide.shotId == shotId) return guide;
+    }
+    return null;
+  }
+
+  bool isShotGuideCurrent(String shotId) {
+    final guide = shotGuideFor(shotId);
+    final shot = _shotById(shotId);
+    if (guide == null || shot == null) return false;
+    return guide.sourceFrameFingerprint == _sourceFrameFingerprint(shot);
+  }
+
+  Future<void> analyzeReplicationFrame(String shotId) async {
+    final shot = _shotById(shotId);
+    final scriptId = value.selectedScriptId;
+    if (shot == null || scriptId.isEmpty) return;
+    final imageFile = File(shot.framePath.trim());
+    if (shot.framePath.trim().isEmpty || !imageFile.existsSync()) {
+      value = value.copyWith(
+        errorMessage: '镜头 ${shot.shotNumber} 的原视频帧不存在，无法分析',
+      );
+      return;
+    }
+    final stored = _repository.getShotGuide(shot.id);
+    final now = DateTime.now().toUtc();
+    final fingerprint = _sourceFrameFingerprint(shot);
+    final previous = stored?.sourceFrameFingerprint == fingerprint
+        ? stored
+        : null;
+    final running = ReplicateShotGuide(
+      shotId: shot.id,
+      sourceFrameFingerprint: fingerprint,
+      elements: previous?.elements ?? const [],
+      subjects: previous?.subjects ?? const [],
+      actionDescription: previous?.actionDescription ?? '',
+      poseConstraints: previous?.poseConstraints ?? '',
+      personCount: previous?.personCount ?? 0,
+      skeletonPath: previous?.skeletonPath ?? '',
+      analysisModel: _settingsController.value.visionModel.trim(),
+      analysisStatus: ProcessingStatus.running,
+      poseStatus: previous?.poseStatus ?? ProcessingStatus.pending,
+      rawResponse: previous?.rawResponse ?? '',
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    );
+    _beginFrameAnalysis(scriptId);
+    _repository.upsertShotGuide(running);
+    _reloadShotGuides(
+      scriptId,
+      message: '正在分析镜头 ${shot.shotNumber} 的配饰、关键道具与精确动作…',
+    );
+    try {
+      final result = await _frameAnalysisService.analyze(
+        settings: _settingsController.value,
+        imageFile: imageFile,
+        shotNumber: shot.shotNumber,
+        previousElements: previous?.elements ?? const [],
+        previousSubjects: previous?.subjects ?? const [],
+      );
+      _repository.upsertShotGuide(
+        running.copyWith(
+          elements: result.elements,
+          subjects: result.subjects,
+          actionDescription: result.actionDescription,
+          poseConstraints: result.poseConstraints,
+          personCount: math.max(running.personCount, result.personCount),
+          analysisStatus: ProcessingStatus.completed,
+          rawResponse: result.rawResponse,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      _reloadShotGuides(
+        scriptId,
+        message: '镜头 ${shot.shotNumber} 原帧分析完成，请选择主体替换/移除，并勾选唯一允许保留的配饰和道具',
+      );
+    } catch (error) {
+      _repository.upsertShotGuide(
+        running.copyWith(
+          analysisStatus: ProcessingStatus.failed,
+          errorMessage: '$error',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      _reloadShotGuides(
+        scriptId,
+        errorMessage: '镜头 ${shot.shotNumber} 原帧分析失败：$error',
+      );
+    } finally {
+      _finishFrameAnalysis(scriptId);
+      _reloadShotGuides(scriptId);
+    }
+  }
+
+  Future<void> analyzeAllReplicationFrames() async {
+    final shotIds = [for (final shot in value.confirmedShots) shot.id];
+    for (var offset = 0; offset < shotIds.length; offset += 4) {
+      final end = (offset + 4).clamp(0, shotIds.length).toInt();
+      await Future.wait([
+        for (final shotId in shotIds.sublist(offset, end))
+          analyzeReplicationFrame(shotId),
+      ]);
+    }
+  }
+
+  Future<void> extractDwPoseForShot(String shotId) async {
+    final shot = _shotById(shotId);
+    final scriptId = value.selectedScriptId;
+    if (shot == null || scriptId.isEmpty) return;
+    final source = File(shot.framePath.trim());
+    if (!source.existsSync()) {
+      value = value.copyWith(errorMessage: '镜头 ${shot.shotNumber} 的原视频帧不存在');
+      return;
+    }
+    if (kIsWeb || !Platform.isWindows) {
+      value = value.copyWith(errorMessage: '当前版本仅支持在 Windows 桌面端提取 DWPose 骨架');
+      return;
+    }
+    final stored = _repository.getShotGuide(shotId);
+    final fingerprint = _sourceFrameFingerprint(shot);
+    final previous = stored?.sourceFrameFingerprint == fingerprint
+        ? stored
+        : null;
+    final now = DateTime.now().toUtc();
+    final running =
+        previous?.copyWith(
+          sourceFrameFingerprint: fingerprint,
+          poseStatus: ProcessingStatus.running,
+          errorMessage: '',
+          updatedAt: now,
+        ) ??
+        ReplicateShotGuide(
+          shotId: shotId,
+          sourceFrameFingerprint: fingerprint,
+          poseStatus: ProcessingStatus.running,
+          createdAt: now,
+          updatedAt: now,
+        );
+    _repository.upsertShotGuide(running);
+    _reloadShotGuides(
+      scriptId,
+      message: '正在提取镜头 ${shot.shotNumber} 的 DWPose 高精度姿势骨架…',
+    );
+    try {
+      final models = await _dwPoseModelManager.loadBundledModels();
+      final outputDirectory = Directory(
+        p.join(_directories.analyses.path, 'dwpose', _safeFileName(scriptId)),
+      );
+      final result = await _dwPoseService.extract(
+        imageFile: source,
+        outputFile: DwPoseService.outputFileFor(
+          directory: outputDirectory,
+          shotId: shotId,
+        ),
+        models: models,
+      );
+      _repository.upsertShotGuide(
+        running.copyWith(
+          skeletonPath: result.skeletonFile.path,
+          personCount: math.max(running.personCount, result.personCount),
+          poseStatus: ProcessingStatus.completed,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      _reloadShotGuides(
+        scriptId,
+        message:
+            '镜头 ${shot.shotNumber} 已提取 ${result.personCount} 个人物的 DWPose 骨架',
+      );
+    } catch (error) {
+      _repository.upsertShotGuide(
+        running.copyWith(
+          poseStatus: ProcessingStatus.failed,
+          errorMessage: '$error',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      _reloadShotGuides(
+        scriptId,
+        errorMessage: '镜头 ${shot.shotNumber} DWPose 提取失败：$error',
+      );
+    }
+  }
+
+  Future<void> extractDwPoseForAllShots() async {
+    for (final shot in value.confirmedShots) {
+      await extractDwPoseForShot(shot.id);
+    }
+  }
+
+  Future<void> removeDwPoseForShot(String shotId) async {
+    final guide = _repository.getShotGuide(shotId);
+    final scriptId = value.selectedScriptId;
+    if (guide == null || scriptId.isEmpty) return;
+    final skeletonPath = guide.skeletonPath.trim();
+    var cleanupWarning = '';
+    if (skeletonPath.isNotEmpty) {
+      final generatedRoot = p.normalize(
+        p.absolute(p.join(_directories.analyses.path, 'dwpose')),
+      );
+      final candidate = p.normalize(p.absolute(skeletonPath));
+      if (p.isWithin(generatedRoot, candidate)) {
+        try {
+          final file = File(candidate);
+          if (await file.exists()) await file.delete();
+        } on FileSystemException catch (error) {
+          cleanupWarning = '；本地骨架缓存删除失败：${error.message}';
+        }
+      }
+    }
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        skeletonPath: '',
+        poseStatus: ProcessingStatus.pending,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    final shotNumber = _shotById(shotId)?.shotNumber;
+    _reloadShotGuides(
+      scriptId,
+      message:
+          '${shotNumber == null ? '当前镜头' : '镜头 $shotNumber'}的动作骨架已移除$cleanupWarning',
+    );
+  }
+
+  void setPreservedElementSelected(
+    String shotId,
+    String elementId,
+    bool selected,
+  ) {
+    final guide = _repository.getShotGuide(shotId);
+    if (guide == null) return;
+    final elements = [
+      for (final element in guide.elements)
+        element.id == elementId
+            ? element.copyWith(selected: selected)
+            : element,
+    ];
+    _repository.upsertShotGuide(
+      guide.copyWith(elements: elements, updatedAt: DateTime.now().toUtc()),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
+
+  void setDetectedSubjectDecision(
+    String shotId,
+    String subjectId,
+    ReplicateSubjectDecision decision,
+  ) {
+    final guide = _repository.getShotGuide(shotId);
+    if (guide == null) return;
+    final subjects = [
+      for (final subject in guide.subjects)
+        if (subject.id == subjectId)
+          subject.copyWith(decision: decision)
+        else
+          subject,
+    ];
+    _repository.upsertShotGuide(
+      guide.copyWith(subjects: subjects, updatedAt: DateTime.now().toUtc()),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
+
+  void removeDetectedSubject(String shotId, String subjectId) {
+    final guide = _repository.getShotGuide(shotId);
+    if (guide == null) return;
+    final subjects = guide.subjects
+        .where((subject) => subject.id != subjectId)
+        .toList(growable: false);
+    if (subjects.length == guide.subjects.length) return;
+    _repository.upsertShotGuide(
+      guide.copyWith(subjects: subjects, updatedAt: DateTime.now().toUtc()),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
+
+  void addManualPreservedElement(String shotId, String label) {
+    final normalized = label.trim();
+    if (normalized.isEmpty) return;
+    final previous = _repository.getShotGuide(shotId);
+    final shot = _shotById(shotId);
+    if (shot == null) return;
+    final now = DateTime.now().toUtc();
+    final guide =
+        previous ??
+        ReplicateShotGuide(
+          shotId: shotId,
+          sourceFrameFingerprint: _sourceFrameFingerprint(shot),
+          createdAt: now,
+          updatedAt: now,
+        );
+    final duplicate = guide.elements.any(
+      (element) =>
+          element.label.trim().toLowerCase() == normalized.toLowerCase(),
+    );
+    if (duplicate) return;
+    final element = ReplicatePreservedElement(
+      id: 'manual:${_uuid.v4()}',
+      category: '手动',
+      label: normalized,
+      selected: true,
+      isManual: true,
+    );
+    _repository.upsertShotGuide(
+      guide.copyWith(elements: [...guide.elements, element], updatedAt: now),
+    );
+    _reloadShotGuides(value.selectedScriptId);
+  }
 
   void updateVideoGenerationStatus(
     ProcessingStatus status, {
@@ -496,9 +861,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     );
   }
 
-  String get automaticFreeCreationStory => _repository.latestStoryboardStory(
-    preferredBoardId: value.selectedScript?.sourceStoryboardId,
-  );
+  String get automaticFreeCreationStory =>
+      _repository.storyboardStory(value.selectedScript?.sourceStoryboardId);
 
   String get effectiveFreeCreationStory {
     final override = value.run?.freeCreationStoryOverride.trim() ?? '';
@@ -1154,9 +1518,49 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       stepAssets: context.assets,
       fallbackShotId: fallbackReferenceShotId,
     );
+    final guide = _currentShotGuide(shot);
+    final skeletonPath = guide?.poseStatus == ProcessingStatus.completed
+        ? guide!.skeletonPath.trim()
+        : '';
+    final skeleton = skeletonPath.isNotEmpty && File(skeletonPath).existsSync()
+        ? File(skeletonPath)
+        : null;
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
     final model = _resolvedGenerationModel(run);
+    if (existing != null &&
+        existing.status == ProcessingStatus.running &&
+        !existing.generationRecovery.isEmpty) {
+      final generatedPath = existing.generatedFramePath.trim();
+      if (generatedPath.isNotEmpty && File(generatedPath).existsSync()) {
+        _saveReplicatedImage(
+          existing.copyWith(
+            generationRecovery: ReplicatedShotGenerationRecovery.empty,
+            status: ProcessingStatus.completed,
+            errorMessage: '',
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+        return true;
+      }
+      try {
+        return await _resumeInterruptedReplicatedShot(
+          shot: shot,
+          context: context,
+          original: original,
+          record: existing,
+        );
+      } catch (error) {
+        _saveReplicatedImage(
+          existing.copyWith(
+            status: ProcessingStatus.failed,
+            errorMessage: '恢复中断的复刻任务失败，未发起新的首轮图片请求：$error',
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+        return false;
+      }
+    }
     var record = ReplicatedShotImage(
       id: existing?.id ?? _replicatedImageId(run.id, shot.id),
       runId: run.id,
@@ -1165,7 +1569,13 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       originalFramePath: shot.framePath,
       generatedFramePath: existing?.generatedFramePath ?? '',
       assetIds: [for (final reference in references) reference.id],
-      prompt: _generationPrompt(shot, references, model),
+      prompt: _generationPrompt(
+        shot,
+        references,
+        model,
+        guide: guide,
+        hasPoseSkeleton: skeleton != null,
+      ),
       model: model,
       rawResponse: '',
       status: ProcessingStatus.running,
@@ -1183,9 +1593,31 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return false;
     }
     if (references.isEmpty) {
+      final hasExplicitSubjectDecision =
+          guide != null &&
+          guide.subjects.isNotEmpty &&
+          guide.undecidedSubjects.isEmpty;
+      if (hasExplicitSubjectDecision) {
+        // 原帧本身仍会作为参考图；全部主体显式移除时无需额外资产。
+      } else {
+        record = record.copyWith(
+          status: ProcessingStatus.failed,
+          errorMessage: '当前镜头没有已绑定且可用的图片资产',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+        return false;
+      }
+    }
+    final readinessError = _replicationInputReadinessError(
+      shot: shot,
+      guide: guide,
+      references: references,
+    );
+    if (readinessError != null) {
       record = record.copyWith(
         status: ProcessingStatus.failed,
-        errorMessage: '当前镜头没有已绑定且可用的图片资产',
+        errorMessage: readinessError,
         updatedAt: DateTime.now().toUtc(),
       );
       _saveReplicatedImage(record);
@@ -1193,6 +1625,29 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     _saveReplicatedImage(record);
     try {
+      final descriptor = ImageGenerationCatalog.descriptorFor(model);
+      if (descriptor == null) {
+        throw FormatException('不支持的图片生成模型：$model');
+      }
+      final decisionReferences = _referencesForSubjectDecisions(
+        references,
+        guide,
+      );
+      var preparedReferences = await _prepareSelectedAssetViews(
+        shot: shot,
+        run: run,
+        original: original,
+        references: decisionReferences,
+        maximumReferenceCount:
+            descriptor.maxReferenceImages - 1 - (skeleton == null ? 0 : 1),
+      );
+      if (NanoBananaProModelCapability.supports(model)) {
+        preparedReferences = _referencesInNanoBananaManifestOrder(
+          shot: shot,
+          original: original,
+          references: preparedReferences,
+        );
+      }
       if (!_disposed) {
         _setReplicationMessage(
           context.scriptId,
@@ -1201,24 +1656,40 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       }
       final prompt = await _buildVisionEnhancedGenerationPrompt(
         shot: shot,
-        references: references,
+        references: preparedReferences,
         model: model,
         original: original,
+        guide: guide,
+        hasPoseSkeleton: skeleton != null,
       );
       record = record.copyWith(
+        assetIds: preparedReferences
+            .map((reference) => reference.id)
+            .toSet()
+            .toList(),
         prompt: prompt,
         updatedAt: DateTime.now().toUtc(),
       );
       _saveReplicatedImage(record);
-      final descriptor = ImageGenerationCatalog.descriptorFor(model);
-      if (descriptor == null) {
-        throw FormatException('不支持的图片生成模型：$model');
+      final referenceCount =
+          1 + (skeleton == null ? 0 : 1) + preparedReferences.length;
+      if (referenceCount > descriptor.maxReferenceImages) {
+        throw FormatException(
+          '${descriptor.label} 最多支持 ${descriptor.maxReferenceImages} 张参考图；'
+          '当前为原视频帧 1 张、DWPose 骨架 ${skeleton == null ? 0 : 1} 张、绑定及裁切资产 ${preparedReferences.length} 张。请减少绑定资产后重试。',
+        );
       }
-      final aspectRatio = _catalogOption(
-        run.generationAspectRatio,
-        descriptor.aspectRatios,
-        preferred: '16:9',
-      );
+      final aspectRatio = run.inheritSourceAspectRatio
+          ? _closestSupportedSourceAspectRatio(
+              original,
+              descriptor.aspectRatios,
+              fallback: run.generationAspectRatio,
+            )
+          : _catalogOption(
+              run.generationAspectRatio,
+              descriptor.aspectRatios,
+              preferred: '16:9',
+            );
       final imageSize = _catalogOption(
         run.generationImageSize,
         ImageGenerationCatalog.resolutionsFor(model, aspectRatio),
@@ -1237,23 +1708,25 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         ),
       );
       await outputDirectory.create(recursive: true);
-      final result = await _imageGenerationService.generateEditedImage(
-        ImageGenerationRequest(
-          provider: ImageGenerationProviderResolver.resolve(
-            settings: _settingsController.value,
-            model: model,
-          ),
+      final generationRequest = ImageGenerationRequest(
+        provider: ImageGenerationProviderResolver.resolve(
+          settings: _settingsController.value,
           model: model,
-          prompt: record.prompt,
-          aspectRatio: aspectRatio,
-          imageSize: imageSize,
-          quality: quality,
-          referenceImagePaths: [
-            original.path,
-            for (final reference in references) reference.path,
-          ],
-          outputDirectory: outputDirectory,
         ),
+        model: model,
+        prompt: record.prompt,
+        aspectRatio: aspectRatio,
+        imageSize: imageSize,
+        quality: quality,
+        referenceImagePaths: [
+          original.path,
+          if (skeleton != null) skeleton.path,
+          for (final reference in preparedReferences) reference.path,
+        ],
+        outputDirectory: outputDirectory,
+      );
+      final result = await _imageGenerationService.generateEditedImage(
+        generationRequest,
       );
       final persistedPath = await _persistGeneratedFrame(
         sourcePath: result.localPath,
@@ -1264,6 +1737,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       record = record.copyWith(
         generatedFramePath: persistedPath,
         rawResponse: result.rawResponse,
+        generationRecovery: ReplicatedShotGenerationRecovery.empty,
         status: ProcessingStatus.completed,
         errorMessage: '',
         updatedAt: DateTime.now().toUtc(),
@@ -1281,11 +1755,441 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
   }
 
+  Future<bool> _reviewAndCorrectReplicatedShot({
+    required ScriptShot shot,
+    required _ReplicationContext context,
+    required File original,
+    required ImageGenerationRequest generationRequest,
+    required ImageGenerationResult initialResult,
+    required String initialPersistedPath,
+    required Directory outputDirectory,
+    required ReplicatedShotImage record,
+  }) async {
+    var recovery = record.generationRecovery;
+    final reviews = _storedGenerationReviews(recovery.reviewAttempts);
+    final restoredCorrectionRawResponse = _storedGenerationRawResponse(
+      record,
+      key: 'correctionGenerationRawResponse',
+    );
+    ImageGenerationResult? correctionResult =
+        restoredCorrectionRawResponse.isEmpty
+        ? null
+        : ImageGenerationResult(
+            localPath: initialPersistedPath,
+            remoteUrl: '',
+            rawResponse: restoredCorrectionRawResponse,
+          );
+    var correctionAttempted =
+        recovery.stage == ReplicatedShotRecoveryStage.awaitingCorrectedReview;
+    var persistedPath = initialPersistedPath;
+
+    Future<ReplicationGenerationReviewResult> reviewCurrent() =>
+        _generationReviewService.review(
+          settings: _settingsController.value,
+          input: ReplicationGenerationReviewInput(
+            shotNumber: shot.shotNumber,
+            originalFrame: original,
+            orderedReferenceImages: [
+              for (final path in generationRequest.referenceImagePaths)
+                File(path),
+            ],
+            generatedImage: File(persistedPath),
+            structuredConstraints: record.prompt,
+          ),
+          allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
+        );
+
+    Future<bool> fail({
+      required String diagnostic,
+      required String stoppedReason,
+    }) async {
+      record = record.copyWith(
+        generatedFramePath: persistedPath,
+        rawResponse: _replicationAuditRawResponse(
+          initialRawResponse: initialResult.rawResponse,
+          correctionRawResponse: correctionResult?.rawResponse,
+          reviews: reviews,
+          correctionAttempted: correctionAttempted,
+          stoppedReason: stoppedReason,
+        ),
+        status: ProcessingStatus.failed,
+        errorMessage: diagnostic,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      return false;
+    }
+
+    ReplicationGenerationReviewIssue? issue;
+    if (recovery.stage == ReplicatedShotRecoveryStage.awaitingInitialReview) {
+      if (!_disposed) {
+        _setReplicationMessage(
+          context.scriptId,
+          '正在审核镜头 ${shot.shotNumber} 的复刻结果…',
+        );
+      }
+      ReplicationGenerationReviewResult firstReview;
+      try {
+        firstReview = await reviewCurrent();
+        reviews.add(firstReview);
+      } catch (error) {
+        return fail(
+          diagnostic: '生成结果已保留，但生成后审核失败：$error',
+          stoppedReason: 'initial_review_error',
+        );
+      }
+      if (firstReview.passed) {
+        record = record.copyWith(
+          rawResponse: _replicationAuditRawResponse(
+            initialRawResponse: initialResult.rawResponse,
+            reviews: reviews,
+            correctionAttempted: false,
+            stoppedReason: 'passed_initial_review',
+          ),
+          generationRecovery: ReplicatedShotGenerationRecovery.empty,
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+        return true;
+      }
+      issue = firstReview.issue;
+      if (issue == null) {
+        return fail(
+          diagnostic: '生成结果已保留，但审核未返回可验证的单一问题',
+          stoppedReason: 'missing_review_issue',
+        );
+      }
+      recovery = recovery.copyWith(
+        stage: ReplicatedShotRecoveryStage.awaitingCorrection,
+        reviewAttempts: [for (final review in reviews) review.toJson()],
+      );
+      record = record.copyWith(
+        rawResponse: _replicationAuditRawResponse(
+          initialRawResponse: initialResult.rawResponse,
+          reviews: reviews,
+          correctionAttempted: false,
+          stoppedReason: 'awaiting_correction',
+        ),
+        generationRecovery: recovery,
+        status: ProcessingStatus.running,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+    } else if (recovery.stage ==
+        ReplicatedShotRecoveryStage.awaitingCorrection) {
+      issue = reviews.isEmpty ? null : reviews.first.issue;
+      if (issue == null) {
+        return fail(
+          diagnostic: '生成结果已保留，但持久化的首审问题无效，无法安全续轮纠错。',
+          stoppedReason: 'invalid_persisted_review_issue',
+        );
+      }
+    }
+
+    if (recovery.stage != ReplicatedShotRecoveryStage.awaitingCorrectedReview) {
+      final continuation =
+          initialResult.geminiContinuation ??
+          _restoredGeminiContinuation(recovery);
+      if (continuation == null) {
+        final unavailableReason = recovery.continuationDiagnostic.trim();
+        return fail(
+          diagnostic:
+              '生成后审核未通过：${_replicationReviewDiagnostic(issue!)}；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，已停止付费纠错并保留生成结果。',
+          stoppedReason:
+              recovery.continuationTransport ==
+                  ReplicatedShotContinuationTransport.generateContent
+              ? 'generate_content_restart_continuation_unavailable'
+              : 'missing_gemini_continuation',
+        );
+      }
+
+      if (!_disposed) {
+        _setReplicationMessage(
+          context.scriptId,
+          '镜头 ${shot.shotNumber} 审核发现一个问题，正在执行唯一一次续轮纠错…',
+        );
+      }
+      recovery = recovery.copyWith(
+        stage: ReplicatedShotRecoveryStage.correctionInFlight,
+      );
+      record = record.copyWith(
+        rawResponse: _replicationAuditRawResponse(
+          initialRawResponse: initialResult.rawResponse,
+          reviews: reviews,
+          correctionAttempted: true,
+          stoppedReason: 'correction_in_flight',
+        ),
+        generationRecovery: recovery,
+        status: ProcessingStatus.running,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      try {
+        correctionAttempted = true;
+        correctionResult = await _imageGenerationService.generateEditedImage(
+          ImageGenerationRequest(
+            provider: generationRequest.provider,
+            model: generationRequest.model,
+            prompt: ReplicationGenerationReviewService.buildCorrectionPrompt(
+              issue!,
+            ),
+            aspectRatio: generationRequest.aspectRatio,
+            imageSize: generationRequest.imageSize,
+            quality: generationRequest.quality,
+            referenceImagePaths: const [],
+            outputDirectory: generationRequest.outputDirectory,
+            geminiContinuation: continuation,
+          ),
+        );
+        persistedPath = await _persistGeneratedFrame(
+          sourcePath: correctionResult.localPath,
+          outputDirectory: outputDirectory,
+          shot: shot,
+          previousPath: persistedPath,
+        );
+        recovery = recovery.copyWith(
+          stage: ReplicatedShotRecoveryStage.awaitingCorrectedReview,
+          reviewAttempts: [for (final review in reviews) review.toJson()],
+        );
+        record = record.copyWith(
+          generatedFramePath: persistedPath,
+          rawResponse: _replicationAuditRawResponse(
+            initialRawResponse: initialResult.rawResponse,
+            correctionRawResponse: correctionResult.rawResponse,
+            reviews: reviews,
+            correctionAttempted: true,
+            stoppedReason: 'awaiting_corrected_review',
+          ),
+          generationRecovery: recovery,
+          status: ProcessingStatus.running,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+      } catch (error) {
+        return fail(
+          diagnostic: '生成结果已保留；唯一一次 Gemini 续轮纠错失败，已停止付费循环：$error',
+          stoppedReason: 'correction_error',
+        );
+      }
+    }
+
+    if (!_disposed) {
+      _setReplicationMessage(
+        context.scriptId,
+        '正在复核镜头 ${shot.shotNumber} 的纠错结果…',
+      );
+    }
+    ReplicationGenerationReviewResult secondReview;
+    try {
+      secondReview = await reviewCurrent();
+      reviews.add(secondReview);
+    } catch (error) {
+      return fail(
+        diagnostic: '纠错结果已保留，但第二次审核失败；已停止继续付费纠错：$error',
+        stoppedReason: 'corrected_review_error',
+      );
+    }
+    if (!secondReview.passed) {
+      final remainingIssue = secondReview.issue;
+      return fail(
+        diagnostic: remainingIssue == null
+            ? '纠错后审核仍未通过，且未返回可验证问题；已停止继续付费纠错并保留结果。'
+            : '纠错后审核仍未通过：${_replicationReviewDiagnostic(remainingIssue)}；已停止继续付费纠错并保留结果。',
+        stoppedReason: 'failed_after_single_correction',
+      );
+    }
+
+    record = record.copyWith(
+      generatedFramePath: persistedPath,
+      rawResponse: _replicationAuditRawResponse(
+        initialRawResponse: initialResult.rawResponse,
+        correctionRawResponse:
+            correctionResult?.rawResponse ?? restoredCorrectionRawResponse,
+        reviews: reviews,
+        correctionAttempted: true,
+        stoppedReason: 'passed_after_single_correction',
+      ),
+      generationRecovery: ReplicatedShotGenerationRecovery.empty,
+      status: ProcessingStatus.completed,
+      errorMessage: '',
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _saveReplicatedImage(record);
+    return true;
+  }
+
+  static String _replicationReviewDiagnostic(
+    ReplicationGenerationReviewIssue issue,
+  ) => '${issue.summary}（证据：${issue.evidence}）';
+
+  static GeminiImageContinuation? _restoredGeminiContinuation(
+    ReplicatedShotGenerationRecovery recovery,
+  ) {
+    if (!recovery.canResumeCorrection) return null;
+    return GeminiImageContinuation(
+      transport: GeminiImageContinuationTransport.interactions,
+      apiModel: recovery.continuationApiModel,
+      previousInteractionId: recovery.previousInteractionId,
+    );
+  }
+
+  static List<ReplicationGenerationReviewResult> _storedGenerationReviews(
+    List<Map<String, Object?>> stored,
+  ) {
+    try {
+      return [
+        for (final review in stored)
+          ReplicationGenerationReviewResult.fromJson(review),
+      ];
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  static String _storedGenerationRawResponse(
+    ReplicatedShotImage record, {
+    required String key,
+  }) {
+    try {
+      final decoded = jsonDecode(record.rawResponse);
+      if (decoded is Map && decoded['postGenerationReview'] is Map) {
+        return decoded[key]?.toString() ?? '';
+      }
+    } on FormatException {
+      // 首次生成响应可能不是 JSON；awaitingInitialReview 直接使用原值。
+    }
+    return key == 'initialGenerationRawResponse' ? record.rawResponse : '';
+  }
+
+  Future<bool> _resumeInterruptedReplicatedShot({
+    required ScriptShot shot,
+    required _ReplicationContext context,
+    required File original,
+    required ReplicatedShotImage record,
+  }) async {
+    final recovery = record.generationRecovery;
+    if (recovery.stage == ReplicatedShotRecoveryStage.correctionInFlight) {
+      _saveReplicatedImage(
+        record.copyWith(
+          status: ProcessingStatus.failed,
+          errorMessage:
+              '应用在唯一一次 Gemini 纠错请求已开始、结果尚未安全落盘时中断；无法确认该请求是否已执行或计费，为避免重复付费纠错，未再次发送图片请求。',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return false;
+    }
+    final generated = File(record.generatedFramePath.trim());
+    final references = recovery.orderedReferencePaths;
+    final storedReviews = _storedGenerationReviews(recovery.reviewAttempts);
+    final storedInitialRawResponse = _storedGenerationRawResponse(
+      record,
+      key: 'initialGenerationRawResponse',
+    );
+    final storedCorrectionRawResponse = _storedGenerationRawResponse(
+      record,
+      key: 'correctionGenerationRawResponse',
+    );
+    final needsStoredFirstReview =
+        recovery.stage != ReplicatedShotRecoveryStage.awaitingInitialReview;
+    final hasValidStoredFirstReview =
+        storedReviews.length == 1 &&
+        !storedReviews.single.passed &&
+        storedReviews.single.issue != null;
+    final invalidInput =
+        !NanoBananaProModelCapability.supports(record.model) ||
+        !original.existsSync() ||
+        record.prompt.trim().isEmpty ||
+        !generated.existsSync() ||
+        references.isEmpty ||
+        File(references.first).absolute.path != original.absolute.path ||
+        references.any((path) => !File(path).existsSync()) ||
+        recovery.aspectRatio.trim().isEmpty ||
+        recovery.imageSize.trim().isEmpty ||
+        recovery.quality.trim().isEmpty ||
+        storedInitialRawResponse.trim().isEmpty ||
+        (needsStoredFirstReview && !hasValidStoredFirstReview) ||
+        (recovery.stage ==
+                ReplicatedShotRecoveryStage.awaitingCorrectedReview &&
+            storedCorrectionRawResponse.trim().isEmpty);
+    if (invalidInput) {
+      _saveReplicatedImage(
+        record.copyWith(
+          status: ProcessingStatus.failed,
+          errorMessage:
+              '检测到中断的复刻任务，但恢复所需的生成参数、原图、稳定顺序参考图或结果图已不完整；为避免错误续轮，未发起任何图片请求。',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return false;
+    }
+    final outputDirectory = Directory(
+      p.join(
+        _directories.generatedImages.path,
+        'replicate',
+        _safeFileName(context.run.id),
+      ),
+    );
+    await outputDirectory.create(recursive: true);
+    final generationRequest = ImageGenerationRequest(
+      provider: ImageGenerationProviderResolver.resolve(
+        settings: _settingsController.value,
+        model: record.model,
+      ),
+      model: record.model,
+      prompt: record.prompt,
+      aspectRatio: recovery.aspectRatio,
+      imageSize: recovery.imageSize,
+      quality: recovery.quality,
+      referenceImagePaths: [...references],
+      outputDirectory: outputDirectory,
+    );
+    final initialResult = ImageGenerationResult(
+      localPath: generated.path,
+      remoteUrl: '',
+      rawResponse: storedInitialRawResponse,
+      geminiContinuation: _restoredGeminiContinuation(recovery),
+    );
+    return _reviewAndCorrectReplicatedShot(
+      shot: shot,
+      context: context,
+      original: original,
+      generationRequest: generationRequest,
+      initialResult: initialResult,
+      initialPersistedPath: generated.path,
+      outputDirectory: outputDirectory,
+      record: record,
+    );
+  }
+
+  static String _replicationAuditRawResponse({
+    required String initialRawResponse,
+    String? correctionRawResponse,
+    required List<ReplicationGenerationReviewResult> reviews,
+    required bool correctionAttempted,
+    required String stoppedReason,
+  }) => jsonEncode({
+    'initialGenerationRawResponse': initialRawResponse,
+    'correctionGenerationRawResponse': ?correctionRawResponse,
+    'postGenerationReview': {
+      'attempts': [for (final review in reviews) review.toJson()],
+      'correctionAttempted': correctionAttempted,
+      'stoppedReason': stoppedReason,
+    },
+  });
+
   Future<String> _buildVisionEnhancedGenerationPrompt({
     required ScriptShot shot,
     required List<_ReplacementReference> references,
     required String model,
     required File original,
+    required ReplicateShotGuide? guide,
+    required bool hasPoseSkeleton,
   }) async {
     try {
       final analysis = await _visionService.analyzeImage(
@@ -1296,28 +2200,72 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         columnIndex: shot.shotNumber - 1,
         allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
       );
-      final prompt = await _resolveUserPriorityGenerationPrompt(
+      return _finalizeGenerationPrompt(
         shot: shot,
         references: references,
+        model: model,
         original: original,
         automaticPrompt: _generationPrompt(
           shot,
           references,
           model,
           analysis: analysis,
+          guide: guide,
+          hasPoseSkeleton: hasPoseSkeleton,
         ),
+        hasPoseSkeleton: hasPoseSkeleton,
       );
-      return _appendFinalTextSafetyCheck(prompt);
     } catch (_) {
       // 视觉模型不可用、超时或返回格式异常时，保留原有一键生成能力。
-      final prompt = await _resolveUserPriorityGenerationPrompt(
+      return _finalizeGenerationPrompt(
         shot: shot,
         references: references,
+        model: model,
         original: original,
-        automaticPrompt: _generationPrompt(shot, references, model),
+        automaticPrompt: _generationPrompt(
+          shot,
+          references,
+          model,
+          guide: guide,
+          hasPoseSkeleton: hasPoseSkeleton,
+        ),
+        hasPoseSkeleton: hasPoseSkeleton,
       );
-      return _appendFinalTextSafetyCheck(prompt);
     }
+  }
+
+  Future<String> _finalizeGenerationPrompt({
+    required ScriptShot shot,
+    required List<_ReplacementReference> references,
+    required String model,
+    required File original,
+    required String automaticPrompt,
+    required bool hasPoseSkeleton,
+  }) async {
+    if (NanoBananaProModelCapability.supports(model)) {
+      return const NanoBananaReplicationPromptCompiler().compile(
+        NanoBananaReplicationPromptInput(
+          model: model,
+          automaticPrompt: automaticPrompt,
+          manifest: _nanoBananaAssetManifest(
+            shot: shot,
+            original: original,
+            references: references,
+          ),
+          userInstructions: shot.replicationInstructions,
+          structuralReferenceDescriptions: hasPoseSkeleton
+              ? const ['DWPose 高精度人物姿势骨架，只锁定关节位置、肢体方向、身体重心和动作轮廓']
+              : const [],
+        ),
+      );
+    }
+    final prompt = await _resolveUserPriorityGenerationPrompt(
+      shot: shot,
+      references: references,
+      original: original,
+      automaticPrompt: automaticPrompt,
+    );
+    return _appendFinalTextSafetyCheck(prompt);
   }
 
   Future<String> _resolveUserPriorityGenerationPrompt({
@@ -1353,11 +2301,39 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           )
           .replaceFirst(RegExp(r'\s*```$', multiLine: true), '')
           .trim();
-      return normalized.isEmpty ? fallback : normalized;
+      return normalized.isEmpty ||
+              !_retainsAutomaticReplicationConstraints(
+                automaticPrompt: automaticPrompt,
+                resolvedPrompt: normalized,
+              )
+          ? fallback
+          : normalized;
     } catch (_) {
       // 解析服务异常时仍把用户要求明确置于末尾最高优先级，避免静默丢失。
       return fallback;
     }
+  }
+
+  static bool _retainsAutomaticReplicationConstraints({
+    required String automaticPrompt,
+    required String resolvedPrompt,
+  }) {
+    const coreMarkers = ['图片1是原视频镜头', '绑定资产硬约束', '画面文字与标识零容忍硬约束'];
+    const conditionalMarkers = [
+      'Gemini 3 精确多图复刻执行协议',
+      'DWPose 高精度人物姿势骨架图',
+      '多模特身份与位置绑定硬约束',
+      '多模特产品一一绑定硬约束',
+      '用户已勾选保留元素',
+      '未勾选元素：必须移除',
+    ];
+    for (final marker in [...coreMarkers, ...conditionalMarkers]) {
+      if (automaticPrompt.contains(marker) &&
+          !resolvedPrompt.contains(marker)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   static String _userPriorityFallbackPrompt({
@@ -1366,7 +2342,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }) =>
       '$automaticPrompt\n\n'
       '【用户补充说明：最高优先级】$instructions\n'
-      '冲突处理：用户补充说明可覆盖自动解析、资产描述和固定复刻规则，但不得改变图片1的色彩风格、色温、明暗关系、对比度、光影层次或电影调色；这些视觉基准始终以原视频帧为准。不得保留原人物的服装、首饰、眼镜、帽子、包、手表或其他配饰，除非用户明确要求保留。\n'
+      '冲突处理：用户补充说明可覆盖自动解析和资产描述，但不得取消或改写“原帧主体处理计划”的逐项决策；只有计划中明确标记保留的原人物或原产品可以沿用，其他主体不得改为保留，也不得改变图片1的光线与调色。原帧配饰和道具只有用户已勾选的白名单元素可以继承；未勾选项即使在补充说明中被提及也必须移除。\n'
       '文字例外判定：只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才可开放该段指定文本；其他情况仍必须执行无文字、无 Logo 硬约束。';
 
   static String _userPriorityResolutionPrompt({
@@ -1392,7 +2368,7 @@ $automaticPrompt
 编辑要求：
 1. 保留与用户说明不冲突的镜头叙事、构图、动作、光影和已绑定素材要求；色彩与调色必须完整沿用图片1。
 2. 用户要求替换、移除或不要出现的元素，必须明确写为“不出现/替换为”并移除原有相反表述；人物配饰包括首饰、眼镜、帽子、包、手表、发饰等。
-3. 不得复刻图片1原人物的身份、脸部、服装或配饰，除非用户明确要求保留；已绑定的新人物或产品始终优先使用。
+3. 必须完整保留并逐项执行“原帧主体处理计划”。保留项完整沿用图片1中的对应主体；替换项不得继承图片1外观；移除项不得残留。不得改写任何一项处理方式。原帧配饰和道具只有“用户已勾选保留元素”可以继承；“未勾选元素：必须移除”中的每一项都必须消失并自然补全，即使用户补充说明提及也不得恢复。
 4. 必须完整保留自动提示词中的“画面文字与标识零容忍硬约束”。只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才允许该段指定文本；不得把参考图中的其他文字或 Logo 带入成图。
 5. 只输出最终提示词正文，不要解释、标题、Markdown、JSON 或分析过程。
 ''';
@@ -1409,8 +2385,19 @@ $automaticPrompt
     List<_ReplacementReference> references,
     String model, {
     VisionImageAnalysis? analysis,
+    ReplicateShotGuide? guide,
+    bool hasPoseSkeleton = false,
   }) {
-    final base = _replacementPrompt(shot, references, analysis: analysis);
+    final base = _replacementPrompt(
+      shot,
+      references,
+      analysis: analysis,
+      guide: guide,
+      hasPoseSkeleton: hasPoseSkeleton,
+    );
+    if (NanoBananaProModelCapability.supports(model)) {
+      return base;
+    }
     return usesGemini3ImagePrompting(model)
         ? buildGeminiStoryboardPrompt(
             base,
@@ -2611,6 +3598,39 @@ $playbackSpeedBoundary
   bool _isScriptBusy(String scriptId) =>
       _isReplicatingScript(scriptId) || isBuildActiveFor(scriptId);
 
+  bool _isAnalyzingFrames(String scriptId) =>
+      (_activeFrameAnalysisCountsByScriptId[scriptId] ?? 0) > 0;
+
+  void _beginFrameAnalysis(String scriptId) {
+    _activeFrameAnalysisCountsByScriptId[scriptId] =
+        (_activeFrameAnalysisCountsByScriptId[scriptId] ?? 0) + 1;
+  }
+
+  void _finishFrameAnalysis(String scriptId) {
+    final remaining = (_activeFrameAnalysisCountsByScriptId[scriptId] ?? 0) - 1;
+    if (remaining <= 0) {
+      _activeFrameAnalysisCountsByScriptId.remove(scriptId);
+    } else {
+      _activeFrameAnalysisCountsByScriptId[scriptId] = remaining;
+    }
+  }
+
+  void _reloadShotGuides(
+    String scriptId, {
+    String? message,
+    String? errorMessage,
+  }) {
+    if (_disposed || scriptId.isEmpty || value.selectedScriptId != scriptId) {
+      return;
+    }
+    value = value.copyWith(
+      shotGuides: _repository.listShotGuidesForScript(scriptId),
+      isAnalyzingFrames: _isAnalyzingFrames(scriptId),
+      message: message,
+      errorMessage: errorMessage,
+    );
+  }
+
   void _beginBuild(String scriptId) {
     _activeBuildCountsByScriptId[scriptId] =
         (_activeBuildCountsByScriptId[scriptId] ?? 0) + 1;
@@ -2735,6 +3755,7 @@ $playbackSpeedBoundary
       _repository.upsertRun(run);
     }
     final assets = _repository.listAssets(run.id);
+    final shotGuides = _repository.listShotGuidesForScript(scriptId);
     final replicatedImages = _restoreReplicatedImages(run.id);
     var prompts = _repository.listPrompts(run.id);
     final workflowAssetIdsByShot = _confirmedScriptAssetIdsByShot(
@@ -2788,7 +3809,9 @@ $playbackSpeedBoundary
       assets: assets,
       replicatedImages: replicatedImages,
       prompts: prompts,
+      shotGuides: shotGuides,
       isBusy: isReplicating || isBuilding,
+      isAnalyzingFrames: _isAnalyzingFrames(scriptId),
       message: isBuilding
           ? (_buildMessagesByScriptId[scriptId] ?? '')
           : isReplicating
@@ -3117,6 +4140,23 @@ $playbackSpeedBoundary
     return null;
   }
 
+  ReplicateShotGuide? _currentShotGuide(ScriptShot shot) {
+    final guide = _repository.getShotGuide(shot.id);
+    if (guide == null ||
+        guide.sourceFrameFingerprint != _sourceFrameFingerprint(shot)) {
+      return null;
+    }
+    return guide;
+  }
+
+  String _sourceFrameFingerprint(ScriptShot shot) {
+    final path = shot.framePath.trim();
+    if (path.isEmpty) return '';
+    final file = File(path);
+    if (!file.existsSync()) return 'missing:${p.normalize(path)}';
+    return sha256.convert(file.readAsBytesSync()).toString();
+  }
+
   ReplicatedShotImage? _replicatedImageForShot(String shotId) {
     for (final image in value.replicatedImages) {
       if (image.scriptShotId == shotId) return image;
@@ -3143,7 +4183,31 @@ $playbackSpeedBoundary
   }
 
   List<ReplicatedShotImage> _restoreReplicatedImages(String runId) {
-    final images = _repository.listReplicatedShotImages(runId);
+    final migratedIds = <String>{};
+    ReplicatedShotImage completeLegacyReviewRecord(ReplicatedShotImage image) {
+      if (image.generationRecovery.isEmpty ||
+          image.generatedFramePath.trim().isEmpty ||
+          !File(image.generatedFramePath.trim()).existsSync()) {
+        return image;
+      }
+      migratedIds.add(image.id);
+      return image.copyWith(
+        generationRecovery: ReplicatedShotGenerationRecovery.empty,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      );
+    }
+
+    final images = [
+      for (final image in _repository.listReplicatedShotImages(runId))
+        completeLegacyReviewRecord(image),
+    ];
+    for (final image in images) {
+      if (migratedIds.contains(image.id)) {
+        _repository.upsertReplicatedShotImage(image);
+      }
+    }
     final missingBasenames = <String>{
       for (final image in images)
         if (image.generatedFramePath.trim().isNotEmpty &&
@@ -3191,21 +4255,11 @@ $playbackSpeedBoundary
     List<ReplicateAsset>? stepAssets,
     String? fallbackShotId,
   }) {
-    final linked = _confirmedScriptAssets(shotId, scriptId: scriptId);
     if (_workflowRepository != null) {
-      final references = [
-        for (final asset in linked)
-          if (_mediaKindForType(asset.type) == ReplicateMediaKind.image &&
-              asset.path.trim().isNotEmpty &&
-              File(asset.path).existsSync())
-            _ReplacementReference(
-              id: asset.id,
-              type: asset.type,
-              name: asset.name,
-              description: asset.description,
-              path: asset.path,
-            ),
-      ];
+      final references = _replacementReferencesFromScriptBindings(
+        shotId,
+        scriptId: scriptId,
+      );
       if (references.isNotEmpty || fallbackShotId == null) {
         return references;
       }
@@ -3226,56 +4280,610 @@ $playbackSpeedBoundary
             name: asset.name,
             description: asset.description,
             path: asset.path,
+            slotLabel: '',
           ),
     ];
+  }
+
+  Future<List<_ReplacementReference>> _prepareSelectedAssetViews({
+    required ScriptShot shot,
+    required ReplicateRun run,
+    required File original,
+    required List<_ReplacementReference> references,
+    required int maximumReferenceCount,
+  }) async {
+    if (!run.multiViewEnhancementEnabled ||
+        references.isEmpty ||
+        maximumReferenceCount <= references.length) {
+      return references;
+    }
+    final outputDirectory = Directory(
+      p.join(
+        _directories.analyses.path,
+        'replicate_asset_views',
+        _safeFileName(run.id),
+        _safeFileName(shot.id),
+      ),
+    );
+    final result = <_ReplacementReference>[];
+    for (var index = 0; index < references.length; index++) {
+      final reference = references[index];
+      final remainingAssets = references.length - index - 1;
+      final remainingBudget = maximumReferenceCount - result.length;
+      final maximumOutputCount = math.min(
+        3,
+        math.max(1, remainingBudget - remainingAssets),
+      );
+      if (maximumOutputCount <= 1 ||
+          !const {
+            ReplicateAssetType.character,
+            ReplicateAssetType.product,
+          }.contains(reference.type)) {
+        result.add(reference);
+        continue;
+      }
+      try {
+        if (!_disposed) {
+          _setReplicationMessage(
+            run.scriptId ?? value.selectedScriptId,
+            '正在为镜头 ${shot.shotNumber} 分析“${reference.name}”的多视图并选择最佳裁切…',
+          );
+        }
+        final prepared = await _assetViewSelectionService.prepare(
+          settings: _settingsController.value,
+          originalFrame: original,
+          assetImage: File(reference.path),
+          outputDirectory: outputDirectory,
+          shotNumber: shot.shotNumber,
+          assetId: reference.id,
+          assetName: reference.name,
+          assetType: reference.type,
+          slotLabel: reference.slotLabel,
+          maximumOutputCount: maximumOutputCount,
+        );
+        for (var viewIndex = 0; viewIndex < prepared.length; viewIndex++) {
+          final view = prepared[viewIndex];
+          result.add(
+            _ReplacementReference(
+              id: viewIndex == 0
+                  ? reference.id
+                  : '${reference.id}:view:$viewIndex',
+              type: reference.type,
+              name: reference.name,
+              description: [
+                reference.description,
+                if (view.description.isNotEmpty)
+                  view.isDetail
+                      ? '视觉模型选择的局部细节：${view.description}'
+                      : '视觉模型选择的镜头匹配主视图：${view.description}',
+              ].where((value) => value.trim().isNotEmpty).join('；'),
+              path: view.path,
+              slotLabel: reference.slotLabel,
+              isDetailCrop: view.isDetail,
+            ),
+          );
+        }
+      } catch (_) {
+        result.add(reference);
+      }
+    }
+    return result;
+  }
+
+  List<_ReplacementReference> _referencesForSubjectDecisions(
+    List<_ReplacementReference> references,
+    ReplicateShotGuide? guide,
+  ) {
+    if (guide == null || guide.subjects.isEmpty) return references;
+    final decisions = {
+      for (final subject in guide.subjects)
+        (subject.type, subject.slotIndex): subject.decision,
+    };
+    final hasReplacingProduct = guide.subjects.any(
+      (subject) =>
+          subject.type == ReplicateSubjectType.product &&
+          subject.decision == ReplicateSubjectDecision.replace,
+    );
+    final result = <_ReplacementReference>[];
+    for (final reference in references) {
+      var include = true;
+      final characterIndex = _characterSlotIndex(reference.slotLabel);
+      if (characterIndex != null) {
+        final decision =
+            decisions[(ReplicateSubjectType.person, characterIndex)];
+        include =
+            decision == null || decision == ReplicateSubjectDecision.replace;
+      } else {
+        final productIndex = _productSlotIndex(reference.slotLabel);
+        if (productIndex != null) {
+          final decision =
+              decisions[(ReplicateSubjectType.product, productIndex)];
+          include =
+              decision == null || decision == ReplicateSubjectDecision.replace;
+        } else {
+          final productDetailIndex = _productDetailSlotIndex(
+            reference.slotLabel,
+          );
+          if (productDetailIndex != null) {
+            final decision =
+                decisions[(ReplicateSubjectType.product, productDetailIndex)];
+            include = decision == null
+                ? hasReplacingProduct
+                : decision == ReplicateSubjectDecision.replace;
+          }
+        }
+      }
+      if (include) result.add(reference);
+    }
+    return result;
+  }
+
+  static NanoBananaAssetManifest _nanoBananaAssetManifest({
+    required ScriptShot shot,
+    required File original,
+    required List<_ReplacementReference> references,
+  }) {
+    final modelAssets = <NanoBananaAssetInput>[];
+    final productAssets = <NanoBananaAssetInput>[];
+    final productDetailAssets = <NanoBananaAssetInput>[];
+    final sceneAssets = <NanoBananaAssetInput>[];
+    final modelSlotByAssetId = <String, int>{};
+    final productSlotByAssetId = <String, int>{};
+    var nextModelSlot = 0;
+    var nextProductSlot = 0;
+
+    for (final reference in references) {
+      final characterSlot = _characterSlotIndex(reference.slotLabel);
+      final productSlot = _productSlotIndex(reference.slotLabel);
+      final detailSlot = _productDetailSlotIndex(reference.slotLabel);
+      if (characterSlot != null) {
+        nextModelSlot = math.max(nextModelSlot, characterSlot + 1);
+      }
+      if (productSlot != null) {
+        nextProductSlot = math.max(nextProductSlot, productSlot + 1);
+      }
+      if (detailSlot != null) {
+        nextProductSlot = math.max(nextProductSlot, detailSlot + 1);
+      }
+    }
+
+    for (final reference in references) {
+      final assetId = _logicalReferenceAssetId(reference.id);
+      final viewOrder = _referenceViewOrder(reference.id);
+      final characterSlot = _characterSlotIndex(reference.slotLabel);
+      final productSlot = _productSlotIndex(reference.slotLabel);
+      final detailSlot = _productDetailSlotIndex(reference.slotLabel);
+      if (reference.type == ReplicateAssetType.character) {
+        final slot =
+            characterSlot ??
+            modelSlotByAssetId.putIfAbsent(assetId, () => nextModelSlot++);
+        modelAssets.add(
+          NanoBananaAssetInput.model(
+            assetId: assetId,
+            path: reference.path,
+            slotIndex: slot,
+            viewOrder: viewOrder,
+          ),
+        );
+        continue;
+      }
+      if (reference.type == ReplicateAssetType.scene) {
+        sceneAssets.add(
+          NanoBananaAssetInput.scene(
+            assetId: assetId,
+            path: reference.path,
+            viewOrder: viewOrder,
+          ),
+        );
+        continue;
+      }
+      if (detailSlot != null) {
+        productDetailAssets.add(
+          NanoBananaAssetInput.productDetail(
+            assetId: assetId,
+            path: reference.path,
+            productSlotIndex: detailSlot,
+            viewOrder: viewOrder,
+          ),
+        );
+        continue;
+      }
+      final slot =
+          productSlot ??
+          productSlotByAssetId.putIfAbsent(assetId, () => nextProductSlot++);
+      productAssets.add(
+        NanoBananaAssetInput.product(
+          assetId: assetId,
+          path: reference.path,
+          slotIndex: slot,
+          viewOrder: viewOrder,
+        ),
+      );
+    }
+
+    return NanoBananaAssetManifest.build(
+      sourceFrameId: '${shot.id}:source-frame',
+      sourceFramePath: original.path,
+      modelAssets: modelAssets,
+      productAssets: productAssets,
+      productDetailAssets: productDetailAssets,
+      sceneAssets: sceneAssets,
+    );
+  }
+
+  static List<_ReplacementReference> _referencesInNanoBananaManifestOrder({
+    required ScriptShot shot,
+    required File original,
+    required List<_ReplacementReference> references,
+  }) {
+    if (references.length < 2) return references;
+    final manifest = _nanoBananaAssetManifest(
+      shot: shot,
+      original: original,
+      references: references,
+    );
+    final remaining = [...references];
+    final ordered = <_ReplacementReference>[];
+    for (final entry in manifest.entries.skip(1)) {
+      final index = remaining.indexWhere(
+        (reference) =>
+            _logicalReferenceAssetId(reference.id) == entry.assetId &&
+            reference.path == entry.path,
+      );
+      if (index < 0) {
+        throw StateError('Nano Banana Pro 资产清单无法映射图片${entry.imageNumber}');
+      }
+      ordered.add(remaining.removeAt(index));
+    }
+    if (remaining.isNotEmpty) {
+      throw StateError('Nano Banana Pro 资产清单遗漏 ${remaining.length} 张参考图');
+    }
+    return ordered;
+  }
+
+  static String _logicalReferenceAssetId(String id) =>
+      id.replaceFirst(RegExp(r':view:\d+$'), '');
+
+  static int _referenceViewOrder(String id) =>
+      int.tryParse(RegExp(r':view:(\d+)$').firstMatch(id)?.group(1) ?? '') ?? 0;
+
+  String? _replicationInputReadinessError({
+    required ScriptShot shot,
+    required ReplicateShotGuide? guide,
+    required List<_ReplacementReference> references,
+  }) {
+    if (guide == null ||
+        guide.sourceFrameFingerprint != _sourceFrameFingerprint(shot) ||
+        guide.analysisStatus != ProcessingStatus.completed) {
+      return '请先分析镜头 ${shot.shotNumber} 的原帧，再确认每个可见人物和产品的处理方式';
+    }
+    if (guide.undecidedSubjects.isNotEmpty) {
+      final labels = guide.undecidedSubjects
+          .map((subject) => subject.label)
+          .join('、');
+      return '请先为以下原帧主体选择“保留、替换或移除”：$labels';
+    }
+    for (final subject in guide.subjects) {
+      if (subject.decision != ReplicateSubjectDecision.replace) continue;
+      final hasReplacement = references.any((reference) {
+        return switch (subject.type) {
+          ReplicateSubjectType.person =>
+            _characterSlotIndex(reference.slotLabel) == subject.slotIndex,
+          ReplicateSubjectType.product =>
+            _productSlotIndex(reference.slotLabel) == subject.slotIndex,
+        };
+      });
+      if (!hasReplacement) {
+        final subjectCount = guide.subjects
+            .where((candidate) => candidate.type == subject.type)
+            .length;
+        final prefix = subject.type == ReplicateSubjectType.person
+            ? '模特'
+            : '产品';
+        final slotLabel = subjectCount <= 1 && subject.slotIndex == 0
+            ? prefix
+            : '$prefix${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}';
+        return '${subject.label} 已选择“替换”，请先为$slotLabel绑定对应资产';
+      }
+    }
+    return null;
+  }
+
+  List<_ReplacementReference> _replacementReferencesFromScriptBindings(
+    String shotId, {
+    String? scriptId,
+  }) {
+    final repository = _workflowRepository;
+    final selectedScriptId = scriptId ?? value.selectedScriptId;
+    if (repository == null || selectedScriptId.isEmpty) return const [];
+    final assetsById = {
+      for (final asset in repository.listScriptAssets(selectedScriptId))
+        asset.id: asset,
+    };
+    final bindings = <({ScriptShotAssetLink link, ScriptAsset asset})>[];
+    for (final link in repository.listLinksForShot(shotId)) {
+      final asset = assetsById[link.scriptAssetId];
+      if (!link.confirmed ||
+          asset == null ||
+          _mediaKindForType(asset.type) != ReplicateMediaKind.image ||
+          asset.path.trim().isEmpty ||
+          !File(asset.path).existsSync()) {
+        continue;
+      }
+      bindings.add((link: link, asset: asset));
+    }
+    if (bindings.isEmpty) return const [];
+
+    final characterBindings = [
+      for (final binding in bindings)
+        if (binding.asset.type == ReplicateAssetType.character) binding,
+    ];
+    final participantCount = math.max(
+      characterBindings.length,
+      bindings.fold<int>(0, (count, binding) {
+        final slot = ScriptAssetSlotPolicy.presetSlotForSortOrder(
+          binding.link.sortOrder,
+        );
+        return switch (slot?.kind) {
+          ScriptAssetPresetSlotKind.character => math.max(
+            count,
+            slot!.characterIndex + 1,
+          ),
+          ScriptAssetPresetSlotKind.product => math.max(
+            count,
+            slot!.productIndex + 1,
+          ),
+          ScriptAssetPresetSlotKind.productDetail => math.max(
+            count,
+            slot!.productIndex + 1,
+          ),
+          _ => count,
+        };
+      }),
+    );
+    final presetSlots = <ScriptAssetPresetSlot>[
+      for (var index = 0; index < participantCount; index++) ...[
+        ScriptAssetPresetSlot.character(index),
+        ScriptAssetPresetSlot.product(index),
+        ScriptAssetPresetSlot.productDetail(index),
+      ],
+      const ScriptAssetPresetSlot.scene(),
+    ];
+    final assignments =
+        <String, ({ScriptShotAssetLink link, ScriptAsset asset})>{};
+    final remainingBindings = [...bindings];
+    for (final binding in bindings) {
+      final slot = ScriptAssetSlotPolicy.presetSlotForSortOrder(
+        binding.link.sortOrder,
+      );
+      if (slot == null ||
+          !presetSlots.any((candidate) => candidate.key == slot.key) ||
+          !slot.acceptsAsset(
+            type: binding.asset.type,
+            name: binding.asset.name,
+            description: binding.asset.description,
+          ) ||
+          assignments.containsKey(slot.key)) {
+        continue;
+      }
+      assignments[slot.key] = binding;
+      remainingBindings.remove(binding);
+    }
+    for (final binding in [...remainingBindings]) {
+      ScriptAssetPresetSlot? target;
+      if (binding.asset.type == ReplicateAssetType.character) {
+        target = presetSlots
+            .where((slot) => slot.kind == ScriptAssetPresetSlotKind.character)
+            .where((slot) => !assignments.containsKey(slot.key))
+            .firstOrNull;
+      } else if (binding.asset.type == ReplicateAssetType.product) {
+        target = presetSlots
+            .where(
+              (slot) =>
+                  slot.kind == ScriptAssetPresetSlotKind.product ||
+                  slot.kind == ScriptAssetPresetSlotKind.productDetail,
+            )
+            .where((slot) => !assignments.containsKey(slot.key))
+            .firstOrNull;
+      } else if (binding.asset.type == ReplicateAssetType.scene) {
+        target = presetSlots
+            .where((slot) => slot.kind == ScriptAssetPresetSlotKind.scene)
+            .where((slot) => !assignments.containsKey(slot.key))
+            .firstOrNull;
+      }
+      if (target == null) continue;
+      assignments[target.key] = binding;
+      remainingBindings.remove(binding);
+    }
+    final usedAssetIds = <String>{};
+    final references = <_ReplacementReference>[];
+
+    void addBinding(
+      ({ScriptShotAssetLink link, ScriptAsset asset}) binding,
+      String slotLabel,
+    ) {
+      if (!usedAssetIds.add(binding.asset.id)) return;
+      references.add(
+        _ReplacementReference(
+          id: binding.asset.id,
+          type: binding.asset.type,
+          name: binding.asset.name,
+          description: binding.asset.description,
+          path: binding.asset.path,
+          slotLabel: slotLabel,
+        ),
+      );
+    }
+
+    for (final slot in presetSlots) {
+      final binding = assignments[slot.key];
+      if (binding == null) continue;
+      addBinding(binding, slot.label(characterCount: participantCount));
+    }
+
+    for (final binding in remainingBindings) {
+      addBinding(binding, '');
+    }
+    return references;
   }
 
   String _replacementPrompt(
     ScriptShot shot,
     List<_ReplacementReference> references, {
     VisionImageAnalysis? analysis,
+    ReplicateShotGuide? guide,
+    bool hasPoseSkeleton = false,
   }) {
     final definitions = <String>[];
     final assetRequirements = <String>[];
+    final characterSlotLabelsByIndex = <int, String>{};
+    final productSlotLabelsByIndex = <int, String>{};
+    final characterImageBySlot = <int, String>{};
+    final productImageBySlot = <int, String>{};
+    for (final reference in references) {
+      final characterIndex = _characterSlotIndex(reference.slotLabel);
+      if (characterIndex != null) {
+        characterSlotLabelsByIndex[characterIndex] = reference.slotLabel;
+      }
+      final productIndex = _productSlotIndex(reference.slotLabel);
+      if (productIndex != null) {
+        productSlotLabelsByIndex[productIndex] = reference.slotLabel;
+      }
+    }
+    final characterSlotLabels = characterSlotLabelsByIndex.values.toList(
+      growable: false,
+    );
+    final pairedSlotIndices =
+        characterSlotLabelsByIndex.keys
+            .where(productSlotLabelsByIndex.containsKey)
+            .toList(growable: false)
+          ..sort();
+    final assetStartNumber = hasPoseSkeleton ? 3 : 2;
     for (var index = 0; index < references.length; index++) {
       final reference = references[index];
-      final imageLabel = '图片${index + 2}';
+      final imageLabel = '图片${index + assetStartNumber}';
       final description = reference.description.trim().isEmpty
           ? ''
           : '，特征：${reference.description.trim()}';
-      definitions.add(
-        '$imageLabel 是${_replacementTypeLabel(reference.type)}“${reference.name}”$description。',
+      final roleLabel = reference.slotLabel.isNotEmpty
+          ? reference.isDetailCrop
+                ? '${reference.slotLabel}局部细节裁切'
+                : _productDetailSlotIndex(reference.slotLabel) != null
+                ? '产品细节参考'
+                : '${reference.slotLabel}参考'
+          : _replacementTypeLabel(reference.type);
+      final characterSlotIndex = _characterSlotIndex(reference.slotLabel);
+      final productSlotIndex = _productSlotIndex(reference.slotLabel);
+      final productDetailSlotIndex = _productDetailSlotIndex(
+        reference.slotLabel,
       );
-      assetRequirements.add(switch (reference.type) {
-        ReplicateAssetType.character =>
-          '人物必须使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型、服装和外观；'
-              '图片1中的原人物只可作为姿态、表情、视线和动作阶段基准，严禁复用其身份或外观。',
-        ReplicateAssetType.product =>
-          '产品必须使用$imageLabel 中“${reference.name}”的真实结构、无字包装造型、非标识性色块、纹理、材质、反光和比例；'
-              '产品主体必须清晰可辨，边缘、表面材质和无字包装细节不得模糊、变形或被不合理遮挡；所有文字、Logo、商标及可识别品牌标记必须移除并自然重建；'
-              '图片1中的原产品只可作为穿着方式、手部接触或摆放关系基准，严禁复用其外观。',
-        ReplicateAssetType.scene =>
-          '场景必须使用$imageLabel 中“${reference.name}”的环境元素；以图片1相同的镜位、透视、主体位置和空间层次重新搭建场景。',
-        ReplicateAssetType.prop =>
-          '道具必须使用$imageLabel 中“${reference.name}”的外观；保持图片1里的尺寸、朝向、遮挡和交互关系。',
+      final pairedProductLabel = characterSlotIndex == null
+          ? null
+          : productSlotLabelsByIndex[characterSlotIndex];
+      final pairedCharacterLabel = productSlotIndex == null
+          ? null
+          : characterSlotLabelsByIndex[productSlotIndex];
+      if (!reference.isDetailCrop && characterSlotIndex != null) {
+        characterImageBySlot.putIfAbsent(characterSlotIndex, () => imageLabel);
+      }
+      if (!reference.isDetailCrop && productSlotIndex != null) {
+        productImageBySlot.putIfAbsent(productSlotIndex, () => imageLabel);
+      }
+      definitions.add(
+        '$imageLabel 是$roleLabel“${reference.name}”$description。',
+      );
+      if (reference.isDetailCrop) {
+        assetRequirements.add(
+          '$imageLabel 是视觉模型根据当前镜头选择的局部细节裁切，只用于补充“${reference.name}”在主视图中不可见的结构、接缝、边缘、材质或五官；'
+          '不得把局部裁切误当成完整主体，不得改变对应${reference.slotLabel.isEmpty ? '资产' : reference.slotLabel}主视图定义的整体轮廓、比例和朝向。',
+        );
+        continue;
+      }
+      assetRequirements.add(switch ((reference.type, reference.slotLabel)) {
+        (_, _) when productDetailSlotIndex != null =>
+          '$imageLabel 只补充“${reference.name}”的局部结构、接缝、边缘、材质和纹理；不得替代${productSlotLabelsByIndex[productDetailSlotIndex] ?? '对应产品主视图'}定义的整体外形与比例。',
+        (_, final slotLabel)
+            when characterSlotIndex != null && pairedProductLabel != null =>
+          '$slotLabel 使用$imageLabel 的身份、脸部、发型和体型，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；身份不得与其他槽位交换。'
+              '服装、鞋帽和配饰以$pairedProductLabel为准：可穿戴商品须完整穿着，非穿戴商品保持图片1的持拿或展示关系。',
+        (_, final slotLabel) when characterSlotIndex != null =>
+          '$slotLabel 使用$imageLabel 的身份、脸部、发型、体型和穿搭，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；不得继承原人物外观或与其他槽位交换。',
+        (ReplicateAssetType.character, _) =>
+          '人物使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型和穿搭；图片1只提供姿态与空间关系。',
+        (ReplicateAssetType.product, final slotLabel)
+            when productSlotIndex != null && pairedCharacterLabel != null =>
+          '$slotLabel 使用$imageLabel 中“${reference.name}”的整体轮廓、比例、结构、接缝、边缘、纹理、材质和反光；'
+              '$pairedCharacterLabel与$slotLabel一一绑定，可穿戴商品须完整穿着，手持商品保持图片1的接触关系。不得使用原产品外观、交叉分配或生成品牌文字。',
+        (ReplicateAssetType.product, _) =>
+          '产品使用$imageLabel 中“${reference.name}”的整体轮廓、比例、结构、接缝、边缘、纹理、材质和反光；图片1只提供位置、朝向和接触关系，不得继承原产品外观或品牌文字。',
+        (ReplicateAssetType.scene, _) =>
+          '场景使用$imageLabel 中“${reference.name}”的环境元素，并服从图片1的镜位、透视和主体位置。',
+        (ReplicateAssetType.prop, _) =>
+          '道具使用$imageLabel 中“${reference.name}”的外观，并保持图片1的尺寸、朝向和交互关系。',
         _ => '将$imageLabel 中“${reference.name}”作为新分镜的指定视觉元素使用。',
       });
     }
+    final selectedElements = guide?.selectedElements ?? const [];
+    final unselectedElements = guide?.unselectedElements ?? const [];
+    final preservedElementRules = [
+      for (final element in selectedElements)
+        '${element.label}${element.description.trim().isEmpty ? '' : '（${element.description.trim()}）'}'
+            '${element.location.trim().isEmpty ? '' : '，位置：${element.location.trim()}'}'
+            '${element.relationship.trim().isEmpty ? '' : '，关系：${element.relationship.trim()}'}',
+    ];
+    final removedElementRules = [
+      for (final element in unselectedElements)
+        '${element.label}${element.description.trim().isEmpty ? '' : '（${element.description.trim()}）'}'
+            '${element.location.trim().isEmpty ? '' : '，原位置：${element.location.trim()}'}'
+            '${element.relationship.trim().isEmpty ? '' : '，原关系：${element.relationship.trim()}'}',
+    ];
+    final firstBoundImageLabel = '图片$assetStartNumber';
+    final subjectDecisionRules = <String>[
+      for (final subject
+          in guide?.subjects ?? const <ReplicateDetectedSubject>[])
+        switch (subject.decision) {
+          ReplicateSubjectDecision.replace =>
+            '${subject.label}（${subject.type == ReplicateSubjectType.person ? '人物' : '产品'}槽位${subject.slotIndex + 1}）：替换。'
+                '保留图片1中的位置、尺度、朝向、动作、接触和遮挡关系，但禁止继承其身份或外观；'
+                '外观只使用${subject.type == ReplicateSubjectType.person ? characterImageBySlot[subject.slotIndex] ?? '对应模特资产' : productImageBySlot[subject.slotIndex] ?? '对应产品资产'}。',
+          ReplicateSubjectDecision.keep =>
+            '${subject.label}（${subject.type == ReplicateSubjectType.person ? '人物' : '产品'}槽位${subject.slotIndex + 1}）：保留。'
+                '${subject.type == ReplicateSubjectType.person ? '完整沿用图片1中该人物的身份、脸部、发型、体型、服装、配饰与可见外观' : '完整沿用图片1中该产品或服装的轮廓、结构、颜色、材质、细节与穿着/接触关系'}；不得使用绑定资产覆盖、混合或重绘该主体。',
+          ReplicateSubjectDecision.remove =>
+            '${subject.label}（${subject.type == ReplicateSubjectType.person ? '人物' : '产品'}槽位${subject.slotIndex + 1}）：移除。'
+                '成图不得出现该主体或残影，并按周围透视、纹理与光影自然补全被遮挡区域。',
+          ReplicateSubjectDecision.undecided => '',
+        },
+    ]..removeWhere((rule) => rule.isEmpty);
     return [
-      '任务类型：基于参考重新创作一张清晰、可拍摄的全新分镜图，不是图片修复或高清重绘。',
-      '图片1是原视频镜头 ${shot.shotNumber} 的唯一视觉母版：其镜头语言、画幅、机位、构图、透视、光影、色彩氛围和空间方向必须逐项沿用；禁止从图片1复用人物身份、服装款式、产品款式、道具外观、品牌包装或具体画面描述。',
+      '任务：生成镜头 ${shot.shotNumber} 的受控复刻分镜。',
+      '图片1是原视频镜头的编辑底图与结构参考：锁定画幅、景别、机位、构图、透视、主体槽位、姿态、接触和遮挡。只有下方处理计划明确标记“保留”的主体，才允许继续使用图片1中的身份、服装或产品外观；替换与移除项不得继承对应原主体外观。',
+      if (hasPoseSkeleton)
+        '图片2是 DWPose 姿势骨架，只定义关节位置、肢体方向、身体重心和动作轮廓；不得从骨架的颜色、线条或背景推断任何外观。',
       ...definitions,
+      if (subjectDecisionRules.isNotEmpty)
+        '【原帧主体处理计划】每项必须独立执行，不得用模型自行判断覆盖：\n${subjectDecisionRules.join('\n')}',
+      if (characterSlotLabels.length > 1)
+        '多模特身份与位置绑定硬约束：按图片1人物中心点从左到右对应模特A、模特B……；${characterSlotLabels.join('、')}不得合并、互换位置或交叉套用身份。',
+      if (pairedSlotIndices.length > 1)
+        '多模特产品一一绑定硬约束：${pairedSlotIndices.map((index) => '${characterSlotLabelsByIndex[index]}→${productSlotLabelsByIndex[index]}').join('、')}；不得交叉套用、互换、串穿或混搭。',
       ...assetRequirements,
-      '绑定资产硬约束：图片2起的每一张图片都是当前镜头明确绑定的指定素材，必须按其人物、产品、场景或道具角色使用；禁止遗漏任一绑定素材，也禁止以图片1中的同类人物、产品、场景或道具替代。',
-      '从零开始生成新的高质量画面：重新渲染全部人物、服装、产品、背景、光影和细节。输出必须清晰锐利、细节完整、主体边缘干净、没有压缩噪点、运动模糊或低清纹理。',
-      '严格复现图片1的画幅、景别、机位、构图、透视、主体数量、空间方向、视线方向、遮挡关系、光源方向、色温、景深和镜头承接。若同时提供人物、产品和场景参考，必须让该人物在该场景中穿着或使用该产品；人物服装、产品外观和道具样式始终以图片2起绑定资产为准。',
-      '屏幕方向硬约束：以查看图片1时的画面左/右为唯一坐标系，不是人物自身左右，也不随图片2起素材的朝向变化。必须保持主体在画面内的左右位置、脸部/身体/视线朝向、身体倾斜、肢体动作、道具朝向及相对位置；严禁水平镜像、左右颠倒、反向朝向或交换左右侧构图。若任何素材描述与此冲突，始终以图片1为准。',
-      '色彩锁定硬约束：以图片1可见的色彩风格、色温、明暗关系、对比度、阴影、高光、光影层次和电影调色为唯一基准，必须保持一致；新人物、产品、场景和道具只替换视觉实体，必须被统一调入图片1原帧色彩。严禁根据图片2起的资产图、资产文字、镜头色彩字段、视觉分析文字、通用风格词或用户补充说明重新配色、换色、增强饱和度、改变冷暖调、改变曝光或生成另一套调色。',
-      '绝对不要：超分辨率、锐化、去噪、修复、放大、以图生图描摹、保留原帧像素、复制原帧的模糊或瑕疵。',
+      '绑定资产硬约束：$firstBoundImageLabel 起的图片按上文角色使用。主视图定义完整身份或产品整体；标记为局部细节裁切的图片只补充局部证据。不得遗漏、平均融合或用图片1中的同类原主体替代。',
+      if (preservedElementRules.isNotEmpty)
+        '【用户已勾选保留元素】从图片1保留其结构、材质、位置和佩戴/接触关系：${preservedElementRules.join('；')}。',
+      if (removedElementRules.isNotEmpty)
+        '【未勾选元素：必须移除】以下原帧配饰或道具未获授权，成图不得出现本体、残影或可识别特征：${removedElementRules.join('；')}。逐项移除后，必须按周围透视、纹理、材质、遮挡关系和光影自然补全暴露区域，不得用相似物替代。',
+      if (guide != null && guide.actionDescription.trim().isNotEmpty)
+        '【原帧精确动作硬约束】${guide.actionDescription.trim()}。',
+      if (guide != null && guide.poseConstraints.trim().isNotEmpty)
+        '【逐关节姿态硬约束】${guide.poseConstraints.trim()}。',
+      '构图执行：保持图片1的画幅、机位、透视、槽位位置、空间方向、视线、动作、接触和遮挡；仅按主体处理计划改变实体。屏幕左/右以查看图片1时为准，严禁镜像。',
+      '调色执行：新实体必须融入图片1的光线方向、色温、曝光、阴影、高光和景深；资产图自身背景、构图、光照与调色不进入成图。',
+      '质量执行：产品轮廓、比例、接缝、口袋、边缘、材质和反光应可辨；人物面部、手指与手物接触自然；不得出现新旧身份或产品特征融合、重复主体、残影和低清纹理。',
       _textAndLogoExclusionConstraint,
       ..._shotStructureInstructions(shot),
       if (analysis != null) ..._visualStructureInstructions(analysis),
-      '最终交付：一张自然真实、专业清晰、与原视频帧叙事和镜头语言一致，但从头新生成的复刻分镜图。',
+      '最终交付：一张自然真实、专业清晰、严格执行主体处理计划的复刻分镜图。',
     ].join('\n');
   }
 
@@ -3290,7 +4898,7 @@ $playbackSpeedBoundary
   ].where((instruction) => instruction.isNotEmpty).toList(growable: false);
 
   List<String> _visualStructureInstructions(VisionImageAnalysis analysis) => [
-    '【视觉模型对原帧的结构维度解析】以下内容只用于锁定镜头语言、空间关系和运动趋势；不得把其中的原人物服装、产品款式、道具外观或品牌包装带入成图。',
+    '【视觉模型对原帧的结构维度解析】以下内容只用于锁定镜头语言、空间关系和运动趋势；主体外观是否沿用只服从“原帧主体处理计划”，不得根据解析文字额外恢复原人物服装、产品款式、道具外观或品牌包装。',
     _visionInstruction(
       '镜头与构图',
       _joinVisionValues([
@@ -3343,6 +4951,39 @@ $playbackSpeedBoundary
         _ => '视觉参考',
       };
 
+  static int? _characterSlotIndex(String label) {
+    if (label == '模特') return 0;
+    final match = RegExp(r'^模特([A-Z]+)$').firstMatch(label);
+    if (match == null) return null;
+    var value = 0;
+    for (final codeUnit in match.group(1)!.codeUnits) {
+      value = value * 26 + codeUnit - 64;
+    }
+    return value - 1;
+  }
+
+  static int? _productSlotIndex(String label) {
+    if (label == '产品') return 0;
+    final match = RegExp(r'^产品([A-Z]+)$').firstMatch(label);
+    if (match == null) return null;
+    var value = 0;
+    for (final codeUnit in match.group(1)!.codeUnits) {
+      value = value * 26 + codeUnit - 64;
+    }
+    return value - 1;
+  }
+
+  static int? _productDetailSlotIndex(String label) {
+    if (label == '产品细节') return 0;
+    final match = RegExp(r'^产品细节([A-Z]+)$').firstMatch(label);
+    if (match == null) return null;
+    var value = 0;
+    for (final codeUnit in match.group(1)!.codeUnits) {
+      value = value * 26 + codeUnit - 64;
+    }
+    return value - 1;
+  }
+
   String _resolvedGenerationModel(ReplicateRun run) {
     final configured = run.generationModel.trim();
     return configured.isEmpty
@@ -3358,6 +4999,40 @@ $playbackSpeedBoundary
       descriptor.aspectRatios,
       preferred: '16:9',
     );
+  }
+
+  static String _closestSupportedSourceAspectRatio(
+    File source,
+    List<String> supported, {
+    required String fallback,
+  }) {
+    try {
+      final decoded = img.decodeImage(source.readAsBytesSync());
+      if (decoded == null || decoded.width <= 0 || decoded.height <= 0) {
+        throw const FormatException('无法读取原帧尺寸');
+      }
+      final sourceRatio = decoded.width / decoded.height;
+      String? best;
+      var bestDistance = double.infinity;
+      for (final option in supported) {
+        final parts = option.split(':');
+        if (parts.length != 2) continue;
+        final width = double.tryParse(parts.first);
+        final height = double.tryParse(parts.last);
+        if (width == null || height == null || width <= 0 || height <= 0) {
+          continue;
+        }
+        final distance = (math.log(sourceRatio / (width / height))).abs();
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = option;
+        }
+      }
+      if (best != null) return best;
+    } catch (_) {
+      // 损坏或暂不支持的原帧格式使用任务内保存的兼容比例。
+    }
+    return _catalogOption(fallback, supported, preferred: '16:9');
   }
 
   static String _defaultImageSize(String model) {
@@ -3762,10 +5437,6 @@ $playbackSpeedBoundary
     return _confirmedScriptAssetsForShots(targetShots).isNotEmpty;
   }
 
-  List<ScriptAsset> _confirmedScriptAssets(String shotId, {String? scriptId}) {
-    return _confirmedScriptAssetsForShotIds([shotId], scriptId: scriptId);
-  }
-
   List<ScriptAsset> _confirmedScriptAssetsForShots(Iterable<ScriptShot> shots) {
     final items = shots.toList(growable: false);
     return _confirmedScriptAssetsForShotIds(
@@ -4085,6 +5756,8 @@ class _ReplacementReference {
     required this.name,
     required this.description,
     required this.path,
+    this.slotLabel = '',
+    this.isDetailCrop = false,
   });
 
   final String id;
@@ -4092,4 +5765,6 @@ class _ReplacementReference {
   final String name;
   final String description;
   final String path;
+  final String slotLabel;
+  final bool isDetailCrop;
 }

@@ -30,6 +30,7 @@ import '../../features/updater/application/updater_controller.dart';
 import '../../features/updater/data/updater_service.dart';
 import '../database/app_database.dart';
 import '../services/app_directories.dart';
+import '../services/desktop_file_dialog_service.dart';
 import '../services/workspace_directories.dart';
 
 final globalDatabaseProvider = Provider<AppDatabase>((ref) {
@@ -39,6 +40,18 @@ final globalDatabaseProvider = Provider<AppDatabase>((ref) {
 final appDirectoriesProvider = Provider<AppDirectories>((ref) {
   throw StateError('AppDirectories 尚未初始化');
 });
+
+final desktopFileDialogServiceProvider = Provider<DesktopFileDialogService>((
+  ref,
+) {
+  final directories = ref.watch(appDirectoriesProvider);
+  final service = DesktopFileDialogService(
+    defaultDirectory: directories.imports,
+    logsDirectory: directories.logs,
+  );
+  ref.onDispose(service.dispose);
+  return service;
+}, dependencies: [appDirectoriesProvider]);
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
   return ref.watch(projectDatabaseProvider);

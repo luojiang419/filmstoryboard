@@ -14,12 +14,44 @@ $flutterVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3])+$($Matches[4])"
 $appPath = Join-Path $Root 'build\windows\x64\runner\Release\filmstoryboard.exe'
 $bundledFfmpegPath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffmpeg.exe'
 $bundledFfprobePath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffprobe.exe'
+$bundledDwPoseDetectorPath = Join-Path $Root 'build\windows\x64\runner\Release\data\dwpose\models\yolox_l.onnx'
+$bundledDwPosePosePath = Join-Path $Root 'build\windows\x64\runner\Release\data\dwpose\models\dw-ll_ucoco_384.onnx'
 $assetName = "filmstoryboard-Setup-$Version.exe"
 $assetPath = Join-Path $Root "dist\installer\$assetName"
 
-foreach ($requiredPath in @($appPath, $bundledFfmpegPath, $bundledFfprobePath, $assetPath)) {
+foreach ($requiredPath in @(
+    $appPath,
+    $bundledFfmpegPath,
+    $bundledFfprobePath,
+    $bundledDwPoseDetectorPath,
+    $bundledDwPosePosePath,
+    $assetPath
+)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Missing release artifact: $requiredPath"
+    }
+}
+
+$dwPoseModels = @(
+    @{
+        Path = $bundledDwPoseDetectorPath
+        Length = 216746733
+        Sha256 = '7860ae79de6c89a3c1eb72ae9a2756c0ccfbe04b7791bb5880afabd97855a411'
+    },
+    @{
+        Path = $bundledDwPosePosePath
+        Length = 134399116
+        Sha256 = '724f4ff2439ed61afb86fb8a1951ec39c6220682803b4a8bd4f598cd913b1843'
+    }
+)
+foreach ($model in $dwPoseModels) {
+    $file = Get-Item -LiteralPath $model.Path
+    if ($file.Length -ne $model.Length) {
+        throw "Bundled DWPose model size mismatch: $($model.Path)"
+    }
+    $modelSha256 = (Get-FileHash -LiteralPath $model.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($modelSha256 -ne $model.Sha256) {
+        throw "Bundled DWPose model SHA-256 mismatch: $($model.Path)"
     }
 }
 

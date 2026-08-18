@@ -2050,6 +2050,76 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     return incoming.trim();
   }
 
+  bool removeImageFromExternalBoard({
+    required String sourceId,
+    required String stableId,
+  }) {
+    final normalizedSourceId = sourceId.trim();
+    final normalizedStableId = stableId.trim();
+    if (normalizedSourceId.isEmpty || normalizedStableId.isEmpty) {
+      return false;
+    }
+    final boardId = 'external-board:$normalizedSourceId';
+    final assetId = 'external-cut:$normalizedStableId';
+    final board = value.boards.cast<StoryboardBoard?>().firstWhere(
+      (item) => item?.id == boardId,
+      orElse: () => null,
+    );
+    if (board == null || !board.items.any((item) => item.asset.id == assetId)) {
+      return false;
+    }
+
+    final remaining = board.items
+        .where((item) => item.asset.id != assetId)
+        .toList(growable: false);
+    final remainingItems = [
+      for (var index = 0; index < remaining.length; index++)
+        remaining[index].copyWith(slotIndex: index),
+    ];
+    final nextBoard = _boardWithAdaptiveHeight(
+      _boardWithGridForItemCount(
+        board.copyWith(items: remainingItems),
+        itemCount: remainingItems.length,
+      ),
+    );
+    final usedByAnotherBoard = value.boards.any(
+      (candidate) =>
+          candidate.id != boardId &&
+          candidate.items.any((item) => item.asset.id == assetId),
+    );
+    var nextAssets = value.assets;
+    var nextResourceGroups = value.resourceGroups;
+    var nextResourceRootOrder = value.resourceRootOrder;
+    if (!usedByAnotherBoard) {
+      _database.deleteCutResultsByIds([assetId]);
+      nextAssets = [
+        for (final asset in value.assets)
+          if (asset.id != assetId) asset,
+      ];
+      final resourceTree = _normalizeResourceTree(
+        groups: value.resourceGroups,
+        rootOrder: value.resourceRootOrder,
+        assets: nextAssets,
+        folders: value.folders,
+      );
+      nextResourceGroups = resourceTree.groups;
+      nextResourceRootOrder = resourceTree.rootOrder;
+    }
+    _setState(
+      value.copyWith(
+        assets: nextAssets,
+        resourceGroups: nextResourceGroups,
+        resourceRootOrder: nextResourceRootOrder,
+        boards: [
+          for (final candidate in value.boards)
+            if (candidate.id == boardId) nextBoard else candidate,
+        ],
+        message: '已同步移除故事板中的视频帧',
+      ),
+    );
+    return true;
+  }
+
   void closeBoard(String boardId) {
     final index = value.openBoardIds.indexOf(boardId);
     if (index < 0) {

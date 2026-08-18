@@ -211,7 +211,16 @@ void main() {
     expect(find.text('资产库'), findsOneWidget);
     expect(find.text('上传资产'), findsNothing);
     expect(find.text('按描述生成'), findsNothing);
-    expect(find.text('女模特'), findsOneWidget);
+    final libraryItemCard = find.byKey(
+      ValueKey(
+        'prepare-asset-library-item-${assetLibraryController.value.items.single.id}',
+      ),
+    );
+    expect(libraryItemCard, findsOneWidget);
+    expect(
+      find.descendant(of: libraryItemCard, matching: find.text('女模特')),
+      findsNWidgets(2),
+    );
     await tester.tap(find.byKey(const ValueKey('script-auto-match-assets')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(assetBindingController.value.links, hasLength(1));

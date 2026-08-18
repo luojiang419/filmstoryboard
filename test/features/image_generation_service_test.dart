@@ -125,12 +125,74 @@ void main() {
     expect(submitBody?['replyType'], 'json');
     final images = submitBody?['images'] as List<dynamic>;
     expect(images, hasLength(1));
+    final submittedImage = images.single.toString();
+    expect(submittedImage, startsWith('data:image/png;base64,'));
     expect(
-      images.first.toString().startsWith('data:image/jpeg;base64,'),
-      isTrue,
+      base64Decode(submittedImage.substring(submittedImage.indexOf(',') + 1)),
+      await source.readAsBytes(),
     );
     expect(File(result.localPath).existsSync(), isTrue);
     expect(File('${result.localPath}.json').existsSync(), isTrue);
+  });
+
+  test('Gemini图像模型对20MB以内本地参考图保持原格式和原始字节', () async {
+    final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
+    addTearDown(() => root.delete(recursive: true));
+    final source = await _writeImage(root, 'reference.png');
+    final sourceBytes = await source.readAsBytes();
+    final output = Directory('${root.path}${Platform.pathSeparator}output');
+
+    Map<String, dynamic>? submitBody;
+    final resultBytes = img.encodePng(img.Image(width: 4, height: 4));
+    final service = ImageGenerationService(
+      client: MockClient((request) async {
+        submitBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'candidates': [
+              {
+                'content': {
+                  'parts': [
+                    {
+                      'inlineData': {
+                        'mimeType': 'image/png',
+                        'data': base64Encode(resultBytes),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    addTearDown(service.close);
+
+    await service.generateEditedImage(
+      ImageGenerationRequest(
+        provider: _providerFor(
+          model: 'gemini-3-pro-image-preview',
+          apiBaseUrl: 'https://www.shiying-api.com',
+          apiKey: 'gemini-key',
+        ),
+        model: 'gemini-3-pro-image-preview',
+        prompt: '保持产品全部细节',
+        aspectRatio: '4:3',
+        imageSize: '2K',
+        quality: 'auto',
+        referenceImagePaths: [source.path],
+        outputDirectory: output,
+      ),
+    );
+
+    final contents = submitBody?['contents'] as List<dynamic>;
+    final parts = (contents.single as Map<String, dynamic>)['parts'] as List;
+    final inlineData = (parts.last as Map)['inline_data'] as Map;
+    expect(inlineData['mime_type'], 'image/png');
+    expect(base64Decode(inlineData['data'] as String), sourceBytes);
   });
 
   test('GPT Image模型会把比例和档位换算为分辨率并传递质量', () async {
@@ -222,15 +284,26 @@ void main() {
     );
   });
 
-  test('旧版Gemini预览模型使用诗影generateContent接口并保存内联图片', () async {
+  test('Gemini generateContent保持多图顺序并原样回传thoughtSignature续轮', () async {
     final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
     addTearDown(() => root.delete(recursive: true));
-    final source = await _writeImage(root, 'reference.png');
+    final firstSource = await _writeImage(
+      root,
+      'reference-1.png',
+      color: img.ColorRgb8(20, 40, 60),
+    );
+    final secondSource = await _writeImage(
+      root,
+      'reference-2.png',
+      color: img.ColorRgb8(80, 100, 120),
+    );
     final output = Directory('${root.path}${Platform.pathSeparator}output');
 
-    Map<String, dynamic>? submitBody;
+    final submitBodies = <Map<String, dynamic>>[];
     final resultBytes = img.encodePng(img.Image(width: 4, height: 4));
-    final thoughtSignature = 'opaque-signature-' * 128;
+    final encodedResult = base64Encode(resultBytes);
+    final firstThoughtSignature = 'opaque-signature-first-' * 128;
+    final secondThoughtSignature = 'opaque-signature-second-' * 64;
     final service = ImageGenerationService(
       client: MockClient((request) async {
         expect(request.url.host, 'www.shiying-api.com');
@@ -239,18 +312,28 @@ void main() {
           '/v1beta/models/gemini-3-pro-image-preview:generateContent',
         );
         expect(request.headers['authorization'], 'Bearer gemini-key');
-        submitBody = jsonDecode(request.body) as Map<String, dynamic>;
+        submitBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        final isFirstTurn = submitBodies.length == 1;
         return http.Response(
           jsonEncode({
             'candidates': [
               {
                 'content': {
+                  'role': 'model',
                   'parts': [
                     {
-                      'thoughtSignature': thoughtSignature,
+                      'text': isFirstTurn ? '已完成初稿' : '已完成纠正',
+                      'thoughtSignature': isFirstTurn
+                          ? firstThoughtSignature
+                          : secondThoughtSignature,
+                    },
+                    {
+                      'thoughtSignature': isFirstTurn
+                          ? firstThoughtSignature
+                          : secondThoughtSignature,
                       'inlineData': {
                         'mimeType': 'image/png',
-                        'data': base64Encode(resultBytes),
+                        'data': encodedResult,
                       },
                     },
                   ],
@@ -263,7 +346,9 @@ void main() {
               'candidatesTokenCount': 34,
             },
             'modelVersion': 'gemini-3-pro-image-preview',
-            'responseId': 'response-compact-test',
+            'responseId': isFirstTurn
+                ? 'response-compact-test'
+                : 'response-follow-up',
           }),
           200,
           headers: {'content-type': 'application/json'},
@@ -272,68 +357,121 @@ void main() {
     );
     addTearDown(service.close);
 
-    final result = await service.generateEditedImage(
+    final provider = _providerFor(
+      model: 'gemini-3-pro-image-preview',
+      apiBaseUrl: 'https://www.shiying-api.com',
+      apiKey: 'gemini-key',
+    );
+    final firstResult = await service.generateEditedImage(
       ImageGenerationRequest(
-        provider: _providerFor(
-          model: 'gemini-3-pro-image-preview',
-          apiBaseUrl: 'https://www.shiying-api.com',
-          apiKey: 'gemini-key',
-        ),
+        provider: provider,
         model: 'gemini-3-pro-image-preview',
         prompt: '保留角色并改成雨夜场景',
         aspectRatio: '16:9',
         imageSize: '2K',
         quality: 'auto',
-        referenceImagePaths: [source.path],
+        referenceImagePaths: [firstSource.path, secondSource.path],
         outputDirectory: output,
       ),
     );
+    final secondResult = await service.generateEditedImage(
+      ImageGenerationRequest(
+        provider: provider,
+        model: 'gemini-3-pro-image-preview',
+        prompt: '只纠正雨伞颜色，其他内容不变',
+        aspectRatio: '16:9',
+        imageSize: '2K',
+        quality: 'auto',
+        referenceImagePaths: const [],
+        outputDirectory: output,
+        geminiContinuation: firstResult.geminiContinuation,
+      ),
+    );
 
-    final contents = submitBody?['contents'] as List<dynamic>;
-    final parts = (contents.single as Map<String, dynamic>)['parts'] as List;
-    expect(parts, hasLength(2));
-    expect((parts.last as Map)['inline_data'], isNotNull);
+    final firstContents = submitBodies.first['contents'] as List<dynamic>;
+    final firstParts = (firstContents.single as Map)['parts'] as List;
+    expect(firstParts, hasLength(3));
+    expect(_inlineBytes(firstParts[1] as Map), await firstSource.readAsBytes());
     expect(
-      ((submitBody?['generationConfig'] as Map)['imageConfig'] as Map),
+      _inlineBytes(firstParts[2] as Map),
+      await secondSource.readAsBytes(),
+    );
+    expect(
+      ((submitBodies.first['generationConfig'] as Map)['imageConfig'] as Map),
       containsPair('aspectRatio', '16:9'),
     );
-    expect(result.remoteUrl, isEmpty);
-    expect(await File(result.localPath).readAsBytes(), resultBytes);
-    final metadataFile = File('${result.localPath}.json');
-    expect(metadataFile.existsSync(), isTrue);
+
+    final followUpContents = submitBodies.last['contents'] as List<dynamic>;
+    expect(followUpContents, hasLength(3));
+    final returnedModelParts = (followUpContents[1] as Map)['parts'] as List;
+    expect(
+      (returnedModelParts.first as Map)['thoughtSignature'],
+      firstThoughtSignature,
+    );
+    expect(
+      (returnedModelParts.last as Map)['thoughtSignature'],
+      firstThoughtSignature,
+    );
+    expect(
+      ((returnedModelParts.last as Map)['inlineData'] as Map)['data'],
+      encodedResult,
+    );
+    expect(
+      (((followUpContents.last as Map)['parts'] as List).single as Map)['text'],
+      '只纠正雨伞颜色，其他内容不变',
+    );
+
+    expect(firstResult.remoteUrl, isEmpty);
+    expect(await File(firstResult.localPath).readAsBytes(), resultBytes);
+    expect(await File(secondResult.localPath).readAsBytes(), resultBytes);
+    expect(
+      firstResult.geminiContinuation?.transport,
+      GeminiImageContinuationTransport.generateContent,
+    );
+    final metadataFile = File('${firstResult.localPath}.json');
     final compactResponse =
-        jsonDecode(result.rawResponse) as Map<String, dynamic>;
+        jsonDecode(firstResult.rawResponse) as Map<String, dynamic>;
     expect(compactResponse['responseId'], 'response-compact-test');
     expect(compactResponse['modelVersion'], 'gemini-3-pro-image-preview');
     expect(compactResponse['usageMetadata'], isNotNull);
-    expect(
-      ((compactResponse['candidates'] as List).single as Map)['finishReason'],
-      'STOP',
-    );
-    expect(result.rawResponse, isNot(contains(base64Encode(resultBytes))));
-    expect(result.rawResponse, isNot(contains(thoughtSignature)));
-    expect(result.rawResponse, isNot(contains('thoughtSignature')));
+    expect(firstResult.rawResponse, isNot(contains(encodedResult)));
+    expect(firstResult.rawResponse, contains(firstThoughtSignature));
+    expect(firstResult.rawResponse, contains('thoughtSignature'));
     expect(
       compactResponse['payloadOmissions'],
-      containsPair('imagePayloadCharacters', base64Encode(resultBytes).length),
-    );
-    expect(
-      compactResponse['payloadOmissions'],
-      containsPair('opaqueSignatureCharacters', thoughtSignature.length),
+      containsPair('imagePayloadCharacters', encodedResult.length),
     );
     final metadata =
         jsonDecode(await metadataFile.readAsString()) as Map<String, dynamic>;
-    expect(metadata['rawResponse'], result.rawResponse);
-    expect(await metadataFile.length(), lessThan(2048));
+    expect(metadata['rawResponse'], firstResult.rawResponse);
+    final requestRecord = metadata['requestRecord'] as Map<String, dynamic>;
+    expect(requestRecord['route'], 'generateContent');
+    expect(
+      (requestRecord['orderedReferences'] as List)
+          .map((item) => (item as Map)['source'])
+          .toList(),
+      [firstSource.path, secondSource.path],
+    );
+    expect(requestRecord.containsKey('apiKey'), isFalse);
+    expect(await metadataFile.length(), lessThan(32 * 1024));
   });
 
-  test('Gemini稳定图像模型使用Interactions接口并保存内联图片', () async {
+  test('Gemini Interactions保持多图顺序并使用官方有状态续轮', () async {
     final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
     addTearDown(() => root.delete(recursive: true));
-    final source = await _writeImage(root, 'reference.png');
+    final firstSource = await _writeImage(
+      root,
+      'reference-1.png',
+      color: img.ColorRgb8(12, 34, 56),
+    );
+    final secondSource = await _writeImage(
+      root,
+      'reference-2.png',
+      color: img.ColorRgb8(65, 43, 21),
+    );
     final output = Directory('${root.path}${Platform.pathSeparator}output');
 
-    Map<String, dynamic>? submitBody;
+    final submitBodies = <Map<String, dynamic>>[];
     final resultBytes = List<int>.generate(512, (index) => index % 251);
     final encodedResult = base64Encode(resultBytes);
     final service = ImageGenerationService(
@@ -342,11 +480,15 @@ void main() {
         expect(request.url.path, '/v1beta/interactions');
         expect(request.headers['x-goog-api-key'], 'gemini-key');
         expect(request.headers.containsKey('authorization'), isFalse);
-        submitBody = jsonDecode(request.body) as Map<String, dynamic>;
+        submitBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         return http.Response(
           jsonEncode({
-            'id': 'interaction-1',
+            'id': 'interaction-${submitBodies.length}',
             'steps': [
+              {
+                'type': 'thought',
+                'signature': 'interaction-signature-${submitBodies.length}',
+              },
               {
                 'type': 'model_output',
                 'content': [
@@ -367,46 +509,101 @@ void main() {
     );
     addTearDown(service.close);
 
-    final result = await service.generateEditedImage(
+    final provider = _providerFor(
+      model: 'gemini-3-pro-image',
+      apiBaseUrl: 'https://generativelanguage.googleapis.com',
+      apiKey: 'gemini-key',
+    );
+    final firstResult = await service.generateEditedImage(
       ImageGenerationRequest(
-        provider: _providerFor(
-          model: 'gemini-3-pro-image',
-          apiBaseUrl: 'https://generativelanguage.googleapis.com',
-          apiKey: 'gemini-key',
-        ),
+        provider: provider,
         model: 'gemini-3-pro-image',
         prompt: '保留构图并高清重绘',
         aspectRatio: '16:9',
         imageSize: '2K',
         quality: 'auto',
-        referenceImagePaths: [source.path],
+        referenceImagePaths: [firstSource.path, '', secondSource.path],
         outputDirectory: output,
       ),
     );
-
-    expect(submitBody?['model'], 'gemini-3-pro-image');
-    final input = submitBody?['input'] as List<dynamic>;
-    expect((input.first as Map)['text'], '保留构图并高清重绘');
-    expect((input.last as Map)['type'], 'image');
-    expect(
-      submitBody?['response_format'],
-      containsPair('aspect_ratio', '16:9'),
+    final secondResult = await service.generateEditedImage(
+      ImageGenerationRequest(
+        provider: provider,
+        model: 'gemini-3-pro-image',
+        prompt: '只修正左手手指，其他内容不变',
+        aspectRatio: '16:9',
+        imageSize: '2K',
+        quality: 'auto',
+        referenceImagePaths: const [],
+        outputDirectory: output,
+        geminiContinuation: firstResult.geminiContinuation,
+      ),
     );
-    expect(submitBody?['response_format'], containsPair('image_size', '2K'));
-    expect(await File(result.localPath).readAsBytes(), resultBytes);
-    expect(result.rawResponse, isNot(contains(encodedResult)));
+
+    final firstBody = submitBodies.first;
+    expect(firstBody['model'], 'gemini-3-pro-image');
+    expect(firstBody['store'], isTrue);
+    expect(firstBody.containsKey('previous_interaction_id'), isFalse);
+    final firstInput = firstBody['input'] as List<dynamic>;
+    expect((firstInput.first as Map)['text'], '保留构图并高清重绘');
+    expect(
+      _interactionBytes(firstInput[1] as Map),
+      await firstSource.readAsBytes(),
+    );
+    expect(
+      _interactionBytes(firstInput[2] as Map),
+      await secondSource.readAsBytes(),
+    );
+    expect(firstBody['response_format'], containsPair('aspect_ratio', '16:9'));
+    expect(firstBody['response_format'], containsPair('image_size', '2K'));
+
+    final followUpBody = submitBodies.last;
+    expect(followUpBody['store'], isTrue);
+    expect(followUpBody['previous_interaction_id'], 'interaction-1');
+    final followUpInput = followUpBody['input'] as List<dynamic>;
+    expect(followUpInput, hasLength(1));
+    expect((followUpInput.single as Map)['text'], '只修正左手手指，其他内容不变');
+    expect(
+      secondResult.geminiContinuation?.previousInteractionId,
+      'interaction-2',
+    );
+    expect(await File(firstResult.localPath).readAsBytes(), resultBytes);
+    expect(await File(secondResult.localPath).readAsBytes(), resultBytes);
+    expect(firstResult.rawResponse, isNot(contains(encodedResult)));
+    expect(firstResult.rawResponse, contains('interaction-signature-1'));
     final compactResponse =
-        jsonDecode(result.rawResponse) as Map<String, dynamic>;
+        jsonDecode(firstResult.rawResponse) as Map<String, dynamic>;
     expect(
       compactResponse['payloadOmissions'],
       containsPair('imagePayloadCharacters', encodedResult.length),
+    );
+    final metadata =
+        jsonDecode(await File('${firstResult.localPath}.json').readAsString())
+            as Map<String, dynamic>;
+    final requestRecord = metadata['requestRecord'] as Map<String, dynamic>;
+    expect(requestRecord['route'], 'interactions');
+    expect(
+      (requestRecord['inputOrder'] as List)
+          .map((item) => (item as Map)['sourceRequestIndex'])
+          .whereType<int>()
+          .toList(),
+      [0, 2],
     );
   });
 
   test('第三方Gemini地址对稳定图像模型使用preview generateContent兼容路由', () async {
     final root = await Directory.systemTemp.createTemp('gemini_image_gen_');
     addTearDown(() => root.delete(recursive: true));
-    final source = await _writeImage(root, 'reference.png');
+    final firstSource = await _writeImage(
+      root,
+      'reference-1.png',
+      color: img.ColorRgb8(10, 20, 30),
+    );
+    final secondSource = await _writeImage(
+      root,
+      'reference-2.png',
+      color: img.ColorRgb8(30, 20, 10),
+    );
     final output = Directory('${root.path}${Platform.pathSeparator}output');
 
     Map<String, dynamic>? submitBody;
@@ -459,17 +656,29 @@ void main() {
         aspectRatio: '16:9',
         imageSize: '2K',
         quality: 'auto',
-        referenceImagePaths: [source.path],
+        referenceImagePaths: [firstSource.path, secondSource.path],
         outputDirectory: output,
       ),
     );
 
+    final contents = submitBody?['contents'] as List<dynamic>;
+    final parts = (contents.single as Map)['parts'] as List;
+    expect(parts, hasLength(3));
+    expect(_inlineBytes(parts[1] as Map), await firstSource.readAsBytes());
+    expect(_inlineBytes(parts[2] as Map), await secondSource.readAsBytes());
     final generationConfig =
         submitBody?['generationConfig'] as Map<String, dynamic>;
     final imageConfig = generationConfig['imageConfig'] as Map<String, dynamic>;
     expect(imageConfig, containsPair('aspectRatio', '16:9'));
     expect(imageConfig, containsPair('imageSize', '2K'));
     expect(await File(result.localPath).readAsBytes(), resultBytes);
+    final metadata =
+        jsonDecode(await File('${result.localPath}.json').readAsString())
+            as Map<String, dynamic>;
+    expect(
+      (metadata['requestRecord'] as Map)['route'],
+      'thirdPartyGenerateContentCompatibility',
+    );
   });
 
   test('图片修改仍然要求至少一张参考图', () async {
@@ -1094,6 +1303,15 @@ void main() {
   });
 }
 
+List<int> _inlineBytes(Map part) {
+  final inlineData = (part['inline_data'] ?? part['inlineData']) as Map;
+  return base64Decode(inlineData['data'] as String);
+}
+
+List<int> _interactionBytes(Map part) {
+  return base64Decode(part['data'] as String);
+}
+
 ImageGenerationProviderConnection _providerFor({
   required String model,
   required String apiBaseUrl,
@@ -1109,9 +1327,13 @@ ImageGenerationProviderConnection _providerFor({
   );
 }
 
-Future<File> _writeImage(Directory root, String name) async {
+Future<File> _writeImage(
+  Directory root,
+  String name, {
+  img.Color? color,
+}) async {
   final image = img.Image(width: 12, height: 8);
-  img.fill(image, color: img.ColorRgb8(40, 90, 140));
+  img.fill(image, color: color ?? img.ColorRgb8(40, 90, 140));
   final file = File('${root.path}${Platform.pathSeparator}$name');
   await file.writeAsBytes(img.encodePng(image));
   return file;

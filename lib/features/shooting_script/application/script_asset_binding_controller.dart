@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
@@ -9,6 +11,7 @@ import '../../video_analysis/domain/video_analysis_models.dart';
 import '../data/script_asset_matching_service.dart';
 import '../data/shooting_script_workflow_repository.dart';
 import '../domain/shooting_asset_library_models.dart';
+import '../domain/script_asset_slot_policy.dart';
 import '../domain/shooting_script_models.dart';
 import '../domain/shooting_script_workflow_models.dart';
 import 'shooting_asset_library_controller.dart';
@@ -140,33 +143,50 @@ class ShootingScriptAssetBindingController
 
   Future<void> addLibraryAssetToShot(
     ShootingAssetLibraryItem item,
-    String shotId,
-  ) => _bindAssetToShot(item, shotId);
+    String shotId, {
+    int? slotSortOrder,
+    String? slotLabel,
+  }) => _bindAssetToShot(
+    item,
+    shotId,
+    slotSortOrder: slotSortOrder,
+    slotLabel: slotLabel,
+  );
 
   Future<void> replaceLibraryAssetOnShot(
     ShootingAssetLibraryItem item,
     String shotId, {
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   }) => _bindAssetToShot(
     item,
     shotId,
     replaceScriptAssetId: replaceScriptAssetId,
+    slotSortOrder: slotSortOrder,
+    slotLabel: slotLabel,
   );
 
   Future<void> addStepAssetToShot(
     ReplicateAsset item,
     String shotId, {
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   }) => _bindAssetToShot(
     _libraryCandidateFromStepAsset(item),
     shotId,
     replaceScriptAssetId: replaceScriptAssetId,
+    slotSortOrder: slotSortOrder,
+    slotLabel: slotLabel,
   );
 
   Future<void> _bindAssetToShot(
     ShootingAssetLibraryItem item,
     String shotId, {
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   }) async {
     final script = _shootingScriptController.value.selectedScript;
     if (script == null ||
@@ -195,10 +215,11 @@ class ShootingScriptAssetBindingController
       existing?.copyWith(
             matchSource: ScriptAssetMatchSource.manual,
             confidence: 1,
-            matchReason: '用户从资产库拖拽',
+            matchReason: slotLabel == null ? '用户从资产库拖拽' : '用户绑定至“$slotLabel”槽位',
             confirmed: true,
             locked: true,
-            sortOrder: replaced?.sortOrder ?? existing.sortOrder,
+            sortOrder:
+                slotSortOrder ?? replaced?.sortOrder ?? existing.sortOrder,
             updatedAt: now,
           ) ??
           ScriptShotAssetLink(
@@ -206,10 +227,14 @@ class ShootingScriptAssetBindingController
             scriptAssetId: asset.id,
             matchSource: ScriptAssetMatchSource.manual,
             confidence: 1,
-            matchReason: replaced == null ? '用户手动绑定' : '用户替换绑定',
+            matchReason: slotLabel != null
+                ? '用户绑定至“$slotLabel”槽位'
+                : replaced == null
+                ? '用户手动绑定'
+                : '用户替换绑定',
             confirmed: true,
             locked: true,
-            sortOrder: replaced?.sortOrder ?? links.length,
+            sortOrder: slotSortOrder ?? replaced?.sortOrder ?? links.length,
             createdAt: now,
             updatedAt: now,
           ),
@@ -235,6 +260,7 @@ class ShootingScriptAssetBindingController
 
   Future<void> autoMatchAll({
     List<ReplicateAsset> preferredAssets = const [],
+    Map<String, int> maximumProductCountsByShotId = const {},
   }) async {
     final script = _shootingScriptController.value.selectedScript;
     final shots = _shootingScriptController.value.shots;
@@ -258,6 +284,7 @@ class ShootingScriptAssetBindingController
         shots[index],
         libraryItems,
         preferredItems: preferredItems,
+        maximumProductCount: maximumProductCountsByShotId[shots[index].id],
       );
       if (!_disposed) {
         value = value.copyWith(
@@ -272,6 +299,7 @@ class ShootingScriptAssetBindingController
   Future<void> autoMatchShot(
     String shotId, {
     List<ReplicateAsset> preferredAssets = const [],
+    int? maximumProductCount,
   }) async {
     final script = _shootingScriptController.value.selectedScript;
     final shot = _shootingScriptController.value.shots
@@ -284,6 +312,7 @@ class ShootingScriptAssetBindingController
       shot,
       _libraryController.value.items,
       preferredItems: _stepAssetCandidates(preferredAssets),
+      maximumProductCount: maximumProductCount,
     );
     refresh();
     value = value.copyWith(
@@ -302,6 +331,7 @@ class ShootingScriptAssetBindingController
     ScriptShot shot,
     List<ShootingAssetLibraryItem> libraryItems, {
     List<ShootingAssetLibraryItem> preferredItems = const [],
+    int? maximumProductCount,
   }) async {
     final preferredResult = preferredItems.isEmpty
         ? const ScriptAssetMatchResult(candidates: [], usedModel: false)
@@ -328,6 +358,28 @@ class ShootingScriptAssetBindingController
       for (final link in value.linksForShot(shot.id))
         if (link.locked) link.scriptAssetId,
     };
+    final occupiedSortOrders = {
+      for (final link in value.linksForShot(shot.id)) link.sortOrder,
+    };
+    final reservedParticipantCount = occupiedSortOrders
+        .map(ScriptAssetSlotPolicy.presetSlotForSortOrder)
+        .whereType<ScriptAssetPresetSlot>()
+        .fold<int>(1, (count, slot) {
+          final slotCount = switch (slot.kind) {
+            ScriptAssetPresetSlotKind.character => slot.characterIndex + 1,
+            ScriptAssetPresetSlotKind.product => slot.productIndex + 1,
+            ScriptAssetPresetSlotKind.productDetail => slot.productIndex + 1,
+            ScriptAssetPresetSlotKind.scene => 1,
+          };
+          return math.max(count, slotCount);
+        });
+    final effectiveMaximumProductCount = math.max(
+      maximumProductCount ?? 0,
+      math.max(
+        ScriptAssetSlotPolicy.recognizedCharacterCount(shot: shot),
+        reservedParticipantCount,
+      ),
+    );
     for (final candidate in result.candidates.where(
       (item) => item.confidence >= 0.08,
     )) {
@@ -339,6 +391,23 @@ class ShootingScriptAssetBindingController
           .linksForShot(shot.id)
           .where((link) => link.scriptAssetId == scriptAsset.id)
           .firstOrNull;
+      if (existing != null) {
+        occupiedSortOrders.remove(existing.sortOrder);
+      }
+      final preferredSortOrder =
+          ScriptAssetSlotPolicy.preferredSortOrderForAsset(
+            type: libraryItem.type,
+            name: libraryItem.name,
+            description: libraryItem.description,
+            aliases: libraryItem.aliases,
+            occupiedSortOrders: occupiedSortOrders,
+            maximumProductCount: effectiveMaximumProductCount,
+          );
+      final sortOrder =
+          preferredSortOrder ??
+          existing?.sortOrder ??
+          _nextGeneralSortOrder(occupiedSortOrders);
+      occupiedSortOrders.add(sortOrder);
       final now = DateTime.now().toUtc();
       _repository.upsertLink(
         existing?.copyWith(
@@ -346,6 +415,7 @@ class ShootingScriptAssetBindingController
               confidence: candidate.confidence,
               matchReason: candidate.reason,
               confirmed: candidate.confidence >= 0.82,
+              sortOrder: sortOrder,
               updatedAt: now,
             ) ??
             ScriptShotAssetLink(
@@ -356,7 +426,7 @@ class ShootingScriptAssetBindingController
               matchReason: candidate.reason,
               confirmed: candidate.confidence >= 0.82,
               locked: false,
-              sortOrder: value.linksForShot(shot.id).length,
+              sortOrder: sortOrder,
               createdAt: now,
               updatedAt: now,
             ),
@@ -369,19 +439,39 @@ class ShootingScriptAssetBindingController
     String scriptId,
     ShootingAssetLibraryItem item,
   ) {
+    final effectiveType = ScriptAssetSlotPolicy.effectiveTypeForSlotting(
+      type: item.type,
+      name: item.name,
+      description: item.description,
+      aliases: item.aliases,
+    );
     final existing = value.assets
         .where(
           (asset) =>
               asset.scriptId == scriptId && asset.libraryAssetId == item.id,
         )
         .firstOrNull;
-    if (existing != null) return existing;
+    if (existing != null) {
+      if (existing.type == effectiveType) return existing;
+      final updated = existing.copyWith(
+        type: effectiveType,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _repository.upsertScriptAsset(updated);
+      value = value.copyWith(
+        assets: [
+          for (final asset in value.assets)
+            if (asset.id == updated.id) updated else asset,
+        ],
+      );
+      return updated;
+    }
     final now = DateTime.now().toUtc();
     final asset = ScriptAsset(
       id: _uuid.v4(),
       scriptId: scriptId,
       libraryAssetId: item.id,
-      type: item.type,
+      type: effectiveType,
       name: item.name,
       description: item.description,
       path: item.path,
@@ -424,6 +514,14 @@ class ShootingScriptAssetBindingController
         .map((asset) => asset.referenceNumber)
         .toList();
     return numbers.isEmpty ? 1 : numbers.reduce((a, b) => a > b ? a : b) + 1;
+  }
+
+  int _nextGeneralSortOrder(Set<int> occupiedSortOrders) {
+    var sortOrder = 0;
+    while (occupiedSortOrders.contains(sortOrder)) {
+      sortOrder++;
+    }
+    return sortOrder;
   }
 
   void _handleScriptChanged() {

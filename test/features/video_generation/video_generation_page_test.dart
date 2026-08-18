@@ -218,6 +218,33 @@ void main() {
     expect(progressBranch, lessThan(completedBranch));
   });
 
+  test('IO 点预览与生成视频播放器提供空格播放暂停快捷键', () {
+    final generationSource = File(
+      'lib/features/video_generation/presentation/video_generation_page.dart',
+    ).readAsStringSync();
+    final trimEditorSource = File(
+      'lib/features/video_generation/presentation/widgets/'
+      'generated_video_trim_editor.dart',
+    ).readAsStringSync();
+
+    expect(
+      generationSource,
+      contains('generated-video-inline-keyboard-\${widget.file.path}'),
+    );
+    expect(
+      generationSource,
+      contains("'generated-video-fullscreen-keyboard-scope'"),
+    );
+    expect(generationSource, contains("'source-range-preview-keyboard-scope'"));
+    expect(
+      RegExp(r'LogicalKeyboardKey\.space').allMatches(generationSource).length,
+      greaterThanOrEqualTo(3),
+    );
+    expect(trimEditorSource, contains("'generated-video-io-keyboard-scope'"));
+    expect(trimEditorSource, contains('LogicalKeyboardKey.space'));
+    expect(trimEditorSource, contains('unawaited(_togglePlayback())'));
+  });
+
   test('视频生成页 XML 导出复用设置页默认时间线目录', () {
     final source = File(
       'lib/features/video_generation/application/video_generation_controller.dart',
@@ -262,7 +289,10 @@ void main() {
     expect(source, contains("class _WorkVideoShotGroup"));
     expect(source, contains("class _WorkManagementShotGroupTile"));
     expect(source, contains("ExpansionTile("));
-    expect(source, contains("_shouldExpandWorkGroup(group, controller)"));
+    expect(
+      source,
+      contains("_shouldExpandWorkGroup(context, group, controller)"),
+    );
     expect(source, contains("for (final shot in state.shots)"));
     expect(source, contains("task.shotId == shot.id"));
     expect(source, contains("task.scriptId == selectedScriptId"));

@@ -685,7 +685,7 @@ class ScriptMultimodalAnalysisService {
     ScriptShot? shot,
   }) {
     final existing = shot?.durationSeconds ?? 0;
-    if (existing > 0) return existing.clamp(3, 15).toDouble();
+    if (existing > 0) return existing;
     final text = [
       analysis.bodyAction,
       analysis.movementTrend,
@@ -694,15 +694,15 @@ class ScriptMultimodalAnalysisService {
       analysis.transitionHint,
     ].join(' ');
     if (_containsAny(text, const ['快速', '瞬间', '闪现', '切换'])) {
-      return 3;
-    }
-    if (_containsAny(text, const ['建立', '全景', '远景', '走', '跑', '移动', '环绕'])) {
-      return 6;
+      return 2;
     }
     if (_containsAny(text, const ['静止', '定格', '特写', '细节', '局部'])) {
+      return 2.5;
+    }
+    if (_containsAny(text, const ['建立', '全景', '远景', '走', '跑', '移动', '环绕'])) {
       return 4;
     }
-    return 5;
+    return 3;
   }
 
   static double _designGroupDurationSeconds(
@@ -711,7 +711,7 @@ class ScriptMultimodalAnalysisService {
     required List<ScriptShot> shots,
   }) {
     final existing = shots.last.durationSeconds;
-    if (existing > 0) return existing.clamp(3, 15).toDouble();
+    if (existing > 0) return existing;
 
     final text = [
       for (final analysis in analyses) ...[
@@ -725,7 +725,9 @@ class ScriptMultimodalAnalysisService {
       motion.speedCurve,
       motion.transitionExecution,
     ].join(' ');
-    var duration = 4 + (analyses.length - 1).clamp(0, 4);
+    // 参考图是同一镜头内的动作锚点，不等于每张图都要额外占用一秒。
+    // 时长只根据真实动作量和空间移动估算，避免多帧组机械膨胀到 8–12 秒。
+    var duration = 3.0;
     if (_containsAny(text, const [
       '拿起',
       '放下',
@@ -740,18 +742,28 @@ class ScriptMultimodalAnalysisService {
       '变形',
       '切换',
     ])) {
-      duration += 1;
+      duration += 0.5;
     }
-    if (_containsAny(text, const ['建立', '全景', '远景', '环绕', '跟随', '升降'])) {
+    if (_containsAny(text, const [
+      '建立',
+      '全景',
+      '远景',
+      '走向',
+      '跑向',
+      '移动',
+      '环绕',
+      '跟随',
+      '升降',
+    ])) {
       duration += 1;
     }
     if (_containsAny(text, const ['快速', '瞬间', '闪现', '短促'])) {
       duration -= 1;
     }
-    if (_containsAny(text, const ['静止', '定格', '不明显']) && analyses.length <= 2) {
-      duration -= 1;
+    if (_containsAny(text, const ['静止', '定格', '不明显'])) {
+      duration -= 0.5;
     }
-    return duration.clamp(3, 12).toDouble();
+    return duration.clamp(2, 5).toDouble();
   }
 
   static String _normalizeGeneratedField(String field, String value) {

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:filmstoryboard/app/app_theme.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/providers/app_providers.dart';
@@ -20,7 +21,10 @@ import 'package:filmstoryboard/features/shooting_script/application/shooting_ass
 import 'package:filmstoryboard/features/shooting_script/data/shooting_asset_library_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_asset_library_models.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_models.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/script_asset_slot_policy.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
 import 'package:filmstoryboard/features/video_generation/application/video_generation_controller.dart';
@@ -53,7 +57,7 @@ void main() {
       directories = await AppDirectories.create(executableDirectory: root);
       database = await AppDatabase.open(directories.databaseFile);
       fixtureImage = File('assets/branding/app_icon_512.png');
-      originalFrame = fixtureImage;
+      originalFrame = fixtureImage.absolute;
       replicatedFrame = fixtureImage.absolute;
     });
     final settingsRepository = SettingsRepository(database, directories);
@@ -104,6 +108,44 @@ void main() {
       ),
     );
     final now = DateTime.now().toUtc();
+    replicateRepository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        sourceFrameFingerprint: sha256
+            .convert(originalFrame.readAsBytesSync())
+            .toString(),
+        elements: const [
+          ReplicatePreservedElement(
+            id: '眼镜:细金属框眼镜',
+            category: '眼镜',
+            label: '细金属框眼镜',
+            description: '银色细框透明镜片',
+          ),
+        ],
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '画面人物1',
+            slotIndex: 0,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '手持产品',
+            slotIndex: 0,
+          ),
+        ],
+        personCount: 1,
+        actionDescription: '人物侧身并抬起右手拿产品',
+        poseConstraints: '锁定头肩夹角、右肘与右腕位置',
+        skeletonPath: fixtureImage.absolute.path,
+        analysisStatus: ProcessingStatus.completed,
+        poseStatus: ProcessingStatus.completed,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
     replicateRepository.upsertReplicatedShotImage(
       ReplicatedShotImage(
         id: 'test-replicated-${shot.id}',
@@ -200,6 +242,10 @@ void main() {
       find.byKey(const ValueKey('replicate-new-prepare-assets-step')),
       findsOneWidget,
     );
+    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsOneWidget);
+    expect(find.text('提取全部骨架'), findsOneWidget);
+    expect(find.text('部署 DWPose'), findsNothing);
+    expect(find.text('下载并部署'), findsNothing);
     expect(
       tester.getCenter(find.text('准备资产')).dx,
       lessThan(tester.getCenter(find.text('确认镜头')).dx),
@@ -589,6 +635,17 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('分辨率'), findsOneWidget);
+    expect(find.text('跟随原帧画幅'), findsOneWidget);
+    expect(find.text('多视图裁切增强（可选）'), findsOneWidget);
+    expect(find.textContaining('默认关闭并直接上传原图'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('replicate-multi-view-enhancement-enabled')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('replicate-inherit-source-aspect-ratio')),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const ValueKey('replicate-generation-aspect-ratio')),
     );
@@ -600,12 +657,21 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(replicateController.value.run?.generationAspectRatio, '1:1');
+    expect(replicateController.value.run?.inheritSourceAspectRatio, isFalse);
+    expect(replicateController.value.run?.multiViewEnhancementEnabled, isTrue);
     expect(
       replicateRepository
           .getRun(replicateController.value.run!.id)
           ?.generationAspectRatio,
       '1:1',
       reason: '弹窗保存后必须立即写入当前复刻任务',
+    );
+    expect(
+      replicateRepository
+          .getRun(replicateController.value.run!.id)
+          ?.multiViewEnhancementEnabled,
+      isTrue,
+      reason: '可选多视图增强开关必须随当前复刻任务持久化',
     );
     expect(find.text('资产库'), findsOneWidget);
     expect(
@@ -640,9 +706,146 @@ void main() {
     expect(find.text('镜头 01'), findsOneWidget);
     expect(find.text('原视频帧'), findsAtLeastNWidgets(1));
     expect(find.text('复刻分镜'), findsAtLeastNWidgets(1));
-    await tester.tap(
-      find.byKey(ValueKey('prepare-asset-replica-frame-${shot.id}')),
+    final detectedPersonSlot = find.byKey(
+      ValueKey('detected-subject-asset-slot-${shot.id}-person:0'),
     );
+    final detectedProductSlot = find.byKey(
+      ValueKey('detected-subject-asset-slot-${shot.id}-product:0'),
+    );
+    expect(detectedPersonSlot, findsOneWidget);
+    expect(detectedProductSlot, findsOneWidget);
+    expect(
+      find.byKey(ValueKey('shot-asset-slot-${shot.id}-product-detail')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(ValueKey('shot-asset-slot-${shot.id}-scene')),
+      findsNothing,
+    );
+    final preservedElement = find.byKey(
+      ValueKey('preserved-element-${shot.id}-眼镜:细金属框眼镜'),
+    );
+    expect(preservedElement, findsOneWidget);
+    expect(find.text('原帧配饰/道具白名单'), findsOneWidget);
+    expect(find.text('原帧主体处理（只能替换或移除）'), findsNothing);
+    expect(find.text('勾选后才允许保留；未勾选会移除：'), findsOneWidget);
+    final personDecision = find.byKey(
+      ValueKey('replicate-subject-decision-${shot.id}-person:0'),
+    );
+    expect(personDecision, findsOneWidget);
+    final subjectDecisionDropdown = find.descendant(
+      of: detectedPersonSlot,
+      matching: find.byType(DropdownButton<ReplicateSubjectDecision>),
+    );
+    await tester.ensureVisible(personDecision);
+    await tester.pump();
+    await tester.tap(subjectDecisionDropdown);
+    await tester.pumpAndSettle();
+    expect(find.text('保留（沿用原视频帧）'), findsOneWidget);
+    expect(find.text('从画面移除'), findsOneWidget);
+    expect(find.text('替换（必须绑定对应资产）'), findsWidgets);
+    await tester.tap(find.text('保留（沿用原视频帧）'));
+    await tester.pumpAndSettle();
+    expect(
+      replicateController.shotGuideFor(shot.id)?.subjects.first.decision,
+      ReplicateSubjectDecision.keep,
+    );
+    expect(find.textContaining('人物侧身并抬起右手拿产品'), findsNothing);
+    expect(find.textContaining('锁定头肩夹角、右肘与右腕位置'), findsNothing);
+    final analyzeFrameButton = find.byKey(
+      ValueKey('analyze-replication-frame-${shot.id}'),
+    );
+    final extractPoseButton = find.byKey(ValueKey('extract-dwpose-${shot.id}'));
+    final replaceProductButton = find.byKey(
+      ValueKey('replicate-shot-image-${shot.id}'),
+    );
+    expect(analyzeFrameButton, findsOneWidget);
+    expect(extractPoseButton, findsOneWidget);
+    expect(replaceProductButton, findsOneWidget);
+    expect(
+      tester.getCenter(analyzeFrameButton).dx,
+      lessThan(tester.getCenter(extractPoseButton).dx),
+    );
+    expect(
+      tester.getCenter(extractPoseButton).dx,
+      lessThan(tester.getCenter(replaceProductButton).dx),
+    );
+    final frameGuidePanel = find.byKey(
+      ValueKey('replicate-frame-guide-${shot.id}'),
+    );
+    expect(
+      find.descendant(of: frameGuidePanel, matching: analyzeFrameButton),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: frameGuidePanel, matching: extractPoseButton),
+      findsNothing,
+    );
+    expect(find.byKey(ValueKey('dwpose-preview-${shot.id}')), findsNothing);
+    expect(
+      find.byKey(ValueKey('shot-skeleton-asset-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(tester.widget<FilterChip>(preservedElement).onSelected, isNotNull);
+    final skeletonAsset = find.byKey(
+      ValueKey('shot-skeleton-asset-${shot.id}'),
+    );
+    await tester.ensureVisible(skeletonAsset);
+    await tester.pump();
+    await tester.tap(skeletonAsset);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.byKey(ValueKey('dwpose-gallery-image-${shot.id}')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byTooltip('关闭预览'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byTooltip('移除动作骨架'), findsOneWidget);
+    await tester.tap(find.byTooltip('移除动作骨架'));
+    await tester.pump();
+    expect(
+      find.byKey(ValueKey('shot-skeleton-asset-${shot.id}')),
+      findsNothing,
+    );
+    expect(replicateController.shotGuideFor(shot.id)?.skeletonPath, isEmpty);
+    expect(
+      replicateController.shotGuideFor(shot.id)?.poseStatus,
+      ProcessingStatus.pending,
+    );
+    expect(fixtureImage.existsSync(), isTrue, reason: '外部参考文件不得被移除骨架功能删除');
+    await tester.ensureVisible(preservedElement);
+    await tester.pump();
+    await tester.tap(preservedElement);
+    await tester.pump();
+    expect(
+      replicateController.shotGuideFor(shot.id)?.selectedElements,
+      hasLength(1),
+    );
+    replicateRepository.upsertShotGuide(
+      replicateController
+          .shotGuideFor(shot.id)!
+          .copyWith(
+            sourceFrameFingerprint: 'stale-fingerprint',
+            updatedAt: DateTime.now().toUtc(),
+          ),
+    );
+    replicateController.refresh();
+    await tester.pump();
+    expect(
+      find.byKey(ValueKey('replicate-frame-guide-stale-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('shot-skeleton-asset-${shot.id}')),
+      findsNothing,
+    );
+    expect(tester.widget<FilterChip>(preservedElement).onSelected, isNull);
+    final replicaFrame = find.byKey(
+      ValueKey('prepare-asset-replica-frame-${shot.id}'),
+    );
+    await tester.ensureVisible(replicaFrame);
+    await tester.pump();
+    await tester.tap(replicaFrame);
     await tester.pump(const Duration(milliseconds: 300));
     expect(
       find.byKey(const ValueKey('script-frame-gallery-image-1-复刻分镜')),
@@ -650,7 +853,10 @@ void main() {
     );
     await tester.tap(find.byTooltip('关闭预览'));
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.byKey(const ValueKey('collapse-all-shot-scripts')));
+    final collapseAll = find.byKey(const ValueKey('collapse-all-shot-scripts'));
+    await tester.ensureVisible(collapseAll);
+    await tester.pump();
+    await tester.tap(collapseAll);
     await tester.pump(const Duration(milliseconds: 220));
     expect(
       find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
@@ -1213,13 +1419,57 @@ void main() {
     );
     shootingController.createEmpty(name: '准备资产右栏测试');
     final shot = shootingController.addShot()!;
-    shootingController.updateShot(shot.copyWith(content: '女模特拿起产品并看向镜头'));
+    final originalFrame = File('assets/branding/app_icon_512.png').absolute;
+    shootingController.updateShot(
+      shot.copyWith(content: '两位女模特拿起产品并看向镜头', framePath: originalFrame.path),
+    );
+    final replicateRepository = ReplicateRepository(database);
+    final guideNow = DateTime.now().toUtc();
+    replicateRepository.upsertShotGuide(
+      ReplicateShotGuide(
+        shotId: shot.id,
+        sourceFrameFingerprint: sha256
+            .convert(originalFrame.readAsBytesSync())
+            .toString(),
+        subjects: const [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '左侧女模特',
+            slotIndex: 0,
+          ),
+          ReplicateDetectedSubject(
+            id: 'person:1',
+            type: ReplicateSubjectType.person,
+            label: '右侧女模特',
+            slotIndex: 1,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:0',
+            type: ReplicateSubjectType.product,
+            label: '左侧展示产品',
+            slotIndex: 0,
+          ),
+          ReplicateDetectedSubject(
+            id: 'product:1',
+            type: ReplicateSubjectType.product,
+            label: '右侧展示产品',
+            slotIndex: 1,
+          ),
+        ],
+        personCount: 2,
+        createdAt: guideNow,
+        updatedAt: guideNow,
+      ),
+    );
     final replicateController = ReplicateController(
-      repository: ReplicateRepository(database),
+      repository: replicateRepository,
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
     )..moveToStep(ReplicateStep.prepareAssets);
+    expect(replicateController.shotGuideFor(shot.id)?.subjects, hasLength(4));
+    expect(replicateController.isShotGuideCurrent(shot.id), isTrue);
     final videoGenerationController = VideoGenerationController(
       repository: VideoGenerationRepository(database),
       videoRepository: VideoAnalysisRepository(database),
@@ -1229,6 +1479,26 @@ void main() {
       settingsController: settingsController,
     );
     final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final analysisNow = DateTime.now().toUtc();
+    workflowRepository.upsertAnalysis(
+      ScriptShotAnalysisRecord(
+        id: 'prepare-assets-multi-model-analysis',
+        shotId: shot.id,
+        model: 'test-vision-model',
+        status: ProcessingStatus.completed,
+        fieldSources: const {},
+        fieldConfidence: const {},
+        promptContext: const ScriptShotPromptContext(
+          subject: {'people': '模特并排展示产品'},
+        ),
+        promptContextSchemaVersion:
+            ScriptShotPromptContext.currentSchemaVersion,
+        rawResponse: '',
+        errorMessage: '',
+        createdAt: analysisNow,
+        updatedAt: analysisNow,
+      ),
+    );
     final analysisController = ShootingScriptAnalysisController(
       shootingScriptController: shootingController,
       repository: workflowRepository,
@@ -1247,7 +1517,7 @@ void main() {
       await File('assets/branding/app_icon_512.png').copy(librarySource.path);
       await libraryController.importItem(
         sourcePath: librarySource.path,
-        type: ReplicateAssetType.character,
+        type: ReplicateAssetType.reference,
         name: '女模特',
         description: '黄色上衣模特',
       );
@@ -1374,8 +1644,49 @@ void main() {
     );
     expect(find.text('上传人物'), findsNothing);
     expect(find.text('资产库'), findsOneWidget);
-    expect(find.text('女模特'), findsOneWidget);
+    expect(find.text('女模特'), findsAtLeastNWidgets(1));
     expect(find.text('黄色上衣模特'), findsOneWidget);
+    expect(find.textContaining('左侧女模特'), findsOneWidget);
+    expect(find.textContaining('右侧女模特'), findsOneWidget);
+    expect(find.textContaining('左侧展示产品'), findsOneWidget);
+    expect(find.textContaining('右侧展示产品'), findsOneWidget);
+    expect(find.text('产品细节A'), findsNothing);
+    expect(find.text('产品细节B'), findsNothing);
+    expect(find.text('场景（可选）'), findsNothing);
+    expect(
+      find.byKey(ValueKey('detected-subject-asset-slot-${shot.id}-person:0')),
+      findsOneWidget,
+    );
+    final modelBSlot = find.byKey(
+      ValueKey('detected-subject-asset-slot-${shot.id}-person:1'),
+    );
+    expect(modelBSlot, findsOneWidget);
+    final productASlot = find.byKey(
+      ValueKey('detected-subject-asset-slot-${shot.id}-product:0'),
+    );
+    final productBSlot = find.byKey(
+      ValueKey('detected-subject-asset-slot-${shot.id}-product:1'),
+    );
+    expect(productASlot, findsOneWidget);
+    expect(productBSlot, findsOneWidget);
+    expect(
+      find.byKey(
+        ValueKey('remove-detected-subject-asset-slot-${shot.id}-product:1'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('shot-asset-slot-${shot.id}-product-detail')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(ValueKey('shot-asset-slot-${shot.id}-product-detail-1')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(ValueKey('shot-asset-slot-${shot.id}-scene')),
+      findsNothing,
+    );
     expect(
       find.byKey(
         ValueKey(
@@ -1384,6 +1695,120 @@ void main() {
       ),
       findsOneWidget,
     );
+    final modelATapTarget = find.byKey(
+      ValueKey('detected-subject-asset-picker-${shot.id}-person:0'),
+    );
+    expect(modelATapTarget, findsOneWidget);
+    tester.widget<InkWell>(modelATapTarget).onTap?.call();
+    await tester.pumpAndSettle();
+    final assetPicker = find.byType(AlertDialog);
+    expect(find.text('选择“左侧女模特”的替换资产'), findsOneWidget);
+    expect(
+      find.descendant(of: assetPicker, matching: find.text('女模特')),
+      findsAtLeastNWidgets(1),
+    );
+    expect(find.textContaining('暂无可用资产'), findsNothing);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('自动匹配此镜头'));
+    await tester.pump(const Duration(milliseconds: 220));
+    final autoMatchedAsset = bindingController.value.assets.single;
+    expect(autoMatchedAsset.type, ReplicateAssetType.character);
+    expect(
+      bindingController.value.links.single.sortOrder,
+      ScriptAssetSlotPolicy.characterSortOrderBase,
+    );
+    final libraryAssetCard = find.byKey(
+      ValueKey(
+        'prepare-asset-library-item-${libraryController.value.items.single.id}',
+      ),
+    );
+    final modelBPicker = find.byKey(
+      ValueKey('detected-subject-asset-picker-${shot.id}-person:1'),
+    );
+    await tester.ensureVisible(modelBPicker);
+    await tester.pump();
+    final dragOffset =
+        tester.getCenter(modelBPicker) - tester.getCenter(libraryAssetCard);
+    await tester.drag(
+      libraryAssetCard,
+      dragOffset,
+      touchSlopX: 0,
+      touchSlopY: 0,
+    );
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(bindingController.value.links, hasLength(1));
+    expect(
+      bindingController.value.links.single.sortOrder,
+      ScriptAssetSlotPolicy.characterSortOrderBase + 1,
+    );
+    expect(bindingController.value.links.single.matchReason, contains('模特B'));
+    bindingController.refresh();
+    await tester.pump();
+    expect(
+      bindingController.value.links.single.sortOrder,
+      ScriptAssetSlotPolicy.characterSortOrderBase + 1,
+    );
+
+    late final ShootingAssetLibraryItem productItem;
+    await tester.runAsync(() async {
+      productItem = (await libraryController.importItem(
+        sourcePath: File('assets/branding/app_icon_source.png').absolute.path,
+        type: ReplicateAssetType.product,
+        name: '蓝色外套',
+        description: '模特B专属服装',
+      ))!;
+    });
+    await tester.pump();
+    final productBTapTarget = find.byKey(
+      ValueKey('detected-subject-asset-picker-${shot.id}-product:1'),
+    );
+    expect(productBTapTarget, findsOneWidget);
+    tester.widget<InkWell>(productBTapTarget).onTap?.call();
+    await tester.pumpAndSettle();
+    expect(find.text('选择“右侧展示产品”的替换资产'), findsOneWidget);
+    final productChoice = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.widgetWithText(ListTile, '蓝色外套'),
+    );
+    expect(productChoice, findsOneWidget);
+    await tester.tap(productChoice);
+    await tester.pumpAndSettle();
+    final productScriptAsset = bindingController.value.assets.singleWhere(
+      (asset) => asset.name == productItem.name,
+    );
+    final productBLink = bindingController.value.links.singleWhere(
+      (link) => link.scriptAssetId == productScriptAsset.id,
+    );
+    expect(
+      productBLink.sortOrder,
+      ScriptAssetSlotPolicy.productSortOrderForIndex(1),
+    );
+    expect(productBLink.matchReason, contains('产品B'));
+
+    await tester.tap(
+      find.byKey(
+        ValueKey('remove-detected-subject-asset-slot-${shot.id}-product:1'),
+      ),
+    );
+    await tester.pump();
+    expect(productBSlot, findsNothing);
+    expect(
+      replicateController
+          .shotGuideFor(shot.id)
+          ?.subjects
+          .map((item) => item.id),
+      isNot(contains('product:1')),
+    );
+    expect(
+      bindingController.value.links.where(
+        (link) => link.scriptAssetId == productScriptAsset.id,
+      ),
+      isEmpty,
+      reason: '移除整个参考图格子时也应清理其资产绑定，不能转成补充资产格子',
+    );
+
     await tester.tap(
       find.byKey(const ValueKey('manage-prepare-assets-library')),
     );
@@ -1439,6 +1864,9 @@ void main() {
     final shootingSource = File(
       'lib/features/shooting_script/presentation/shooting_script_page.dart',
     ).readAsStringSync();
+    final fileDialogServiceSource = File(
+      'lib/core/services/desktop_file_dialog_service.dart',
+    ).readAsStringSync();
 
     expect(replicateSource, isNot(contains('class _AssetLibraryActionBar')));
     expect(
@@ -1447,8 +1875,9 @@ void main() {
     );
     expect(shootingSource, contains('asset-manager-upload-assets'));
     expect(shootingSource, contains('asset-manager-generate-from-description'));
+    expect(shootingSource, contains('desktopFileDialogServiceProvider'));
     expect(
-      shootingSource,
+      fileDialogServiceSource,
       contains('await WidgetsBinding.instance.endOfFrame'),
     );
     expect(shootingSource, contains('await widget.onPickFiles('));

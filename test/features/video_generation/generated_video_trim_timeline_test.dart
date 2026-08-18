@@ -18,7 +18,7 @@ void main() {
   testWidgets('IO 时间轴提供刻度、双拖拽点并按帧归一化', (tester) async {
     GeneratedVideoTrimRange? changed;
     GeneratedVideoTrimRange? committed;
-    Duration? seekPosition;
+    final seekPositions = <Duration>[];
     const initial = GeneratedVideoTrimRange(
       sourceDuration: Duration(seconds: 5),
       inPoint: Duration.zero,
@@ -30,7 +30,7 @@ void main() {
           body: GeneratedVideoTrimTimeline(
             range: initial,
             position: const Duration(seconds: 1),
-            onSeek: (position) => seekPosition = position,
+            onSeek: seekPositions.add,
             onChanged: (range) => changed = range,
             onChangeEnd: (range) => committed = range,
           ),
@@ -56,6 +56,22 @@ void main() {
     await tester.tapAt(
       Offset(seekArea.left + seekArea.width * 0.6, seekArea.top + 30),
     );
-    expect(seekPosition, const Duration(seconds: 3));
+    expect(seekPositions.last, const Duration(seconds: 3));
+
+    final gesture = await tester.startGesture(
+      Offset(seekArea.left + seekArea.width * 0.2, seekArea.top + 30),
+    );
+    await gesture.moveTo(
+      Offset(seekArea.left + seekArea.width * 0.45, seekArea.top + 30),
+    );
+    await tester.pump();
+    await gesture.moveTo(
+      Offset(seekArea.left + seekArea.width * 0.8, seekArea.top + 30),
+    );
+    await gesture.up();
+
+    expect(seekPositions.length, greaterThanOrEqualTo(3));
+    expect(seekPositions, contains(const Duration(milliseconds: 2250)));
+    expect(seekPositions.last, const Duration(seconds: 4));
   });
 }

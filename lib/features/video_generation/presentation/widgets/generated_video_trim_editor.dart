@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -241,54 +242,67 @@ class _GeneratedVideoTrimEditorState extends State<GeneratedVideoTrimEditor> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Expanded(
-        child: AdaptiveVideoViewport(
-          player: _player,
-          child: _error.isEmpty
-              ? Video(
-                  controller: _videoController,
-                  controls: null,
-                  fit: BoxFit.contain,
-                )
-              : Center(child: Text(_error)),
+  Widget build(BuildContext context) => Focus(
+    key: const ValueKey('generated-video-io-keyboard-scope'),
+    autofocus: true,
+    onKeyEvent: (node, event) {
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.space &&
+          _error.isEmpty) {
+        unawaited(_togglePlayback());
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: AdaptiveVideoViewport(
+            player: _player,
+            child: _error.isEmpty
+                ? Video(
+                    controller: _videoController,
+                    controls: null,
+                    fit: BoxFit.contain,
+                  )
+                : Center(child: Text(_error)),
+          ),
         ),
-      ),
-      const SizedBox(height: 14),
-      GeneratedVideoTrimTimeline(
-        range: _range,
-        position: _position,
-        onSeek: (position) => unawaited(_seekTo(position)),
-        onChanged: _handleRangeChanged,
-        onChangeEnd: _handleRangeChangeEnd,
-      ),
-      const SizedBox(height: 8),
-      Row(
-        children: [
-          IconButton.filledTonal(
-            key: const ValueKey('generated-video-io-play'),
-            onPressed: _error.isEmpty ? _togglePlayback : null,
-            icon: Icon(
-              _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+        const SizedBox(height: 14),
+        GeneratedVideoTrimTimeline(
+          range: _range,
+          position: _position,
+          onSeek: (position) => unawaited(_seekTo(position)),
+          onChanged: _handleRangeChanged,
+          onChangeEnd: _handleRangeChangeEnd,
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            IconButton.filledTonal(
+              key: const ValueKey('generated-video-io-play'),
+              onPressed: _error.isEmpty ? _togglePlayback : null,
+              icon: Icon(
+                _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              ),
             ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            'I ${formatVideoTimecode(_range.inPoint)}  ·  '
-            '${formatVideoTimecode(_position)}  ·  '
-            'O ${formatVideoTimecode(_range.outPoint)}',
-          ),
-          const Spacer(),
-          TextButton.icon(
-            key: const ValueKey('generated-video-io-reset'),
-            onPressed: _resetRange,
-            icon: const Icon(Icons.restart_alt_rounded),
-            label: const Text('恢复完整范围'),
-          ),
-        ],
-      ),
-    ],
+            const SizedBox(width: 10),
+            Text(
+              'I ${formatVideoTimecode(_range.inPoint)}  ·  '
+              '${formatVideoTimecode(_position)}  ·  '
+              'O ${formatVideoTimecode(_range.outPoint)}',
+            ),
+            const Spacer(),
+            TextButton.icon(
+              key: const ValueKey('generated-video-io-reset'),
+              onPressed: _resetRange,
+              icon: const Icon(Icons.restart_alt_rounded),
+              label: const Text('恢复完整范围'),
+            ),
+          ],
+        ),
+      ],
+    ),
   );
 }

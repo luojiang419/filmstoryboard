@@ -62,7 +62,7 @@ void main() {
     expect(patch.values['sound'], contains('真实时间速度'));
     expect(patch.values['sound'], contains('禁止慢放'));
     expect(patch.values['sound'], contains('非叙事性音乐：N/A'));
-    expect(double.parse(patch.values['durationSeconds']!), 6);
+    expect(double.parse(patch.values['durationSeconds']!), 4);
     expect(patch.values.containsKey('productCode'), isFalse);
     expect(patch.fieldConfidence['content'], greaterThan(0.8));
     expect(patch.promptContext.subject['people'], '一名成年人');
@@ -295,7 +295,7 @@ void main() {
       ),
     );
 
-    expect(patch.values['durationSeconds'], '6.0');
+    expect(patch.values['durationSeconds'], '3.5');
     expect(patch.values['sound'], contains('开始：手掌接触产品瓶'));
     expect(patch.values['sound'], contains('完成：产品瓶稳定落位'));
     expect(patch.values['sound'], contains('真实时间速度'));
@@ -316,6 +316,88 @@ void main() {
     expect(patch.promptContext.camera['observedCameraMovement'], '升降');
     expect(patch.promptContext.camera['cameraAngle'], '轻微上摇到眼平');
     expect(patch.promptContext.continuity['chronologyCue'], '开场到收束');
+  });
+
+  test('组级时长不随参考帧数量机械增长且自动值不超过五秒', () {
+    final shots = [
+      for (var index = 0; index < 6; index++)
+        _shot('shot-$index', index + 1, 0),
+    ];
+    final analyses = [
+      for (var index = 0; index < 6; index++)
+        VisionImageAnalysis(
+          caption: '人物连续走向产品台',
+          detail: '同一镜头的第 ${index + 1} 个动作锚点',
+          scene: '展厅',
+          props: '产品台',
+          people: '一名成年人',
+          expression: '专注',
+          bodyAction: '走向产品台并拿起产品',
+          movementTrend: '向前移动',
+          shotSize: '中景',
+          composition: '主体居中',
+          subjectDirection: '正面',
+          gazeDirection: '看向产品',
+          actionStage: '阶段 ${index + 1}',
+          spatialRelation: '人物逐步靠近产品台',
+          chronologyCue: '连续动作',
+          rawResponse: '{}',
+        ),
+    ];
+
+    final patch = ScriptMultimodalAnalysisService.fromShotGroupAnalysis(
+      shots: shots,
+      analyses: analyses,
+      motion: const VisionShotMotionAnalysis(
+        isSameShot: true,
+        cameraMovement: '跟随',
+        designedCameraMovement: '摄影机连续跟随人物向前移动',
+        cameraAngle: '眼平',
+        evidence: '场景与主体连续',
+        rawResponse: '{}',
+      ),
+    );
+
+    expect(patch.values['durationSeconds'], '4.5');
+  });
+
+  test('构建脚本保留人工填写的小于三秒时长', () {
+    final analysis = VisionImageAnalysis(
+      caption: '人物快速转身',
+      detail: '人物完成一次短促转身',
+      scene: '室内',
+      props: '',
+      people: '一名成年人',
+      expression: '警觉',
+      bodyAction: '快速转身',
+      movementTrend: '转身',
+      shotSize: '中景',
+      composition: '主体居中',
+      subjectDirection: '侧面',
+      gazeDirection: '看向画外',
+      actionStage: '完成',
+      spatialRelation: '人物位于房间中央',
+      chronologyCue: '短促动作',
+      rawResponse: '{}',
+    );
+    final singlePatch = ScriptMultimodalAnalysisService.fromVisionAnalysis(
+      analysis,
+      shot: _shot('shot-single', 1, 1.2),
+    );
+    final groupPatch = ScriptMultimodalAnalysisService.fromShotGroupAnalysis(
+      shots: [_shot('shot-group', 1, 1.2)],
+      analyses: [analysis],
+      motion: const VisionShotMotionAnalysis(
+        isSameShot: true,
+        cameraMovement: '固定',
+        cameraAngle: '眼平',
+        evidence: '单帧',
+        rawResponse: '{}',
+      ),
+    );
+
+    expect(singlePatch.values['durationSeconds'], '1.2');
+    expect(groupPatch.values['durationSeconds'], '1.2');
   });
 
   test('首尾帧镜头组将所有图片合并到一次视觉 API 请求', () async {

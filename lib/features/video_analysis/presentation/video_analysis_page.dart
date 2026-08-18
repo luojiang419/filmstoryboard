@@ -12,6 +12,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
+import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../projects/application/project_aspect_controller.dart';
 import '../../projects/domain/project_aspect_ratio.dart';
@@ -66,6 +67,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
       child: Focus(
         autofocus: true,
         child: DropTarget(
+          enable: DesktopDropTargetScope.enabledOf(context),
           key: const ValueKey('video-analysis-drop-target'),
           onDragEntered: (_) => setState(() => _isDraggingOver = true),
           onDragExited: (_) => setState(() => _isDraggingOver = false),
@@ -193,7 +195,13 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
     BuildContext context,
     VideoAnalysisController controller,
   ) async {
-    final results = await openFiles(acceptedTypeGroups: const [_videoTypes]);
+    final results = await ref
+        .read(desktopFileDialogServiceProvider)
+        .openFiles(
+          source: 'video_analysis.pick_video',
+          acceptedTypeGroups: const [_videoTypes],
+          initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
+        );
     if (results.isEmpty) {
       return;
     }
@@ -867,7 +875,7 @@ class _VideoSidebar extends StatelessWidget {
   ) async {
     final originalFile = File(video.originalPath);
     final storedFile = controller.resolveVideo(video);
-    final directory = originalFile.existsSync()
+    final directory = await originalFile.exists()
         ? originalFile.parent
         : storedFile.parent;
     final opened = await const FileExplorerService().openDirectory(
@@ -1340,11 +1348,12 @@ class _VideoPreviewPaneState extends State<_VideoPreviewPane> {
   }
 
   Future<void> _openVideo() async {
-    if (!widget.videoFile.existsSync()) {
-      setState(() => _loadError = '视频文件不存在');
+    if (!await widget.videoFile.exists()) {
+      if (mounted) setState(() => _loadError = '视频文件不存在');
       return;
     }
     try {
+      if (!mounted) return;
       setState(() => _loadError = '');
       await _player.open(Media(widget.videoFile.path), play: false);
       await _seekPreview();

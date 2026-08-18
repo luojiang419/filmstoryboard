@@ -198,7 +198,7 @@ void main() {
       record?.sourceImageFingerprint,
       'sha256:${sha256.convert([4, 5, 6])}',
     );
-    expect(record?.analysisRuleVersion, 8);
+    expect(record?.analysisRuleVersion, 9);
   });
 
   test('解析分镜缺少复刻图时不回退原视频帧', () async {
@@ -260,7 +260,7 @@ void main() {
     expect(buildCompleted, isFalse);
   });
 
-  test('构建脚本按镜头组只发起一次多帧解析并更新首帧', () async {
+  test('构建脚本按镜头组解析并重算旧版模型生成的超长时长', () async {
     final root = await Directory.systemTemp.createTemp(
       'script_analysis_group_',
     );
@@ -307,7 +307,7 @@ void main() {
     shootingController.updateShot(
       second.copyWith(
         framePath: secondFrame.path,
-        durationSeconds: 0,
+        durationSeconds: 8,
         content: '第二帧旧内容',
         continuesFromPrevious: true,
       ),
@@ -335,6 +335,22 @@ void main() {
       AppSettings.defaultMiniMaxVideoGenerationConfigId,
     );
     final workflowRepository = ShootingScriptWorkflowRepository(database);
+    final legacyAnalysisTime = DateTime.now().toUtc();
+    workflowRepository.upsertAnalysis(
+      ScriptShotAnalysisRecord(
+        id: 'legacy-duration-analysis',
+        shotId: first.id,
+        model: 'legacy-model',
+        status: ProcessingStatus.completed,
+        fieldSources: const {'durationSeconds': 'model'},
+        fieldConfidence: const {'durationSeconds': 0.68},
+        analysisRuleVersion: 8,
+        rawResponse: '{}',
+        errorMessage: '',
+        createdAt: legacyAnalysisTime,
+        updatedAt: legacyAnalysisTime,
+      ),
+    );
     final analysisController = ShootingScriptAnalysisController(
       shootingScriptController: shootingController,
       repository: workflowRepository,
@@ -397,6 +413,7 @@ void main() {
     );
     expect(analysisService.singleShotCalls, 0);
     expect(analysisService.groupCalls, 1);
+    expect(analysisService.groupTailDurationInputs, [0]);
     expect(analysisService.imagePaths, [firstReplica.path, secondReplica.path]);
     final updatedHead = shootingController.value.shots.first;
     expect(updatedHead.content, '多帧综合后的镜头内容');
@@ -847,6 +864,7 @@ class _FakeAnalysisService extends ScriptMultimodalAnalysisService {
   final Duration groupDelay;
   final imagePaths = <String>[];
   final groupSizes = <int>[];
+  final groupTailDurationInputs = <double>[];
   int singleShotCalls = 0;
   int groupCalls = 0;
   int activeGroupCalls = 0;
@@ -887,6 +905,7 @@ class _FakeAnalysisService extends ScriptMultimodalAnalysisService {
       maxActiveGroupCalls = activeGroupCalls;
     }
     groupSizes.add(shots.length);
+    groupTailDurationInputs.add(shots.last.durationSeconds);
     imagePaths.addAll(imageFiles.map((file) => file.path));
     creativeBriefs.add(creativeBrief);
     storyContexts.add(storyContext);

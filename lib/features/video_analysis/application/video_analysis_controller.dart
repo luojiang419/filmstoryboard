@@ -253,6 +253,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   final _analysisSessionsByVideoId = <String, _VideoAnalysisSession>{};
   final _removedFrameUndoHistory = <String, List<_RemovedVideoFrame>>{};
   final _removedFrameRedoHistory = <String, List<_RemovedVideoFrame>>{};
+  Future<void> _storyboardSynchronizationTail = Future<void>.value();
   late final Future<int> _legacyMetadataRepair;
   bool _isDisposed = false;
 
@@ -1095,6 +1096,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
           .toList(growable: false),
     );
     _repository.deleteVideoFrame(frame.id);
+    _storyboardController?.removeImageFromExternalBoard(
+      sourceId: 'video:$videoId',
+      stableId: 'video-frame:${frame.id}',
+    );
     _pushFrameHistory(_removedFrameUndoHistory, videoId, entry);
     _removedFrameRedoHistory.remove(videoId);
     final nextFrameId = value.selectedFrameId == frame.id
@@ -1118,6 +1123,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     for (final shot in entry.affectedShots) {
       _repository.upsertVideoShot(shot);
     }
+    _scheduleGeneratedStoryboardSynchronization(videoId);
     _pushFrameHistory(_removedFrameRedoHistory, videoId, entry);
     _loadSelectedVideo(
       selectedFrameId: entry.frame.id,
@@ -1130,6 +1136,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     final videoId = value.selectedVideoId;
     final entry = _removedFrameRedoHistory[videoId]!.removeLast();
     _repository.deleteVideoFrame(entry.frame.id);
+    _storyboardController?.removeImageFromExternalBoard(
+      sourceId: 'video:$videoId',
+      stableId: 'video-frame:${entry.frame.id}',
+    );
     _pushFrameHistory(_removedFrameUndoHistory, videoId, entry);
     final nextFrameId = value.selectedFrameId == entry.frame.id
         ? value.frames
@@ -1143,6 +1153,44 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       message: '已再次移除视频帧 #${entry.frame.index + 1}',
     );
   }
+
+  void _scheduleGeneratedStoryboardSynchronization(String videoId) {
+    _storyboardSynchronizationTail = _storyboardSynchronizationTail
+        .catchError((_) {})
+        .then((_) => _synchronizeGeneratedStoryboard(videoId));
+  }
+
+  Future<void> _synchronizeGeneratedStoryboard(String videoId) async {
+    final storyboardController = _storyboardController;
+    final sourceId = 'video:$videoId';
+    if (storyboardController == null ||
+        !storyboardController.value.boards.any(
+          (board) => board.id == 'external-board:$sourceId',
+        )) {
+      return;
+    }
+    final video = _repository.getSourceVideo(videoId);
+    if (video == null) return;
+    final storyboard = VideoStoryboardBridge.build(
+      video: video,
+      frames: _repository.listVideoFrames(videoId),
+      frameAnalyses: _repository.listVideoFrameAnalyses(videoId),
+      shots: _repository.listVideoShots(videoId),
+      summary: _repository.getVideoSummary(videoId),
+      resolveFramePath: (frame) => resolveFrame(frame).path,
+    );
+    await storyboardController.createOrReplaceBoardFromExternalImages(
+      sourceId: storyboard.sourceId,
+      boardName: storyboard.boardName,
+      images: storyboard.images,
+      summary: storyboard.summary,
+      selectBoard: false,
+      preserveExistingCaptions: true,
+    );
+  }
+
+  Future<void> waitForPendingStoryboardSynchronization() =>
+      _storyboardSynchronizationTail;
 
   void _pushFrameHistory(
     Map<String, List<_RemovedVideoFrame>> historyByVideoId,

@@ -1359,6 +1359,7 @@ void main() {
     late final AppDirectories directories;
     late final AppDatabase database;
     late final SettingsController settingsController;
+    late final File invalidDrop;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp('storyboard_widget_');
       directories = await AppDirectories.create(executableDirectory: root);
@@ -1376,9 +1377,7 @@ void main() {
       );
       final image = File('${root.path}${Platform.pathSeparator}frame.png');
       await image.writeAsBytes(base64Decode(_onePixelPng));
-      final invalidDrop = File(
-        '${root.path}${Platform.pathSeparator}notes.txt',
-      );
+      invalidDrop = File('${root.path}${Platform.pathSeparator}notes.txt');
       await invalidDrop.writeAsString('not an image');
     });
 
@@ -1448,6 +1447,59 @@ void main() {
     expect(find.text('修改图片'), findsOneWidget);
     expect(find.text('提示词'), findsOneWidget);
     expect(find.text('自动提示词'), findsOneWidget);
+    expect(find.text('或从资源管理器直接拖入图片'), findsOneWidget);
+
+    final referenceDropTargetFinder = find.byKey(
+      const ValueKey('storyboard-image-edit-reference-drop-target'),
+    );
+    var referenceDropTarget = tester.widget<DropTarget>(
+      referenceDropTargetFinder,
+    );
+    referenceDropTarget.onDragEntered!(
+      DropEventDetails(localPosition: Offset.zero, globalPosition: Offset.zero),
+    );
+    await tester.pump(const Duration(milliseconds: 460));
+    expect(find.text('松开即可添加为参考图'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('storyboard-image-edit-reference-drop-glow')),
+      findsOneWidget,
+    );
+
+    referenceDropTarget = tester.widget<DropTarget>(referenceDropTargetFinder);
+    referenceDropTarget.onDragDone!(
+      DropDoneDetails(
+        files: [DropItemFile(invalidDrop.path)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ),
+    );
+    await tester.pump();
+    expect(find.text('请拖入 PNG、JPG、WEBP 或 BMP 图片'), findsOneWidget);
+    expect(find.byKey(const ValueKey('image-edit-reference-0')), findsNothing);
+
+    referenceDropTarget = tester.widget<DropTarget>(referenceDropTargetFinder);
+    referenceDropTarget.onDragEntered!(
+      DropEventDetails(localPosition: Offset.zero, globalPosition: Offset.zero),
+    );
+    await tester.pump();
+    referenceDropTarget = tester.widget<DropTarget>(referenceDropTargetFinder);
+    referenceDropTarget.onDragDone!(
+      DropDoneDetails(
+        files: [DropItemFile(imagePath)],
+        localPosition: Offset.zero,
+        globalPosition: Offset.zero,
+      ),
+    );
+    await tester.pump();
+    expect(find.text('已拖入 1 张参考图'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('image-edit-reference-0')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('storyboard-image-edit-reference-drop-glow')),
+      findsNothing,
+    );
 
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();

@@ -11,6 +11,7 @@ import 'package:intl/intl.dart';
 import '../../../app/app_shell.dart';
 import '../../../app/window_title_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../remote_access/application/remote_workspace_registry.dart';
 import '../../remote_access/application/remote_project_registry.dart';
 import '../application/project_remote_source.dart';
@@ -144,6 +145,7 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
           const WindowTitleBar(),
           Expanded(
             child: DropTarget(
+              enable: DesktopDropTargetScope.enabledOf(context),
               onDragDone: (detail) {
                 final files = detail.files
                     .where(
@@ -184,10 +186,15 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
   }
 
   Future<void> _openProjectPicker() async {
-    final file = await openFile(
-      acceptedTypeGroups: const [_projectFileType],
-      confirmButtonText: '打开工程',
-    );
+    final directories = ref.read(appDirectoriesProvider);
+    final file = await ref
+        .read(desktopFileDialogServiceProvider)
+        .openFile(
+          source: 'projects.open_project',
+          acceptedTypeGroups: const [_projectFileType],
+          initialDirectory: directories.projects.path,
+          confirmButtonText: '打开工程',
+        );
     if (file != null) {
       await _openIndex(File(file.path));
     }
@@ -288,13 +295,18 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
   Future<void> _exportProject(ProjectEntry entry) async {
     final safeName = entry.displayName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
     final timestamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
-    final location = await getSaveLocation(
-      suggestedName: '${safeName}_$timestamp.storyboard.zip',
-      acceptedTypeGroups: const [
-        XTypeGroup(label: 'ZIP 工程包', extensions: ['zip']),
-      ],
-      confirmButtonText: '导出工程包',
-    );
+    final directories = ref.read(appDirectoriesProvider);
+    final location = await ref
+        .read(desktopFileDialogServiceProvider)
+        .getSaveLocation(
+          source: 'projects.export_project',
+          initialDirectory: directories.exports.path,
+          suggestedName: '${safeName}_$timestamp.storyboard.zip',
+          acceptedTypeGroups: const [
+            XTypeGroup(label: 'ZIP 工程包', extensions: ['zip']),
+          ],
+          confirmButtonText: '导出工程包',
+        );
     if (location == null) {
       return;
     }
@@ -310,12 +322,17 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
   }
 
   Future<void> _importProjectPackage() async {
-    final file = await openFile(
-      acceptedTypeGroups: const [
-        XTypeGroup(label: '故事板工程包', extensions: ['zip']),
-      ],
-      confirmButtonText: '导入工程包',
-    );
+    final directories = ref.read(appDirectoriesProvider);
+    final file = await ref
+        .read(desktopFileDialogServiceProvider)
+        .openFile(
+          source: 'projects.import_package',
+          initialDirectory: directories.imports.path,
+          acceptedTypeGroups: const [
+            XTypeGroup(label: '故事板工程包', extensions: ['zip']),
+          ],
+          confirmButtonText: '导入工程包',
+        );
     if (file == null) {
       return;
     }

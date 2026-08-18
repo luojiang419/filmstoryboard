@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/desktop_file_dialog_service.dart';
 import '../../../core/services/empty_directory_cleaner.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/services/workspace_snapshot_save_queue.dart';
@@ -33,6 +34,7 @@ final gridCutControllerProvider = Provider<GridCutController>(
       database: ref.watch(appDatabaseProvider),
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
+      fileDialogService: ref.watch(desktopFileDialogServiceProvider),
       cutResultsChangeNotifier: ref.watch(cutResultsChangeNotifierProvider),
       projectName: ref.watch(currentProjectNameProvider),
     );
@@ -42,6 +44,7 @@ final gridCutControllerProvider = Provider<GridCutController>(
   dependencies: [
     projectDirectoriesProvider,
     appDatabaseProvider,
+    desktopFileDialogServiceProvider,
     cutResultsChangeNotifierProvider,
     currentProjectNameProvider,
   ],
@@ -53,12 +56,17 @@ class GridCutController extends ValueNotifier<GridCutState> {
     required AppDatabase database,
     required GridDetectionService detectionService,
     required GridCropService cropService,
+    DesktopFileDialogService? fileDialogService,
     ValueNotifier<int>? cutResultsChangeNotifier,
     String projectName = '项目',
   }) : _directories = directories,
        _database = database,
        _detectionService = detectionService,
        _cropService = cropService,
+       _fileDialogService =
+           fileDialogService ??
+           DesktopFileDialogService(defaultDirectory: directories.imports),
+       _ownsFileDialogService = fileDialogService == null,
        _cutResultsChangeNotifier = cutResultsChangeNotifier,
        _projectName = projectName.trim().isEmpty ? '项目' : projectName.trim(),
        _pathResolver = ProjectPathResolver(directories.workspaceRoot),
@@ -88,6 +96,8 @@ class GridCutController extends ValueNotifier<GridCutState> {
   final AppDatabase _database;
   final GridDetectionService _detectionService;
   final GridCropService _cropService;
+  final DesktopFileDialogService _fileDialogService;
+  final bool _ownsFileDialogService;
   final ValueNotifier<int>? _cutResultsChangeNotifier;
   final String _projectName;
   final ProjectPathResolver _pathResolver;
@@ -100,12 +110,17 @@ class GridCutController extends ValueNotifier<GridCutState> {
   void dispose() {
     _workspaceSaveQueue.dispose();
     _selectionSaveQueue.dispose();
+    if (_ownsFileDialogService) {
+      _fileDialogService.dispose();
+    }
     super.dispose();
   }
 
   Future<void> pickImages() async {
-    final files = await openFiles(
+    final files = await _fileDialogService.openFiles(
+      source: 'grid_cut.pick_images',
       acceptedTypeGroups: [_imageTypes],
+      initialDirectory: _directories.imports.path,
       confirmButtonText: '导入图片',
     );
     await importPaths(files.map((file) => file.path).toList());

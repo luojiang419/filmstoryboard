@@ -10,6 +10,10 @@
 
 #include "win32_window.h"
 
+namespace filmstoryboard {
+class NativeFileDialogChannel;
+}
+
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
  public:
@@ -33,6 +37,8 @@ class FlutterWindow : public Win32Window {
 
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       resolve_automation_channel_;
+  std::unique_ptr<filmstoryboard::NativeFileDialogChannel>
+      native_file_dialog_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

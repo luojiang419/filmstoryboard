@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
@@ -80,6 +81,7 @@ class _VideoGenerationWorkspaceState
   String _loginPromptProvider = '';
   var _workPanelWidth = _workPanelDefaultWidth;
   var _workPanelCollapsed = false;
+  final _fileAvailabilityCache = FileAvailabilityCache();
 
   @override
   void initState() {
@@ -88,144 +90,157 @@ class _VideoGenerationWorkspaceState
   }
 
   @override
+  void dispose() {
+    _fileAvailabilityCache.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final controller = ref.watch(videoGenerationControllerProvider);
     _syncRequestedScript(controller);
-    return ValueListenableBuilder<VideoGenerationState>(
-      valueListenable: controller,
-      builder: (context, state, _) {
-        _scheduleCliInstallPrompt(state, controller);
-        _scheduleLoginPrompt(state, controller);
-        if (state.scripts.isEmpty) {
-          return const Center(child: Text('还没有可生成视频的拍摄脚本'));
-        }
-        final visibleTasks = state.tasks.where((task) {
-          return switch (_taskFilter) {
-            'completed' =>
-              task.status == VideoGenerationTaskStatus.completed ||
-                  task.status == VideoGenerationTaskStatus.partialCompleted,
-            'active' => !task.status.isTerminal,
-            'failed' =>
-              task.status == VideoGenerationTaskStatus.failed ||
-                  task.status == VideoGenerationTaskStatus.canceled ||
-                  task.status == VideoGenerationTaskStatus.timedOut,
-            _ => true,
-          };
-        }).toList();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _Toolbar(
-              state: state,
-              controller: controller,
-              showScriptSelector: widget.showScriptSelector,
-              taskFilter: _taskFilter,
-              onTaskFilterChanged: (filter) {
-                if (filter != null) setState(() => _taskFilter = filter);
-              },
-              onInstall: () => _promptCliInstall(controller),
-              onLogin: () => _runCliLoginAuthorization(controller),
-              onGenerateAll: () => _confirmBatch(context, state, controller),
-            ),
-            if (state.isLoadingEnvironment || state.isBusy) ...[
-              const SizedBox(height: 8),
-              const LinearProgressIndicator(minHeight: 3),
-            ],
-            if (state.message.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(state.message, style: Theme.of(context).textTheme.bodySmall),
-            ],
-            if (state.errorMessage.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                state.errorMessage,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+    return FileAvailabilityScope(
+      cache: _fileAvailabilityCache,
+      child: ValueListenableBuilder<VideoGenerationState>(
+        valueListenable: controller,
+        builder: (context, state, _) {
+          _scheduleCliInstallPrompt(state, controller);
+          _scheduleLoginPrompt(state, controller);
+          if (state.scripts.isEmpty) {
+            return const Center(child: Text('还没有可生成视频的拍摄脚本'));
+          }
+          final visibleTasks = state.tasks.where((task) {
+            return switch (_taskFilter) {
+              'completed' =>
+                task.status == VideoGenerationTaskStatus.completed ||
+                    task.status == VideoGenerationTaskStatus.partialCompleted,
+              'active' => !task.status.isTerminal,
+              'failed' =>
+                task.status == VideoGenerationTaskStatus.failed ||
+                    task.status == VideoGenerationTaskStatus.canceled ||
+                    task.status == VideoGenerationTaskStatus.timedOut,
+              _ => true,
+            };
+          }).toList();
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _Toolbar(
+                state: state,
+                controller: controller,
+                showScriptSelector: widget.showScriptSelector,
+                taskFilter: _taskFilter,
+                onTaskFilterChanged: (filter) {
+                  if (filter != null) setState(() => _taskFilter = filter);
+                },
+                onInstall: () => _promptCliInstall(controller),
+                onLogin: () => _runCliLoginAuthorization(controller),
+                onGenerateAll: () => _confirmBatch(context, state, controller),
               ),
-            ],
-            const SizedBox(height: 10),
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final table = _GenerationTable(
-                    state: state.copyWith(tasks: visibleTasks),
-                    controller: controller,
-                    onGenerateShot: (shot) =>
-                        _confirmShot(context, state, controller, shot),
-                  );
-                  final previewTask = state.selectedPreviewTask;
-                  final previewFile = previewTask == null
-                      ? null
-                      : controller.generatedVideoFileFor(previewTask);
-                  final workspaceContent =
-                      previewTask != null && previewFile?.existsSync() == true
-                      ? _WorkVideoTrimPreview(
-                          state: state,
-                          controller: controller,
-                          task: previewTask,
-                          file: previewFile!,
-                        )
-                      : table;
-                  if (widget.externalizeWorkPanel) {
-                    return workspaceContent;
-                  }
-                  final panel = _WorkManagementPanel(
-                    state: state,
-                    controller: controller,
-                    collapsed: _workPanelCollapsed,
-                    onToggleCollapsed: _toggleWorkPanel,
-                  );
-                  final registeredPanel = CollapsiblePanelRegistration(
-                    expanded: !_workPanelCollapsed,
-                    onExpandedChanged: _setWorkPanelExpanded,
-                    child: panel,
-                  );
-                  if (constraints.maxWidth < 1040) {
-                    return Column(
+              if (state.isLoadingEnvironment || state.isBusy) ...[
+                const SizedBox(height: 8),
+                const LinearProgressIndicator(minHeight: 3),
+              ],
+              if (state.message.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  state.message,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+              if (state.errorMessage.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  state.errorMessage,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+              const SizedBox(height: 10),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final table = _GenerationTable(
+                      state: state.copyWith(tasks: visibleTasks),
+                      controller: controller,
+                      onGenerateShot: (shot) =>
+                          _confirmShot(context, state, controller, shot),
+                    );
+                    final previewTask = state.selectedPreviewTask;
+                    final previewFile = previewTask == null
+                        ? null
+                        : controller.generatedVideoFileFor(previewTask);
+                    final workspaceContent =
+                        previewTask != null &&
+                            _videoFileExists(context, previewFile)
+                        ? _WorkVideoTrimPreview(
+                            state: state,
+                            controller: controller,
+                            task: previewTask,
+                            file: previewFile!,
+                          )
+                        : table;
+                    if (widget.externalizeWorkPanel) {
+                      return workspaceContent;
+                    }
+                    final panel = _WorkManagementPanel(
+                      state: state,
+                      controller: controller,
+                      collapsed: _workPanelCollapsed,
+                      onToggleCollapsed: _toggleWorkPanel,
+                    );
+                    final registeredPanel = CollapsiblePanelRegistration(
+                      expanded: !_workPanelCollapsed,
+                      onExpandedChanged: _setWorkPanelExpanded,
+                      child: panel,
+                    );
+                    if (constraints.maxWidth < 1040) {
+                      return Column(
+                        children: [
+                          Expanded(child: workspaceContent),
+                          const Divider(height: 1),
+                          SizedBox(height: 300, child: registeredPanel),
+                        ],
+                      );
+                    }
+                    final maximumWidth = math.max(
+                      _workPanelMinWidth,
+                      constraints.maxWidth -
+                          _workspaceMinWidth -
+                          _resizeHandleWidth,
+                    );
+                    final panelWidth = _workPanelWidth
+                        .clamp(_workPanelMinWidth, maximumWidth)
+                        .toDouble();
+                    return Row(
                       children: [
                         Expanded(child: workspaceContent),
-                        const Divider(height: 1),
-                        SizedBox(height: 300, child: registeredPanel),
+                        _VideoGenerationRightPanelResizeHandle(
+                          key: const ValueKey(
+                            'video-generation-work-panel-resize-handle',
+                          ),
+                          enabled: !_workPanelCollapsed,
+                          onDragEnd: _saveUiState,
+                          onDrag: (delta) => setState(() {
+                            _workPanelWidth = (panelWidth - delta)
+                                .clamp(_workPanelMinWidth, maximumWidth)
+                                .toDouble();
+                          }),
+                        ),
+                        SizedBox(
+                          width: _workPanelCollapsed
+                              ? _workPanelCollapsedWidth
+                              : panelWidth,
+                          child: registeredPanel,
+                        ),
                       ],
                     );
-                  }
-                  final maximumWidth = math.max(
-                    _workPanelMinWidth,
-                    constraints.maxWidth -
-                        _workspaceMinWidth -
-                        _resizeHandleWidth,
-                  );
-                  final panelWidth = _workPanelWidth
-                      .clamp(_workPanelMinWidth, maximumWidth)
-                      .toDouble();
-                  return Row(
-                    children: [
-                      Expanded(child: workspaceContent),
-                      _VideoGenerationRightPanelResizeHandle(
-                        key: const ValueKey(
-                          'video-generation-work-panel-resize-handle',
-                        ),
-                        enabled: !_workPanelCollapsed,
-                        onDragEnd: _saveUiState,
-                        onDrag: (delta) => setState(() {
-                          _workPanelWidth = (panelWidth - delta)
-                              .clamp(_workPanelMinWidth, maximumWidth)
-                              .toDouble();
-                        }),
-                      ),
-                      SizedBox(
-                        width: _workPanelCollapsed
-                            ? _workPanelCollapsedWidth
-                            : panelWidth,
-                        child: registeredPanel,
-                      ),
-                    ],
-                  );
-                },
+                  },
+                ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 
@@ -1258,23 +1273,34 @@ class VideoGenerationExternalWorkPanel extends ConsumerStatefulWidget {
 
 class _VideoGenerationExternalWorkPanelState
     extends ConsumerState<VideoGenerationExternalWorkPanel> {
+  final _fileAvailabilityCache = FileAvailabilityCache();
+
+  @override
+  void dispose() {
+    _fileAvailabilityCache.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(videoGenerationControllerProvider);
     _syncRequestedScript(controller);
-    return ValueListenableBuilder<VideoGenerationState>(
-      valueListenable: controller,
-      builder: (context, state, _) {
-        if (state.scripts.isEmpty) {
-          return const Center(child: Text('还没有可生成视频的拍摄脚本'));
-        }
-        return _WorkManagementPanel(
-          state: state,
-          controller: controller,
-          collapsed: widget.collapsed,
-          onToggleCollapsed: widget.onToggleCollapsed,
-        );
-      },
+    return FileAvailabilityScope(
+      cache: _fileAvailabilityCache,
+      child: ValueListenableBuilder<VideoGenerationState>(
+        valueListenable: controller,
+        builder: (context, state, _) {
+          if (state.scripts.isEmpty) {
+            return const Center(child: Text('还没有可生成视频的拍摄脚本'));
+          }
+          return _WorkManagementPanel(
+            state: state,
+            controller: controller,
+            collapsed: widget.collapsed,
+            onToggleCollapsed: widget.onToggleCollapsed,
+          );
+        },
+      ),
     );
   }
 
@@ -1489,7 +1515,7 @@ class _WorkManagementShotGroupTile extends StatelessWidget {
       ),
       child: ExpansionTile(
         key: PageStorageKey('work-management-shot-group-tile-${group.shot.id}'),
-        initiallyExpanded: _shouldExpandWorkGroup(group, controller),
+        initiallyExpanded: _shouldExpandWorkGroup(context, group, controller),
         tilePadding: const EdgeInsets.symmetric(horizontal: 12),
         childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
         title: Text(
@@ -1547,7 +1573,7 @@ class _WorkManagementVideoItem extends StatelessWidget {
     final task = entry.task;
     final shot = entry.shot;
     final file = controller.generatedVideoFileFor(task);
-    final hasLocalVideo = file.existsSync();
+    final hasLocalVideo = _videoFileExists(context, file);
     final isActive = _isActiveVideoTask(task);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -1639,8 +1665,10 @@ class _WorkManagementVideoItem extends StatelessWidget {
     required VideoGenerationTask task,
     required File file,
   }) async {
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final overlayState = Overlay.of(context);
+    final hasFile = await FileAvailabilityScope.of(context).checkNow(file.path);
+    if (!context.mounted || !overlayState.mounted) return;
+    final overlay = overlayState.context.findRenderObject()! as RenderBox;
     final position = RelativeRect.fromRect(
       Rect.fromPoints(details.globalPosition, details.globalPosition),
       Offset.zero & overlay.size,
@@ -1651,7 +1679,7 @@ class _WorkManagementVideoItem extends StatelessWidget {
       items: [
         PopupMenuItem(
           value: _WorkVideoMenuAction.openPath,
-          enabled: file.existsSync(),
+          enabled: hasFile,
           child: const ListTile(
             dense: true,
             leading: Icon(Icons.folder_open_rounded),
@@ -1660,7 +1688,7 @@ class _WorkManagementVideoItem extends StatelessWidget {
         ),
         PopupMenuItem(
           value: _WorkVideoMenuAction.saveAs,
-          enabled: file.existsSync(),
+          enabled: hasFile,
           child: const ListTile(
             dense: true,
             leading: Icon(Icons.save_as_rounded),
@@ -1694,17 +1722,20 @@ class _WorkManagementVideoItem extends StatelessWidget {
     VideoGenerationTask task,
     File source,
   ) async {
-    final location = await getSaveLocation(
-      acceptedTypeGroups: const [
-        XTypeGroup(label: 'MP4 视频', extensions: ['mp4']),
-      ],
-      initialDirectory: source.parent.path,
-      suggestedName: source.uri.pathSegments.isEmpty
-          ? '生成视频.mp4'
-          : source.uri.pathSegments.last,
-      confirmButtonText: '保存',
-      canCreateDirectories: true,
-    );
+    final location = await ProviderScope.containerOf(context, listen: false)
+        .read(desktopFileDialogServiceProvider)
+        .getSaveLocation(
+          source: 'video_generation.work_management_save_as',
+          acceptedTypeGroups: const [
+            XTypeGroup(label: 'MP4 视频', extensions: ['mp4']),
+          ],
+          initialDirectory: source.parent.path,
+          suggestedName: source.uri.pathSegments.isEmpty
+              ? '生成视频.mp4'
+              : source.uri.pathSegments.last,
+          confirmButtonText: '保存',
+          canCreateDirectories: true,
+        );
     if (location == null) return;
     final saved = await controller.saveGeneratedVideoCopy(task, location.path);
     if (saved != null && context.mounted) {
@@ -1913,12 +1944,20 @@ List<_WorkVideoShotGroup> _orderedWorkVideoShotGroups(
 }
 
 bool _shouldExpandWorkGroup(
+  BuildContext context,
   _WorkVideoShotGroup group,
   VideoGenerationController controller,
 ) {
   final latest = group.entries.last.task;
   if (_isActiveVideoTask(latest)) return true;
-  return controller.generatedVideoFileFor(latest).existsSync();
+  return _videoFileExists(context, controller.generatedVideoFileFor(latest));
+}
+
+bool _videoFileExists(BuildContext context, File? file) {
+  if (file == null || file.path.trim().isEmpty) return false;
+  return FileAvailabilityScope.of(
+    context,
+  ).exists(file.path, defaultValue: true);
 }
 
 String _missingWorkVideoMessage(VideoGenerationTask task) {
@@ -2192,7 +2231,7 @@ class _OriginalVideoCell extends StatelessWidget {
               onPressed: range == null ? null : openPreview,
               icon: const Icon(Icons.play_circle_outline_rounded),
               label: Text(
-                thumbnail?.existsSync() == true ? '按 IO 点预览' : '预览源视频',
+                _videoFileExists(context, thumbnail) ? '按 IO 点预览' : '预览源视频',
               ),
             ),
           ],
@@ -2267,7 +2306,7 @@ class _VideoGroupFrameStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final shots = group.shots.take(3).toList(growable: false);
     final availableShots = group.shots
-        .where((shot) => fileForShot(shot)?.existsSync() == true)
+        .where((shot) => _videoFileExists(context, fileForShot(shot)))
         .toList(growable: false);
     return Tooltip(
       message: '${group.rangeLabel} · $emptyLabel',
@@ -2324,7 +2363,7 @@ class _VideoGroupFrameThumbnail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final hasFile = file?.existsSync() == true;
+    final hasFile = _videoFileExists(context, file);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: hasFile ? onTap : null,
@@ -2400,7 +2439,7 @@ class _GeneratedVideoCell extends StatelessWidget {
     final localFile = latest == null
         ? null
         : controller.generatedVideoFileFor(latest);
-    final hasLocalVideo = localFile?.existsSync() == true;
+    final hasLocalVideo = _videoFileExists(context, localFile);
     final isGenerating = latest != null && _isActiveVideoTask(latest);
     final canGenerate =
         controller.canGenerateShot(owner) &&
@@ -2590,18 +2629,21 @@ class _GeneratedVideoCell extends StatelessWidget {
 
   Future<void> _download(BuildContext context, VideoGenerationTask task) async {
     final source = File(task.localPath);
-    if (!source.existsSync()) return;
-    final location = await getSaveLocation(
-      acceptedTypeGroups: const [
-        XTypeGroup(label: 'MP4 视频', extensions: ['mp4']),
-      ],
-      initialDirectory: source.parent.path,
-      suggestedName: source.uri.pathSegments.isEmpty
-          ? '生成视频.mp4'
-          : source.uri.pathSegments.last,
-      confirmButtonText: '保存',
-      canCreateDirectories: true,
-    );
+    if (!await source.exists() || !context.mounted) return;
+    final location = await ProviderScope.containerOf(context, listen: false)
+        .read(desktopFileDialogServiceProvider)
+        .getSaveLocation(
+          source: 'video_generation.generated_video_download',
+          acceptedTypeGroups: const [
+            XTypeGroup(label: 'MP4 视频', extensions: ['mp4']),
+          ],
+          initialDirectory: source.parent.path,
+          suggestedName: source.uri.pathSegments.isEmpty
+              ? '生成视频.mp4'
+              : source.uri.pathSegments.last,
+          confirmButtonText: '保存',
+          canCreateDirectories: true,
+        );
     if (location == null) return;
     final saved = await controller.saveGeneratedVideoCopy(task, location.path);
     if (saved != null && context.mounted) {
@@ -2611,52 +2653,57 @@ class _GeneratedVideoCell extends StatelessWidget {
     }
   }
 
-  Future<void> _history(
-    BuildContext context,
-    List<VideoGenerationTask> tasks,
-  ) => showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('镜头 ${controller.generationOwnerFor(shot).shotNumber} 历史版本'),
-      content: SizedBox(
-        width: 720,
-        height: 520,
-        child: GridView.builder(
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 340,
-            mainAxisSpacing: 14,
-            crossAxisSpacing: 14,
-            childAspectRatio: 1.18,
+  Future<void> _history(BuildContext context, List<VideoGenerationTask> tasks) {
+    final fileAvailabilityCache = FileAvailabilityScope.of(context);
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => FileAvailabilityScope(
+        cache: fileAvailabilityCache,
+        child: AlertDialog(
+          title: Text(
+            '镜头 ${controller.generationOwnerFor(shot).shotNumber} 历史版本',
           ),
-          itemCount: tasks.length,
-          itemBuilder: (context, index) {
-            final task = tasks[index];
-            final file = controller.generatedVideoFileFor(task);
-            return _HistoryVideoVersionCard(
-              key: ValueKey('generated-video-history-card-${task.id}'),
-              task: task,
-              file: file,
-              index: index,
-              onOpen: file.existsSync()
-                  ? () => _showFullscreenGeneratedVideo(
-                      context,
-                      file,
-                      range: task.trimRange,
-                      title: '镜头 ${shot.shotNumber} · 历史版本 ${index + 1}',
-                    )
-                  : null,
-            );
-          },
+          content: SizedBox(
+            width: 720,
+            height: 520,
+            child: GridView.builder(
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 340,
+                mainAxisSpacing: 14,
+                crossAxisSpacing: 14,
+                childAspectRatio: 1.18,
+              ),
+              itemCount: tasks.length,
+              itemBuilder: (context, index) {
+                final task = tasks[index];
+                final file = controller.generatedVideoFileFor(task);
+                return _HistoryVideoVersionCard(
+                  key: ValueKey('generated-video-history-card-${task.id}'),
+                  task: task,
+                  file: file,
+                  index: index,
+                  onOpen: _videoFileExists(context, file)
+                      ? () => _showFullscreenGeneratedVideo(
+                          context,
+                          file,
+                          range: task.trimRange,
+                          title: '镜头 ${shot.shotNumber} · 历史版本 ${index + 1}',
+                        )
+                      : null,
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('关闭'),
-        ),
-      ],
-    ),
-  );
+    );
+  }
 
   Future<void> _rename(BuildContext context, VideoGenerationTask task) async {
     final textController = TextEditingController();
@@ -2813,13 +2860,28 @@ class _HistoryVideoVersionCardState extends State<_HistoryVideoVersionCard> {
   late final Player _player;
   late final VideoController _videoController;
   var _thumbnailError = '';
+  var _thumbnailCheckStarted = false;
 
   @override
   void initState() {
     super.initState();
     _player = Player();
     _videoController = VideoController(_player);
-    if (widget.file.existsSync()) unawaited(_openThumbnail());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_thumbnailCheckStarted) return;
+    _thumbnailCheckStarted = true;
+    unawaited(_openThumbnailIfAvailable());
+  }
+
+  Future<void> _openThumbnailIfAvailable() async {
+    final available = await FileAvailabilityScope.of(
+      context,
+    ).checkNow(widget.file.path);
+    if (available && mounted) await _openThumbnail();
   }
 
   Future<void> _openThumbnail() async {
@@ -2841,7 +2903,7 @@ class _HistoryVideoVersionCardState extends State<_HistoryVideoVersionCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hasFile = widget.file.existsSync();
+    final hasFile = _videoFileExists(context, widget.file);
     final canOpen = hasFile && widget.onOpen != null;
     return Card(
       margin: EdgeInsets.zero,
@@ -2967,6 +3029,7 @@ class _InlineGeneratedVideoPlayerState
     extends State<_InlineGeneratedVideoPlayer> {
   late final Player _player;
   late final VideoController _videoController;
+  late final FocusNode _keyboardFocusNode;
   StreamSubscription<bool>? _playingSubscription;
   StreamSubscription<Duration>? _positionSubscription;
   Duration _position = Duration.zero;
@@ -2978,6 +3041,7 @@ class _InlineGeneratedVideoPlayerState
     super.initState();
     _player = Player();
     _videoController = VideoController(_player);
+    _keyboardFocusNode = FocusNode();
     _playingSubscription = _player.stream.playing.listen((playing) {
       if (mounted) setState(() => _playing = playing);
     });
@@ -3037,77 +3101,105 @@ class _InlineGeneratedVideoPlayerState
     await _player.play();
   }
 
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.space &&
+        _error.isEmpty) {
+      unawaited(_toggle());
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _handleTap() {
+    _keyboardFocusNode.requestFocus();
+    final action = widget.onTap;
+    if (action != null) {
+      action();
+    } else {
+      unawaited(_toggle());
+    }
+  }
+
   @override
   void dispose() {
     unawaited(_playingSubscription?.cancel());
     unawaited(_positionSubscription?.cancel());
+    _keyboardFocusNode.dispose();
     _player.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => AdaptiveVideoViewport(
-    player: _player,
-    child: ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: ColoredBox(
-        color: Colors.black,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (_error.isEmpty)
-              Video(
-                controller: _videoController,
-                controls: null,
-                fit: BoxFit.contain,
-              )
-            else
-              Center(
-                child: Text(
-                  _error,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white),
+  Widget build(BuildContext context) => Focus(
+    key: ValueKey('generated-video-inline-keyboard-${widget.file.path}'),
+    focusNode: _keyboardFocusNode,
+    onKeyEvent: _handleKeyEvent,
+    child: AdaptiveVideoViewport(
+      player: _player,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: ColoredBox(
+          color: Colors.black,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_error.isEmpty)
+                Video(
+                  controller: _videoController,
+                  controls: null,
+                  fit: BoxFit.contain,
+                )
+              else
+                Center(
+                  child: Text(
+                    _error,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white),
+                  ),
                 ),
-              ),
-            if (_error.isEmpty)
-              Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  key: ValueKey('generated-video-play-${widget.file.path}'),
-                  onTap: widget.onTap ?? _toggle,
-                  child: Center(
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 160),
-                      opacity: _playing ? 0 : 1,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.64),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: Icon(
-                            Icons.play_arrow_rounded,
-                            color: Colors.white,
-                            size: 34,
+              if (_error.isEmpty)
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: ValueKey('generated-video-play-${widget.file.path}'),
+                    onTap: _handleTap,
+                    child: Center(
+                      child: AnimatedOpacity(
+                        duration: const Duration(milliseconds: 160),
+                        opacity: _playing ? 0 : 1,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.64),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Padding(
+                            padding: EdgeInsets.all(10),
+                            child: Icon(
+                              Icons.play_arrow_rounded,
+                              color: Colors.white,
+                              size: 34,
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
                 ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton.filledTonal(
+                  key: ValueKey(
+                    'generated-video-fullscreen-${widget.file.path}',
+                  ),
+                  tooltip: '全屏播放',
+                  onPressed: widget.onFullscreen,
+                  icon: const Icon(Icons.fullscreen_rounded),
+                ),
               ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton.filledTonal(
-                key: ValueKey('generated-video-fullscreen-${widget.file.path}'),
-                tooltip: '全屏播放',
-                onPressed: widget.onFullscreen,
-                icon: const Icon(Icons.fullscreen_rounded),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     ),
@@ -3281,6 +3373,18 @@ class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
     }
   }
 
+  Future<void> _togglePlayback() async {
+    if (_player.state.playing) {
+      await _player.pause();
+      return;
+    }
+    final position = _player.state.position;
+    if (position < widget.range.inPoint || position >= widget.range.outPoint) {
+      await _player.seek(widget.range.inPoint);
+    }
+    await _player.play();
+  }
+
   @override
   void dispose() {
     unawaited(_positionSubscription?.cancel());
@@ -3290,12 +3394,18 @@ class _FullscreenGeneratedVideoState extends State<_FullscreenGeneratedVideo> {
 
   @override
   Widget build(BuildContext context) => Focus(
+    key: const ValueKey('generated-video-fullscreen-keyboard-scope'),
     autofocus: true,
     onKeyEvent: (node, event) {
-      if (event is KeyDownEvent &&
-          event.logicalKey == LogicalKeyboardKey.escape) {
-        Navigator.pop(context);
-        return KeyEventResult.handled;
+      if (event is KeyDownEvent) {
+        if (event.logicalKey == LogicalKeyboardKey.escape) {
+          Navigator.pop(context);
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.space && _error.isEmpty) {
+          unawaited(_togglePlayback());
+          return KeyEventResult.handled;
+        }
       }
       return KeyEventResult.ignored;
     },
@@ -3666,56 +3776,69 @@ class _SourceRangePreviewDialogState extends State<_SourceRangePreviewDialog> {
     final progress = widget.range.duration.inMilliseconds == 0
         ? 0.0
         : elapsed / widget.range.duration.inMilliseconds;
-    return AlertDialog(
-      title: const Text('原视频 IO 点预览'),
-      content: SizedBox(
-        width: 820,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            AdaptiveVideoViewport(
-              player: _player,
-              initialAspectRatio: widget.range.aspectRatio,
-              maxHeight: 520,
-              child: _error.isEmpty
-                  ? Video(
-                      controller: _videoController,
-                      controls: null,
-                      fit: BoxFit.contain,
-                    )
-                  : Center(child: Text(_error)),
-            ),
-            const SizedBox(height: 12),
-            LinearProgressIndicator(value: progress),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                IconButton.filledTonal(
-                  onPressed: _error.isEmpty ? _togglePlayback : null,
-                  icon: Icon(
-                    _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+    return Focus(
+      key: const ValueKey('source-range-preview-keyboard-scope'),
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.space &&
+            _error.isEmpty) {
+          unawaited(_togglePlayback());
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: AlertDialog(
+        title: const Text('原视频 IO 点预览'),
+        content: SizedBox(
+          width: 820,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              AdaptiveVideoViewport(
+                player: _player,
+                initialAspectRatio: widget.range.aspectRatio,
+                maxHeight: 520,
+                child: _error.isEmpty
+                    ? Video(
+                        controller: _videoController,
+                        controls: null,
+                        fit: BoxFit.contain,
+                      )
+                    : Center(child: Text(_error)),
+              ),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(value: progress),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  IconButton.filledTonal(
+                    onPressed: _error.isEmpty ? _togglePlayback : null,
+                    icon: Icon(
+                      _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  'I ${_formatDuration(widget.range.inPoint)}  ·  '
-                  '${_formatDuration(_position)}  ·  '
-                  'O ${_formatDuration(widget.range.outPoint)}',
-                ),
-                const Spacer(),
-                const Text('复用源文件，不产生片段文件'),
-              ],
-            ),
-          ],
+                  const SizedBox(width: 10),
+                  Text(
+                    'I ${_formatDuration(widget.range.inPoint)}  ·  '
+                    '${_formatDuration(_position)}  ·  '
+                    'O ${_formatDuration(widget.range.outPoint)}',
+                  ),
+                  const Spacer(),
+                  const Text('复用源文件，不产生片段文件'),
+                ],
+              ),
+            ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('关闭'),
-        ),
-      ],
     );
   }
 }

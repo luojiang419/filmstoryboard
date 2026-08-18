@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/database/app_database.dart';
 import '../core/providers/app_providers.dart';
 import '../core/widgets/collapsible_panel_shortcut_scope.dart';
+import '../core/widgets/desktop_drop_target_scope.dart';
 import '../features/exporter/presentation/exporter_page.dart';
 import '../features/exporter/application/export_remote_source.dart';
 import '../features/grid_cut/presentation/grid_cut_page.dart';
@@ -263,11 +264,14 @@ class _AppShellState extends ConsumerState<AppShell> {
         for (final index in _visitedTabIndexes.toList()..sort())
           Positioned.fill(
             key: ValueKey('app-shell-page-$index'),
-            child: Offstage(
-              offstage: index != _tabIndex,
-              child: TickerMode(
-                enabled: index == _tabIndex,
-                child: _buildPage(index),
+            child: DesktopDropTargetScope(
+              enabled: index == _tabIndex,
+              child: Offstage(
+                offstage: index != _tabIndex,
+                child: TickerMode(
+                  enabled: index == _tabIndex,
+                  child: _buildPage(index),
+                ),
               ),
             ),
           ),

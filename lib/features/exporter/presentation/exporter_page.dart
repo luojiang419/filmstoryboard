@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 
 import '../../../core/database/app_database.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/file_availability_cache.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../settings/domain/app_settings.dart';
@@ -50,11 +51,18 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
   double? _exportProgress;
   int? _anchorIndex;
   String? _previewBoardId;
+  final _fileAvailabilityCache = FileAvailabilityCache();
 
   @override
   void initState() {
     super.initState();
     _restoreUiState();
+  }
+
+  @override
+  void dispose() {
+    _fileAvailabilityCache.dispose();
+    super.dispose();
   }
 
   @override
@@ -69,119 +77,126 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     final videoRepository = VideoAnalysisRepository(database);
     final reportVideo = _latestReportVideo(videoRepository);
 
-    return ListenableBuilder(
-      listenable: Listenable.merge([
-        storyboardController,
-        shootingScriptController,
-      ]),
-      builder: (context, _) {
-        final boards = storyboardController.value.boards;
-        final shooting = shootingScriptController.value;
-        _syncSelectionWithBoards(boards);
-        final selectedBoards = _selectedBoards(boards);
-        final previewBoard = _previewBoardId == null
-            ? null
-            : boards.cast<StoryboardBoard?>().firstWhere(
-                (board) => board?.id == _previewBoardId,
-                orElse: () => null,
-              );
-        final canExport = boards.isNotEmpty && selectedBoards.isNotEmpty;
-        final canExportTimeline = _canExportTimelineXml(
-          shooting: shooting,
-          database: database,
-          projectDirectories: projectDirectories,
-        );
+    return FileAvailabilityScope(
+      cache: _fileAvailabilityCache,
+      child: ListenableBuilder(
+        listenable: Listenable.merge([
+          storyboardController,
+          shootingScriptController,
+        ]),
+        builder: (context, _) {
+          final boards = storyboardController.value.boards;
+          final shooting = shootingScriptController.value;
+          _syncSelectionWithBoards(boards);
+          final selectedBoards = _selectedBoards(boards);
+          final previewBoard = _previewBoardId == null
+              ? null
+              : boards.cast<StoryboardBoard?>().firstWhere(
+                  (board) => board?.id == _previewBoardId,
+                  orElse: () => null,
+                );
+          final canExport = boards.isNotEmpty && selectedBoards.isNotEmpty;
+          final canExportTimeline = _canExportTimelineXml(
+            shooting: shooting,
+            database: database,
+            projectDirectories: projectDirectories,
+          );
 
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final sidebarWidth = constraints.maxWidth < 1000 ? 300.0 : 340.0;
-            return Row(
-              children: [
-                SizedBox(
-                  width: sidebarWidth,
-                  child: _ExportSidebar(
-                    format: _format,
-                    resolution: _resolution,
-                    message: _message,
-                    boardCount: boards.length,
-                    selectedBoards: selectedBoards,
-                    isExporting: _isExporting,
-                    progress: _exportProgress,
-                    onCancelExport: _exportCanCancel ? _cancelExport : null,
-                    onFormatChanged: _setFormat,
-                    onResolutionChanged: _setResolution,
-                    onExportSelected: canExport
-                        ? () =>
-                              _exportSelected(boards, settingsController.value)
-                        : null,
-                    onExportDefault: canExport
-                        ? () =>
-                              _exportToDefault(boards, settingsController.value)
-                        : null,
-                    onExportBoardImages: canExport
-                        ? () => _exportBoardImagesSelected(
-                            boards,
-                            settingsController.value,
-                          )
-                        : null,
-                    onExportShootingScript: canExport
-                        ? () => _exportShootingScript(
-                            boards,
-                            settingsController.value,
-                          )
-                        : null,
-                    onExportTimeline: canExportTimeline
-                        ? () => _exportTimelineXml(
-                            shooting: shooting,
-                            database: database,
-                            projectDirectories: projectDirectories,
-                            settings: settingsController.value,
-                          )
-                        : null,
-                    onExportVideoAnalysisReport: reportVideo == null
-                        ? null
-                        : () => _exportVideoAnalysisReport(
-                            repository: videoRepository,
-                            video: reportVideo,
-                            settings: settingsController.value,
-                          ),
-                    onOpenDefaultExportDirectory: () =>
-                        _openDefaultExportDirectory(
-                          settingsController.value.exportDirectory,
-                        ),
-                  ),
-                ),
-                const VerticalDivider(width: 1, thickness: 1),
-                Expanded(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    child: previewBoard == null
-                        ? _BoardSelectionPane(
-                            key: const ValueKey('exporter-board-browser'),
-                            boards: boards,
-                            selectedIds: _selectedBoardIds,
-                            onSelect: _selectBoard,
-                            onPreview: _enterBoardPreview,
-                          )
-                        : _BoardExportPreviewPane(
-                            key: ValueKey(
-                              'exporter-board-preview-${previewBoard.id}',
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final sidebarWidth = constraints.maxWidth < 1000 ? 300.0 : 340.0;
+              return Row(
+                children: [
+                  SizedBox(
+                    width: sidebarWidth,
+                    child: _ExportSidebar(
+                      format: _format,
+                      resolution: _resolution,
+                      message: _message,
+                      boardCount: boards.length,
+                      selectedBoards: selectedBoards,
+                      isExporting: _isExporting,
+                      progress: _exportProgress,
+                      onCancelExport: _exportCanCancel ? _cancelExport : null,
+                      onFormatChanged: _setFormat,
+                      onResolutionChanged: _setResolution,
+                      onExportSelected: canExport
+                          ? () => _exportSelected(
+                              boards,
+                              settingsController.value,
+                            )
+                          : null,
+                      onExportDefault: canExport
+                          ? () => _exportToDefault(
+                              boards,
+                              settingsController.value,
+                            )
+                          : null,
+                      onExportBoardImages: canExport
+                          ? () => _exportBoardImagesSelected(
+                              boards,
+                              settingsController.value,
+                            )
+                          : null,
+                      onExportShootingScript: canExport
+                          ? () => _exportShootingScript(
+                              boards,
+                              settingsController.value,
+                            )
+                          : null,
+                      onExportTimeline: canExportTimeline
+                          ? () => _exportTimelineXml(
+                              shooting: shooting,
+                              database: database,
+                              projectDirectories: projectDirectories,
+                              settings: settingsController.value,
+                            )
+                          : null,
+                      onExportVideoAnalysisReport: reportVideo == null
+                          ? null
+                          : () => _exportVideoAnalysisReport(
+                              repository: videoRepository,
+                              video: reportVideo,
+                              settings: settingsController.value,
                             ),
-                            board: previewBoard,
-                            captionNumberEnabled: settingsController
-                                .value
-                                .storyboardCaptionNumberEnabled,
-                            onBack: _closeBoardPreview,
+                      onOpenDefaultExportDirectory: () =>
+                          _openDefaultExportDirectory(
+                            settingsController.value.exportDirectory,
                           ),
+                    ),
                   ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+                  const VerticalDivider(width: 1, thickness: 1),
+                  Expanded(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      child: previewBoard == null
+                          ? _BoardSelectionPane(
+                              key: const ValueKey('exporter-board-browser'),
+                              boards: boards,
+                              selectedIds: _selectedBoardIds,
+                              onSelect: _selectBoard,
+                              onPreview: _enterBoardPreview,
+                            )
+                          : _BoardExportPreviewPane(
+                              key: ValueKey(
+                                'exporter-board-preview-${previewBoard.id}',
+                              ),
+                              board: previewBoard,
+                              captionNumberEnabled: settingsController
+                                  .value
+                                  .storyboardCaptionNumberEnabled,
+                              onBack: _closeBoardPreview,
+                            ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
     );
   }
 
@@ -342,14 +357,17 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
   ) async {
     final selectedBoards = _selectedBoards(boards);
     final first = selectedBoards.first;
-    final location = await getSaveLocation(
-      initialDirectory: settings.exportDirectory,
-      suggestedName: _defaultFileName(first, _format),
-      acceptedTypeGroups: [
-        XTypeGroup(label: _format.label, extensions: [_format.extension]),
-      ],
-      confirmButtonText: '导出',
-    );
+    final location = await ref
+        .read(desktopFileDialogServiceProvider)
+        .getSaveLocation(
+          source: 'exporter.export_selected',
+          initialDirectory: settings.exportDirectory,
+          suggestedName: _defaultFileName(first, _format),
+          acceptedTypeGroups: [
+            XTypeGroup(label: _format.label, extensions: [_format.extension]),
+          ],
+          confirmButtonText: '导出',
+        );
     if (location == null) {
       return;
     }
@@ -648,7 +666,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
               p.join(outputDirectory, _defaultBoardImagesFolderName()),
             )
           : Directory(outputDirectory);
-      if (!rootDirectory.existsSync()) {
+      if (!await rootDirectory.exists()) {
         await rootDirectory.create(recursive: true);
       }
 
@@ -744,12 +762,10 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
       }
     } on StoryboardExportCancelled {
       for (final file in exportedFiles) {
-        if (file.existsSync()) {
-          try {
-            await file.delete();
-          } on FileSystemException {
-            // 尽力清理已完成画板，保留取消状态。
-          }
+        try {
+          await file.delete();
+        } on FileSystemException {
+          // 尽力清理已完成画板，保留取消状态。
         }
       }
       if (mounted) {
@@ -819,29 +835,29 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
 
   Future<Directory> _createAvailableDirectory(String path) async {
     var directory = Directory(path);
-    if (!directory.existsSync()) {
+    if (!await directory.exists()) {
       return directory.create(recursive: true);
     }
-    if (_directoryIsEmpty(directory)) {
+    if (await _directoryIsEmpty(directory)) {
       return directory;
     }
 
     var index = 2;
     while (true) {
       directory = Directory('$path-$index');
-      if (!directory.existsSync()) {
+      if (!await directory.exists()) {
         return directory.create(recursive: true);
       }
-      if (_directoryIsEmpty(directory)) {
+      if (await _directoryIsEmpty(directory)) {
         return directory;
       }
       index++;
     }
   }
 
-  bool _directoryIsEmpty(Directory directory) {
+  Future<bool> _directoryIsEmpty(Directory directory) async {
     try {
-      return directory.listSync().isEmpty;
+      return directory.list().isEmpty;
     } on FileSystemException {
       return false;
     }
@@ -849,7 +865,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
 
   Future<void> _openDefaultExportDirectory(String path) async {
     final directory = Directory(path);
-    if (!directory.existsSync()) {
+    if (!await directory.exists()) {
       await directory.create(recursive: true);
     }
     await Process.start('explorer.exe', [directory.path]);
@@ -1874,7 +1890,10 @@ class _BoardPreviewImage extends StatelessWidget {
             borderRadius: BorderRadius.circular(6),
             child: ColoredBox(
               color: canvasColors.imageBackground,
-              child: file.existsSync()
+              child:
+                  FileAvailabilityScope.of(
+                    context,
+                  ).exists(file.path, defaultValue: true)
                   ? Transform(
                       alignment: Alignment.center,
                       transform: Matrix4.diagonal3Values(

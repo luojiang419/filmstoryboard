@@ -9,6 +9,7 @@ import 'package:filmstoryboard/features/shooting_script/application/shooting_scr
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
+import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_service.dart';
 import 'package:filmstoryboard/features/video_analysis/data/ffmpeg_frame_extractor.dart';
@@ -132,6 +133,12 @@ void main() {
     );
     final firstFrame = _frame(videoId, 'frame-history-1', 0, now);
     final secondFrame = _frame(videoId, 'frame-history-2', 1, now);
+    await File(
+      p.join(directories.workspaceRoot.path, firstFrame.path),
+    ).writeAsBytes(img.encodeJpg(img.Image(width: 64, height: 36)));
+    await File(
+      p.join(directories.workspaceRoot.path, secondFrame.path),
+    ).writeAsBytes(img.encodeJpg(img.Image(width: 64, height: 36)));
     repository
       ..upsertSourceVideo(video)
       ..upsertVideoFrame(firstFrame)
@@ -166,25 +173,50 @@ void main() {
           updatedAt: now,
         ),
       );
+    final storyboardController = StoryboardController(
+      database: database,
+      directories: directories,
+      settingsController: settingsController,
+    );
+    final shootingScriptController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
     final controller = VideoAnalysisController(
       directories: directories,
       settingsController: settingsController,
       repository: repository,
+      storyboardController: storyboardController,
+      shootingScriptController: shootingScriptController,
     );
     addTearDown(() async {
       controller.dispose();
+      shootingScriptController.dispose();
+      storyboardController.dispose();
       settingsController.dispose();
       database.dispose();
       await root.delete(recursive: true);
     });
+
+    expect(await controller.generateStoryboardForSelectedVideo(), isTrue);
+    StoryboardBoard generatedBoard() => storyboardController.value.boards
+        .singleWhere((board) => board.id == 'external-board:video:$videoId');
+    expect(generatedBoard().items.map((item) => item.asset.id), [
+      'external-cut:video-frame:${firstFrame.id}',
+      'external-cut:video-frame:${secondFrame.id}',
+    ]);
 
     controller.removeFrame(firstFrame.id);
     expect(controller.value.frames.map((frame) => frame.id), [secondFrame.id]);
     expect(controller.canUndoFrameRemoval, isTrue);
     expect(controller.canRedoFrameRemoval, isFalse);
     expect(repository.listVideoFrameAnalyses(videoId), isEmpty);
+    expect(generatedBoard().items.map((item) => item.asset.id), [
+      'external-cut:video-frame:${secondFrame.id}',
+    ]);
 
     controller.undoFrameRemoval();
+    await controller.waitForPendingStoryboardSynchronization();
     expect(repository.listVideoFrames(videoId), hasLength(2));
     expect(
       repository.listVideoFrameAnalyses(videoId).single.frameId,
@@ -195,10 +227,17 @@ void main() {
       secondFrame.id,
     ]);
     expect(controller.canRedoFrameRemoval, isTrue);
+    expect(generatedBoard().items.map((item) => item.asset.id), [
+      'external-cut:video-frame:${firstFrame.id}',
+      'external-cut:video-frame:${secondFrame.id}',
+    ]);
 
     controller.redoFrameRemoval();
     expect(repository.listVideoFrames(videoId), hasLength(1));
     expect(repository.listVideoFrameAnalyses(videoId), isEmpty);
+    expect(generatedBoard().items.map((item) => item.asset.id), [
+      'external-cut:video-frame:${secondFrame.id}',
+    ]);
   });
 
   test('未解析候选帧可先创建故事板和脚本并在解析完成后原位回填', () async {

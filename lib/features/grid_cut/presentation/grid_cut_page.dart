@@ -12,6 +12,7 @@ import 'package:pasteboard/pasteboard.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
+import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
@@ -122,6 +123,7 @@ class _GridCutPageState extends ConsumerState<GridCutPage> {
       autofocus: true,
       onKeyEvent: _handleKeyEvent,
       child: DropTarget(
+        enable: DesktopDropTargetScope.enabledOf(context),
         onDragEntered: (_) => controller.setDraggingOver(true),
         onDragExited: (_) => controller.setDraggingOver(false),
         onDragDone: (details) {
@@ -1068,7 +1070,7 @@ class _ImageSidebarState extends State<_ImageSidebar> {
 
   Future<void> _copyImageFile(String path) async {
     final file = File(path);
-    if (!file.existsSync()) {
+    if (!await file.exists()) {
       _showMessage('图片文件不存在');
       return;
     }

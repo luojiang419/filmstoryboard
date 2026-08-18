@@ -24,6 +24,7 @@ class ImageGenerationRequest {
     required this.quality,
     required this.referenceImagePaths,
     required this.outputDirectory,
+    this.geminiContinuation,
   });
 
   final ImageGenerationProviderConnection provider;
@@ -34,6 +35,7 @@ class ImageGenerationRequest {
   final String quality;
   final List<String> referenceImagePaths;
   final Directory outputDirectory;
+  final GeminiImageContinuation? geminiContinuation;
 
   String get apiBaseUrl => provider.apiBaseUrl;
   String get apiKey => provider.apiKey;
@@ -44,11 +46,29 @@ class ImageGenerationResult {
     required this.localPath,
     required this.remoteUrl,
     required this.rawResponse,
+    this.geminiContinuation,
   });
 
   final String localPath;
   final String remoteUrl;
   final String rawResponse;
+  final GeminiImageContinuation? geminiContinuation;
+}
+
+enum GeminiImageContinuationTransport { interactions, generateContent }
+
+class GeminiImageContinuation {
+  const GeminiImageContinuation({
+    required this.transport,
+    required this.apiModel,
+    this.previousInteractionId = '',
+    this.generateContentHistory = const [],
+  });
+
+  final GeminiImageContinuationTransport transport;
+  final String apiModel;
+  final String previousInteractionId;
+  final List<Map<String, Object?>> generateContentHistory;
 }
 
 class ImageGenerationModelCatalog {
@@ -408,6 +428,8 @@ class GptImageGenerationPreset {
 }
 
 class ImageGenerationService {
+  static const nanoBananaOriginalReferenceByteLimit = 20 * 1024 * 1024;
+
   ImageGenerationService({
     http.Client? client,
     http.Client Function()? apiMartUploadClientFactory,
@@ -633,16 +655,19 @@ class ImageGenerationService {
     ImageGenerationRequest request,
     ImageGenerationModelDescriptor descriptor,
   ) async {
+    final apiModel = descriptor.apiModel.trim();
+    final continuation = _validateGeminiContinuation(
+      request.geminiContinuation,
+      transport: GeminiImageContinuationTransport.interactions,
+      apiModel: apiModel,
+    );
+    final references = await _prepareGeminiReferenceInputs(
+      request.referenceImagePaths,
+    );
     final input = <Map<String, Object?>>[
       {'type': 'text', 'text': request.prompt.trim()},
+      for (final reference in references) reference.interactionPart,
     ];
-    for (final reference in request.referenceImagePaths) {
-      final normalized = reference.trim();
-      if (normalized.isEmpty) {
-        continue;
-      }
-      input.add(await _geminiInteractionImageInput(normalized));
-    }
 
     final responseFormat = <String, Object?>{
       'type': 'image',
@@ -652,14 +677,24 @@ class ImageGenerationService {
       'image_size': _normalizeDefaultImageSize(request.imageSize),
     };
     final endpoint = _apiUri(request.apiBaseUrl, '/v1beta/interactions');
+    final requestRecord = _geminiRequestRecord(
+      route: 'interactions',
+      endpoint: endpoint,
+      apiModel: apiModel,
+      references: references,
+      continuation: continuation,
+    );
     final responseData = await _postGeminiJson(
       endpoint,
       apiBaseUrl: request.apiBaseUrl,
       apiKey: request.apiKey,
       body: {
-        'model': descriptor.apiModel.trim(),
+        'model': apiModel,
         'input': input,
         'response_format': responseFormat,
+        'store': true,
+        if (continuation != null)
+          'previous_interaction_id': continuation.previousInteractionId,
       },
     );
     final inlineImage =
@@ -672,6 +707,11 @@ class ImageGenerationService {
       inlineImage: inlineImage,
       request: request,
       responseData: responseData,
+      requestRecord: requestRecord,
+      continuation: _geminiInteractionContinuation(
+        responseData,
+        apiModel: apiModel,
+      ),
     );
   }
 
@@ -680,38 +720,42 @@ class ImageGenerationService {
     ImageGenerationModelDescriptor descriptor, {
     String? apiModelOverride,
   }) async {
+    final model = (apiModelOverride ?? descriptor.apiModel).trim();
+    final continuation = _validateGeminiContinuation(
+      request.geminiContinuation,
+      transport: GeminiImageContinuationTransport.generateContent,
+      apiModel: model,
+    );
+    final references = await _prepareGeminiReferenceInputs(
+      request.referenceImagePaths,
+    );
     final parts = <Map<String, Object?>>[
       {'text': request.prompt.trim()},
+      for (final reference in references) reference.generateContentPart,
     ];
-    for (final input in request.referenceImagePaths) {
-      final normalized = input.trim();
-      if (normalized.isEmpty) {
-        continue;
-      }
-      final dataUri = await _prepareGeminiReferenceImage(normalized);
-      final separator = dataUri.indexOf(',');
-      if (separator <= 5 ||
-          !dataUri.substring(0, separator).contains(';base64')) {
-        throw const FormatException('Gemini 参考图格式无效');
-      }
-      final mimeType = dataUri.substring(5, separator).split(';').first;
-      parts.add({
-        'inline_data': {
-          'mime_type': mimeType,
-          'data': dataUri.substring(separator + 1),
-        },
-      });
-    }
-
-    final model = (apiModelOverride ?? descriptor.apiModel).trim();
     final endpoint = _apiUri(
       request.apiBaseUrl,
       '/v1beta/models/${Uri.encodeComponent(model)}:generateContent',
     );
+    final currentUserContent = <String, Object?>{
+      'role': 'user',
+      'parts': parts,
+    };
+    final contents = <Map<String, Object?>>[
+      if (continuation != null) ...continuation.generateContentHistory,
+      currentUserContent,
+    ];
+    final requestRecord = _geminiRequestRecord(
+      route: apiModelOverride == null
+          ? 'generateContent'
+          : 'thirdPartyGenerateContentCompatibility',
+      endpoint: endpoint,
+      apiModel: model,
+      references: references,
+      continuation: continuation,
+    );
     final body = <String, Object?>{
-      'contents': [
-        {'role': 'user', 'parts': parts},
-      ],
+      'contents': contents,
       'generationConfig': {
         'responseModalities': ['TEXT', 'IMAGE'],
         'imageConfig': {
@@ -736,6 +780,12 @@ class ImageGenerationService {
       inlineImage: inlineImage,
       request: request,
       responseData: responseData,
+      requestRecord: requestRecord,
+      continuation: _geminiGenerateContentContinuation(
+        responseData,
+        apiModel: model,
+        requestContents: contents,
+      ),
     );
   }
 
@@ -743,6 +793,8 @@ class ImageGenerationService {
     required _GeminiInlineImage inlineImage,
     required ImageGenerationRequest request,
     required Map<String, dynamic> responseData,
+    required Map<String, Object?> requestRecord,
+    required GeminiImageContinuation? continuation,
   }) async {
     final localPath = await _saveInlineImage(
       inlineImage.data,
@@ -755,34 +807,22 @@ class ImageGenerationService {
       remoteUrl: '',
       request: request,
       rawResponse: rawResponse,
+      requestRecord: requestRecord,
     );
     return ImageGenerationResult(
       localPath: localPath,
       remoteUrl: '',
       rawResponse: rawResponse,
+      geminiContinuation: continuation,
     );
-  }
-
-  Future<Map<String, Object?>> _geminiInteractionImageInput(
-    String input,
-  ) async {
-    final dataUri = await _prepareGeminiReferenceImage(input);
-    final separator = dataUri.indexOf(',');
-    if (separator <= 5 ||
-        !dataUri.substring(0, separator).contains(';base64')) {
-      throw const FormatException('Gemini 参考图格式无效');
-    }
-    final mimeType = dataUri.substring(5, separator).split(';').first;
-    return {
-      'type': 'image',
-      'mime_type': mimeType,
-      'data': dataUri.substring(separator + 1),
-    };
   }
 
   Future<String> _prepareGeminiReferenceImage(String input) async {
     if (!input.startsWith('http://') && !input.startsWith('https://')) {
-      return _prepareReferenceImage(input);
+      return _prepareReferenceImage(
+        input,
+        originalByteLimit: nanoBananaOriginalReferenceByteLimit,
+      );
     }
     final response = await _client.get(Uri.parse(input));
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -792,6 +832,150 @@ class ImageGenerationService {
         response.headers['content-type']?.split(';').first.trim() ??
         _mimeTypeForImagePath(input);
     return 'data:$mimeType;base64,${base64Encode(response.bodyBytes)}';
+  }
+
+  Future<List<_PreparedGeminiReference>> _prepareGeminiReferenceInputs(
+    List<String> inputs,
+  ) async {
+    final references = <_PreparedGeminiReference>[];
+    for (var requestIndex = 0; requestIndex < inputs.length; requestIndex++) {
+      final source = inputs[requestIndex].trim();
+      if (source.isEmpty) {
+        continue;
+      }
+      final dataUri = await _prepareGeminiReferenceImage(source);
+      final separator = dataUri.indexOf(',');
+      if (separator <= 5 ||
+          !dataUri.substring(0, separator).contains(';base64')) {
+        throw const FormatException('Gemini 参考图格式无效');
+      }
+      references.add(
+        _PreparedGeminiReference(
+          source: source,
+          requestIndex: requestIndex,
+          mimeType: dataUri.substring(5, separator).split(';').first,
+          data: dataUri.substring(separator + 1),
+        ),
+      );
+    }
+    return references;
+  }
+
+  GeminiImageContinuation? _validateGeminiContinuation(
+    GeminiImageContinuation? continuation, {
+    required GeminiImageContinuationTransport transport,
+    required String apiModel,
+  }) {
+    if (continuation == null) {
+      return null;
+    }
+    if (continuation.transport != transport) {
+      throw const FormatException('Gemini 续轮状态与当前 API 路由不匹配');
+    }
+    if (continuation.apiModel.trim() != apiModel) {
+      throw FormatException(
+        'Gemini 续轮模型 ${continuation.apiModel} 与当前模型 $apiModel 不一致',
+      );
+    }
+    if (transport == GeminiImageContinuationTransport.interactions &&
+        continuation.previousInteractionId.trim().isEmpty) {
+      throw const FormatException('Gemini Interactions 续轮缺少上一轮 interaction ID');
+    }
+    if (transport == GeminiImageContinuationTransport.generateContent &&
+        continuation.generateContentHistory.isEmpty) {
+      throw const FormatException('Gemini generateContent 续轮缺少上一轮完整历史');
+    }
+    return continuation;
+  }
+
+  Map<String, Object?> _geminiRequestRecord({
+    required String route,
+    required Uri endpoint,
+    required String apiModel,
+    required List<_PreparedGeminiReference> references,
+    required GeminiImageContinuation? continuation,
+  }) {
+    return {
+      'protocol': 'gemini',
+      'route': route,
+      'endpoint': endpoint.toString(),
+      'apiModel': apiModel,
+      'inputOrder': [
+        {'position': 0, 'type': 'text'},
+        for (var index = 0; index < references.length; index++)
+          {
+            'position': index + 1,
+            'type': 'referenceImage',
+            'referenceIndex': index,
+            'sourceRequestIndex': references[index].requestIndex,
+          },
+      ],
+      'orderedReferences': [
+        for (var index = 0; index < references.length; index++)
+          {
+            'referenceIndex': index,
+            'sourceRequestIndex': references[index].requestIndex,
+            'source': references[index].source,
+            'mimeType': references[index].mimeType,
+          },
+      ],
+      'continuation': continuation == null
+          ? const {'mode': 'initial'}
+          : {
+              'mode': 'followUp',
+              'transport': continuation.transport.name,
+              if (continuation.previousInteractionId.isNotEmpty)
+                'previousInteractionId': continuation.previousInteractionId,
+              if (continuation.generateContentHistory.isNotEmpty)
+                'historyContentCount':
+                    continuation.generateContentHistory.length,
+            },
+    };
+  }
+
+  GeminiImageContinuation? _geminiInteractionContinuation(
+    Map<String, dynamic> responseData, {
+    required String apiModel,
+  }) {
+    final interactionId = responseData['id']?.toString().trim() ?? '';
+    if (interactionId.isEmpty) {
+      return null;
+    }
+    return GeminiImageContinuation(
+      transport: GeminiImageContinuationTransport.interactions,
+      apiModel: apiModel,
+      previousInteractionId: interactionId,
+    );
+  }
+
+  GeminiImageContinuation? _geminiGenerateContentContinuation(
+    Map<String, dynamic> responseData, {
+    required String apiModel,
+    required List<Map<String, Object?>> requestContents,
+  }) {
+    final modelContent = _geminiModelContent(responseData);
+    if (modelContent == null) {
+      return null;
+    }
+    return GeminiImageContinuation(
+      transport: GeminiImageContinuationTransport.generateContent,
+      apiModel: apiModel,
+      generateContentHistory: [...requestContents, modelContent],
+    );
+  }
+
+  Map<String, Object?>? _geminiModelContent(Map<String, dynamic> responseData) {
+    final candidates = responseData['candidates'];
+    if (candidates is! List || candidates.isEmpty) {
+      return null;
+    }
+    final candidate = candidates.first;
+    if (candidate is! Map || candidate['content'] is! Map) {
+      return null;
+    }
+    final content = Map<String, Object?>.from(candidate['content'] as Map);
+    content.putIfAbsent('role', () => 'model');
+    return content;
   }
 
   _GeminiInlineImage? _geminiInlineImage(Map<String, dynamic> data) {
@@ -1346,12 +1530,21 @@ class ImageGenerationService {
     ImageGenerationRequest request,
   ) async {
     final images = <String>[];
+    final descriptor = ImageGenerationModelCatalog.descriptorFor(request.model);
+    final preserveOriginal = descriptor?.familyId == 'nano-banana';
     for (final path in request.referenceImagePaths) {
       final normalized = path.trim();
       if (normalized.isEmpty) {
         continue;
       }
-      images.add(await _prepareReferenceImage(normalized));
+      images.add(
+        await _prepareReferenceImage(
+          normalized,
+          originalByteLimit: preserveOriginal
+              ? nanoBananaOriginalReferenceByteLimit
+              : 0,
+        ),
+      );
     }
 
     final model = request.model.trim();
@@ -1470,7 +1663,10 @@ class ImageGenerationService {
     throw const FormatException('图片生成接口响应不是 JSON 对象');
   }
 
-  Future<String> _prepareReferenceImage(String input) async {
+  Future<String> _prepareReferenceImage(
+    String input, {
+    int originalByteLimit = 0,
+  }) async {
     if (input.startsWith('data:') ||
         input.startsWith('http://') ||
         input.startsWith('https://')) {
@@ -1482,6 +1678,10 @@ class ImageGenerationService {
       throw FileSystemException('参考图不存在', input);
     }
     final bytes = await file.readAsBytes();
+    if (originalByteLimit > 0 && bytes.length <= originalByteLimit) {
+      final mimeType = _mimeTypeForImagePath(input);
+      return 'data:$mimeType;base64,${base64Encode(bytes)}';
+    }
     final transferable = TransferableTypedData.fromList([bytes]);
     return Isolate.run(
       () => _prepareReferenceImageInWorker(transferable, input),
@@ -1508,6 +1708,7 @@ class ImageGenerationService {
     required String remoteUrl,
     required ImageGenerationRequest request,
     required String rawResponse,
+    Map<String, Object?> requestRecord = const {},
   }) async {
     final file = File('$localPath.json');
     await file.writeAsString(
@@ -1519,6 +1720,7 @@ class ImageGenerationService {
         'quality': request.quality,
         'remoteUrl': remoteUrl,
         'referenceImages': request.referenceImagePaths,
+        if (requestRecord.isNotEmpty) 'requestRecord': requestRecord,
         'rawResponse': rawResponse,
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       }),
@@ -1560,10 +1762,6 @@ class ImageGenerationService {
       final key = entry.key.toString();
       final normalizedKey = key.replaceAll('_', '').toLowerCase();
       final entryValue = entry.value;
-      if (normalizedKey == 'thoughtsignature') {
-        omissions.addThoughtSignature(entryValue);
-        continue;
-      }
       if (_isEncodedImagePayload(
         key: normalizedKey,
         parentKey: parentKey,
@@ -1625,6 +1823,10 @@ class ImageGenerationService {
         '不能使用 ${request.provider.providerLabel} 配置',
       );
     }
+    if (request.geminiContinuation != null &&
+        descriptor.protocol != ImageGenerationProviderProtocol.gemini) {
+      throw const FormatException('只有 Gemini 图片模型支持 Gemini 续轮状态');
+    }
     if (request.apiBaseUrl.trim().isEmpty) {
       throw FormatException('请先填写 ${request.provider.providerLabel} API 地址');
     }
@@ -1643,7 +1845,8 @@ class ImageGenerationService {
   }
 
   void _validateReferenceImages(ImageGenerationRequest request) {
-    if (request.referenceImagePaths.isEmpty) {
+    if (request.referenceImagePaths.isEmpty &&
+        request.geminiContinuation == null) {
       throw const FormatException('至少需要一张参考图');
     }
   }
@@ -1748,10 +1951,8 @@ class ImageGenerationService {
 class _ImageResponseOmissions {
   var imagePayloadCount = 0;
   var imagePayloadCharacters = 0;
-  var thoughtSignatureCount = 0;
-  var thoughtSignatureCharacters = 0;
 
-  bool get hasEntries => imagePayloadCount > 0 || thoughtSignatureCount > 0;
+  bool get hasEntries => imagePayloadCount > 0;
 
   void addImagePayload(Object? value) {
     imagePayloadCount++;
@@ -1760,22 +1961,35 @@ class _ImageResponseOmissions {
     }
   }
 
-  void addThoughtSignature(Object? value) {
-    thoughtSignatureCount++;
-    if (value is String) {
-      thoughtSignatureCharacters += value.length;
-    }
-  }
-
   Map<String, int> toJson() => {
     if (imagePayloadCount > 0) ...{
       'imagePayloadCount': imagePayloadCount,
       'imagePayloadCharacters': imagePayloadCharacters,
     },
-    if (thoughtSignatureCount > 0) ...{
-      'opaqueSignatureCount': thoughtSignatureCount,
-      'opaqueSignatureCharacters': thoughtSignatureCharacters,
-    },
+  };
+}
+
+class _PreparedGeminiReference {
+  const _PreparedGeminiReference({
+    required this.source,
+    required this.requestIndex,
+    required this.mimeType,
+    required this.data,
+  });
+
+  final String source;
+  final int requestIndex;
+  final String mimeType;
+  final String data;
+
+  Map<String, Object?> get interactionPart => {
+    'type': 'image',
+    'mime_type': mimeType,
+    'data': data,
+  };
+
+  Map<String, Object?> get generateContentPart => {
+    'inline_data': {'mime_type': mimeType, 'data': data},
   };
 }
 

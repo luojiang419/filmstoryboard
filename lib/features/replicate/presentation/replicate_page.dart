@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../settings/application/settings_controller.dart';
@@ -21,6 +22,7 @@ import '../../shooting_script/application/script_analysis_controller.dart';
 import '../../shooting_script/application/script_asset_binding_controller.dart';
 import '../../shooting_script/application/shooting_asset_library_controller.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
+import '../../shooting_script/domain/script_asset_slot_policy.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import '../../video_generation/presentation/video_generation_page.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
@@ -93,6 +95,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
 
   late final ReplicateController _controller;
   final _localShotNavigationController = ReplicateShotNavigationController();
+  final _fileAvailabilityCache = FileAvailabilityCache();
   bool _useBuiltInTemplate = false;
   bool _isOpeningAssetPicker = false;
 
@@ -104,6 +107,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
 
   @override
   void dispose() {
+    _fileAvailabilityCache.dispose();
     _localShotNavigationController.dispose();
     super.dispose();
   }
@@ -119,69 +123,72 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
       shootingAssetLibraryControllerProvider,
     );
     final settingsController = ref.watch(settingsControllerProvider);
-    return ValueListenableBuilder<ReplicateState>(
-      valueListenable: controller,
-      builder: (context, state, _) {
-        if (state.scripts.isEmpty) {
-          return _NoScriptState(
-            onOpenShootingScript:
-                widget.onOpenShootingScript ?? widget.onBackToShootingScript,
-          );
-        }
-        final run = state.run;
-        if (run == null) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final workflow = AnimatedBuilder(
-          animation: Listenable.merge([
-            analysisController,
-            assetBindingController,
-            assetLibraryController,
-            settingsController,
-          ]),
-          builder: (context, _) => _buildWorkflow(
-            context,
-            state: state,
-            controller: controller,
-            analysisController: analysisController,
-            assetBindingController: assetBindingController,
-            assetLibraryState: assetLibraryController.value,
-            run: run,
-            settingsController: settingsController,
-            externalizeStepRightPanel: widget.externalizeStepRightPanel,
-            shotNavigationController:
-                widget.shotNavigationController ??
-                _localShotNavigationController,
-          ),
-        );
-        if (widget.embedded) {
-          return workflow;
-        }
-        return CollapsiblePanelShortcutScope(
-          child: Padding(
-            key: const ValueKey('replicate-page'),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _PageHeader(
-                  state: state,
-                  controller: controller,
-                  useBuiltInTemplate: _useBuiltInTemplate,
-                  onBackToShootingScript: widget.onBackToShootingScript,
-                  onToggleTemplate: () {
-                    setState(() {
-                      _useBuiltInTemplate = !_useBuiltInTemplate;
-                    });
-                  },
-                ),
-                const SizedBox(height: 12),
-                Expanded(child: workflow),
-              ],
+    return FileAvailabilityScope(
+      cache: _fileAvailabilityCache,
+      child: ValueListenableBuilder<ReplicateState>(
+        valueListenable: controller,
+        builder: (context, state, _) {
+          if (state.scripts.isEmpty) {
+            return _NoScriptState(
+              onOpenShootingScript:
+                  widget.onOpenShootingScript ?? widget.onBackToShootingScript,
+            );
+          }
+          final run = state.run;
+          if (run == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final workflow = AnimatedBuilder(
+            animation: Listenable.merge([
+              analysisController,
+              assetBindingController,
+              assetLibraryController,
+              settingsController,
+            ]),
+            builder: (context, _) => _buildWorkflow(
+              context,
+              state: state,
+              controller: controller,
+              analysisController: analysisController,
+              assetBindingController: assetBindingController,
+              assetLibraryState: assetLibraryController.value,
+              run: run,
+              settingsController: settingsController,
+              externalizeStepRightPanel: widget.externalizeStepRightPanel,
+              shotNavigationController:
+                  widget.shotNavigationController ??
+                  _localShotNavigationController,
             ),
-          ),
-        );
-      },
+          );
+          if (widget.embedded) {
+            return workflow;
+          }
+          return CollapsiblePanelShortcutScope(
+            child: Padding(
+              key: const ValueKey('replicate-page'),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _PageHeader(
+                    state: state,
+                    controller: controller,
+                    useBuiltInTemplate: _useBuiltInTemplate,
+                    onBackToShootingScript: widget.onBackToShootingScript,
+                    onToggleTemplate: () {
+                      setState(() {
+                        _useBuiltInTemplate = !_useBuiltInTemplate;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(child: workflow),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -254,6 +261,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
                       key: const ValueKey('replicate-new-prepare-assets-step'),
                       state: state,
                       controller: controller,
+                      analysisState: analysisController.value,
                       assetBindingController: assetBindingController,
                       assetLibraryState: assetLibraryState,
                       onImportLocalAsset: _importSingleAsset,
@@ -368,7 +376,13 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
     setState(() => _isOpeningAssetPicker = true);
     try {
       if (!mounted) return const [];
-      return await openFiles(acceptedTypeGroups: const [_assetTypes]);
+      return await ref
+          .read(desktopFileDialogServiceProvider)
+          .openFiles(
+            source: 'replicate.pick_assets',
+            acceptedTypeGroups: const [_assetTypes],
+            initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
+          );
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -386,7 +400,13 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
     setState(() => _isOpeningAssetPicker = true);
     try {
       if (!mounted) return null;
-      return await openFile(acceptedTypeGroups: const [_assetTypes]);
+      return await ref
+          .read(desktopFileDialogServiceProvider)
+          .openFile(
+            source: 'replicate.replace_asset',
+            acceptedTypeGroups: const [_assetTypes],
+            initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
+          );
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -623,6 +643,14 @@ class ReplicateEmbeddedStepRightPanel extends ConsumerStatefulWidget {
 
 class _ReplicateEmbeddedStepRightPanelState
     extends ConsumerState<ReplicateEmbeddedStepRightPanel> {
+  final _fileAvailabilityCache = FileAvailabilityCache();
+
+  @override
+  void dispose() {
+    _fileAvailabilityCache.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(replicateControllerProvider);
@@ -632,66 +660,69 @@ class _ReplicateEmbeddedStepRightPanelState
     final assetLibraryController = ref.watch(
       shootingAssetLibraryControllerProvider,
     );
-    return ValueListenableBuilder<ReplicateState>(
-      valueListenable: controller,
-      builder: (context, state, _) => AnimatedBuilder(
-        animation: Listenable.merge([
-          assetBindingController,
-          assetLibraryController,
-        ]),
-        builder: (context, _) {
-          final run = state.run;
-          if (state.scripts.isEmpty || run == null) {
-            return const SizedBox.shrink();
-          }
-          if (widget.collapsed) {
-            return _EmbeddedStepPanelFrame(
-              child: _CollapsedStepRightPanel(
-                label: _externalPanelLabel(run.currentStep),
-                expandButtonKey: _externalPanelExpandKey(run.currentStep),
-                onExpand: widget.onToggleCollapsed,
+    return FileAvailabilityScope(
+      cache: _fileAvailabilityCache,
+      child: ValueListenableBuilder<ReplicateState>(
+        valueListenable: controller,
+        builder: (context, state, _) => AnimatedBuilder(
+          animation: Listenable.merge([
+            assetBindingController,
+            assetLibraryController,
+          ]),
+          builder: (context, _) {
+            final run = state.run;
+            if (state.scripts.isEmpty || run == null) {
+              return const SizedBox.shrink();
+            }
+            if (widget.collapsed) {
+              return _EmbeddedStepPanelFrame(
+                child: _CollapsedStepRightPanel(
+                  label: _externalPanelLabel(run.currentStep),
+                  expandButtonKey: _externalPanelExpandKey(run.currentStep),
+                  onExpand: widget.onToggleCollapsed,
+                ),
+              );
+            }
+            final panel = switch (run.currentStep) {
+              ReplicateStep.confirmShots =>
+                run.freeCreationEnabled
+                    ? _FreeCreationStoryPanel(
+                        controller: controller,
+                        onToggleCollapsed: widget.onToggleCollapsed,
+                      )
+                    : _StoryboardStoryPanel(
+                        groups: ScriptShotGroup.group(state.shots),
+                        onToggleCollapsed: widget.onToggleCollapsed,
+                        onSelectGroup: (group) => widget
+                            .shotNavigationController
+                            .navigateTo(group.shots.first.id),
+                      ),
+              ReplicateStep.prepareAssets => _PrepareAssetLibrarySidePanel(
+                assetLibraryState: assetLibraryController.value,
+                onManageAssets: widget.onManageAssets,
+                onToggleCollapsed: widget.onToggleCollapsed,
               ),
-            );
-          }
-          final panel = switch (run.currentStep) {
-            ReplicateStep.confirmShots =>
-              run.freeCreationEnabled
-                  ? _FreeCreationStoryPanel(
-                      controller: controller,
-                      onToggleCollapsed: widget.onToggleCollapsed,
+              ReplicateStep.composePrompts => _ComposePromptStatusPanel(
+                state: state,
+                controller: controller,
+                completedReplicaCount: state.replicatedImages
+                    .where(
+                      (image) =>
+                          image.status == ProcessingStatus.completed &&
+                          image.generatedFramePath.isNotEmpty,
                     )
-                  : _StoryboardStoryPanel(
-                      groups: ScriptShotGroup.group(state.shots),
-                      onToggleCollapsed: widget.onToggleCollapsed,
-                      onSelectGroup: (group) => widget.shotNavigationController
-                          .navigateTo(group.shots.first.id),
-                    ),
-            ReplicateStep.prepareAssets => _PrepareAssetLibrarySidePanel(
-              assetLibraryState: assetLibraryController.value,
-              onManageAssets: widget.onManageAssets,
-              onToggleCollapsed: widget.onToggleCollapsed,
-            ),
-            ReplicateStep.composePrompts => _ComposePromptStatusPanel(
-              state: state,
-              controller: controller,
-              completedReplicaCount: state.replicatedImages
-                  .where(
-                    (image) =>
-                        image.status == ProcessingStatus.completed &&
-                        image.generatedFramePath.isNotEmpty &&
-                        File(image.generatedFramePath).existsSync(),
-                  )
-                  .length,
-              onToggleCollapsed: widget.onToggleCollapsed,
-            ),
-            ReplicateStep.generateVideos => VideoGenerationExternalWorkPanel(
-              scriptId: run.scriptId,
-              collapsed: false,
-              onToggleCollapsed: widget.onToggleCollapsed,
-            ),
-          };
-          return _EmbeddedStepPanelFrame(child: panel);
-        },
+                    .length,
+                onToggleCollapsed: widget.onToggleCollapsed,
+              ),
+              ReplicateStep.generateVideos => VideoGenerationExternalWorkPanel(
+                scriptId: run.scriptId,
+                collapsed: false,
+                onToggleCollapsed: widget.onToggleCollapsed,
+              ),
+            };
+            return _EmbeddedStepPanelFrame(child: panel);
+          },
+        ),
       ),
     );
   }
@@ -1127,8 +1158,7 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
     final completedReplicaPathByShotId = <String, String>{
       for (final image in widget.state.replicatedImages)
         if (image.status == ProcessingStatus.completed &&
-            image.generatedFramePath.isNotEmpty &&
-            File(image.generatedFramePath).existsSync())
+            image.generatedFramePath.isNotEmpty)
           image.scriptShotId: image.generatedFramePath,
     };
     final content = freeCreationEnabled
@@ -1626,7 +1656,7 @@ class _FreeCreationStoryPanelState extends State<_FreeCreationStoryPanel> {
                         ? '当前使用手动故事；清空后恢复自动摘要'
                         : automaticStory.isEmpty
                         ? '当前无可用自动摘要'
-                        : '当前使用故事板最新自动摘要',
+                        : '当前使用关联故事板自动摘要',
                   ),
                 ),
                 if (!hasOverride && automaticStory.isNotEmpty) ...[
@@ -2112,8 +2142,11 @@ String _framePathForBuiltRange(
 ) {
   if (!showReplica) return shot.framePath;
   final path = replicatedByShotId[shot.id]?.generatedFramePath ?? '';
-  return path.isNotEmpty && File(path).existsSync() ? path : '';
+  return path.trim().isEmpty ? '' : path;
 }
+
+bool _fileExists(BuildContext context, String path) =>
+    FileAvailabilityScope.of(context).exists(path);
 
 class _BuiltFrameThumbnail extends StatelessWidget {
   const _BuiltFrameThumbnail({required this.path, required this.label});
@@ -2123,7 +2156,7 @@ class _BuiltFrameThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final exists = path.isNotEmpty && File(path).existsSync();
+    final exists = _fileExists(context, path);
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: Stack(
@@ -2213,8 +2246,7 @@ class _NewComposePromptsStep extends StatelessWidget {
     final completedReplicaIds = {
       for (final image in state.replicatedImages)
         if (image.status == ProcessingStatus.completed &&
-            image.generatedFramePath.isNotEmpty &&
-            File(image.generatedFramePath).existsSync())
+            image.generatedFramePath.isNotEmpty)
           image.scriptShotId,
     };
     final replicaByShotId = <String, ReplicatedShotImage>{
@@ -2867,7 +2899,7 @@ class _ComposeGroupFrameCell extends StatelessWidget {
 
   bool _hasFileForShot(ScriptShot shot) {
     final path = filePathForShot(shot).trim();
-    return path.isNotEmpty && File(path).existsSync();
+    return path.isNotEmpty;
   }
 }
 
@@ -2885,7 +2917,7 @@ class _ComposeGroupFrameThumbnail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final hasFile = path.trim().isNotEmpty && File(path).existsSync();
+    final hasFile = _fileExists(context, path);
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: Stack(
@@ -4840,8 +4872,7 @@ class _ShotFrameCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final generatedPath = replicatedImage?.generatedFramePath ?? '';
-    final hasGenerated =
-        generatedPath.isNotEmpty && File(generatedPath).existsSync();
+    final hasGenerated = generatedPath.trim().isNotEmpty;
     final selectedPath = forceEmpty
         ? ''
         : showOriginal
@@ -5036,13 +5067,13 @@ class _ShotFrameThumbnail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final exists = path.isNotEmpty && File(path).existsSync();
+    final exists = _fileExists(context, path);
     return Tooltip(
       message: exists ? '$label：$path' : '$label暂不可用',
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: exists ? onTap : null,
+          onTap: path.trim().isNotEmpty ? onTap : null,
           borderRadius: BorderRadius.circular(5),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(5),
@@ -5118,11 +5149,9 @@ Future<void> _showScriptFrameGallery(
     for (final shot in shots)
       _FrameGalleryItem(
         shotNumber: shot.shotNumber,
-        path: _framePathForGallery(
-          shot,
-          showReplica: showReplica,
-          replicatedByShotId: replicatedByShotId,
-        ),
+        path: showReplica
+            ? replicatedByShotId[shot.id]?.generatedFramePath ?? ''
+            : shot.framePath,
         label: showReplica ? '复刻分镜' : '原视频帧',
       ),
   ];
@@ -5133,8 +5162,7 @@ Future<void> _showScriptFrameGallery(
     labelBuilder: (item, index, total) =>
         '镜头 ${item.shotNumber.toString().padLeft(2, '0')} · ${item.label} · ${index + 1}/$total',
     itemBuilder: (context, item) {
-      final exists = item.path.isNotEmpty && File(item.path).existsSync();
-      if (!exists) {
+      if (item.path.isEmpty) {
         return const Center(
           child: Text('当前镜头暂无可预览的图片', style: TextStyle(color: Colors.white)),
         );
@@ -5153,18 +5181,25 @@ Future<void> _showScriptFrameGallery(
   );
 }
 
-String _framePathForGallery(
-  ScriptShot shot, {
-  required bool showReplica,
-  required Map<String, ReplicatedShotImage> replicatedByShotId,
-}) {
-  if (!showReplica) return shot.framePath;
-  final replicated = replicatedByShotId[shot.id]?.generatedFramePath ?? '';
-  if (replicated.isNotEmpty && File(replicated).existsSync()) {
-    return replicated;
-  }
-  return '';
-}
+Future<void> _showAssetImageGallery(
+  BuildContext context, {
+  required String path,
+  required String label,
+  required Key imageKey,
+}) => showFullscreenZoomGallery<String>(
+  context: context,
+  items: [path],
+  initialIndex: 0,
+  labelBuilder: (_, _, _) => label,
+  itemBuilder: (context, imagePath) => Image.file(
+    File(imagePath),
+    key: imageKey,
+    fit: BoxFit.contain,
+    errorBuilder: (_, _, _) => const Center(
+      child: Text('当前图片无法读取', style: TextStyle(color: Colors.white)),
+    ),
+  ),
+);
 
 class _NewGridCell extends StatelessWidget {
   const _NewGridCell({required this.width, required this.child});
@@ -5334,6 +5369,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
     super.key,
     required this.state,
     required this.controller,
+    required this.analysisState,
     required this.assetBindingController,
     required this.assetLibraryState,
     required this.onImportLocalAsset,
@@ -5343,6 +5379,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
 
   final ReplicateState state;
   final ReplicateController controller;
+  final ScriptAnalysisState analysisState;
   final ShootingScriptAssetBindingController assetBindingController;
   final ShootingAssetLibraryState assetLibraryState;
   final Future<ReplicateAsset?> Function(ReplicateAssetType type)
@@ -5354,13 +5391,14 @@ class _NewPrepareAssetsStep extends StatelessWidget {
   Widget build(BuildContext context) {
     final canContinue = state.assets.any(
       (item) =>
-          item.status == ProcessingStatus.completed &&
-          item.path.isNotEmpty &&
-          File(item.path).existsSync(),
+          item.status == ProcessingStatus.completed && item.path.isNotEmpty,
     );
     final bindingState = assetBindingController.value;
     final hasConfirmedBinding = bindingState.links.any(
       (link) => link.confirmed,
+    );
+    final isExtractingDwPose = state.shotGuides.any(
+      (guide) => guide.poseStatus == ProcessingStatus.running,
     );
     final content = ListView(
       key: const ValueKey('replicate-asset-library-scroll'),
@@ -5369,6 +5407,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
         _PrepareAssetsContent(
           state: state,
           controller: controller,
+          analysisState: analysisState,
           bindingState: bindingState,
           assetBindingController: assetBindingController,
           assetLibraryState: assetLibraryState,
@@ -5384,11 +5423,49 @@ class _NewPrepareAssetsStep extends StatelessWidget {
             subtitle: '按当前脚本镜头顺序匹配参考资产图，核对后可继续复刻分镜。',
             actions: [
               OutlinedButton.icon(
+                key: const ValueKey('analyze-all-replication-frames'),
+                onPressed: state.shots.isEmpty || state.isAnalyzingFrames
+                    ? null
+                    : controller.analyzeAllReplicationFrames,
+                icon: state.isAnalyzingFrames
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.center_focus_strong_rounded),
+                label: Text(state.isAnalyzingFrames ? '解析原帧中…' : '解析原帧动作与配饰'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey('extract-all-dwpose'),
+                onPressed: state.shots.isEmpty || isExtractingDwPose
+                    ? null
+                    : controller.extractDwPoseForAllShots,
+                icon: isExtractingDwPose
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.accessibility_new_rounded),
+                label: Text(isExtractingDwPose ? '提取骨架中…' : '提取全部骨架'),
+              ),
+              OutlinedButton.icon(
                 key: const ValueKey('script-auto-match-assets'),
                 onPressed: assetBindingController.value.isBusy
                     ? null
                     : () => assetBindingController.autoMatchAll(
                         preferredAssets: state.assets,
+                        maximumProductCountsByShotId: {
+                          for (final guide in state.shotGuides)
+                            guide.shotId: guide.subjects
+                                .where(
+                                  (subject) =>
+                                      subject.type ==
+                                      ReplicateSubjectType.product,
+                                )
+                                .length,
+                        },
                       ),
                 icon: const Icon(Icons.auto_awesome_rounded),
                 label: Text(
@@ -5483,6 +5560,8 @@ class _ReplicateGenerationParametersDialogState
     extends State<_ReplicateGenerationParametersDialog> {
   late final String _model;
   late String _aspectRatio;
+  late bool _inheritSourceAspectRatio;
+  late bool _multiViewEnhancementEnabled;
   late String _imageSize;
   late String _quality;
 
@@ -5502,6 +5581,8 @@ class _ReplicateGenerationParametersDialogState
   void initState() {
     super.initState();
     _model = widget.controller.resolvedGenerationModel;
+    _inheritSourceAspectRatio = widget.run.inheritSourceAspectRatio;
+    _multiViewEnhancementEnabled = widget.run.multiViewEnhancementEnabled;
     _aspectRatio = _normalizedOption(
       widget.run.generationAspectRatio,
       _aspectRatioOptions,
@@ -5530,6 +5611,25 @@ class _ReplicateGenerationParametersDialogState
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 16),
+            SwitchListTile.adaptive(
+              key: const ValueKey('replicate-inherit-source-aspect-ratio'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('跟随原帧画幅'),
+              subtitle: const Text('每个镜头自动选择最接近原图的模型支持比例'),
+              value: _inheritSourceAspectRatio,
+              onChanged: (value) =>
+                  setState(() => _inheritSourceAspectRatio = value),
+            ),
+            SwitchListTile.adaptive(
+              key: const ValueKey('replicate-multi-view-enhancement-enabled'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('多视图裁切增强（可选）'),
+              subtitle: const Text('默认关闭并直接上传原图；仅当资产图本身是多视图拼图时开启'),
+              value: _multiViewEnhancementEnabled,
+              onChanged: (value) =>
+                  setState(() => _multiViewEnhancementEnabled = value),
+            ),
+            const SizedBox(height: 8),
             DropdownButtonFormField<String>(
               key: const ValueKey('replicate-generation-aspect-ratio'),
               initialValue: _aspectRatioOptions.contains(_aspectRatio)
@@ -5547,13 +5647,15 @@ class _ReplicateGenerationParametersDialogState
                     child: Text(ratio, overflow: TextOverflow.ellipsis),
                   ),
               ],
-              onChanged: (ratio) {
-                if (ratio == null) return;
-                setState(() {
-                  _aspectRatio = ratio;
-                  _imageSize = _normalizedOption('', _imageSizeOptions);
-                });
-              },
+              onChanged: _inheritSourceAspectRatio
+                  ? null
+                  : (ratio) {
+                      if (ratio == null) return;
+                      setState(() {
+                        _aspectRatio = ratio;
+                        _imageSize = _normalizedOption('', _imageSizeOptions);
+                      });
+                    },
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
@@ -5621,6 +5723,8 @@ class _ReplicateGenerationParametersDialogState
           onPressed: () {
             widget.controller.updateGenerationDefaults(
               aspectRatio: _aspectRatio,
+              inheritSourceAspectRatio: _inheritSourceAspectRatio,
+              multiViewEnhancementEnabled: _multiViewEnhancementEnabled,
               imageSize: _imageSize,
               quality: _quality,
             );
@@ -5830,6 +5934,7 @@ class _PrepareAssetsContent extends StatelessWidget {
   const _PrepareAssetsContent({
     required this.state,
     required this.controller,
+    required this.analysisState,
     required this.bindingState,
     required this.assetBindingController,
     required this.assetLibraryState,
@@ -5838,6 +5943,7 @@ class _PrepareAssetsContent extends StatelessWidget {
 
   final ReplicateState state;
   final ReplicateController controller;
+  final ScriptAnalysisState analysisState;
   final ScriptAssetBindingState bindingState;
   final ShootingScriptAssetBindingController assetBindingController;
   final ShootingAssetLibraryState assetLibraryState;
@@ -5851,43 +5957,69 @@ class _PrepareAssetsContent extends StatelessWidget {
       startEndFrameMode: false,
       rows: state.shots,
       tailShotForDisplay: controller.tailShotForDisplay,
+      analysisState: analysisState,
       bindingState: bindingState,
       libraryState: assetLibraryState,
-      onDrop: (item, shotId, replaceScriptAssetId) =>
+      onDrop: (item, shotId, replaceScriptAssetId, slotSortOrder, slotLabel) =>
           assetBindingController.replaceLibraryAssetOnShot(
             item,
             shotId,
             replaceScriptAssetId: replaceScriptAssetId,
+            slotSortOrder: slotSortOrder,
+            slotLabel: slotLabel,
           ),
-      onSelectStepAsset: (item, shotId, replaceScriptAssetId) =>
-          assetBindingController.addStepAssetToShot(
-            item,
-            shotId,
-            replaceScriptAssetId: replaceScriptAssetId,
-          ),
-      onSelectLibraryAsset: (item, shotId, replaceScriptAssetId) =>
-          assetBindingController.replaceLibraryAssetOnShot(
-            item,
-            shotId,
-            replaceScriptAssetId: replaceScriptAssetId,
-          ),
-      onSelectLocalAsset: (type, shotId, replaceScriptAssetId) async {
-        final asset = await onImportLocalAsset(type);
-        if (asset == null) return;
-        await assetBindingController.addStepAssetToShot(
-          asset,
-          shotId,
-          replaceScriptAssetId: replaceScriptAssetId,
-        );
-      },
+      onSelectStepAsset:
+          (item, shotId, replaceScriptAssetId, slotSortOrder, slotLabel) =>
+              assetBindingController.addStepAssetToShot(
+                item,
+                shotId,
+                replaceScriptAssetId: replaceScriptAssetId,
+                slotSortOrder: slotSortOrder,
+                slotLabel: slotLabel,
+              ),
+      onSelectLibraryAsset:
+          (item, shotId, replaceScriptAssetId, slotSortOrder, slotLabel) =>
+              assetBindingController.replaceLibraryAssetOnShot(
+                item,
+                shotId,
+                replaceScriptAssetId: replaceScriptAssetId,
+                slotSortOrder: slotSortOrder,
+                slotLabel: slotLabel,
+              ),
+      onSelectLocalAsset:
+          (type, shotId, replaceScriptAssetId, slotSortOrder, slotLabel) async {
+            final asset = await onImportLocalAsset(type);
+            if (asset == null) return;
+            await assetBindingController.addStepAssetToShot(
+              asset,
+              shotId,
+              replaceScriptAssetId: replaceScriptAssetId,
+              slotSortOrder: slotSortOrder,
+              slotLabel: slotLabel,
+            );
+          },
       onRemove: assetBindingController.removeAssetFromShot,
       onMatchShot: (shotId) => assetBindingController.autoMatchShot(
         shotId,
         preferredAssets: state.assets,
+        maximumProductCount: controller
+            .shotGuideFor(shotId)
+            ?.subjects
+            .where((subject) => subject.type == ReplicateSubjectType.product)
+            .length,
       ),
       onUpdateInstructions: (shot, instructions) => controller.updateShot(
         shot.copyWith(replicationInstructions: instructions),
       ),
+      guideForShot: controller.shotGuideFor,
+      isGuideCurrent: controller.isShotGuideCurrent,
+      onAnalyzeFrame: controller.analyzeReplicationFrame,
+      onExtractPose: controller.extractDwPoseForShot,
+      onRemovePose: controller.removeDwPoseForShot,
+      onTogglePreservedElement: controller.setPreservedElementSelected,
+      onSetSubjectDecision: controller.setDetectedSubjectDecision,
+      onRemoveSubject: controller.removeDetectedSubject,
+      onAddPreservedElement: controller.addManualPreservedElement,
       onReplicateShot: controller.replicateShot,
       onOpenOriginalFrame: (shot) {
         final index = state.shots.indexWhere(
@@ -5923,6 +6055,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.startEndFrameMode,
     required this.rows,
     required this.tailShotForDisplay,
+    required this.analysisState,
     required this.bindingState,
     required this.libraryState,
     required this.onDrop,
@@ -5932,6 +6065,15 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.onRemove,
     required this.onMatchShot,
     required this.onUpdateInstructions,
+    required this.guideForShot,
+    required this.isGuideCurrent,
+    required this.onAnalyzeFrame,
+    required this.onExtractPose,
+    required this.onRemovePose,
+    required this.onTogglePreservedElement,
+    required this.onSetSubjectDecision,
+    required this.onRemoveSubject,
+    required this.onAddPreservedElement,
     required this.onReplicateShot,
     required this.onOpenOriginalFrame,
     required this.onOpenReplicatedFrame,
@@ -5941,36 +6083,60 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   final bool startEndFrameMode;
   final List<ScriptShot> rows;
   final ScriptShot? Function(ScriptShot shot) tailShotForDisplay;
+  final ScriptAnalysisState analysisState;
   final ScriptAssetBindingState bindingState;
   final ShootingAssetLibraryState libraryState;
   final Future<void> Function(
     ShootingAssetLibraryItem item,
     String shotId,
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   )
   onDrop;
   final Future<void> Function(
     ReplicateAsset item,
     String shotId,
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   )
   onSelectStepAsset;
   final Future<void> Function(
     ShootingAssetLibraryItem item,
     String shotId,
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   )
   onSelectLibraryAsset;
   final Future<void> Function(
     ReplicateAssetType type,
     String shotId,
     String? replaceScriptAssetId,
+    int? slotSortOrder,
+    String? slotLabel,
   )
   onSelectLocalAsset;
   final void Function(String shotId, String scriptAssetId) onRemove;
   final Future<void> Function(String shotId) onMatchShot;
   final void Function(ScriptShot shot, String instructions)
   onUpdateInstructions;
+  final ReplicateShotGuide? Function(String shotId) guideForShot;
+  final bool Function(String shotId) isGuideCurrent;
+  final Future<void> Function(String shotId) onAnalyzeFrame;
+  final Future<void> Function(String shotId) onExtractPose;
+  final Future<void> Function(String shotId) onRemovePose;
+  final void Function(String shotId, String elementId, bool selected)
+  onTogglePreservedElement;
+  final void Function(
+    String shotId,
+    String subjectId,
+    ReplicateSubjectDecision decision,
+  )
+  onSetSubjectDecision;
+  final void Function(String shotId, String subjectId) onRemoveSubject;
+  final void Function(String shotId, String label) onAddPreservedElement;
   final Future<bool> Function(String shotId) onReplicateShot;
   final ValueChanged<ScriptShot> onOpenOriginalFrame;
   final ValueChanged<ScriptShot> onOpenReplicatedFrame;
@@ -6088,7 +6254,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
             ),
             const SizedBox(height: 3),
             Text(
-              '自动匹配优先使用本步骤已上传的资产；未匹配到时再从资产库寻找。点击资产格子可重新选择，也可将资产库卡片拖到格子替换。',
+              '分析原帧后会按识别到的人物和产品创建资产格；在每个格子下方选择保留、替换或移除。保留会沿用原视频帧且无需绑定资产；替换时可点击格子选择资产，也可从资产库拖入。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             if (showReplicationProgress)
@@ -6144,6 +6310,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                   tailShot: widget.tailShotForDisplay(shot),
                   replicatedByShotId: replicatedByShotId,
                   startEndFrameMode: widget.startEndFrameMode,
+                  analysis: widget.analysisState.forShot(shot.id),
                   links: widget.bindingState.linksForShot(shot.id),
                   bindingState: widget.bindingState,
                   libraryItems: widget.libraryState.items,
@@ -6154,18 +6321,50 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                       _expandedShotIds.remove(shot.id);
                     }
                   }),
-                  onDrop: (item, replaceId) =>
-                      widget.onDrop(item, shot.id, replaceId),
-                  onSelectStepAsset: (item, replaceId) =>
-                      widget.onSelectStepAsset(item, shot.id, replaceId),
-                  onSelectLibraryAsset: (item, replaceId) =>
-                      widget.onSelectLibraryAsset(item, shot.id, replaceId),
-                  onSelectLocalAsset: (type, replaceId) =>
-                      widget.onSelectLocalAsset(type, shot.id, replaceId),
+                  onDrop: (item, replaceId, sortOrder, slotLabel) => widget
+                      .onDrop(item, shot.id, replaceId, sortOrder, slotLabel),
+                  onSelectStepAsset: (item, replaceId, sortOrder, slotLabel) =>
+                      widget.onSelectStepAsset(
+                        item,
+                        shot.id,
+                        replaceId,
+                        sortOrder,
+                        slotLabel,
+                      ),
+                  onSelectLibraryAsset:
+                      (item, replaceId, sortOrder, slotLabel) =>
+                          widget.onSelectLibraryAsset(
+                            item,
+                            shot.id,
+                            replaceId,
+                            sortOrder,
+                            slotLabel,
+                          ),
+                  onSelectLocalAsset: (type, replaceId, sortOrder, slotLabel) =>
+                      widget.onSelectLocalAsset(
+                        type,
+                        shot.id,
+                        replaceId,
+                        sortOrder,
+                        slotLabel,
+                      ),
                   onRemove: (assetId) => widget.onRemove(shot.id, assetId),
                   onMatch: () => widget.onMatchShot(shot.id),
                   onUpdateInstructions: (instructions) =>
                       widget.onUpdateInstructions(shot, instructions),
+                  guide: widget.guideForShot(shot.id),
+                  guideIsCurrent: widget.isGuideCurrent(shot.id),
+                  onAnalyzeFrame: () => widget.onAnalyzeFrame(shot.id),
+                  onExtractPose: () => widget.onExtractPose(shot.id),
+                  onRemovePose: () => widget.onRemovePose(shot.id),
+                  onTogglePreservedElement: (elementId, selected) => widget
+                      .onTogglePreservedElement(shot.id, elementId, selected),
+                  onSetSubjectDecision: (subjectId, decision) =>
+                      widget.onSetSubjectDecision(shot.id, subjectId, decision),
+                  onRemoveSubject: (subjectId) =>
+                      widget.onRemoveSubject(shot.id, subjectId),
+                  onAddPreservedElement: (label) =>
+                      widget.onAddPreservedElement(shot.id, label),
                   replicatedImage: replicatedByShotId[shot.id],
                   onReplicate: () => widget.onReplicateShot(shot.id),
                   onOpenOriginalFrame: widget.onOpenOriginalFrame,
@@ -6186,6 +6385,7 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.tailShot,
     required this.replicatedByShotId,
     required this.startEndFrameMode,
+    required this.analysis,
     required this.links,
     required this.bindingState,
     required this.libraryItems,
@@ -6199,6 +6399,15 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onRemove,
     required this.onMatch,
     required this.onUpdateInstructions,
+    required this.guide,
+    required this.guideIsCurrent,
+    required this.onAnalyzeFrame,
+    required this.onExtractPose,
+    required this.onRemovePose,
+    required this.onTogglePreservedElement,
+    required this.onSetSubjectDecision,
+    required this.onRemoveSubject,
+    required this.onAddPreservedElement,
     required this.replicatedImage,
     required this.onReplicate,
     required this.onOpenOriginalFrame,
@@ -6209,23 +6418,54 @@ class _ShotAssetDropRow extends StatelessWidget {
   final ScriptShot? tailShot;
   final Map<String, ReplicatedShotImage> replicatedByShotId;
   final bool startEndFrameMode;
+  final ScriptShotAnalysisRecord? analysis;
   final List<ScriptShotAssetLink> links;
   final ScriptAssetBindingState bindingState;
   final List<ShootingAssetLibraryItem> libraryItems;
   final List<ReplicateAsset> stepAssets;
   final bool expanded;
   final VoidCallback onToggleExpanded;
-  final Future<void> Function(ShootingAssetLibraryItem item, String? replaceId)
+  final Future<void> Function(
+    ShootingAssetLibraryItem item,
+    String? replaceId,
+    int? slotSortOrder,
+    String? slotLabel,
+  )
   onDrop;
-  final Future<void> Function(ReplicateAsset item, String? replaceId)
+  final Future<void> Function(
+    ReplicateAsset item,
+    String? replaceId,
+    int? slotSortOrder,
+    String? slotLabel,
+  )
   onSelectStepAsset;
-  final Future<void> Function(ShootingAssetLibraryItem item, String? replaceId)
+  final Future<void> Function(
+    ShootingAssetLibraryItem item,
+    String? replaceId,
+    int? slotSortOrder,
+    String? slotLabel,
+  )
   onSelectLibraryAsset;
-  final Future<void> Function(ReplicateAssetType type, String? replaceId)
+  final Future<void> Function(
+    ReplicateAssetType type,
+    String? replaceId,
+    int? slotSortOrder,
+    String? slotLabel,
+  )
   onSelectLocalAsset;
   final ValueChanged<String> onRemove;
   final VoidCallback onMatch;
   final ValueChanged<String> onUpdateInstructions;
+  final ReplicateShotGuide? guide;
+  final bool guideIsCurrent;
+  final Future<void> Function() onAnalyzeFrame;
+  final Future<void> Function() onExtractPose;
+  final Future<void> Function() onRemovePose;
+  final void Function(String elementId, bool selected) onTogglePreservedElement;
+  final void Function(String subjectId, ReplicateSubjectDecision decision)
+  onSetSubjectDecision;
+  final ValueChanged<String> onRemoveSubject;
+  final ValueChanged<String> onAddPreservedElement;
   final ReplicatedShotImage? replicatedImage;
   final Future<bool> Function() onReplicate;
   final ValueChanged<ScriptShot> onOpenOriginalFrame;
@@ -6234,6 +6474,13 @@ class _ShotAssetDropRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final analysisRunning = guide?.analysisStatus == ProcessingStatus.running;
+    final hasAnalysisResult =
+        guide?.analysisStatus == ProcessingStatus.completed;
+    final poseRunning = guide?.poseStatus == ProcessingStatus.running;
+    final poseReady =
+        guide?.poseStatus == ProcessingStatus.completed &&
+        (guide?.skeletonPath.trim().isNotEmpty ?? false);
     final assetSlots = _buildAssetSlots(context);
     final frameStrip = _ShotAssetFrameStrip(
       shot: shot,
@@ -6322,8 +6569,44 @@ class _ShotAssetDropRow extends StatelessWidget {
                     // ignore: use_null_aware_elements
                     if (replicationStatus != null) replicationStatus,
                     OutlinedButton.icon(
+                      key: ValueKey('analyze-replication-frame-${shot.id}'),
+                      onPressed: analysisRunning ? null : onAnalyzeFrame,
+                      icon: analysisRunning
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(
+                              Icons.center_focus_strong_rounded,
+                              size: 16,
+                            ),
+                      label: Text(hasAnalysisResult ? '重新解析' : '分析原帧'),
+                    ),
+                    const SizedBox(width: 6),
+                    OutlinedButton.icon(
+                      key: ValueKey('extract-dwpose-${shot.id}'),
+                      onPressed: poseRunning || !guideIsCurrent
+                          ? null
+                          : onExtractPose,
+                      icon: poseRunning
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.device_hub_rounded, size: 16),
+                      label: Text(poseReady ? '重新提取骨架' : '提取骨架'),
+                    ),
+                    const SizedBox(width: 6),
+                    OutlinedButton.icon(
                       key: ValueKey('replicate-shot-image-${shot.id}'),
-                      onPressed: links.isNotEmpty ? onReplicate : null,
+                      onPressed:
+                          links.isNotEmpty ||
+                              (guideIsCurrent &&
+                                  (guide?.subjects.isNotEmpty ?? false))
+                          ? onReplicate
+                          : null,
                       icon: const Icon(Icons.compare_arrows_rounded, size: 16),
                       label: Text(
                         startEndFrameMode && tailShot != null
@@ -6366,6 +6649,14 @@ class _ShotAssetDropRow extends StatelessWidget {
                       ],
                     );
                   },
+                ),
+                const SizedBox(height: 8),
+                _ShotFrameGuidePanel(
+                  shot: shot,
+                  guide: guide,
+                  isCurrent: guideIsCurrent,
+                  onToggleElement: onTogglePreservedElement,
+                  onAddElement: onAddPreservedElement,
                 ),
               ],
             )
@@ -6425,25 +6716,208 @@ class _ShotAssetDropRow extends StatelessWidget {
   }
 
   Widget _buildAssetSlots(BuildContext context) {
+    final assetsByLink = <ScriptShotAssetLink, ScriptAsset>{};
+    for (final link in links) {
+      final asset = bindingState.assetById(link.scriptAssetId);
+      if (asset != null) assetsByLink[link] = asset;
+    }
+    final subjects = guideIsCurrent
+        ? guide?.subjects ?? const <ReplicateDetectedSubject>[]
+        : const <ReplicateDetectedSubject>[];
+    final characterCount = subjects
+        .where((subject) => subject.type == ReplicateSubjectType.person)
+        .length;
+    final productCount = subjects
+        .where((subject) => subject.type == ReplicateSubjectType.product)
+        .length;
+    final skeletonPath = guide?.skeletonPath.trim() ?? '';
+    final showSkeleton =
+        guideIsCurrent &&
+        guide?.poseStatus == ProcessingStatus.completed &&
+        skeletonPath.isNotEmpty;
+    final assignments = <String, ScriptShotAssetLink>{};
+    final assignedLinks = <ScriptShotAssetLink>{};
+
+    ScriptAssetPresetSlot slotFor(ReplicateDetectedSubject subject) =>
+        subject.type == ReplicateSubjectType.person
+        ? ScriptAssetPresetSlot.character(subject.slotIndex)
+        : ScriptAssetPresetSlot.product(subject.slotIndex);
+
+    bool sameSubjectSlot(
+      ScriptAssetPresetSlot slot,
+      ReplicateDetectedSubject subject,
+    ) => switch ((slot.kind, subject.type)) {
+      (ScriptAssetPresetSlotKind.character, ReplicateSubjectType.person) =>
+        slot.characterIndex == subject.slotIndex,
+      (ScriptAssetPresetSlotKind.product, ReplicateSubjectType.product) =>
+        slot.productIndex == subject.slotIndex,
+      _ => false,
+    };
+
+    for (final subject in subjects) {
+      final slot = slotFor(subject);
+      for (final entry in assetsByLink.entries) {
+        if (assignedLinks.contains(entry.key)) continue;
+        final persistedSlot = ScriptAssetSlotPolicy.presetSlotForSortOrder(
+          entry.key.sortOrder,
+        );
+        if (persistedSlot == null ||
+            !sameSubjectSlot(persistedSlot, subject) ||
+            !slot.acceptsAsset(
+              type: entry.value.type,
+              name: entry.value.name,
+              description: entry.value.description,
+            )) {
+          continue;
+        }
+        assignments[subject.id] = entry.key;
+        assignedLinks.add(entry.key);
+        break;
+      }
+    }
+
+    for (final subject in subjects) {
+      if (assignments.containsKey(subject.id)) continue;
+      final slot = slotFor(subject);
+      for (final entry in assetsByLink.entries) {
+        if (assignedLinks.contains(entry.key)) continue;
+        final persistedSlot = ScriptAssetSlotPolicy.presetSlotForSortOrder(
+          entry.key.sortOrder,
+        );
+        if (persistedSlot != null && persistedSlot.kind != slot.kind) {
+          continue;
+        }
+        if (!slot.acceptsAsset(
+          type: entry.value.type,
+          name: entry.value.name,
+          description: entry.value.description,
+        )) {
+          continue;
+        }
+        assignments[subject.id] = entry.key;
+        assignedLinks.add(entry.key);
+        break;
+      }
+    }
+    final remainingLinks = [
+      for (final link in links)
+        if (assetsByLink.containsKey(link) && !assignedLinks.contains(link))
+          link,
+    ];
+
     return Wrap(
       spacing: 8,
       runSpacing: 8,
       children: [
-        for (final link in links)
-          if (bindingState.assetById(link.scriptAssetId) case final asset?)
-            _AssetBindingSlot(
-              asset: asset,
-              link: link,
-              onTap: () => _openAssetPicker(
-                context,
-                replaceScriptAssetId: link.scriptAssetId,
-              ),
-              onDrop: (item) => onDrop(item, link.scriptAssetId),
-              onRemove: () => onRemove(link.scriptAssetId),
+        if (subjects.isEmpty)
+          _DetectedSubjectAssetEmptyState(
+            guideIsCurrent: guideIsCurrent,
+            analysisStatus: guide?.analysisStatus,
+          ),
+        for (final subject in subjects)
+          _DetectedSubjectAssetSlot(
+            key: ValueKey(
+              'detected-subject-asset-slot-${shot.id}-${subject.id}',
             ),
+            decisionKey: ValueKey(
+              'replicate-subject-decision-${shot.id}-${subject.id}',
+            ),
+            pickerKey: ValueKey(
+              'detected-subject-asset-picker-${shot.id}-${subject.id}',
+            ),
+            removeKey: ValueKey(
+              'remove-detected-subject-asset-slot-${shot.id}-${subject.id}',
+            ),
+            subject: subject,
+            asset: assignments[subject.id] == null
+                ? null
+                : assetsByLink[assignments[subject.id]!],
+            link: assignments[subject.id],
+            accepts: (item) => slotFor(subject).acceptsAsset(
+              type: item.type,
+              name: item.name,
+              description: item.description,
+              aliases: item.aliases,
+            ),
+            onTap: () => _openAssetPicker(
+              context,
+              replaceScriptAssetId: assignments[subject.id]?.scriptAssetId,
+              presetSlot: slotFor(subject),
+              bindingLabel: _detectedSubjectBindingLabel(
+                subject,
+                characterCount: characterCount,
+                productCount: productCount,
+              ),
+              pickerTitle: '选择“${subject.label}”的替换资产',
+              onAssetSelected: () => onSetSubjectDecision(
+                subject.id,
+                ReplicateSubjectDecision.replace,
+              ),
+            ),
+            onDrop: (item) async {
+              final slot = slotFor(subject);
+              await onDrop(
+                item,
+                assignments[subject.id]?.scriptAssetId,
+                slot.sortOrder,
+                _detectedSubjectBindingLabel(
+                  subject,
+                  characterCount: characterCount,
+                  productCount: productCount,
+                ),
+              );
+              onSetSubjectDecision(
+                subject.id,
+                ReplicateSubjectDecision.replace,
+              );
+            },
+            onRemove: assignments[subject.id] == null
+                ? null
+                : () => onRemove(assignments[subject.id]!.scriptAssetId),
+            onRemoveSlot: () {
+              final assignment = assignments[subject.id];
+              if (assignment != null) onRemove(assignment.scriptAssetId);
+              onRemoveSubject(subject.id);
+            },
+            onDecisionChanged: (decision) =>
+                onSetSubjectDecision(subject.id, decision),
+          ),
+        for (final link in remainingLinks)
+          _AssetBindingSlot(
+            key: ValueKey(
+              'supplemental-shot-asset-${shot.id}-${link.scriptAssetId}',
+            ),
+            asset: assetsByLink[link]!,
+            link: link,
+            slotLabel: '补充资产',
+            accepts: (_) => true,
+            onTap: () => _openAssetPicker(
+              context,
+              replaceScriptAssetId: link.scriptAssetId,
+            ),
+            onDrop: (item) => onDrop(item, link.scriptAssetId, null, null),
+            onRemove: () => onRemove(link.scriptAssetId),
+          ),
+        if (showSkeleton)
+          _SkeletonAssetSlot(
+            key: ValueKey('shot-skeleton-asset-${shot.id}'),
+            path: skeletonPath,
+            onTap: () => _showAssetImageGallery(
+              context,
+              path: skeletonPath,
+              label:
+                  '镜头 ${shot.shotNumber.toString().padLeft(2, '0')} · DWPose 骨架',
+              imageKey: ValueKey('dwpose-gallery-image-${shot.id}'),
+            ),
+            onRemove: onRemovePose,
+          ),
         _EmptyAssetBindingSlot(
+          key: ValueKey('add-supplemental-shot-asset-${shot.id}'),
+          label: '添加补充资产',
+          icon: Icons.add_photo_alternate_outlined,
+          accepts: (_) => true,
           onTap: () => _openAssetPicker(context),
-          onDrop: (item) => onDrop(item, null),
+          onDrop: (item) => onDrop(item, null, null, null),
         ),
       ],
     );
@@ -6452,68 +6926,582 @@ class _ShotAssetDropRow extends StatelessWidget {
   Future<void> _openAssetPicker(
     BuildContext context, {
     String? replaceScriptAssetId,
+    ScriptAssetPresetSlot? presetSlot,
+    String? bindingLabel,
+    String? pickerTitle,
+    VoidCallback? onAssetSelected,
   }) async {
     final choices = [
       for (final asset in stepAssets)
-        if (asset.path.trim().isNotEmpty) _ShotAssetChoice.step(asset),
-      for (final item in libraryItems) _ShotAssetChoice.library(item),
+        if (asset.path.trim().isNotEmpty &&
+            (presetSlot?.acceptsAsset(
+                  type: asset.type,
+                  name: asset.name,
+                  description: asset.description,
+                ) ??
+                true))
+          _ShotAssetChoice.step(asset),
+      for (final item in libraryItems)
+        if (presetSlot?.acceptsAsset(
+              type: item.type,
+              name: item.name,
+              description: item.description,
+              aliases: item.aliases,
+            ) ??
+            true)
+          _ShotAssetChoice.library(item),
     ];
+    final recognizedCharacterCount = ScriptAssetSlotPolicy.presetSlotsFor(
+      shot: shot,
+      analysis: analysis,
+      minimumCharacterCount: guideIsCurrent ? guide?.personCount ?? 1 : 1,
+    ).where((slot) => slot.kind == ScriptAssetPresetSlotKind.character).length;
+    final characterCount = math.max(
+      recognizedCharacterCount,
+      presetSlot?.kind == ScriptAssetPresetSlotKind.character
+          ? presetSlot!.characterIndex + 1
+          : 1,
+    );
+    final slotLabel =
+        bindingLabel ?? presetSlot?.label(characterCount: characterCount);
+    final fileAvailabilityCache = FileAvailabilityScope.of(context);
     final selected = await showDialog<_ShotAssetChoice>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(replaceScriptAssetId == null ? '选择镜头资产' : '重新选择镜头资产'),
-        content: SizedBox(
-          width: 560,
-          height: 360,
-          child: choices.isEmpty
-              ? const Center(child: Text('暂无可用资产，请先上传资产图或添加资产库内容。'))
-              : ListView.separated(
-                  itemCount: choices.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final choice = choices[index];
-                    return ListTile(
-                      leading: _BindingAssetPreview(
-                        path: choice.path,
-                        label: choice.name,
-                      ),
-                      title: Text(choice.name),
-                      subtitle: Text(
-                        '${choice.type.label}${choice.description.isEmpty ? '' : ' · ${choice.description}'}',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      onTap: () => Navigator.of(dialogContext).pop(choice),
-                    );
-                  },
-                ),
+      builder: (dialogContext) => FileAvailabilityScope(
+        cache: fileAvailabilityCache,
+        child: AlertDialog(
+          title: Text(
+            pickerTitle ??
+                (slotLabel == null
+                    ? replaceScriptAssetId == null
+                          ? '选择镜头资产'
+                          : '重新选择镜头资产'
+                    : '选择$slotLabel资产图'),
+          ),
+          content: SizedBox(
+            width: 560,
+            height: 360,
+            child: choices.isEmpty
+                ? const Center(child: Text('暂无可用资产，请先上传资产图或添加资产库内容。'))
+                : ListView.separated(
+                    itemCount: choices.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final choice = choices[index];
+                      return ListTile(
+                        leading: SizedBox(
+                          width: 64,
+                          height: 48,
+                          child: _BindingAssetPreview(
+                            path: choice.path,
+                            label: choice.name,
+                          ),
+                        ),
+                        title: Text(choice.name),
+                        subtitle: Text(
+                          '${choice.type.label}${choice.description.isEmpty ? '' : ' · ${choice.description}'}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () => Navigator.of(dialogContext).pop(choice),
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton.icon(
+              key: ValueKey('select-local-shot-asset-$shot.id'),
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_ShotAssetChoice.local()),
+              icon: const Icon(Icons.folder_open_rounded),
+              label: const Text('从本地文件添加'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton.icon(
-            key: ValueKey('select-local-shot-asset-$shot.id'),
-            onPressed: () =>
-                Navigator.of(dialogContext).pop(_ShotAssetChoice.local()),
-            icon: const Icon(Icons.folder_open_rounded),
-            label: const Text('从本地文件添加'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
-          ),
-        ],
       ),
     );
     if (selected == null) return;
     if (selected.isLocalFile) {
       await onSelectLocalAsset(
-        ReplicateAssetType.reference,
+        presetSlot?.preferredAssetType ?? ReplicateAssetType.reference,
         replaceScriptAssetId,
+        presetSlot?.sortOrder,
+        slotLabel,
       );
     } else if (selected.stepAsset != null) {
-      await onSelectStepAsset(selected.stepAsset!, replaceScriptAssetId);
+      await onSelectStepAsset(
+        selected.stepAsset!,
+        replaceScriptAssetId,
+        presetSlot?.sortOrder,
+        slotLabel,
+      );
     } else if (selected.libraryItem != null) {
-      await onSelectLibraryAsset(selected.libraryItem!, replaceScriptAssetId);
+      await onSelectLibraryAsset(
+        selected.libraryItem!,
+        replaceScriptAssetId,
+        presetSlot?.sortOrder,
+        slotLabel,
+      );
     }
+    onAssetSelected?.call();
+  }
+}
+
+String _detectedSubjectBindingLabel(
+  ReplicateDetectedSubject subject, {
+  required int characterCount,
+  required int productCount,
+}) {
+  final count = subject.type == ReplicateSubjectType.person
+      ? characterCount
+      : productCount;
+  final prefix = subject.type == ReplicateSubjectType.person ? '模特' : '产品';
+  if (count <= 1 && subject.slotIndex == 0) return prefix;
+  return '$prefix${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}';
+}
+
+class _ShotFrameGuidePanel extends StatelessWidget {
+  const _ShotFrameGuidePanel({
+    required this.shot,
+    required this.guide,
+    required this.isCurrent,
+    required this.onToggleElement,
+    required this.onAddElement,
+  });
+
+  final ScriptShot shot;
+  final ReplicateShotGuide? guide;
+  final bool isCurrent;
+  final void Function(String elementId, bool selected) onToggleElement;
+  final ValueChanged<String> onAddElement;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final failed = guide?.analysisStatus == ProcessingStatus.failed;
+    final hasResult = guide?.analysisStatus == ProcessingStatus.completed;
+    final elements = guide?.elements ?? const <ReplicatePreservedElement>[];
+    final stale = guide != null && !isCurrent;
+    return DecoratedBox(
+      key: ValueKey('replicate-frame-guide-${shot.id}'),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: stale || failed
+              ? scheme.error.withValues(alpha: 0.55)
+              : scheme.outlineVariant,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.accessibility_new_rounded,
+                  size: 18,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    '原帧配饰/道具白名单',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (stale)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '原视频帧已改变，当前勾选和动作约束不会用于复刻，请重新解析。',
+                  key: ValueKey('replicate-frame-guide-stale-${shot.id}'),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: scheme.error),
+                ),
+              ),
+            if (failed)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  guide!.errorMessage.isEmpty
+                      ? '原帧分析失败，请重试。'
+                      : guide!.errorMessage,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: scheme.error),
+                ),
+              ),
+            if (elements.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 7,
+                runSpacing: 7,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    '勾选后才允许保留；未勾选会移除：',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  for (final element in elements)
+                    FilterChip(
+                      key: ValueKey(
+                        'preserved-element-${shot.id}-${element.id}',
+                      ),
+                      selected: element.selected,
+                      onSelected: stale
+                          ? null
+                          : (selected) => onToggleElement(element.id, selected),
+                      avatar: element.isManual
+                          ? const Icon(Icons.edit_rounded, size: 14)
+                          : null,
+                      label: Text(element.label),
+                      tooltip: [
+                        element.description,
+                        element.location,
+                        element.relationship,
+                      ].where((text) => text.trim().isNotEmpty).join('；'),
+                    ),
+                  ActionChip(
+                    key: ValueKey('add-preserved-element-${shot.id}'),
+                    avatar: const Icon(Icons.add_rounded, size: 16),
+                    label: const Text('手动补充'),
+                    onPressed: stale ? null : () => _showAddDialog(context),
+                  ),
+                ],
+              ),
+            ] else if (hasResult && isCurrent) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Expanded(child: Text('未识别到独立配饰或关键道具。')),
+                  TextButton.icon(
+                    onPressed: () => _showAddDialog(context),
+                    icon: const Icon(Icons.add_rounded, size: 16),
+                    label: const Text('手动补充'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAddDialog(BuildContext context) async {
+    final textController = TextEditingController();
+    final label = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('手动补充保留元素'),
+        content: TextField(
+          key: ValueKey('manual-preserved-element-input-${shot.id}'),
+          controller: textController,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '例如：黑色手提包、白色运动鞋'),
+          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: ValueKey('save-manual-preserved-element-${shot.id}'),
+            onPressed: () =>
+                Navigator.of(context).pop(textController.text.trim()),
+            child: const Text('添加并勾选'),
+          ),
+        ],
+      ),
+    );
+    textController.dispose();
+    if (label != null && label.trim().isNotEmpty) onAddElement(label);
+  }
+}
+
+class _DetectedSubjectAssetEmptyState extends StatelessWidget {
+  const _DetectedSubjectAssetEmptyState({
+    required this.guideIsCurrent,
+    required this.analysisStatus,
+  });
+
+  final bool guideIsCurrent;
+  final ProcessingStatus? analysisStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = !guideIsCurrent
+        ? '请先分析原帧，识别到的人物和产品会在这里自动创建资产格。'
+        : analysisStatus == ProcessingStatus.running
+        ? '正在识别原帧人物和产品…'
+        : analysisStatus == ProcessingStatus.failed
+        ? '原帧识别失败，请重新解析。'
+        : '未识别到需要保留、替换或移除的人物和产品。';
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 300, maxWidth: 520),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+          child: Text(message, textAlign: TextAlign.center),
+        ),
+      ),
+    );
+  }
+}
+
+class _DetectedSubjectAssetSlot extends StatelessWidget {
+  const _DetectedSubjectAssetSlot({
+    super.key,
+    required this.decisionKey,
+    required this.pickerKey,
+    required this.removeKey,
+    required this.subject,
+    required this.asset,
+    required this.link,
+    required this.accepts,
+    required this.onTap,
+    required this.onDrop,
+    required this.onRemove,
+    required this.onRemoveSlot,
+    required this.onDecisionChanged,
+  });
+
+  final Key decisionKey;
+  final Key pickerKey;
+  final Key removeKey;
+  final ReplicateDetectedSubject subject;
+  final ScriptAsset? asset;
+  final ScriptShotAssetLink? link;
+  final bool Function(ShootingAssetLibraryItem item) accepts;
+  final VoidCallback onTap;
+  final Future<void> Function(ShootingAssetLibraryItem item) onDrop;
+  final VoidCallback? onRemove;
+  final VoidCallback onRemoveSlot;
+  final ValueChanged<ReplicateSubjectDecision> onDecisionChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final typeLabel = subject.type == ReplicateSubjectType.person
+        ? '人物 ${subject.slotIndex + 1}'
+        : '产品 ${subject.slotIndex + 1}';
+    final helper = [
+      subject.location,
+      subject.relationship,
+    ].where((text) => text.trim().isNotEmpty).join('；');
+    final bound = asset != null && link != null;
+    return DragTarget<ShootingAssetLibraryItem>(
+      onWillAcceptWithDetails: (details) => accepts(details.data),
+      onAcceptWithDetails: (details) => unawaited(onDrop(details.data)),
+      builder: (context, candidateData, _) {
+        final active = candidateData.isNotEmpty;
+        return SizedBox(
+          width: 210,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: active
+                  ? scheme.primaryContainer
+                  : scheme.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(
+                color: active ? scheme.primary : scheme.outlineVariant,
+                width: active ? 1.5 : 1,
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(7),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$typeLabel · ${subject.label}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        key: removeKey,
+                        tooltip: '移除资产参考图格子',
+                        onPressed: onRemoveSlot,
+                        icon: const Icon(Icons.close_rounded, size: 16),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 26,
+                          minHeight: 26,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ],
+                  ),
+                  if (helper.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      helper,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                  ],
+                  const SizedBox(height: 6),
+                  SizedBox(
+                    height: 108,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: Material(
+                            color: scheme.surfaceContainerHigh,
+                            borderRadius: BorderRadius.circular(7),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              key: pickerKey,
+                              onTap: onTap,
+                              child: bound
+                                  ? Padding(
+                                      padding: const EdgeInsets.all(4),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          Expanded(
+                                            child: _BindingAssetPreview(
+                                              path: asset!.path,
+                                              label: asset!.name,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            asset!.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    )
+                                  : Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            subject.type ==
+                                                    ReplicateSubjectType.person
+                                                ? Icons.person_add_alt_1_rounded
+                                                : Icons.inventory_2_outlined,
+                                            size: 24,
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            active ? '松开绑定' : '点击绑定替换资产',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.labelSmall,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ),
+                        if (onRemove != null)
+                          Positioned(
+                            top: 0,
+                            right: 0,
+                            child: IconButton(
+                              tooltip: '移除资产绑定',
+                              onPressed: onRemove,
+                              icon: const Icon(Icons.close_rounded, size: 15),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 26,
+                                minHeight: 26,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  InputDecorator(
+                    key: decisionKey,
+                    decoration: const InputDecoration(
+                      labelText: '处理方式',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<ReplicateSubjectDecision>(
+                        value: subject.decision,
+                        isDense: true,
+                        isExpanded: true,
+                        items: const [
+                          DropdownMenuItem(
+                            value: ReplicateSubjectDecision.undecided,
+                            child: Text('请选择处理方式'),
+                          ),
+                          DropdownMenuItem(
+                            value: ReplicateSubjectDecision.keep,
+                            child: Text('保留（沿用原视频帧）'),
+                          ),
+                          DropdownMenuItem(
+                            value: ReplicateSubjectDecision.replace,
+                            child: Text('替换（必须绑定对应资产）'),
+                          ),
+                          DropdownMenuItem(
+                            value: ReplicateSubjectDecision.remove,
+                            child: Text('从画面移除'),
+                          ),
+                        ],
+                        onChanged: (decision) {
+                          if (decision != null) {
+                            onDecisionChanged(decision);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -6712,7 +7700,7 @@ class _ShotAssetFrameStrip extends StatelessWidget {
   static String _completedReplicatedPath(ReplicatedShotImage? image) {
     if (image?.status != ProcessingStatus.completed) return '';
     final path = image?.generatedFramePath.trim() ?? '';
-    return path.isNotEmpty && File(path).existsSync() ? path : '';
+    return path;
   }
 }
 
@@ -6744,31 +7732,36 @@ class _ShotAssetChoice {
 
 class _AssetBindingSlot extends StatelessWidget {
   const _AssetBindingSlot({
+    super.key,
     required this.asset,
     required this.link,
+    required this.slotLabel,
     required this.onTap,
-    required this.onDrop,
     required this.onRemove,
+    required this.onDrop,
+    this.accepts,
   });
 
   final ScriptAsset asset;
   final ScriptShotAssetLink link;
+  final String slotLabel;
   final VoidCallback onTap;
-  final ValueChanged<ShootingAssetLibraryItem> onDrop;
   final VoidCallback onRemove;
+  final ValueChanged<ShootingAssetLibraryItem> onDrop;
+  final bool Function(ShootingAssetLibraryItem item)? accepts;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return DragTarget<ShootingAssetLibraryItem>(
-      onWillAcceptWithDetails: (_) => true,
+      onWillAcceptWithDetails: (details) => accepts?.call(details.data) ?? true,
       onAcceptWithDetails: (details) => onDrop(details.data),
       builder: (context, candidateData, _) {
         final active = candidateData.isNotEmpty;
         return AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           width: 142,
-          height: 118,
+          height: 136,
           decoration: BoxDecoration(
             color: active ? scheme.primaryContainer : scheme.surface,
             borderRadius: BorderRadius.circular(8),
@@ -6788,6 +7781,17 @@ class _AssetBindingSlot extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        Text(
+                          slotLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: scheme.primary,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
                         Expanded(
                           child: _BindingAssetPreview(
                             path: asset.path,
@@ -6838,23 +7842,128 @@ class _AssetBindingSlot extends StatelessWidget {
   }
 }
 
-class _EmptyAssetBindingSlot extends StatelessWidget {
-  const _EmptyAssetBindingSlot({required this.onTap, required this.onDrop});
+class _SkeletonAssetSlot extends StatelessWidget {
+  const _SkeletonAssetSlot({
+    super.key,
+    required this.path,
+    required this.onTap,
+    required this.onRemove,
+  });
 
+  final String path;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 142,
+      height: 136,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Material(
+              color: scheme.surface,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: BorderSide(color: scheme.outlineVariant),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Tooltip(
+                message: 'DWPose 骨架，点击全屏浏览',
+                child: InkWell(
+                  onTap: onTap,
+                  child: Padding(
+                    padding: const EdgeInsets.all(5),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          '动作骨架',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: scheme.primary,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Expanded(
+                          child: _BindingAssetPreview(
+                            path: path,
+                            label: 'DWPose 骨架',
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text(
+                          'DWPose 骨架',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          '姿态参考 · 点击放大',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            right: 0,
+            child: IconButton(
+              tooltip: '移除动作骨架',
+              onPressed: onRemove,
+              icon: const Icon(Icons.close_rounded, size: 15),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyAssetBindingSlot extends StatelessWidget {
+  const _EmptyAssetBindingSlot({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    required this.onDrop,
+    this.accepts,
+  });
+
+  final String label;
+  final IconData icon;
   final VoidCallback onTap;
   final ValueChanged<ShootingAssetLibraryItem> onDrop;
+  final bool Function(ShootingAssetLibraryItem item)? accepts;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return DragTarget<ShootingAssetLibraryItem>(
-      onWillAcceptWithDetails: (_) => true,
+      onWillAcceptWithDetails: (details) => accepts?.call(details.data) ?? true,
       onAcceptWithDetails: (details) => onDrop(details.data),
       builder: (context, candidateData, _) {
         final active = candidateData.isNotEmpty;
         return SizedBox(
           width: 142,
-          height: 118,
+          height: 136,
           child: CustomPaint(
             painter: _DashedBorderPainter(
               active ? scheme.primary : scheme.outlineVariant,
@@ -6868,10 +7977,23 @@ class _EmptyAssetBindingSlot extends StatelessWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.add_photo_alternate_outlined, size: 24),
+                      Icon(icon, size: 24),
                       const SizedBox(height: 4),
                       Text(
-                        active ? '松开替换' : '添加资产图',
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: active ? scheme.primary : null,
+                            ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        active ? '松开绑定' : '拖入或点击选择',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ],
@@ -6894,7 +8016,7 @@ class _BindingAssetPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final exists = path.trim().isNotEmpty && File(path).existsSync();
+    final exists = _fileExists(context, path);
     return ClipRRect(
       borderRadius: BorderRadius.circular(5),
       child: ColoredBox(
@@ -7287,8 +8409,7 @@ class _PrepareAssetsStep extends StatelessWidget {
                     state.assets.any(
                       (item) =>
                           item.status == ProcessingStatus.completed &&
-                          item.path.isNotEmpty &&
-                          File(item.path).existsSync(),
+                          item.path.isNotEmpty,
                     )
                     ? () => controller.moveToStep(ReplicateStep.confirmShots)
                     : null,

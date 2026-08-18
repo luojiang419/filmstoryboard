@@ -9,6 +9,7 @@ project(runner LANGUAGES CXX)
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
+  "native_file_dialog.cpp"
   "resolve_plugin_launcher.cpp"
   "utils.cpp"
   "win32_window.cpp"
@@ -36,8 +37,28 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
-target_link_libraries(${BINARY_NAME} PRIVATE "ole32.lib" "uiautomationcore.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "ole32.lib" "shell32.lib" "uiautomationcore.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Kept out of the default Flutter build; CI and local verification can build
+# this focused target explicitly without adding another test framework.
+add_executable(filmstoryboard_native_file_dialog_test EXCLUDE_FROM_ALL
+  "native_file_dialog.cpp"
+  "native_file_dialog_test.cpp"
+)
+apply_standard_settings(filmstoryboard_native_file_dialog_test)
+target_compile_options(filmstoryboard_native_file_dialog_test PRIVATE /utf-8)
+target_compile_definitions(filmstoryboard_native_file_dialog_test PRIVATE "NOMINMAX")
+target_link_libraries(filmstoryboard_native_file_dialog_test PRIVATE
+  flutter
+  flutter_wrapper_app
+  "ole32.lib"
+  "shell32.lib"
+)
+target_include_directories(filmstoryboard_native_file_dialog_test PRIVATE
+  "${CMAKE_SOURCE_DIR}"
+)
+add_dependencies(filmstoryboard_native_file_dialog_test flutter_assemble)

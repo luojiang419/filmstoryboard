@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/services/desktop_file_dialog_service.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../grid_cut/application/grid_cut_controller.dart';
 import '../../projects/application/project_aspect_controller.dart';
@@ -26,6 +27,7 @@ final storyDesignControllerProvider = Provider<StoryDesignController>(
       directories: ref.watch(projectDirectoriesProvider),
       settingsController: ref.watch(settingsControllerProvider),
       gridCutController: ref.watch(gridCutControllerProvider),
+      fileDialogService: ref.watch(desktopFileDialogServiceProvider),
       preferencesRepository: StoryDesignPreferencesRepository(
         ref.watch(appDatabaseProvider),
       ),
@@ -38,6 +40,7 @@ final storyDesignControllerProvider = Provider<StoryDesignController>(
     projectDirectoriesProvider,
     gridCutControllerProvider,
     appDatabaseProvider,
+    desktopFileDialogServiceProvider,
     projectAspectControllerProvider,
   ],
 );
@@ -47,6 +50,7 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     required WorkspaceDirectories directories,
     required SettingsController settingsController,
     required GridCutController gridCutController,
+    DesktopFileDialogService? fileDialogService,
     StoryDesignPreferencesRepository? preferencesRepository,
     ProjectAspectController? projectAspectController,
     StoryDesignResultRepository? resultRepository,
@@ -54,6 +58,10 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   }) : _directories = directories,
        _settingsController = settingsController,
        _gridCutController = gridCutController,
+       _fileDialogService =
+           fileDialogService ??
+           DesktopFileDialogService(defaultDirectory: directories.imports),
+       _ownsFileDialogService = fileDialogService == null,
        _preferencesRepository = preferencesRepository,
        _projectAspectController = projectAspectController,
        _resultRepository =
@@ -89,6 +97,8 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   final WorkspaceDirectories _directories;
   final SettingsController _settingsController;
   final GridCutController _gridCutController;
+  final DesktopFileDialogService _fileDialogService;
+  final bool _ownsFileDialogService;
   final StoryDesignPreferencesRepository? _preferencesRepository;
   final ProjectAspectController? _projectAspectController;
   final StoryDesignResultRepository _resultRepository;
@@ -160,6 +170,9 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     _projectAspectController?.removeListener(_handleProjectAspectChanged);
     if (_ownsImageGenerationService) {
       _imageGenerationService.close();
+    }
+    if (_ownsFileDialogService) {
+      _fileDialogService.dispose();
     }
     super.dispose();
   }
@@ -291,8 +304,10 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   }
 
   Future<void> pickReferenceImages() async {
-    final files = await openFiles(
+    final files = await _fileDialogService.openFiles(
+      source: 'story_design.pick_reference_images',
       acceptedTypeGroups: [_imageTypes],
+      initialDirectory: _directories.imports.path,
       confirmButtonText: '添加参考图',
     );
     addReferencePaths(files.map((file) => file.path));

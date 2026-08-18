@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/image_file_context_menu.dart';
 import '../../../core/widgets/preview_file_image.dart';
@@ -216,7 +218,7 @@ class _StoryDesignPageState extends ConsumerState<StoryDesignPage> {
 
   Future<void> _addResultAsAsset(StoryDesignResult result) async {
     final file = File(result.path);
-    if (!file.existsSync()) {
+    if (!await file.exists()) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -249,83 +251,109 @@ class _StoryDesignPageState extends ConsumerState<StoryDesignPage> {
   }
 
   Future<void> _showDesignAssetDialog(StoryDesignResult result) async {
-    var type = ReplicateAssetType.reference;
-    final name = TextEditingController(
-      text: p.basenameWithoutExtension(result.path),
-    );
-    final description = TextEditingController(text: result.prompt);
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('添加为资产'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<ReplicateAssetType>(
-                  key: const ValueKey('story-design-add-asset-type'),
-                  initialValue: type,
-                  decoration: const InputDecoration(labelText: '资产类型'),
-                  items: [
-                    for (final item in _designAssetTypes)
-                      DropdownMenuItem(value: item, child: Text(item.label)),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setDialogState(() => type = value);
-                    }
-                  },
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  key: const ValueKey('story-design-add-asset-name'),
-                  controller: name,
-                  decoration: const InputDecoration(labelText: '资产名称'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  key: const ValueKey('story-design-add-asset-description'),
-                  controller: description,
-                  minLines: 3,
-                  maxLines: 6,
-                  decoration: const InputDecoration(
-                    labelText: '特征或备注',
-                    alignLabelWithHint: true,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('取消'),
-            ),
-            FilledButton.icon(
-              key: const ValueKey('story-design-confirm-add-asset'),
-              onPressed: () async {
-                final asset = _DesignAssetEditorResult(
-                  type: type,
-                  name: name.text.trim(),
-                  description: description.text.trim(),
-                );
-                await _importDesignResultAsset(result, asset);
-                if (dialogContext.mounted) {
-                  Navigator.of(dialogContext).pop();
-                }
-              },
-              icon: const Icon(Icons.add_photo_alternate_outlined),
-              label: const Text('添加资产'),
-            ),
-          ],
-        ),
+      builder: (dialogContext) => _DesignAssetDialog(
+        result: result,
+        onConfirm: (asset) => _importDesignResultAsset(result, asset),
       ),
     );
-    name.dispose();
-    description.dispose();
   }
+}
+
+class _DesignAssetDialog extends StatefulWidget {
+  const _DesignAssetDialog({required this.result, required this.onConfirm});
+
+  final StoryDesignResult result;
+  final Future<void> Function(_DesignAssetEditorResult asset) onConfirm;
+
+  @override
+  State<_DesignAssetDialog> createState() => _DesignAssetDialogState();
+}
+
+class _DesignAssetDialogState extends State<_DesignAssetDialog> {
+  late final TextEditingController _name;
+  late final TextEditingController _description;
+  var _type = ReplicateAssetType.reference;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(
+      text: p.basenameWithoutExtension(widget.result.path),
+    );
+    _description = TextEditingController(text: widget.result.prompt);
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('添加为资产'),
+    content: SizedBox(
+      width: 520,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButtonFormField<ReplicateAssetType>(
+            key: const ValueKey('story-design-add-asset-type'),
+            initialValue: _type,
+            decoration: const InputDecoration(labelText: '资产类型'),
+            items: [
+              for (final item in _designAssetTypes)
+                DropdownMenuItem(value: item, child: Text(item.label)),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _type = value);
+            },
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('story-design-add-asset-name'),
+            controller: _name,
+            decoration: const InputDecoration(labelText: '资产名称'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('story-design-add-asset-description'),
+            controller: _description,
+            minLines: 3,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              labelText: '特征或备注',
+              alignLabelWithHint: true,
+            ),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      FilledButton.icon(
+        key: const ValueKey('story-design-confirm-add-asset'),
+        onPressed: () async {
+          await widget.onConfirm(
+            _DesignAssetEditorResult(
+              type: _type,
+              name: _name.text.trim(),
+              description: _description.text.trim(),
+            ),
+          );
+          if (context.mounted) Navigator.of(context).pop();
+        },
+        icon: const Icon(Icons.add_photo_alternate_outlined),
+        label: const Text('添加资产'),
+      ),
+    ],
+  );
 }
 
 class _DesignPanelResizer extends StatelessWidget {
@@ -771,87 +799,150 @@ class _DesignInputFooter extends StatelessWidget {
   }
 }
 
-class _ReferenceImagesPanel extends StatelessWidget {
+class _ReferenceImagesPanel extends StatefulWidget {
   const _ReferenceImagesPanel({required this.controller, required this.state});
 
   final StoryDesignController controller;
   final StoryDesignState state;
 
   @override
+  State<_ReferenceImagesPanel> createState() => _ReferenceImagesPanelState();
+}
+
+class _ReferenceImagesPanelState extends State<_ReferenceImagesPanel> {
+  bool _isDragging = false;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.34),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.36),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.photo_library_rounded, size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '参考图',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
-                ),
-              ),
-              IconButton(
-                tooltip: '添加参考图',
-                onPressed: controller.pickReferenceImages,
-                icon: const Icon(Icons.add_photo_alternate_rounded),
-              ),
-              IconButton(
-                tooltip: '清空参考图',
-                onPressed: state.referenceImagePaths.isEmpty
-                    ? null
-                    : controller.clearReferencePaths,
-                icon: const Icon(Icons.clear_all_rounded),
-              ),
-            ],
-          ),
-          if (state.referenceImagePaths.isEmpty)
-            SizedBox(
-              height: 78,
-              child: Center(
-                child: Text(
-                  '可不添加参考图',
-                  style: TextStyle(color: scheme.onSurfaceVariant),
-                ),
-              ),
-            )
-          else
-            SizedBox(
-              height: 92,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: state.referenceImagePaths.length,
-                separatorBuilder: (context, _) => const SizedBox(width: 8),
-                itemBuilder: (context, index) {
-                  final path = state.referenceImagePaths[index];
-                  return _ReferenceThumb(
-                    path: path,
-                    onRemove: () => controller.removeReferencePath(path),
-                  );
-                },
+    final referenceBody = widget.state.referenceImagePaths.isEmpty
+        ? SizedBox(
+            height: 78,
+            child: Center(
+              child: Text(
+                '可点击或直接拖入参考图',
+                style: TextStyle(color: scheme.onSurfaceVariant),
               ),
             ),
-        ],
+          )
+        : SizedBox(
+            height: 92,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: widget.state.referenceImagePaths.length,
+              separatorBuilder: (context, _) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final path = widget.state.referenceImagePaths[index];
+                return _ReferenceThumb(
+                  key: ValueKey('story-design-reference-$index'),
+                  path: path,
+                  onRemove: () => widget.controller.removeReferencePath(path),
+                );
+              },
+            ),
+          );
+    return DropTarget(
+      key: const ValueKey('story-design-reference-drop-target'),
+      enable: DesktopDropTargetScope.enabledOf(context),
+      onDragEntered: (_) {
+        if (!_isDragging) {
+          setState(() => _isDragging = true);
+        }
+      },
+      onDragExited: (_) {
+        if (_isDragging) {
+          setState(() => _isDragging = false);
+        }
+      },
+      onDragDone: (details) {
+        if (_isDragging) {
+          setState(() => _isDragging = false);
+        }
+        widget.controller.addReferencePaths(
+          details.files.map((file) => file.path),
+        );
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: _isDragging
+              ? scheme.primaryContainer.withValues(alpha: 0.42)
+              : scheme.surfaceContainerHighest.withValues(alpha: 0.34),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: _isDragging
+                ? scheme.primary.withValues(alpha: 0.9)
+                : scheme.outlineVariant.withValues(alpha: 0.36),
+            width: _isDragging ? 1.5 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.photo_library_rounded, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '参考图',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '添加参考图',
+                  onPressed: widget.controller.pickReferenceImages,
+                  icon: const Icon(Icons.add_photo_alternate_rounded),
+                ),
+                IconButton(
+                  tooltip: '清空参考图',
+                  onPressed: widget.state.referenceImagePaths.isEmpty
+                      ? null
+                      : widget.controller.clearReferencePaths,
+                  icon: const Icon(Icons.clear_all_rounded),
+                ),
+              ],
+            ),
+            Stack(
+              children: [
+                referenceBody,
+                if (_isDragging)
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer.withValues(alpha: 0.88),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Center(
+                        child: Text(
+                          '松开即可添加为参考图',
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(
+                                color: scheme.onPrimaryContainer,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _ReferenceThumb extends StatelessWidget {
-  const _ReferenceThumb({required this.path, required this.onRemove});
+  const _ReferenceThumb({
+    super.key,
+    required this.path,
+    required this.onRemove,
+  });
 
   final String path;
   final VoidCallback? onRemove;
