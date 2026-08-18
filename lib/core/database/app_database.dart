@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 26;
+  static const currentSchemaVersion = 27;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -1065,6 +1065,44 @@ class AppDatabase {
         );
       }
       _database.execute('PRAGMA user_version = 26;');
+    }
+    if (version < 27) {
+      if (_tableExists('replicate_shot_guides')) {
+        if (!_columnExists(
+          'replicate_shot_guides',
+          'full_outfit_assets_json',
+        )) {
+          _database.execute(
+            'ALTER TABLE replicate_shot_guides '
+            "ADD COLUMN full_outfit_assets_json TEXT NOT NULL DEFAULT '[]';",
+          );
+        }
+        if (!_columnExists(
+          'replicate_shot_guides',
+          'wearable_product_links_json',
+        )) {
+          _database.execute(
+            'ALTER TABLE replicate_shot_guides '
+            "ADD COLUMN wearable_product_links_json TEXT NOT NULL DEFAULT '[]';",
+          );
+        }
+        if (!_columnExists(
+          'replicate_shot_guides',
+          'product_mark_authorizations_json',
+        )) {
+          _database.execute(
+            'ALTER TABLE replicate_shot_guides '
+            "ADD COLUMN product_mark_authorizations_json TEXT NOT NULL DEFAULT '[]';",
+          );
+        }
+        if (!_columnExists('replicate_shot_guides', 'editable_pose_json')) {
+          _database.execute(
+            'ALTER TABLE replicate_shot_guides '
+            "ADD COLUMN editable_pose_json TEXT NOT NULL DEFAULT '{}';",
+          );
+        }
+      }
+      _database.execute('PRAGMA user_version = 27;');
     }
   }
 

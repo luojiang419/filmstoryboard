@@ -1,4 +1,7 @@
 import '../../video_analysis/domain/video_analysis_models.dart';
+import 'replicate_asset_preparation_models.dart';
+
+export 'replicate_asset_preparation_models.dart';
 
 enum ReplicateStep {
   confirmShots,
@@ -647,6 +650,10 @@ class ReplicateShotGuide {
     this.sourceFrameFingerprint = '',
     this.elements = const [],
     this.subjects = const [],
+    this.fullOutfitAssets = const [],
+    this.wearableProductLinks = const [],
+    this.productMarkAuthorizations = const [],
+    this.editablePose = ReplicateEditablePoseData.empty,
     this.actionDescription = '',
     this.poseConstraints = '',
     this.personCount = 0,
@@ -664,6 +671,10 @@ class ReplicateShotGuide {
   final String sourceFrameFingerprint;
   final List<ReplicatePreservedElement> elements;
   final List<ReplicateDetectedSubject> subjects;
+  final List<ReplicateFullOutfitAsset> fullOutfitAssets;
+  final List<ReplicateWearableProductLink> wearableProductLinks;
+  final List<ReplicateProductMarkAuthorization> productMarkAuthorizations;
+  final ReplicateEditablePoseData editablePose;
   final String actionDescription;
   final String poseConstraints;
   final int personCount;
@@ -692,6 +703,10 @@ class ReplicateShotGuide {
     String? sourceFrameFingerprint,
     List<ReplicatePreservedElement>? elements,
     List<ReplicateDetectedSubject>? subjects,
+    List<ReplicateFullOutfitAsset>? fullOutfitAssets,
+    List<ReplicateWearableProductLink>? wearableProductLinks,
+    List<ReplicateProductMarkAuthorization>? productMarkAuthorizations,
+    ReplicateEditablePoseData? editablePose,
     String? actionDescription,
     String? poseConstraints,
     int? personCount,
@@ -708,6 +723,11 @@ class ReplicateShotGuide {
         sourceFrameFingerprint ?? this.sourceFrameFingerprint,
     elements: elements ?? this.elements,
     subjects: subjects ?? this.subjects,
+    fullOutfitAssets: fullOutfitAssets ?? this.fullOutfitAssets,
+    wearableProductLinks: wearableProductLinks ?? this.wearableProductLinks,
+    productMarkAuthorizations:
+        productMarkAuthorizations ?? this.productMarkAuthorizations,
+    editablePose: editablePose ?? this.editablePose,
     actionDescription: actionDescription ?? this.actionDescription,
     poseConstraints: poseConstraints ?? this.poseConstraints,
     personCount: personCount ?? this.personCount,

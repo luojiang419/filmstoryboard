@@ -936,7 +936,7 @@ void main() {
     expect(row['generation_recovery_json'], '{}');
     expect(
       database.selectRows('PRAGMA user_version;').single['user_version'],
-      26,
+      AppDatabase.currentSchemaVersion,
     );
   });
 }

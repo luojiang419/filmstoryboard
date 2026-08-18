@@ -131,14 +131,20 @@ class ReplicateRepository {
       '''
       INSERT INTO replicate_shot_guides(
         shot_id, source_frame_fingerprint, elements_json, subjects_json,
+        full_outfit_assets_json, wearable_product_links_json,
+        product_mark_authorizations_json, editable_pose_json,
         action_description, pose_constraints, person_count, skeleton_path, analysis_model,
         analysis_status, pose_status, raw_response, error_message,
         created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(shot_id) DO UPDATE SET
         source_frame_fingerprint = excluded.source_frame_fingerprint,
         elements_json = excluded.elements_json,
         subjects_json = excluded.subjects_json,
+        full_outfit_assets_json = excluded.full_outfit_assets_json,
+        wearable_product_links_json = excluded.wearable_product_links_json,
+        product_mark_authorizations_json = excluded.product_mark_authorizations_json,
+        editable_pose_json = excluded.editable_pose_json,
         action_description = excluded.action_description,
         pose_constraints = excluded.pose_constraints,
         person_count = excluded.person_count,
@@ -155,6 +161,17 @@ class ReplicateRepository {
         guide.sourceFrameFingerprint,
         jsonEncode([for (final element in guide.elements) element.toJson()]),
         jsonEncode([for (final subject in guide.subjects) subject.toJson()]),
+        jsonEncode([
+          for (final asset in guide.fullOutfitAssets) asset.toJson(),
+        ]),
+        jsonEncode([
+          for (final link in guide.wearableProductLinks) link.toJson(),
+        ]),
+        jsonEncode([
+          for (final authorization in guide.productMarkAuthorizations)
+            authorization.toJson(),
+        ]),
+        jsonEncode(guide.editablePose.toJson()),
         guide.actionDescription,
         guide.poseConstraints,
         guide.personCount,
@@ -171,8 +188,30 @@ class ReplicateRepository {
   }
 
   ReplicateShotGuide _shotGuide(Map<String, Object?> row) {
-    final decoded = jsonDecode(row['elements_json'] as String? ?? '[]');
-    final decodedSubjects = jsonDecode(row['subjects_json'] as String? ?? '[]');
+    Object? decodeColumn(String column, String fallback) {
+      try {
+        return jsonDecode(row[column] as String? ?? fallback);
+      } on FormatException {
+        return jsonDecode(fallback);
+      }
+    }
+
+    List<T> decodeList<T>(
+      String column,
+      T Function(Map<String, Object?>) decode,
+    ) {
+      final value = decodeColumn(column, '[]');
+      if (value is! List) return const [];
+      return [
+        for (final item in value)
+          if (item is Map)
+            decode(item.map((key, value) => MapEntry('$key', value))),
+      ];
+    }
+
+    final decoded = decodeColumn('elements_json', '[]');
+    final decodedSubjects = decodeColumn('subjects_json', '[]');
+    final decodedPose = decodeColumn('editable_pose_json', '{}');
     DateTime date(Object? value) =>
         DateTime.tryParse(value as String? ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
@@ -197,6 +236,23 @@ class ReplicateRepository {
                   ),
             ]
           : const [],
+      fullOutfitAssets: decodeList(
+        'full_outfit_assets_json',
+        ReplicateFullOutfitAsset.fromJson,
+      ),
+      wearableProductLinks: decodeList(
+        'wearable_product_links_json',
+        ReplicateWearableProductLink.fromJson,
+      ),
+      productMarkAuthorizations: decodeList(
+        'product_mark_authorizations_json',
+        ReplicateProductMarkAuthorization.fromJson,
+      ),
+      editablePose: decodedPose is Map
+          ? ReplicateEditablePoseData.fromJson(
+              decodedPose.map((key, value) => MapEntry('$key', value)),
+            )
+          : ReplicateEditablePoseData.empty,
       actionDescription: row['action_description'] as String? ?? '',
       poseConstraints: row['pose_constraints'] as String? ?? '',
       personCount: row['person_count'] as int? ?? 0,

@@ -17,6 +17,7 @@ void main() {
     );
     addTearDown(database.dispose);
     final now = DateTime.now().toUtc();
+    final authorizationTime = DateTime.utc(2026, 8, 18, 9, 30);
     _insertShot(database, now: now);
     final repository = ReplicateRepository(database);
 
@@ -68,6 +69,83 @@ void main() {
             decision: ReplicateSubjectDecision.remove,
           ),
         ],
+        fullOutfitAssets: const [
+          ReplicateFullOutfitAsset(
+            id: 'outfit:model-a',
+            personSlotIndex: 0,
+            name: '模特 A 完整穿搭',
+            primaryViewId: 'outfit:model-a:front',
+            views: [
+              ReplicateFullOutfitView(
+                id: 'outfit:model-a:front',
+                scriptAssetId: 'asset-model-a-front',
+                role: ReplicateOutfitViewRole.front,
+              ),
+              ReplicateFullOutfitView(
+                id: 'outfit:model-a:side',
+                scriptAssetId: 'asset-model-a-side',
+                role: ReplicateOutfitViewRole.side,
+                order: 1,
+              ),
+              ReplicateFullOutfitView(
+                id: 'outfit:model-a:back',
+                scriptAssetId: 'asset-model-a-back',
+                role: ReplicateOutfitViewRole.back,
+                order: 2,
+              ),
+            ],
+          ),
+        ],
+        wearableProductLinks: const [
+          ReplicateWearableProductLink(
+            personSlotIndex: 0,
+            productSlotIndex: 0,
+            fullOutfitAssetId: 'outfit:model-a',
+          ),
+        ],
+        productMarkAuthorizations: [
+          ReplicateProductMarkAuthorization(
+            productSlotIndex: 0,
+            enabled: true,
+            referenceAssetId: 'asset-logo-a',
+            exactText: 'FILM A',
+            allowedTypes: const [
+              ReplicateAuthorizedMarkType.logo,
+              ReplicateAuthorizedMarkType.productName,
+            ],
+            status: ReplicateAuthorizationStatus.confirmed,
+            confirmedAt: authorizationTime,
+            location: '鞋舌正面',
+          ),
+        ],
+        editablePose: ReplicateEditablePoseData(
+          sourceWidth: 1920,
+          sourceHeight: 1080,
+          people: [
+            ReplicatePosePerson(
+              id: 'pose-person-a',
+              leftToRightOrder: 0,
+              modelSlotIndex: 0,
+              bounds: const ReplicatePoseBounds(
+                x: 120,
+                y: 80,
+                width: 520,
+                height: 920,
+              ),
+              keypoints: [
+                for (var index = 0; index < 133; index++)
+                  ReplicatePoseKeypoint(
+                    index: index,
+                    x: 150 + index.toDouble(),
+                    y: 100 + index.toDouble() / 2,
+                    confidence: 0.95,
+                    manuallyAdjusted: index == 10,
+                  ),
+              ],
+              confidence: 0.93,
+            ),
+          ],
+        ),
         actionDescription: '人物侧身面向画面右侧，右臂自然下垂。',
         poseConstraints: '保持头肩夹角、右肘弯曲角度和身体重心。',
         personCount: 2,
@@ -95,6 +173,28 @@ void main() {
     expect(restored?.subjects.first.decision, ReplicateSubjectDecision.replace);
     expect(restored?.subjects[1].decision, ReplicateSubjectDecision.keep);
     expect(restored?.subjects.last.decision, ReplicateSubjectDecision.remove);
+    expect(restored?.fullOutfitAssets, hasLength(1));
+    expect(restored?.fullOutfitAssets.single.hasCompleteThreeViewSet, isTrue);
+    expect(
+      restored?.fullOutfitAssets.single.primaryView?.scriptAssetId,
+      'asset-model-a-front',
+    );
+    expect(restored?.wearableProductLinks.single.personSlotIndex, 0);
+    expect(restored?.wearableProductLinks.single.productSlotIndex, 0);
+    expect(restored?.wearableProductLinks.single.linked, isTrue);
+    expect(restored?.productMarkAuthorizations.single.isAuthorized, isTrue);
+    expect(restored?.productMarkAuthorizations.single.exactText, 'FILM A');
+    expect(
+      restored?.productMarkAuthorizations.single.confirmedAt,
+      authorizationTime,
+    );
+    expect(restored?.editablePose.sourceWidth, 1920);
+    expect(restored?.editablePose.people.single.keypoints, hasLength(133));
+    expect(
+      restored?.editablePose.people.single.keypoints[10].manuallyAdjusted,
+      isTrue,
+    );
+    expect(restored?.editablePose.people.single.bounds.centerX, 380);
     expect(restored?.poseStatus, ProcessingStatus.completed);
     expect(restored?.skeletonPath, endsWith(p.join('pose', 'shot-1.png')));
 
@@ -114,6 +214,73 @@ void main() {
     });
 
     expect(restored.decision, ReplicateSubjectDecision.undecided);
+  });
+
+  test('授权标识默认关闭且未知姿势版本安全回落为空数据', () {
+    final authorization = ReplicateProductMarkAuthorization.fromJson(const {
+      'productSlotIndex': 2,
+      'exactText': 'MODEL-X',
+      'allowedTypes': ['model', 'futureType'],
+    });
+    final pose = ReplicateEditablePoseData.fromJson(const {
+      'schemaVersion': 99,
+      'people': [
+        {'id': 'future-person'},
+      ],
+    });
+
+    expect(authorization.enabled, isFalse);
+    expect(authorization.isAuthorized, isFalse);
+    expect(authorization.allowedTypes, [ReplicateAuthorizedMarkType.model]);
+    expect(pose, same(ReplicateEditablePoseData.empty));
+  });
+
+  test('版本26数据库无损补齐穿搭、授权和可编辑姿势字段', () async {
+    final root = await Directory.systemTemp.createTemp('replicate_guide_v26_');
+    addTearDown(() => root.delete(recursive: true));
+    final file = File(p.join(root.path, 'legacy.sqlite'));
+    final legacy = sqlite3.open(file.path);
+    legacy
+      ..execute('''
+        CREATE TABLE replicate_shot_guides (
+          shot_id TEXT PRIMARY KEY,
+          subjects_json TEXT NOT NULL DEFAULT '[]',
+          skeleton_path TEXT NOT NULL DEFAULT '',
+          pose_status TEXT NOT NULL DEFAULT 'pending'
+        );
+      ''')
+      ..execute(
+        'INSERT INTO replicate_shot_guides('
+        'shot_id, subjects_json, skeleton_path, pose_status'
+        ') VALUES(?, ?, ?, ?);',
+        [
+          'shot-v26',
+          '[{"id":"person:0","type":"person","decision":"keep"}]',
+          'pose-v26.png',
+          'completed',
+        ],
+      )
+      ..execute('PRAGMA user_version = 26;')
+      ..close();
+
+    final database = await AppDatabase.open(file);
+    addTearDown(database.dispose);
+    final row = database.selectRows(
+      'SELECT * FROM replicate_shot_guides WHERE shot_id = ?;',
+      ['shot-v26'],
+    ).single;
+
+    expect(row['subjects_json'], contains('person:0'));
+    expect(row['skeleton_path'], 'pose-v26.png');
+    expect(row['pose_status'], 'completed');
+    expect(row['full_outfit_assets_json'], '[]');
+    expect(row['wearable_product_links_json'], '[]');
+    expect(row['product_mark_authorizations_json'], '[]');
+    expect(row['editable_pose_json'], '{}');
+    expect(
+      database.selectRows('PRAGMA user_version;').single['user_version'],
+      AppDatabase.currentSchemaVersion,
+    );
   });
 
   test('版本22数据库自动迁移人物数量列并保留既有骨架记录', () async {
