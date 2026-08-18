@@ -50,6 +50,7 @@ import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
 import '../domain/full_outfit_view_policy.dart';
 import '../domain/nano_banana_asset_manifest.dart';
+import '../domain/nano_banana_product_detail_refill_protocol.dart';
 import '../domain/nano_banana_replication_prompt_compiler.dart';
 import '../domain/replicate_models.dart';
 
@@ -824,7 +825,20 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           subject,
     ];
     _repository.upsertShotGuide(
-      guide.copyWith(subjects: subjects, updatedAt: DateTime.now().toUtc()),
+      guide.copyWith(
+        subjects: subjects,
+        productMarkAuthorizations:
+            subject?.type == ReplicateSubjectType.product &&
+                decision != ReplicateSubjectDecision.replace
+            ? guide.productMarkAuthorizations
+                  .where(
+                    (authorization) =>
+                        authorization.productSlotIndex != subject!.slotIndex,
+                  )
+                  .toList(growable: false)
+            : guide.productMarkAuthorizations,
+        updatedAt: DateTime.now().toUtc(),
+      ),
     );
     _reloadShotGuides(value.selectedScriptId);
   }
@@ -858,6 +872,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         subjects: subjects,
         fullOutfitAssets: fullOutfitAssets,
         wearableProductLinks: wearableProductLinks,
+        productMarkAuthorizations: removed?.type == ReplicateSubjectType.product
+            ? guide.productMarkAuthorizations
+                  .where(
+                    (authorization) =>
+                        authorization.productSlotIndex != removed!.slotIndex,
+                  )
+                  .toList(growable: false)
+            : guide.productMarkAuthorizations,
         updatedAt: DateTime.now().toUtc(),
       ),
     );
@@ -1054,12 +1076,82 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _repository.upsertShotGuide(
       guide.copyWith(
         wearableProductLinks: remaining,
+        productMarkAuthorizations: linked
+            ? guide.productMarkAuthorizations
+                  .where(
+                    (authorization) =>
+                        authorization.productSlotIndex != slotIndex,
+                  )
+                  .toList(growable: false)
+            : guide.productMarkAuthorizations,
         updatedAt: DateTime.now().toUtc(),
       ),
     );
     _reloadShotGuides(
       value.selectedScriptId,
       message: linked ? '已联动同槽模特与穿戴产品' : '已解除完整穿搭产品联动',
+    );
+    return true;
+  }
+
+  bool setProductMarkAuthorization({
+    required String shotId,
+    required ReplicateProductMarkAuthorization authorization,
+  }) {
+    final guide = _repository.getShotGuide(shotId);
+    final productExists = guide?.subjects.any(
+      (subject) =>
+          subject.type == ReplicateSubjectType.product &&
+          subject.slotIndex == authorization.productSlotIndex &&
+          subject.decision == ReplicateSubjectDecision.replace,
+    );
+    if (guide == null ||
+        authorization.productSlotIndex < 0 ||
+        productExists != true) {
+      value = value.copyWith(errorMessage: '只有处于“替换”状态的有效产品槽位才能配置标识授权');
+      return false;
+    }
+    final normalizedTypes = authorization.allowedTypes.toSet().toList()
+      ..sort((left, right) => left.index.compareTo(right.index));
+    final confirmed =
+        authorization.enabled &&
+        authorization.status == ReplicateAuthorizationStatus.confirmed;
+    final normalized = ReplicateProductMarkAuthorization(
+      productSlotIndex: authorization.productSlotIndex,
+      enabled: authorization.enabled,
+      referenceAssetId: authorization.referenceAssetId.trim(),
+      exactText: authorization.exactText.trim(),
+      allowedTypes: normalizedTypes,
+      status: authorization.status,
+      confirmedAt: confirmed
+          ? authorization.confirmedAt ?? DateTime.now().toUtc()
+          : null,
+      location: authorization.location.trim(),
+    );
+    _repository.upsertShotGuide(
+      guide.copyWith(
+        productMarkAuthorizations:
+            [
+              for (final existing in guide.productMarkAuthorizations)
+                if (existing.productSlotIndex != authorization.productSlotIndex)
+                  existing,
+              normalized,
+            ]..sort(
+              (left, right) =>
+                  left.productSlotIndex.compareTo(right.productSlotIndex),
+            ),
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    _reloadShotGuides(
+      value.selectedScriptId,
+      message: confirmed
+          ? '产品标识白名单已确认生效'
+          : authorization.status == ReplicateAuthorizationStatus.revoked
+          ? '产品标识授权已撤销'
+          : authorization.enabled
+          ? '产品标识授权已保存，等待明确确认'
+          : '产品标识白名单保持关闭',
     );
     return true;
   }
@@ -2071,6 +2163,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       var preparedReferences = decisionReferences;
       NanoBananaAssetManifest? nanoBananaManifest;
       NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol;
+      NanoBananaProductDetailRefillProtocol? productDetailRefillProtocol;
       if (NanoBananaProModelCapability.supports(model)) {
         nanoBananaManifest = _nanoBananaAssetManifest(
           shot: shot,
@@ -2092,6 +2185,19 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               ),
           ],
         );
+        productDetailRefillProtocol =
+            NanoBananaProductDetailRefillProtocol.build(
+              firstRoundProtocol: nanoBananaFirstRoundProtocol,
+              markAuthorizations:
+                  guide?.productMarkAuthorizations ??
+                  const <ReplicateProductMarkAuthorization>[],
+              manifestAssetIdByReferenceAssetId: {
+                for (final reference in preparedReferences)
+                  reference.id: reference.manifestAssetId.isEmpty
+                      ? _logicalReferenceAssetId(reference.id)
+                      : reference.manifestAssetId,
+              },
+            );
       }
       final prompt = _finalizeGenerationPrompt(
         shot: shot,
@@ -2106,6 +2212,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         hasPoseSkeleton: skeleton != null,
         nanoBananaManifest: nanoBananaManifest,
         nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
+        authorizedProductMarks:
+            productDetailRefillProtocol?.authorizedMarks ?? const [],
       );
       record = record.copyWith(
         assetIds: preparedReferences
@@ -2187,6 +2295,35 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       final shouldProtectPose =
           skeleton != null && nanoBananaFirstRoundProtocol != null;
+      if (productDetailRefillProtocol?.shouldRun == true) {
+        record = record.copyWith(
+          generatedFramePath: persistedPath,
+          rawResponse: result.rawResponse,
+          generationRecovery: _initialPoseReviewRecovery(
+            generationRequest: generationRequest,
+            continuation: result.geminiContinuation,
+            stage: ReplicatedShotRecoveryStage.awaitingProductDetailRefill,
+            productDetailRefillPrompt: productDetailRefillProtocol!
+                .compileContinuationPrompt(),
+            poseProtectionRequired: shouldProtectPose,
+          ),
+          status: ProcessingStatus.running,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        );
+        _saveReplicatedImage(record);
+        return _refillProductDetails(
+          shot: shot,
+          context: context,
+          original: original,
+          generationRequest: generationRequest,
+          initialResult: result,
+          initialPersistedPath: persistedPath,
+          outputDirectory: outputDirectory,
+          record: record,
+          shouldProtectPose: shouldProtectPose,
+        );
+      }
       if (shouldProtectPose) {
         record = record.copyWith(
           generatedFramePath: persistedPath,
@@ -2194,6 +2331,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           generationRecovery: _initialPoseReviewRecovery(
             generationRequest: generationRequest,
             continuation: result.geminiContinuation,
+            poseProtectionRequired: true,
           ),
           status: ProcessingStatus.running,
           errorMessage: '',
@@ -2232,6 +2370,160 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
   }
 
+  Future<bool> _refillProductDetails({
+    required ScriptShot shot,
+    required _ReplicationContext context,
+    required File original,
+    required ImageGenerationRequest generationRequest,
+    required ImageGenerationResult initialResult,
+    required String initialPersistedPath,
+    required Directory outputDirectory,
+    required ReplicatedShotImage record,
+    required bool shouldProtectPose,
+  }) async {
+    var recovery = record.generationRecovery;
+    final initialRawResponse = _storedGenerationRawResponse(
+      record,
+      key: 'initialGenerationRawResponse',
+    );
+    final continuation =
+        initialResult.geminiContinuation ??
+        _restoredGeminiContinuation(recovery);
+    if (recovery.stage !=
+            ReplicatedShotRecoveryStage.awaitingProductDetailRefill ||
+        recovery.productDetailRefillPrompt.trim().isEmpty) {
+      _saveReplicatedImage(
+        record.copyWith(
+          status: ProcessingStatus.failed,
+          errorMessage: '产品局部细节回填恢复状态无效；为避免重复图片请求，已保留首轮成图并停止。',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return false;
+    }
+    if (continuation == null) {
+      final unavailableReason = recovery.continuationDiagnostic.trim();
+      _saveReplicatedImage(
+        record.copyWith(
+          rawResponse: _replicationAuditRawResponse(
+            initialRawResponse: initialRawResponse,
+            reviews: const [],
+            correctionAttempted: false,
+            stoppedReason: 'product_detail_refill_continuation_unavailable',
+          ),
+          status: ProcessingStatus.failed,
+          errorMessage:
+              '首轮成图已保留；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，未发起产品局部细节回填。',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return false;
+    }
+    if (!_disposed) {
+      _setReplicationMessage(
+        context.scriptId,
+        '正在为镜头 ${shot.shotNumber} 执行唯一一次产品局部细节回填…',
+      );
+    }
+    recovery = recovery.copyWith(
+      stage: ReplicatedShotRecoveryStage.productDetailRefillInFlight,
+    );
+    record = record.copyWith(
+      generationRecovery: recovery,
+      status: ProcessingStatus.running,
+      errorMessage: '',
+      updatedAt: DateTime.now().toUtc(),
+    );
+    _saveReplicatedImage(record);
+    try {
+      final refillResult = await _imageGenerationService.generateEditedImage(
+        ImageGenerationRequest(
+          provider: generationRequest.provider,
+          model: generationRequest.model,
+          prompt: recovery.productDetailRefillPrompt,
+          aspectRatio: generationRequest.aspectRatio,
+          imageSize: generationRequest.imageSize,
+          quality: generationRequest.quality,
+          referenceImagePaths: const [],
+          outputDirectory: generationRequest.outputDirectory,
+          geminiContinuation: continuation,
+        ),
+      );
+      final persistedPath = await _persistGeneratedFrame(
+        sourcePath: refillResult.localPath,
+        outputDirectory: outputDirectory,
+        shot: shot,
+        previousPath: initialPersistedPath,
+      );
+      final audit = _replicationAuditRawResponse(
+        initialRawResponse: initialRawResponse,
+        productDetailRefillRawResponse: refillResult.rawResponse,
+        reviews: const [],
+        correctionAttempted: false,
+        stoppedReason: shouldProtectPose
+            ? 'product_detail_refill_completed_awaiting_pose_review'
+            : 'product_detail_refill_completed',
+      );
+      if (!shouldProtectPose) {
+        _saveReplicatedImage(
+          record.copyWith(
+            generatedFramePath: persistedPath,
+            rawResponse: audit,
+            generationRecovery: ReplicatedShotGenerationRecovery.empty,
+            status: ProcessingStatus.completed,
+            errorMessage: '',
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+        return true;
+      }
+      final poseRecovery = _initialPoseReviewRecovery(
+        generationRequest: generationRequest,
+        continuation: refillResult.geminiContinuation,
+        poseProtectionRequired: true,
+      );
+      record = record.copyWith(
+        generatedFramePath: persistedPath,
+        rawResponse: audit,
+        generationRecovery: poseRecovery,
+        status: ProcessingStatus.running,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      );
+      _saveReplicatedImage(record);
+      return _reviewAndCorrectReplicatedShot(
+        shot: shot,
+        context: context,
+        original: original,
+        generationRequest: generationRequest,
+        initialResult: ImageGenerationResult(
+          localPath: persistedPath,
+          remoteUrl: refillResult.remoteUrl,
+          rawResponse: initialRawResponse,
+          geminiContinuation: refillResult.geminiContinuation,
+        ),
+        initialPersistedPath: persistedPath,
+        outputDirectory: outputDirectory,
+        record: record,
+      );
+    } catch (error) {
+      _saveReplicatedImage(
+        record.copyWith(
+          rawResponse: _replicationAuditRawResponse(
+            initialRawResponse: initialRawResponse,
+            reviews: const [],
+            correctionAttempted: false,
+            stoppedReason: 'product_detail_refill_error',
+          ),
+          status: ProcessingStatus.failed,
+          errorMessage: '首轮成图已保留；唯一一次产品局部细节回填失败。请求可能已执行，为避免重复计费不会自动重试：$error',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return false;
+    }
+  }
+
   Future<bool> _reviewAndCorrectReplicatedShot({
     required ScriptShot shot,
     required _ReplicationContext context,
@@ -2247,6 +2539,25 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final restoredCorrectionRawResponse = _storedGenerationRawResponse(
       record,
       key: 'correctionGenerationRawResponse',
+    );
+    final storedProductDetailRefillRawResponse = _storedGenerationRawResponse(
+      record,
+      key: 'productDetailRefillRawResponse',
+    );
+    String auditRawResponse({
+      String? correctionRawResponse,
+      required bool correctionAttempted,
+      required String stoppedReason,
+    }) => _replicationAuditRawResponse(
+      initialRawResponse: initialResult.rawResponse,
+      productDetailRefillRawResponse:
+          storedProductDetailRefillRawResponse.isEmpty
+          ? null
+          : storedProductDetailRefillRawResponse,
+      correctionRawResponse: correctionRawResponse,
+      reviews: reviews,
+      correctionAttempted: correctionAttempted,
+      stoppedReason: stoppedReason,
     );
     ImageGenerationResult? correctionResult =
         restoredCorrectionRawResponse.isEmpty
@@ -2284,10 +2595,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }) async {
       record = record.copyWith(
         generatedFramePath: persistedPath,
-        rawResponse: _replicationAuditRawResponse(
-          initialRawResponse: initialResult.rawResponse,
+        rawResponse: auditRawResponse(
           correctionRawResponse: correctionResult?.rawResponse,
-          reviews: reviews,
           correctionAttempted: correctionAttempted,
           stoppedReason: stoppedReason,
         ),
@@ -2322,9 +2631,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       }
       if (firstReview.passed) {
         record = record.copyWith(
-          rawResponse: _replicationAuditRawResponse(
-            initialRawResponse: initialResult.rawResponse,
-            reviews: reviews,
+          rawResponse: auditRawResponse(
             correctionAttempted: false,
             stoppedReason: 'passed_initial_review',
           ),
@@ -2338,9 +2645,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       }
       if (firstReview.isInconclusive) {
         record = record.copyWith(
-          rawResponse: _replicationAuditRawResponse(
-            initialRawResponse: initialResult.rawResponse,
-            reviews: reviews,
+          rawResponse: auditRawResponse(
             correctionAttempted: false,
             stoppedReason: 'pose_review_inconclusive',
           ),
@@ -2364,9 +2669,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         reviewAttempts: [for (final review in reviews) review.toJson()],
       );
       record = record.copyWith(
-        rawResponse: _replicationAuditRawResponse(
-          initialRawResponse: initialResult.rawResponse,
-          reviews: reviews,
+        rawResponse: auditRawResponse(
           correctionAttempted: false,
           stoppedReason: 'awaiting_correction',
         ),
@@ -2414,9 +2717,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         stage: ReplicatedShotRecoveryStage.correctionInFlight,
       );
       record = record.copyWith(
-        rawResponse: _replicationAuditRawResponse(
-          initialRawResponse: initialResult.rawResponse,
-          reviews: reviews,
+        rawResponse: auditRawResponse(
           correctionAttempted: true,
           stoppedReason: 'correction_in_flight',
         ),
@@ -2455,10 +2756,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         );
         record = record.copyWith(
           generatedFramePath: persistedPath,
-          rawResponse: _replicationAuditRawResponse(
-            initialRawResponse: initialResult.rawResponse,
+          rawResponse: auditRawResponse(
             correctionRawResponse: correctionResult.rawResponse,
-            reviews: reviews,
             correctionAttempted: true,
             stoppedReason: 'awaiting_corrected_review',
           ),
@@ -2495,11 +2794,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (!secondReview.passed) {
       if (secondReview.isInconclusive) {
         record = record.copyWith(
-          rawResponse: _replicationAuditRawResponse(
-            initialRawResponse: initialResult.rawResponse,
+          rawResponse: auditRawResponse(
             correctionRawResponse:
                 correctionResult?.rawResponse ?? restoredCorrectionRawResponse,
-            reviews: reviews,
             correctionAttempted: true,
             stoppedReason: 'corrected_pose_review_inconclusive',
           ),
@@ -2523,11 +2820,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
     record = record.copyWith(
       generatedFramePath: persistedPath,
-      rawResponse: _replicationAuditRawResponse(
-        initialRawResponse: initialResult.rawResponse,
+      rawResponse: auditRawResponse(
         correctionRawResponse:
             correctionResult?.rawResponse ?? restoredCorrectionRawResponse,
-        reviews: reviews,
         correctionAttempted: true,
         stoppedReason: 'passed_after_single_correction',
       ),
@@ -2547,6 +2842,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   static ReplicatedShotGenerationRecovery _initialPoseReviewRecovery({
     required ImageGenerationRequest generationRequest,
     required GeminiImageContinuation? continuation,
+    ReplicatedShotRecoveryStage stage =
+        ReplicatedShotRecoveryStage.awaitingInitialReview,
+    String productDetailRefillPrompt = '',
+    bool poseProtectionRequired = false,
   }) {
     final transport = switch (continuation?.transport) {
       GeminiImageContinuationTransport.interactions =>
@@ -2570,7 +2869,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _ => '',
     };
     return ReplicatedShotGenerationRecovery(
-      stage: ReplicatedShotRecoveryStage.awaitingInitialReview,
+      stage: stage,
       orderedReferencePaths: [...generationRequest.referenceImagePaths],
       aspectRatio: generationRequest.aspectRatio,
       imageSize: generationRequest.imageSize,
@@ -2580,6 +2879,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       previousInteractionId: continuation?.previousInteractionId ?? '',
       continuationResumable: hasResumableInteraction,
       continuationDiagnostic: diagnostic,
+      productDetailRefillPrompt: productDetailRefillPrompt,
+      poseProtectionRequired: poseProtectionRequired,
     );
   }
 
@@ -2629,12 +2930,18 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required ReplicatedShotImage record,
   }) async {
     final recovery = record.generationRecovery;
-    if (recovery.stage == ReplicatedShotRecoveryStage.correctionInFlight) {
+    if (recovery.stage ==
+            ReplicatedShotRecoveryStage.productDetailRefillInFlight ||
+        recovery.stage == ReplicatedShotRecoveryStage.correctionInFlight) {
+      final detailRefillInFlight =
+          recovery.stage ==
+          ReplicatedShotRecoveryStage.productDetailRefillInFlight;
       _saveReplicatedImage(
         record.copyWith(
           status: ProcessingStatus.failed,
-          errorMessage:
-              '应用在唯一一次 Gemini 纠错请求已开始、结果尚未安全落盘时中断；无法确认该请求是否已执行或计费，为避免重复付费纠错，未再次发送图片请求。',
+          errorMessage: detailRefillInFlight
+              ? '应用在唯一一次产品局部细节回填已开始、结果尚未安全落盘时中断；无法确认请求是否已执行或计费，为避免重复付费，未再次发送图片请求。'
+              : '应用在唯一一次 Gemini 纠错请求已开始、结果尚未安全落盘时中断；无法确认该请求是否已执行或计费，为避免重复付费纠错，未再次发送图片请求。',
           updatedAt: DateTime.now().toUtc(),
         ),
       );
@@ -2651,8 +2958,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       record,
       key: 'correctionGenerationRawResponse',
     );
+    final awaitingProductDetailRefill =
+        recovery.stage ==
+        ReplicatedShotRecoveryStage.awaitingProductDetailRefill;
     final needsStoredFirstReview =
-        recovery.stage != ReplicatedShotRecoveryStage.awaitingInitialReview;
+        recovery.stage != ReplicatedShotRecoveryStage.awaitingInitialReview &&
+        !awaitingProductDetailRefill;
     final hasValidStoredFirstReview =
         storedReviews.length == 1 &&
         !storedReviews.single.passed &&
@@ -2669,6 +2980,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         recovery.imageSize.trim().isEmpty ||
         recovery.quality.trim().isEmpty ||
         storedInitialRawResponse.trim().isEmpty ||
+        (awaitingProductDetailRefill &&
+            recovery.productDetailRefillPrompt.trim().isEmpty) ||
         (needsStoredFirstReview && !hasValidStoredFirstReview) ||
         (recovery.stage ==
                 ReplicatedShotRecoveryStage.awaitingCorrectedReview &&
@@ -2711,6 +3024,19 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       rawResponse: storedInitialRawResponse,
       geminiContinuation: _restoredGeminiContinuation(recovery),
     );
+    if (awaitingProductDetailRefill) {
+      return _refillProductDetails(
+        shot: shot,
+        context: context,
+        original: original,
+        generationRequest: generationRequest,
+        initialResult: initialResult,
+        initialPersistedPath: generated.path,
+        outputDirectory: outputDirectory,
+        record: record,
+        shouldProtectPose: recovery.poseProtectionRequired,
+      );
+    }
     return _reviewAndCorrectReplicatedShot(
       shot: shot,
       context: context,
@@ -2725,12 +3051,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   static String _replicationAuditRawResponse({
     required String initialRawResponse,
+    String? productDetailRefillRawResponse,
     String? correctionRawResponse,
     required List<ReplicationGenerationReviewResult> reviews,
     required bool correctionAttempted,
     required String stoppedReason,
   }) => jsonEncode({
     'initialGenerationRawResponse': initialRawResponse,
+    'productDetailRefillRawResponse': ?productDetailRefillRawResponse,
     'correctionGenerationRawResponse': ?correctionRawResponse,
     'postGenerationReview': {
       'attempts': [for (final review in reviews) review.toJson()],
@@ -2746,6 +3074,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required bool hasPoseSkeleton,
     NanoBananaAssetManifest? nanoBananaManifest,
     NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol,
+    List<NanoBananaAuthorizedProductMark> authorizedProductMarks = const [],
   }) {
     if (NanoBananaProModelCapability.supports(model)) {
       final manifest = nanoBananaManifest;
@@ -2762,6 +3091,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               ? const ['DWPose 高精度人物姿势骨架，只锁定关节位置、肢体方向、身体重心和动作轮廓']
               : const [],
           firstRoundProtocol: nanoBananaFirstRoundProtocol,
+          authorizedProductMarks: authorizedProductMarks,
         ),
       );
     }
@@ -2782,14 +3112,14 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       '$automaticPrompt\n\n'
       '【用户补充说明：最高优先级】$instructions\n'
       '冲突处理：用户补充说明可覆盖自动解析和资产描述，但不得取消或改写“原帧主体处理计划”的逐项决策；只有计划中明确标记保留的原人物或原产品可以沿用，其他主体不得改为保留，也不得改变图片1的光线与调色。原帧配饰和道具只有用户已勾选的白名单元素可以继承；未勾选项即使在补充说明中被提及也必须移除。\n'
-      '文字例外判定：只有用户补充说明明确要求画面出现文本并给出需要逐字呈现的具体内容时，才可开放该段指定文本；其他情况仍必须执行无文字、无 Logo 硬约束。';
+      '文字例外判定：普通补充说明不能授权产品 Logo、产品名称、型号或包装文字；非产品场景只有明确给出需要逐字呈现的具体内容时才可开放该段文本，其他情况仍必须执行无文字、无 Logo 硬约束。';
 
   static const _textAndLogoExclusionConstraint =
-      '【画面文字与标识零容忍硬约束】默认输出必须是纯净无字画面。图片1及其他参考图中出现的所有文字、数字、字母、符号组合、底部字幕、标题、贴纸文字、界面文字、水印、品牌 Logo、商标、台标、角标、二维码和条形码，都只能用于理解画面，严禁复制、临摹、变体重绘、替换或新增；必须将相关区域重建为符合场景的自然无字纹理或无标识造型。即使镜头脚本、视觉解析、资产名称、资产描述或产品包装提到了这些内容，也不得出现在成图中。唯一例外：用户在“复刻补充说明”中明确要求画面出现文本，并给出需要逐字呈现的具体内容；此时只允许生成该段指定文本，仍禁止参考图中的其他任何文字或 Logo。';
+      '【画面文字与标识零容忍硬约束】默认输出必须是纯净无字画面。图片1及其他参考图中出现的所有文字、数字、字母、符号组合、底部字幕、标题、贴纸文字、界面文字、水印、品牌 Logo、商标、台标、角标、二维码和条形码，都只能用于理解画面，严禁复制、临摹、变体重绘、替换或新增；必须将相关区域重建为符合场景的自然无字纹理或无标识造型。即使镜头脚本、视觉解析、资产名称、资产描述或产品包装提到了这些内容，也不得出现在成图中。产品 Logo、产品名称、型号与包装文字的唯一例外是结构化“授权标识白名单”；普通复刻补充说明不能授权产品标识。非产品场景只有用户明确给出需要逐字呈现的具体文本时可开放该段文本，其他文字与标识仍禁止。';
 
   static String _appendFinalTextSafetyCheck(String prompt) =>
       '${prompt.trim()}\n\n'
-      '【最终输出复核】若用户未在“复刻补充说明”中明确给出需要逐字出现的具体文本，成图必须完全不含任何文字、数字、字母、符号组合、字幕、水印、Logo、商标、台标、角标、二维码或条形码；若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。';
+      '【最终输出复核】产品文字与标识只服从结构化授权白名单；普通复刻补充说明不能授权产品 Logo、名称、型号或包装文字。非产品场景未明确给出逐字文本时，成图必须完全不含任何文字、数字、字母、符号组合、字幕、水印、Logo、商标、台标、角标、二维码或条形码；已明确给出时也只允许该段指定文本。';
 
   String _generationPrompt(
     ScriptShot shot,

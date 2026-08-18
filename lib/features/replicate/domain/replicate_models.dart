@@ -260,6 +260,8 @@ class ShotPrompt {
 
 enum ReplicatedShotRecoveryStage {
   none,
+  awaitingProductDetailRefill,
+  productDetailRefillInFlight,
   awaitingInitialReview,
   awaitingCorrection,
   correctionInFlight,
@@ -281,9 +283,11 @@ class ReplicatedShotGenerationRecovery {
     this.previousInteractionId = '',
     this.continuationResumable = false,
     this.continuationDiagnostic = '',
+    this.productDetailRefillPrompt = '',
+    this.poseProtectionRequired = false,
   });
 
-  static const schemaVersion = 2;
+  static const schemaVersion = 3;
   static const empty = ReplicatedShotGenerationRecovery();
 
   final ReplicatedShotRecoveryStage stage;
@@ -297,6 +301,8 @@ class ReplicatedShotGenerationRecovery {
   final String previousInteractionId;
   final bool continuationResumable;
   final String continuationDiagnostic;
+  final String productDetailRefillPrompt;
+  final bool poseProtectionRequired;
 
   bool get isEmpty => stage == ReplicatedShotRecoveryStage.none;
 
@@ -319,6 +325,8 @@ class ReplicatedShotGenerationRecovery {
     String? previousInteractionId,
     bool? continuationResumable,
     String? continuationDiagnostic,
+    String? productDetailRefillPrompt,
+    bool? poseProtectionRequired,
   }) => ReplicatedShotGenerationRecovery(
     stage: stage ?? this.stage,
     orderedReferencePaths: orderedReferencePaths ?? this.orderedReferencePaths,
@@ -332,6 +340,10 @@ class ReplicatedShotGenerationRecovery {
     continuationResumable: continuationResumable ?? this.continuationResumable,
     continuationDiagnostic:
         continuationDiagnostic ?? this.continuationDiagnostic,
+    productDetailRefillPrompt:
+        productDetailRefillPrompt ?? this.productDetailRefillPrompt,
+    poseProtectionRequired:
+        poseProtectionRequired ?? this.poseProtectionRequired,
   );
 
   Map<String, Object?> toJson() {
@@ -344,6 +356,9 @@ class ReplicatedShotGenerationRecovery {
       'imageSize': imageSize,
       'quality': quality,
       'reviewAttempts': reviewAttempts,
+      if (productDetailRefillPrompt.isNotEmpty)
+        'productDetailRefillPrompt': productDetailRefillPrompt,
+      'poseProtectionRequired': poseProtectionRequired,
       'continuation': {
         'transport': continuationTransport.name,
         'apiModel': continuationApiModel,
@@ -357,7 +372,11 @@ class ReplicatedShotGenerationRecovery {
   }
 
   factory ReplicatedShotGenerationRecovery.fromJson(Map<String, Object?> json) {
-    if (json.isEmpty || json['schemaVersion'] != schemaVersion) return empty;
+    final storedSchemaVersion = json['schemaVersion'];
+    if (json.isEmpty ||
+        (storedSchemaVersion != 2 && storedSchemaVersion != schemaVersion)) {
+      return empty;
+    }
     final stageName = json['stage']?.toString() ?? '';
     final stage = ReplicatedShotRecoveryStage.values
         .where((value) => value.name == stageName)
@@ -400,6 +419,11 @@ class ReplicatedShotGenerationRecovery {
           continuation['previousInteractionId']?.toString() ?? '',
       continuationResumable: continuation['resumable'] == true,
       continuationDiagnostic: continuation['diagnostic']?.toString() ?? '',
+      productDetailRefillPrompt:
+          json['productDetailRefillPrompt']?.toString() ?? '',
+      poseProtectionRequired: storedSchemaVersion == 2
+          ? true
+          : json['poseProtectionRequired'] == true,
     );
   }
 }

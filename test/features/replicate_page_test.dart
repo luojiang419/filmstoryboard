@@ -1997,6 +1997,53 @@ void main() {
     );
     expect(productBLink.matchReason, contains('产品B'));
 
+    final configureProductMark = find.byKey(
+      ValueKey('configure-product-mark-${shot.id}-1'),
+    );
+    await tester.scrollUntilVisible(
+      configureProductMark,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+    expect(find.text('产品文字与标识授权白名单'), findsOneWidget);
+    expect(find.text('默认关闭'), findsOneWidget);
+    await tester.tap(configureProductMark);
+    await tester.pumpAndSettle();
+    expect(find.text('产品B标识授权'), findsOneWidget);
+    await tester.tap(
+      find.byKey(ValueKey('product-mark-type-${shot.id}-1-productName')),
+    );
+    await tester.enterText(
+      find.byKey(ValueKey('product-mark-location-${shot.id}-1')),
+      '包装正面',
+    );
+    await tester.enterText(
+      find.byKey(ValueKey('product-mark-exact-text-${shot.id}-1')),
+      'FILM B',
+    );
+    await tester.tap(find.byKey(ValueKey('confirm-product-mark-${shot.id}-1')));
+    await tester.pumpAndSettle();
+    final confirmedAuthorization = replicateController
+        .shotGuideFor(shot.id)!
+        .productMarkAuthorizations
+        .single;
+    expect(confirmedAuthorization.productSlotIndex, 1);
+    expect(confirmedAuthorization.referenceAssetId, productScriptAsset.id);
+    expect(confirmedAuthorization.isAuthorized, isTrue);
+    expect(confirmedAuthorization.exactText, 'FILM B');
+    expect(find.textContaining('已确认生效'), findsOneWidget);
+
+    await tester.tap(find.byKey(ValueKey('revoke-product-mark-${shot.id}-1')));
+    await tester.pump();
+    final revokedAuthorization = replicateController
+        .shotGuideFor(shot.id)!
+        .productMarkAuthorizations
+        .single;
+    expect(revokedAuthorization.enabled, isFalse);
+    expect(revokedAuthorization.status, ReplicateAuthorizationStatus.revoked);
+    expect(revokedAuthorization.confirmedAt, isNull);
+
     final removeProductB = find.byKey(
       ValueKey('remove-detected-subject-asset-slot-${shot.id}-product:1'),
     );
@@ -2022,6 +2069,11 @@ void main() {
       ),
       isEmpty,
       reason: '移除整个参考图格子时也应清理其资产绑定，不能转成补充资产格子',
+    );
+    expect(
+      replicateController.shotGuideFor(shot.id)?.productMarkAuthorizations,
+      isEmpty,
+      reason: '移除产品槽时必须同时删除该槽旧授权',
     );
 
     await tester.tap(

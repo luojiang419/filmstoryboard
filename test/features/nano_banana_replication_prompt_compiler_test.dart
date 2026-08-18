@@ -1,5 +1,7 @@
 import 'package:filmstoryboard/features/replicate/domain/nano_banana_asset_manifest.dart';
+import 'package:filmstoryboard/features/replicate/domain/nano_banana_product_detail_refill_protocol.dart';
 import 'package:filmstoryboard/features/replicate/domain/nano_banana_replication_prompt_compiler.dart';
+import 'package:filmstoryboard/features/replicate/domain/replicate_asset_preparation_models.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -176,5 +178,58 @@ void main() {
     expect(prompt, contains('图片4是正面视图，与图片3共同属于同一完整穿搭资产，槽位A'));
     expect(prompt, contains('图片5是背面视图，与图片3共同属于同一完整穿搭资产，槽位A'));
     expect(prompt, contains('不得覆盖主视图锁定的整体身份、轮廓、比例、颜色'));
+  });
+
+  test('结构化产品标识白名单可进入首轮提示词，普通补充说明不能替代授权', () {
+    final manifest = NanoBananaAssetManifest.build(
+      sourceFrameId: 'source',
+      sourceFramePath: 'source.png',
+      productAssets: const [
+        NanoBananaAssetInput.product(
+          assetId: 'product-a',
+          path: 'product-a.png',
+          slotIndex: 0,
+        ),
+      ],
+      productDetailAssets: const [
+        NanoBananaAssetInput.productDetail(
+          assetId: 'detail-a',
+          path: 'detail-a.png',
+          productSlotIndex: 0,
+        ),
+      ],
+    );
+    final firstRound = NanoBananaFirstRoundProtocol.build(manifest: manifest);
+    final refill = NanoBananaProductDetailRefillProtocol.build(
+      firstRoundProtocol: firstRound,
+      markAuthorizations: [
+        ReplicateProductMarkAuthorization(
+          productSlotIndex: 0,
+          enabled: true,
+          referenceAssetId: 'detail-a',
+          exactText: 'FILM A',
+          allowedTypes: const [ReplicateAuthorizedMarkType.productName],
+          status: ReplicateAuthorizationStatus.confirmed,
+          confirmedAt: DateTime.utc(2026, 8, 18),
+          location: '包装正面',
+        ),
+      ],
+    );
+
+    final prompt = const NanoBananaReplicationPromptCompiler().compile(
+      NanoBananaReplicationPromptInput(
+        model: 'nano-banana-pro-vip',
+        automaticPrompt: '替换产品。',
+        manifest: manifest,
+        userInstructions: '再加一个未经授权的 OTHER Logo',
+        firstRoundProtocol: firstRound,
+        authorizedProductMarks: refill.authorizedMarks,
+      ),
+    );
+
+    expect(prompt, contains('产品槽位A：仅可依据图片3'));
+    expect(prompt, contains('逐字文本必须且只能是“FILM A”'));
+    expect(prompt, contains('普通复刻补充说明不能授权产品 Logo'));
+    expect(prompt, contains('白名单之外的任何文字或标识均未获授权'));
   });
 }

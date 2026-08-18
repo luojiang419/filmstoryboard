@@ -6058,6 +6058,11 @@ class _PrepareAssetsContent extends StatelessWidget {
             slotIndex: slotIndex,
             linked: linked,
           ),
+      onSetProductMarkAuthorization: (shotId, authorization) =>
+          controller.setProductMarkAuthorization(
+            shotId: shotId,
+            authorization: authorization,
+          ),
       onRemoveSubject: controller.removeDetectedSubject,
       onAddPreservedElement: controller.addManualPreservedElement,
       onReplicateShot: controller.replicateShot,
@@ -6118,6 +6123,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.onSetFullOutfitPrimaryView,
     required this.onSplitFullOutfit,
     required this.onSetWearableProductLink,
+    required this.onSetProductMarkAuthorization,
     required this.onRemoveSubject,
     required this.onAddPreservedElement,
     required this.onReplicateShot,
@@ -6211,6 +6217,11 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   onSplitFullOutfit;
   final bool Function(String shotId, int slotIndex, bool linked)
   onSetWearableProductLink;
+  final bool Function(
+    String shotId,
+    ReplicateProductMarkAuthorization authorization,
+  )
+  onSetProductMarkAuthorization;
   final void Function(String shotId, String subjectId) onRemoveSubject;
   final void Function(String shotId, String label) onAddPreservedElement;
   final Future<bool> Function(String shotId) onReplicateShot;
@@ -6470,6 +6481,8 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                           ),
                   onSetWearableProductLink: (slotIndex, linked) => widget
                       .onSetWearableProductLink(shot.id, slotIndex, linked),
+                  onSetProductMarkAuthorization: (authorization) => widget
+                      .onSetProductMarkAuthorization(shot.id, authorization),
                   onRemoveSubject: (subjectId) =>
                       widget.onRemoveSubject(shot.id, subjectId),
                   onAddPreservedElement: (label) =>
@@ -6521,6 +6534,7 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onSetFullOutfitPrimaryView,
     required this.onSplitFullOutfit,
     required this.onSetWearableProductLink,
+    required this.onSetProductMarkAuthorization,
     required this.onRemoveSubject,
     required this.onAddPreservedElement,
     required this.replicatedImage,
@@ -6599,6 +6613,8 @@ class _ShotAssetDropRow extends StatelessWidget {
   )
   onSplitFullOutfit;
   final bool Function(int slotIndex, bool linked) onSetWearableProductLink;
+  final bool Function(ReplicateProductMarkAuthorization authorization)
+  onSetProductMarkAuthorization;
   final ValueChanged<String> onRemoveSubject;
   final ValueChanged<String> onAddPreservedElement;
   final ReplicatedShotImage? replicatedImage;
@@ -6801,6 +6817,14 @@ class _ShotAssetDropRow extends StatelessWidget {
                   isCurrent: guideIsCurrent,
                   onToggleElement: onTogglePreservedElement,
                   onAddElement: onAddPreservedElement,
+                ),
+                const SizedBox(height: 8),
+                _ProductMarkAuthorizationPanel(
+                  shot: shot,
+                  guide: guide,
+                  isCurrent: guideIsCurrent,
+                  referenceOptions: _productMarkReferenceOptions(),
+                  onSave: onSetProductMarkAuthorization,
                 ),
               ],
             )
@@ -7152,6 +7176,33 @@ class _ShotAssetDropRow extends StatelessWidget {
     );
   }
 
+  List<_ProductMarkReferenceOption> _productMarkReferenceOptions() {
+    final options = <_ProductMarkReferenceOption>[];
+    for (final link in links) {
+      final slot = ScriptAssetSlotPolicy.presetSlotForSortOrder(link.sortOrder);
+      if (slot == null ||
+          (slot.kind != ScriptAssetPresetSlotKind.product &&
+              slot.kind != ScriptAssetPresetSlotKind.productDetail)) {
+        continue;
+      }
+      final asset = bindingState.assetById(link.scriptAssetId);
+      if (asset == null) continue;
+      options.add(
+        _ProductMarkReferenceOption(
+          assetId: asset.id,
+          productSlotIndex: slot.productIndex,
+          label:
+              '${slot.kind == ScriptAssetPresetSlotKind.productDetail ? '细节图' : '产品主图'} · ${asset.name}',
+        ),
+      );
+    }
+    options.sort((left, right) {
+      final slotOrder = left.productSlotIndex.compareTo(right.productSlotIndex);
+      return slotOrder != 0 ? slotOrder : left.label.compareTo(right.label);
+    });
+    return options;
+  }
+
   Future<void> _openPoseEditor(BuildContext context) async {
     final pose = guide?.editablePose ?? ReplicateEditablePoseData.empty;
     if (pose.isEmpty) return;
@@ -7455,6 +7506,444 @@ String _detectedSubjectBindingLabel(
   final prefix = subject.type == ReplicateSubjectType.person ? '模特' : '产品';
   if (count <= 1 && subject.slotIndex == 0) return prefix;
   return '$prefix${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}';
+}
+
+class _ProductMarkReferenceOption {
+  const _ProductMarkReferenceOption({
+    required this.assetId,
+    required this.productSlotIndex,
+    required this.label,
+  });
+
+  final String assetId;
+  final int productSlotIndex;
+  final String label;
+}
+
+class _ProductMarkAuthorizationPanel extends StatelessWidget {
+  const _ProductMarkAuthorizationPanel({
+    required this.shot,
+    required this.guide,
+    required this.isCurrent,
+    required this.referenceOptions,
+    required this.onSave,
+  });
+
+  final ScriptShot shot;
+  final ReplicateShotGuide? guide;
+  final bool isCurrent;
+  final List<_ProductMarkReferenceOption> referenceOptions;
+  final bool Function(ReplicateProductMarkAuthorization authorization) onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final linkedSlots = {
+      for (final link
+          in guide?.wearableProductLinks ??
+              const <ReplicateWearableProductLink>[])
+        if (link.linked) link.productSlotIndex,
+    };
+    final productSlots = [
+      for (final subject
+          in guide?.subjects ?? const <ReplicateDetectedSubject>[])
+        if (subject.type == ReplicateSubjectType.product &&
+            subject.decision == ReplicateSubjectDecision.replace &&
+            !linkedSlots.contains(subject.slotIndex))
+          subject.slotIndex,
+    ]..sort();
+    final authorizations = {
+      for (final authorization
+          in guide?.productMarkAuthorizations ??
+              const <ReplicateProductMarkAuthorization>[])
+        authorization.productSlotIndex: authorization,
+    };
+    return DecoratedBox(
+      key: ValueKey('product-mark-authorization-panel-${shot.id}'),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.verified_user_outlined,
+                  size: 18,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    '产品文字与标识授权白名单',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const Chip(
+                  label: Text('默认关闭'),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            Text(
+              '普通复刻说明不能授权产品 Logo、名称、型号或包装文字。只有逐产品选择参考图、准确位置并明确确认后，白名单才会生效。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (!isCurrent) ...[
+              const SizedBox(height: 6),
+              Text(
+                '原帧分析已过期，请重新解析后再配置授权。',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.error),
+              ),
+            ] else if (productSlots.isEmpty) ...[
+              const SizedBox(height: 6),
+              const Text('当前没有可配置的独立替换产品；完整穿搭联动产品不在此处单独授权。'),
+            ] else ...[
+              const SizedBox(height: 8),
+              for (final slotIndex in productSlots) ...[
+                _buildSlotRow(
+                  context,
+                  slotIndex: slotIndex,
+                  authorization: authorizations[slotIndex],
+                  options: [
+                    for (final option in referenceOptions)
+                      if (option.productSlotIndex == slotIndex) option,
+                  ],
+                ),
+                if (slotIndex != productSlots.last) const SizedBox(height: 7),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSlotRow(
+    BuildContext context, {
+    required int slotIndex,
+    required ReplicateProductMarkAuthorization? authorization,
+    required List<_ProductMarkReferenceOption> options,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final referenceAvailable =
+        authorization == null ||
+        options.any(
+          (option) => option.assetId == authorization.referenceAssetId,
+        );
+    final staleReference =
+        authorization?.isAuthorized == true && !referenceAvailable;
+    final authorized =
+        authorization?.isAuthorized == true && referenceAvailable;
+    final pending =
+        authorization?.enabled == true && !authorized && !staleReference;
+    final status = authorized
+        ? '已确认生效'
+        : staleReference
+        ? '参考图已变化，需重新确认'
+        : pending
+        ? '等待明确确认'
+        : authorization?.status == ReplicateAuthorizationStatus.revoked
+        ? '已撤销'
+        : '未启用';
+    return DecoratedBox(
+      key: ValueKey('product-mark-authorization-${shot.id}-$slotIndex'),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(
+          color: authorized
+              ? scheme.primary.withValues(alpha: 0.55)
+              : scheme.outlineVariant,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '产品${ScriptAssetSlotPolicy.characterSuffix(slotIndex)} · $status',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: authorized ? scheme.primary : null,
+                    ),
+                  ),
+                  if (authorization != null && authorization.enabled)
+                    Text(
+                      [
+                        authorization.location,
+                        authorization.allowedTypes
+                            .map(_markTypeLabel)
+                            .join('、'),
+                        if (authorization.exactText.isNotEmpty)
+                          '“${authorization.exactText}”',
+                      ].where((text) => text.trim().isNotEmpty).join(' · '),
+                      style: Theme.of(context).textTheme.labelSmall,
+                    )
+                  else
+                    Text(
+                      options.isEmpty ? '请先绑定本产品的主图或细节图。' : '不会生成或继承任何产品文字与标识。',
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                ],
+              ),
+            ),
+            if (authorization?.enabled == true)
+              TextButton(
+                key: ValueKey('revoke-product-mark-${shot.id}-$slotIndex'),
+                onPressed: () => onSave(
+                  authorization!.copyWith(
+                    enabled: false,
+                    status: ReplicateAuthorizationStatus.revoked,
+                    clearConfirmedAt: true,
+                  ),
+                ),
+                child: const Text('撤销'),
+              ),
+            OutlinedButton(
+              key: ValueKey('configure-product-mark-${shot.id}-$slotIndex'),
+              onPressed: options.isEmpty
+                  ? null
+                  : () => _showAuthorizationDialog(
+                      context,
+                      slotIndex: slotIndex,
+                      authorization: authorization,
+                      options: options,
+                    ),
+              child: Text(authorization == null ? '配置' : '编辑'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAuthorizationDialog(
+    BuildContext context, {
+    required int slotIndex,
+    required ReplicateProductMarkAuthorization? authorization,
+    required List<_ProductMarkReferenceOption> options,
+  }) async {
+    var enabled = authorization?.enabled ?? true;
+    var selectedReferenceId =
+        options.any(
+          (option) => option.assetId == authorization?.referenceAssetId,
+        )
+        ? authorization!.referenceAssetId
+        : options.first.assetId;
+    final selectedTypes = <ReplicateAuthorizedMarkType>{
+      ...?authorization?.allowedTypes,
+    };
+    final exactTextController = TextEditingController(
+      text: authorization?.exactText ?? '',
+    );
+    final locationController = TextEditingController(
+      text: authorization?.location ?? '',
+    );
+    String errorText = '';
+    final result = await showDialog<ReplicateProductMarkAuthorization>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          ReplicateProductMarkAuthorization draft(
+            ReplicateAuthorizationStatus status,
+          ) => ReplicateProductMarkAuthorization(
+            productSlotIndex: slotIndex,
+            enabled: enabled,
+            referenceAssetId: selectedReferenceId,
+            exactText: exactTextController.text,
+            allowedTypes: selectedTypes.toList(),
+            status: status,
+            confirmedAt: status == ReplicateAuthorizationStatus.confirmed
+                ? DateTime.now().toUtc()
+                : null,
+            location: locationController.text,
+          );
+
+          void confirm() {
+            final requiresText = selectedTypes.any(
+              (type) => type != ReplicateAuthorizedMarkType.logo,
+            );
+            final error = !enabled
+                ? '请先启用授权白名单。'
+                : selectedTypes.isEmpty
+                ? '请至少选择一种允许的标识类型。'
+                : locationController.text.trim().isEmpty
+                ? '请填写标识在产品上的准确位置。'
+                : requiresText && exactTextController.text.trim().isEmpty
+                ? '名称、型号或包装文字必须填写逐字准确文本。'
+                : '';
+            if (error.isNotEmpty) {
+              setDialogState(() => errorText = error);
+              return;
+            }
+            Navigator.of(
+              dialogContext,
+            ).pop(draft(ReplicateAuthorizationStatus.confirmed));
+          }
+
+          return AlertDialog(
+            title: Text(
+              '产品${ScriptAssetSlotPolicy.characterSuffix(slotIndex)}标识授权',
+            ),
+            content: SizedBox(
+              width: 520,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SwitchListTile(
+                      key: ValueKey(
+                        'enable-product-mark-${shot.id}-$slotIndex',
+                      ),
+                      contentPadding: EdgeInsets.zero,
+                      value: enabled,
+                      onChanged: (value) => setDialogState(() {
+                        enabled = value;
+                        errorText = '';
+                      }),
+                      title: const Text('启用本产品授权白名单'),
+                      subtitle: const Text('关闭时保持零文字、零标识。'),
+                    ),
+                    DropdownButtonFormField<String>(
+                      key: ValueKey(
+                        'product-mark-reference-${shot.id}-$slotIndex',
+                      ),
+                      initialValue: selectedReferenceId,
+                      decoration: const InputDecoration(labelText: '权威参考图'),
+                      items: [
+                        for (final option in options)
+                          DropdownMenuItem(
+                            value: option.assetId,
+                            child: Text(option.label),
+                          ),
+                      ],
+                      onChanged: enabled
+                          ? (value) => setDialogState(() {
+                              selectedReferenceId =
+                                  value ?? selectedReferenceId;
+                              errorText = '';
+                            })
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('允许的标识类型'),
+                    const SizedBox(height: 5),
+                    Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: [
+                        for (final type in ReplicateAuthorizedMarkType.values)
+                          FilterChip(
+                            key: ValueKey(
+                              'product-mark-type-${shot.id}-$slotIndex-${type.name}',
+                            ),
+                            label: Text(_markTypeLabel(type)),
+                            selected: selectedTypes.contains(type),
+                            onSelected: enabled
+                                ? (selected) => setDialogState(() {
+                                    selected
+                                        ? selectedTypes.add(type)
+                                        : selectedTypes.remove(type);
+                                    errorText = '';
+                                  })
+                                : null,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: ValueKey(
+                        'product-mark-location-${shot.id}-$slotIndex',
+                      ),
+                      controller: locationController,
+                      enabled: enabled,
+                      decoration: const InputDecoration(
+                        labelText: '准确位置（必填）',
+                        hintText: '例如：鞋舌正面、包装盒右下角',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      key: ValueKey(
+                        'product-mark-exact-text-${shot.id}-$slotIndex',
+                      ),
+                      controller: exactTextController,
+                      enabled: enabled,
+                      decoration: const InputDecoration(
+                        labelText: '逐字文本',
+                        hintText: '名称、型号或包装文字必填；纯图形 Logo 可留空',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      '确认后只授权所选产品槽位、参考图、类型、位置和逐字文本的交集；不会授权素材中的其他文字或标识。',
+                    ),
+                    if (errorText.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        errorText,
+                        key: ValueKey(
+                          'product-mark-error-${shot.id}-$slotIndex',
+                        ),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                key: ValueKey(
+                  'save-pending-product-mark-${shot.id}-$slotIndex',
+                ),
+                onPressed: () => Navigator.of(
+                  dialogContext,
+                ).pop(draft(ReplicateAuthorizationStatus.unconfirmed)),
+                child: const Text('保存待确认'),
+              ),
+              FilledButton(
+                key: ValueKey('confirm-product-mark-${shot.id}-$slotIndex'),
+                onPressed: confirm,
+                child: const Text('确认并授权'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (result != null) onSave(result);
+  }
+
+  static String _markTypeLabel(ReplicateAuthorizedMarkType type) =>
+      switch (type) {
+        ReplicateAuthorizedMarkType.logo => 'Logo/图形商标',
+        ReplicateAuthorizedMarkType.productName => '产品名称',
+        ReplicateAuthorizedMarkType.model => '型号',
+        ReplicateAuthorizedMarkType.packagingText => '包装文字',
+      };
 }
 
 class _ShotFrameGuidePanel extends StatelessWidget {

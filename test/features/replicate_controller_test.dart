@@ -442,6 +442,38 @@ void main() {
       await root.delete(recursive: true);
     });
 
+    expect(
+      controller.setProductMarkAuthorization(
+        shotId: shot.id,
+        authorization: const ReplicateProductMarkAuthorization(
+          productSlotIndex: 0,
+          enabled: true,
+          referenceAssetId: '  asset-detail  ',
+          exactText: '  FILM A  ',
+          allowedTypes: [
+            ReplicateAuthorizedMarkType.productName,
+            ReplicateAuthorizedMarkType.productName,
+            ReplicateAuthorizedMarkType.logo,
+          ],
+          status: ReplicateAuthorizationStatus.confirmed,
+          location: '  鞋舌正面  ',
+        ),
+      ),
+      isTrue,
+    );
+    var authorization = repository
+        .getShotGuide(shot.id)!
+        .productMarkAuthorizations
+        .single;
+    expect(authorization.referenceAssetId, 'asset-detail');
+    expect(authorization.exactText, 'FILM A');
+    expect(authorization.location, '鞋舌正面');
+    expect(authorization.allowedTypes, [
+      ReplicateAuthorizedMarkType.logo,
+      ReplicateAuthorizedMarkType.productName,
+    ]);
+    expect(authorization.confirmedAt, isNotNull);
+
     for (final entry in const [
       (ReplicateOutfitViewRole.front, 'asset-front'),
       (ReplicateOutfitViewRole.side, 'asset-side'),
@@ -485,6 +517,11 @@ void main() {
       ),
       isTrue,
     );
+    expect(
+      repository.getShotGuide(shot.id)?.productMarkAuthorizations,
+      isEmpty,
+      reason: '完整穿搭联动启用后，独立产品参考已退出生成，旧授权必须失效',
+    );
 
     controller.setDetectedSubjectDecision(
       shot.id,
@@ -515,6 +552,21 @@ void main() {
     expect(
       repository.getShotGuide(shot.id)?.subjects.last.decision,
       ReplicateSubjectDecision.keep,
+    );
+    expect(
+      controller.setProductMarkAuthorization(
+        shotId: shot.id,
+        authorization: const ReplicateProductMarkAuthorization(
+          productSlotIndex: 0,
+          enabled: true,
+          referenceAssetId: 'asset-detail',
+          allowedTypes: [ReplicateAuthorizedMarkType.logo],
+          status: ReplicateAuthorizationStatus.confirmed,
+          location: '鞋舌正面',
+        ),
+      ),
+      isFalse,
+      reason: '产品不再处于替换状态时不能恢复旧授权',
     );
   });
 
@@ -2045,6 +2097,21 @@ void main() {
         ],
         actionDescription: '人物三分之二侧身，右手在胸前持产品',
         poseConstraints: '锁定头肩夹角、右肘角度和右腕位置',
+        productMarkAuthorizations: [
+          ReplicateProductMarkAuthorization(
+            productSlotIndex: 0,
+            enabled: true,
+            referenceAssetId: productDetailAssetId,
+            exactText: 'FILM A',
+            allowedTypes: const [
+              ReplicateAuthorizedMarkType.logo,
+              ReplicateAuthorizedMarkType.productName,
+            ],
+            status: ReplicateAuthorizationStatus.confirmed,
+            confirmedAt: now,
+            location: '瓶身正面',
+          ),
+        ],
         skeletonPath: skeleton.path,
         analysisStatus: ProcessingStatus.completed,
         poseStatus: ProcessingStatus.completed,
@@ -2119,9 +2186,10 @@ void main() {
     );
     expect(controller.value.run?.inheritSourceAspectRatio, isTrue);
     expect(await controller.replicateShot(first.id), isTrue);
-    expect(imageService.requests.single.aspectRatio, '4:3');
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests.first.aspectRatio, '4:3');
     expect(
-      imageService.requests.single.referenceImagePaths,
+      imageService.requests.first.referenceImagePaths,
       [
         frame1.path,
         skeleton.path,
@@ -2135,6 +2203,40 @@ void main() {
       ],
       reason: '默认关闭多视图增强时必须逐字传递用户原始资产路径',
     );
+    expect(imageService.requests.last.referenceImagePaths, isEmpty);
+    expect(imageService.requests.last.geminiContinuation, isNotNull);
+    expect(imageService.requests.last.prompt, contains('【产品局部细节单次回填】'));
+    expect(imageService.requests.last.prompt, contains('产品槽位A使用图片5'));
+    expect(imageService.requests.last.prompt, contains('逐字文本必须且只能是“FILM A”'));
+    final replicateRepository = ReplicateRepository(database);
+    final completedBeforeInFlightGuard = controller.value.replicatedImages
+        .firstWhere((image) => image.scriptShotId == first.id);
+    replicateRepository.upsertReplicatedShotImage(
+      completedBeforeInFlightGuard.copyWith(
+        generationRecovery: const ReplicatedShotGenerationRecovery(
+          stage: ReplicatedShotRecoveryStage.productDetailRefillInFlight,
+        ),
+        status: ProcessingStatus.running,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      ),
+    );
+    controller.refresh();
+    final detailInFlightRequestStart = imageService.requests.length;
+    expect(await controller.replicateShot(first.id), isFalse);
+    expect(
+      imageService.requests.length,
+      detailInFlightRequestStart,
+      reason: '局部回填已经派发但尚未安全落盘时，恢复流程不得重复付费请求',
+    );
+    expect(
+      controller.value.replicatedImages
+          .firstWhere((image) => image.scriptShotId == first.id)
+          .errorMessage,
+      contains('为避免重复付费'),
+    );
+    replicateRepository.upsertReplicatedShotImage(completedBeforeInFlightGuard);
+    controller.refresh();
     expect(visionService.completionPrompts, isEmpty);
     expect(
       Directory(
@@ -2194,7 +2296,20 @@ void main() {
       ..requestStarted = null
       ..requestGate = null;
 
-    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests, hasLength(3));
+    final firstShotRequest = imageService.requests.singleWhere(
+      (request) =>
+          request.referenceImagePaths.isNotEmpty &&
+          request.referenceImagePaths.first == frame1.path,
+    );
+    final secondShotRequest = imageService.requests.singleWhere(
+      (request) =>
+          request.referenceImagePaths.isNotEmpty &&
+          request.referenceImagePaths.first == frame2.path,
+    );
+    final detailRefillRequest = imageService.requests.singleWhere(
+      (request) => request.referenceImagePaths.isEmpty,
+    );
     expect(
       imageService.requests.every(
         (request) => request.aspectRatio == generationAspectRatio,
@@ -2213,9 +2328,9 @@ void main() {
       ),
       isTrue,
     );
-    expect(imageService.requests[0].referenceImagePaths.first, frame1.path);
-    expect(imageService.requests[1].referenceImagePaths.first, frame2.path);
-    expect(imageService.requests[0].referenceImagePaths, [
+    expect(firstShotRequest.referenceImagePaths.first, frame1.path);
+    expect(secondShotRequest.referenceImagePaths.first, frame2.path);
+    expect(firstShotRequest.referenceImagePaths, [
       frame1.path,
       skeleton.path,
       character.path,
@@ -2226,31 +2341,22 @@ void main() {
       productDetailB.path,
       scene.path,
     ]);
-    expect(imageService.requests[1].referenceImagePaths, [
-      frame2.path,
-      product.path,
-    ]);
+    expect(secondShotRequest.referenceImagePaths, [frame2.path, product.path]);
     expect(
-      imageService.requests[0].referenceImagePaths,
+      firstShotRequest.referenceImagePaths,
       isNot(contains(unboundProp.path)),
     );
-    expect(imageService.requests[0].prompt, contains('图片1'));
-    expect(imageService.requests[0].prompt, contains('替换'));
+    expect(firstShotRequest.prompt, contains('图片1'));
+    expect(firstShotRequest.prompt, contains('替换'));
     expect(visionService.analyzeCount, 0);
     expect(visionService.completionPrompts, isEmpty);
-    expect(
-      imageService.requests[0].prompt,
-      isNot(contains('【视觉模型对原帧的结构维度解析】')),
-    );
-    expect(imageService.requests[0].prompt, contains('人物三分之二侧身'));
-    expect(imageService.requests[0].prompt, isNot(contains('女模特在窗边展示产品')));
-    expect(imageService.requests[0].prompt, isNot(contains('蓝色包装瓶')));
-    expect(imageService.requests[0].prompt, isNot(contains('叙事画面')));
-    expect(imageService.requests[0].prompt, isNot(contains('画面细节')));
-    expect(
-      imageService.requests[0].prompt,
-      contains('【Nano Banana Pro 确定性精准复刻协议】'),
-    );
+    expect(firstShotRequest.prompt, isNot(contains('【视觉模型对原帧的结构维度解析】')));
+    expect(firstShotRequest.prompt, contains('人物三分之二侧身'));
+    expect(firstShotRequest.prompt, isNot(contains('女模特在窗边展示产品')));
+    expect(firstShotRequest.prompt, isNot(contains('蓝色包装瓶')));
+    expect(firstShotRequest.prompt, isNot(contains('叙事画面')));
+    expect(firstShotRequest.prompt, isNot(contains('画面细节')));
+    expect(firstShotRequest.prompt, contains('【Nano Banana Pro 确定性精准复刻协议】'));
     expect(imageService.requests[0].prompt, contains('图片1是原帧编辑底图'));
     expect(imageService.requests[0].prompt, contains('【原帧主体处理计划】'));
     expect(imageService.requests[0].prompt, contains('左侧人物（人物槽位1）：替换'));
@@ -2309,7 +2415,11 @@ void main() {
       imageService.requests[0].prompt,
       contains('完整沿用图片1中该产品或服装的轮廓、结构、颜色、材质、细节与穿着/接触关系'),
     );
-    expect(imageService.requests[1].prompt, isNot(contains('人物必须使用图片2')));
+    expect(secondShotRequest.prompt, isNot(contains('人物必须使用图片2')));
+    expect(firstShotRequest.prompt, contains('【授权标识白名单：只允许以下精确项目】'));
+    expect(firstShotRequest.prompt, contains('产品槽位A：仅可依据图片5'));
+    expect(detailRefillRequest.prompt, contains('【产品局部细节单次回填】'));
+    expect(detailRefillRequest.prompt, contains('不得新增、删除或移动任何主体'));
     expect(imageService.requests[0].prompt, isNot(contains('不要机械拼贴或照抄参考图版式')));
     controller.setDetectedSubjectDecision(
       first.id,
@@ -2322,7 +2432,9 @@ void main() {
       ReplicateSubjectDecision.keep,
     );
     expect(await controller.replicateShot(first.id), isTrue);
-    final mixedDecisionRequest = imageService.requests.last;
+    final mixedDecisionRequest = imageService.requests.lastWhere(
+      (request) => request.referenceImagePaths.isNotEmpty,
+    );
     expect(mixedDecisionRequest.prompt, contains('右侧人物（人物槽位2）：移除'));
     expect(mixedDecisionRequest.prompt, contains('右侧产品（产品槽位2）：保留'));
     expect(
@@ -2429,18 +2541,23 @@ void main() {
       reason: 'Nano Banana Pro 最终提示词必须由确定性编译器合并，不得调用视觉模型自由改写',
     );
     expect(
-      imageService.requests.last.prompt,
+      imageService.requests
+          .lastWhere((request) => request.referenceImagePaths.isNotEmpty)
+          .prompt,
       isNot(contains(visionService.resolvedPrompt)),
     );
+    final instructedFirstRoundRequest = imageService.requests.lastWhere(
+      (request) => request.referenceImagePaths.isNotEmpty,
+    );
     expect(
-      imageService.requests.last.prompt,
+      instructedFirstRoundRequest.prompt,
       contains('【Nano Banana Pro 确定性精准复刻协议】'),
     );
-    expect(imageService.requests.last.prompt, contains('【用户补充说明：确定性合并】'));
-    expect(imageService.requests.last.prompt, contains('移除原人物的耳环、眼镜和帽子'));
-    expect(imageService.requests.last.prompt, contains('【最终输出复核】'));
+    expect(instructedFirstRoundRequest.prompt, contains('【用户补充说明：确定性合并】'));
+    expect(instructedFirstRoundRequest.prompt, contains('移除原人物的耳环、眼镜和帽子'));
+    expect(instructedFirstRoundRequest.prompt, contains('【最终输出复核】'));
     expect(
-      imageService.requests.last.prompt,
+      instructedFirstRoundRequest.prompt,
       endsWith('最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。'),
     );
 
@@ -2453,9 +2570,12 @@ void main() {
     );
     expect(await controller.replicateShot(first.id), isTrue);
     expect(visionService.completionPrompts, isEmpty);
-    expect(imageService.requests.last.prompt, contains('在画面顶部写“夏日新品”'));
+    final textSpecifiedFirstRoundRequest = imageService.requests.lastWhere(
+      (request) => request.referenceImagePaths.isNotEmpty,
+    );
+    expect(textSpecifiedFirstRoundRequest.prompt, contains('在画面顶部写“夏日新品”'));
     expect(
-      imageService.requests.last.prompt,
+      textSpecifiedFirstRoundRequest.prompt,
       endsWith('最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。'),
       reason: '用户指定文本时只开放该段文本，参考图中的其他文字与 Logo 仍必须禁止',
     );
@@ -2480,8 +2600,8 @@ void main() {
     expect(await controller.replicateShot(first.id), isTrue);
     expect(
       imageService.requests.length - conditionalCorrectionRequestStart,
-      2,
-      reason: '有效 DWPose 明确反证姿势偏差时只能追加一次续轮校正',
+      3,
+      reason: '产品细节只回填一次，DWPose 明确反证姿势偏差时也只能再追加一次续轮校正',
     );
     expect(
       generationReviewService.inputs.length - conditionalReviewStart,
@@ -2530,8 +2650,8 @@ void main() {
     expect(await controller.replicateShot(first.id), isFalse);
     expect(
       imageService.requests.length - failedAfterCorrectionRequestStart,
-      2,
-      reason: '第二次审核仍失败时也只能有首轮和唯一一次校正两次图片请求',
+      3,
+      reason: '第二次审核仍失败时也只能有首轮、一次细节回填和一次姿势校正',
     );
     expect(
       generationReviewService.inputs.length - failedAfterCorrectionReviewStart,
@@ -2561,7 +2681,7 @@ void main() {
       ),
     );
     expect(await controller.replicateShot(first.id), isTrue);
-    expect(imageService.requests.length - inconclusiveRequestStart, 1);
+    expect(imageService.requests.length - inconclusiveRequestStart, 2);
     expect(generationReviewService.inputs.length - inconclusiveReviewStart, 1);
     final inconclusiveRecord = controller.value.replicatedImages.firstWhere(
       (image) => image.scriptShotId == first.id,
@@ -2576,7 +2696,7 @@ void main() {
     final failedReviewStart = generationReviewService.inputs.length;
     generationReviewService.error = const FormatException('姿势审核未返回可解析的 JSON');
     expect(await controller.replicateShot(first.id), isFalse);
-    expect(imageService.requests.length - failedReviewRequestStart, 1);
+    expect(imageService.requests.length - failedReviewRequestStart, 2);
     expect(generationReviewService.inputs.length - failedReviewStart, 1);
     final failedReviewRecord = controller.value.replicatedImages.firstWhere(
       (image) => image.scriptShotId == first.id,
@@ -2615,6 +2735,19 @@ void main() {
     expect(resumedRecord.status, ProcessingStatus.completed);
     expect(resumedRecord.generationRecovery.isEmpty, isTrue);
 
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:0',
+      ReplicateSubjectDecision.keep,
+    );
+    controller.setDetectedSubjectDecision(
+      first.id,
+      'product:0',
+      ReplicateSubjectDecision.replace,
+    );
+    workflowRepository
+      ..deleteLink(first.id, productDetailAssetId)
+      ..deleteLink(first.id, productDetailBAssetId);
     imageService.includeGeminiContinuation = false;
     generationReviewService.results.add(
       const ReplicationGenerationReviewResult(

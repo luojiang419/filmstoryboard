@@ -1,5 +1,5 @@
 #define MyAppName "filmstoryboard"
-#define MyAppVersion "1.0.0.316"
+#define MyAppVersion "1.0.0.317"
 #define MyAppPublisher "Jiang"
 #define MyAppExeName "filmstoryboard.exe"
 

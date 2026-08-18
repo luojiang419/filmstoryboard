@@ -1,5 +1,7 @@
 import '../../storyboard/domain/image_generation_model_catalog.dart';
 import 'nano_banana_asset_manifest.dart';
+import 'nano_banana_product_detail_refill_protocol.dart';
+import 'replicate_asset_preparation_models.dart';
 import 'replication_authority_policy.dart';
 
 class NanoBananaProModelCapability {
@@ -18,6 +20,7 @@ class NanoBananaReplicationPromptInput {
     this.structuralReferenceDescriptions = const [],
     this.productOverridesWardrobeAppearance = false,
     this.firstRoundProtocol,
+    this.authorizedProductMarks = const [],
   });
 
   final String model;
@@ -29,6 +32,7 @@ class NanoBananaReplicationPromptInput {
   final List<String> structuralReferenceDescriptions;
   final bool productOverridesWardrobeAppearance;
   final NanoBananaFirstRoundProtocol? firstRoundProtocol;
+  final List<NanoBananaAuthorizedProductMark> authorizedProductMarks;
 }
 
 class NanoBananaReplicationPromptCompiler {
@@ -148,6 +152,16 @@ class NanoBananaReplicationPromptCompiler {
         ),
     ];
     final userInstructions = input.userInstructions.trim();
+    final markWhitelist = input.authorizedProductMarks.isEmpty
+        ? '【授权标识白名单】无。所有产品文字与标识均禁止继承或生成。'
+        : <String>[
+            '【授权标识白名单：只允许以下精确项目】',
+            for (final mark in input.authorizedProductMarks)
+              '产品槽位${_slotLabel(mark.productSlotIndex)}：仅可依据图片${mark.referenceImageNumber}，'
+                  '在“${mark.location}”呈现${mark.allowedTypes.map(_markTypeLabel).join('、')}'
+                  '${mark.exactText.isEmpty ? '' : '，逐字文本必须且只能是“${mark.exactText}”'}。',
+            '白名单之外的任何文字或标识均未获授权；不得从图片1、素材背景或其他槽位推断、复制或补全。',
+          ].join('\n');
     final sceneRule = context.hasSceneAsset
         ? '已提供新场景资产：图片1中的原场景外观、装饰、材质、颜色与照明风格均未获授权；只保留图片1的空间布局、机位、透视、主体位置、遮挡和接触关系，并由场景资产提供环境外观。'
         : '未提供新场景资产：图片1可继续提供原环境外观与环境光色，但不得因此恢复任何未被主体处理计划明确保留的原人物、原产品、配饰或道具。';
@@ -160,6 +174,7 @@ class NanoBananaReplicationPromptCompiler {
       sceneRule,
       '【编辑方法】以图片1为编辑底图，按下方正文逐项执行“保留主体、替换主体、移除主体、保留白名单元素”；只改动被明确指定的实体。保留主体完整沿用图片1中的对应外观；移除后按相邻透视、纹理、材质、遮挡与光影自然补全；新增或替换实体必须匹配图片1的尺度、位置、姿态、接触、镜头、景深和光照。',
       '同一逻辑资产的多张视图只是互补证据：主视图锁定整体身份、轮廓和比例，细节视图只补充局部结构与材质。不得生成混合身份、混合产品、额外副本，也不得把素材图自身的背景、版式、机位、姿势、光照或调色带入成图。',
+      markWhitelist,
       '【确定性复刻正文】',
       automaticPrompt,
       if (userInstructions.isNotEmpty) ...[
@@ -167,7 +182,7 @@ class NanoBananaReplicationPromptCompiler {
         '冲突处理：用户补充说明可覆盖镜头脚本中的普通描述，但不得改变逐图权威来源或取消“原帧主体处理计划”；只有计划中明确标记保留的原人物或原产品才能沿用，不得把其他主体或未勾选元素改为保留，也不得恢复未授权原场景。只有补充说明明确给出需要逐字出现的具体文本时，才允许该段指定文本。',
       ],
       '【提交前内部核对】逐项确认：图片编号与资产角色一致；所有保留、替换和移除均已完成；人物与产品未串槽；图片1左右方向未镜像；新实体已匹配原构图、透视、遮挡、接触和光照；未获主体处理计划授权的原人物、原产品、原场景、未勾选配饰/道具及其残影均未泄漏。不要输出核对过程。',
-      '【最终输出复核】若用户未在“复刻补充说明”中明确给出需要逐字出现的具体文本，成图必须完全不含任何文字、数字、字母、符号组合、字幕、水印、Logo、商标、台标、角标、二维码或条形码；若用户已明确给出，只允许该段指定文本，其他文字与标识一律禁止。',
+      '【最终输出复核】产品文字与标识只服从“授权标识白名单”；普通复刻补充说明不能授权产品 Logo、产品名称、型号或包装文字。非产品场景中，只有用户补充说明明确给出需要逐字出现的具体文本时才允许该段文本。除此之外，成图必须完全不含任何文字、数字、字母、符号组合、字幕、水印、Logo、商标、台标、角标、二维码或条形码。',
       '最终只输出一张完成的复刻分镜画面，不要输出解释、标题、镜号、界面或核对文本。',
     ].join('\n');
   }
@@ -264,6 +279,14 @@ class NanoBananaReplicationPromptCompiler {
     ReplicationAuthorityScope.sourceElementPlacementAndContact =>
       '勾选原帧元素位置与接触关系',
   };
+
+  static String _markTypeLabel(ReplicateAuthorizedMarkType type) =>
+      switch (type) {
+        ReplicateAuthorizedMarkType.logo => 'Logo/图形商标',
+        ReplicateAuthorizedMarkType.productName => '产品名称',
+        ReplicateAuthorizedMarkType.model => '型号',
+        ReplicateAuthorizedMarkType.packagingText => '包装文字',
+      };
 
   static String _slotLabel(int slotIndex) {
     var number = slotIndex + 1;
