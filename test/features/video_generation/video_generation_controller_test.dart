@@ -1934,7 +1934,7 @@ void main() {
     expect(File(retried.localPath).readAsBytesSync(), [7, 6, 5, 4]);
   });
 
-  test('本地视频 API 非首尾帧会提交首帧和已确认资产图', () async {
+  test('本地视频 API 会将单张模特多视图拼图作为已确认资产原样提交', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     String submittedBody = '';
     server.listen((request) async {
@@ -1983,18 +1983,18 @@ void main() {
       p.join(fixture.root.path, 'local-reference-frame.png'),
     ).writeAsBytes([1, 2, 3]);
     final assetFile = await File(
-      p.join(fixture.root.path, 'local-reference-asset.png'),
+      p.join(fixture.root.path, 'model-three-view-collage.png'),
     ).writeAsBytes([4, 5, 6]);
     final shot = fixture.shootingController.addShot()!;
     final updatedShot = shot.copyWith(
       framePath: frame.path,
       durationSeconds: 2,
       prompt: '''subject_definitions:
-- <Picture 1>: The opening frame and composition reference.
-- <Picture 2>: The transparent drinking glass product reference.
-summary: A concise product presentation.
-retention_analysis: Retain the glass identity and opening composition.
-detailed_description: [Shot 1] The glass remains consistent while the camera moves slowly.
+ - <Picture 1>: The opening frame and composition reference.
+ - <Picture 2>: The same model shown from multiple angles in one image.
+ summary: Animate the model consistently.
+ retention_analysis: Retain the model identity and opening composition.
+ detailed_description: [Shot 1] The model remains consistent while moving naturally.
 overall_soundscape: Quiet studio ambience.
 non_diegetic_music: Minimal ambient music.''',
     );
@@ -2005,11 +2005,11 @@ non_diegetic_music: Minimal ambient music.''',
     final now = DateTime.now().toUtc();
     workflowRepository.upsertScriptAsset(
       ScriptAsset(
-        id: 'local-asset-product',
+        id: 'local-asset-model-multiview',
         scriptId: updatedShot.scriptId,
-        type: ReplicateAssetType.product,
-        name: '透明水杯',
-        description: '透明玻璃材质，银色杯盖',
+        type: ReplicateAssetType.character,
+        name: '模特 A 多视图拼图',
+        description: '同一张图包含正面、侧面和背面，用于动作一致性',
         path: assetFile.path,
         referenceNumber: 1,
         status: ProcessingStatus.completed,
@@ -2020,7 +2020,7 @@ non_diegetic_music: Minimal ambient music.''',
     workflowRepository.upsertLink(
       ScriptShotAssetLink(
         shotId: updatedShot.id,
-        scriptAssetId: 'local-asset-product',
+        scriptAssetId: 'local-asset-model-multiview',
         matchSource: ScriptAssetMatchSource.manual,
         confidence: 1,
         matchReason: '手动确认',
@@ -2051,7 +2051,8 @@ non_diegetic_music: Minimal ambient music.''',
       RegExp(r'name="reference_images"').allMatches(submittedBody),
       hasLength(2),
     );
-    expect(submittedBody, contains('<Picture 2>: The transparent'));
+    expect(submittedBody, contains('<Picture 2>: The same model'));
+    expect(submittedBody, contains('model-three-view-collage.png'));
     expect(submittedBody, isNot(contains('【参考素材补充】')));
     expect(
       RegExp(r'subject_definitions:').allMatches(submittedBody),

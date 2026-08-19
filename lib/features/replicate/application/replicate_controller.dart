@@ -37,7 +37,6 @@ import '../data/bundled_video_skill_library.dart';
 import '../data/dwpose_editable_pose_mapper.dart';
 import '../data/dwpose_model_manager.dart';
 import '../data/dwpose_service.dart';
-import '../data/full_outfit_collage_splitter.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/replication_frame_analysis_service.dart';
@@ -48,7 +47,6 @@ import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
 import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
-import '../domain/full_outfit_view_policy.dart';
 import '../domain/nano_banana_asset_manifest.dart';
 import '../domain/nano_banana_product_detail_refill_protocol.dart';
 import '../domain/nano_banana_replication_prompt_compiler.dart';
@@ -196,8 +194,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     VisionStoryboardService? visionService,
     ReplicationFrameAnalysisService? frameAnalysisService,
     ReplicationGenerationReviewService? generationReviewService,
-    FullOutfitCollageSplitter fullOutfitCollageSplitter =
-        const FullOutfitCollageSplitter(),
     DwPoseModelManager? dwPoseModelManager,
     DwPoseService? dwPoseService,
     H3PromptWritingService h3PromptWritingService =
@@ -220,7 +216,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _ownsImageGenerationService = imageGenerationService == null,
        _visionService = visionService ?? VisionStoryboardService(),
        _ownsVisionService = visionService == null,
-       _fullOutfitCollageSplitter = fullOutfitCollageSplitter,
        _h3PromptWritingService = h3PromptWritingService,
        _freeCreationPromptWritingService = freeCreationPromptWritingService,
        _h3SkillLibrary = h3SkillLibrary ?? BundledH3SkillLibrary(),
@@ -265,7 +260,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsVisionService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
-  final FullOutfitCollageSplitter _fullOutfitCollageSplitter;
   late final DwPoseModelManager _dwPoseModelManager;
   late final DwPoseService _dwPoseService;
   late final bool _ownsDwPoseService;
@@ -805,18 +799,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final subject = guide.subjects
         .where((candidate) => candidate.id == subjectId)
         .firstOrNull;
-    if (subject != null &&
-        decision != ReplicateSubjectDecision.replace &&
-        guide.wearableProductLinks.any(
-          (link) =>
-              link.linked &&
-              (subject.type == ReplicateSubjectType.person
-                  ? link.personSlotIndex == subject.slotIndex
-                  : link.productSlotIndex == subject.slotIndex),
-        )) {
-      value = value.copyWith(errorMessage: '该主体仍与完整穿搭联动，请先确认并解除联动后再修改处理方式');
-      return;
-    }
     final subjects = [
       for (final subject in guide.subjects)
         if (subject.id == subjectId)
@@ -827,6 +809,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _repository.upsertShotGuide(
       guide.copyWith(
         subjects: subjects,
+        fullOutfitAssets: const [],
+        wearableProductLinks: const [],
         productMarkAuthorizations:
             subject?.type == ReplicateSubjectType.product &&
                 decision != ReplicateSubjectDecision.replace
@@ -853,25 +837,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final removed = guide.subjects
         .where((subject) => subject.id == subjectId)
         .firstOrNull;
-    final fullOutfitAssets = removed?.type == ReplicateSubjectType.person
-        ? guide.fullOutfitAssets
-              .where((asset) => asset.personSlotIndex != removed!.slotIndex)
-              .toList(growable: false)
-        : guide.fullOutfitAssets;
-    final wearableProductLinks = removed == null
-        ? guide.wearableProductLinks
-        : guide.wearableProductLinks
-              .where(
-                (link) => removed.type == ReplicateSubjectType.person
-                    ? link.personSlotIndex != removed.slotIndex
-                    : link.productSlotIndex != removed.slotIndex,
-              )
-              .toList(growable: false);
     _repository.upsertShotGuide(
       guide.copyWith(
         subjects: subjects,
-        fullOutfitAssets: fullOutfitAssets,
-        wearableProductLinks: wearableProductLinks,
+        fullOutfitAssets: const [],
+        wearableProductLinks: const [],
         productMarkAuthorizations: removed?.type == ReplicateSubjectType.product
             ? guide.productMarkAuthorizations
                   .where(
@@ -884,214 +854,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       ),
     );
     _reloadShotGuides(value.selectedScriptId);
-  }
-
-  ReplicateFullOutfitAsset? fullOutfitAssetFor(
-    String shotId,
-    int personSlotIndex,
-  ) => _repository
-      .getShotGuide(shotId)
-      ?.fullOutfitAssets
-      .where((asset) => asset.personSlotIndex == personSlotIndex)
-      .firstOrNull;
-
-  void setFullOutfitView({
-    required String shotId,
-    required int personSlotIndex,
-    required ReplicateOutfitViewRole role,
-    required String scriptAssetId,
-    String subjectDirection = '',
-  }) {
-    final guide = _repository.getShotGuide(shotId);
-    if (guide == null || scriptAssetId.trim().isEmpty) return;
-    final outfitId = 'full-outfit:$personSlotIndex';
-    final existing = guide.fullOutfitAssets
-        .where((asset) => asset.personSlotIndex == personSlotIndex)
-        .firstOrNull;
-    final view = ReplicateFullOutfitView(
-      id: '$outfitId:${role.name}',
-      scriptAssetId: scriptAssetId,
-      role: role,
-      order: role.index,
-    );
-    final views = [
-      for (final candidate
-          in existing?.views ?? const <ReplicateFullOutfitView>[])
-        if (candidate.role != role) candidate,
-      view,
-    ]..sort((a, b) => a.order.compareTo(b.order));
-    final inferredPrimaryViewId = FullOutfitViewPolicy.selectPrimaryViewId(
-      views: views,
-      subjectDirection: subjectDirection,
-    );
-    final keepManualPrimary =
-        existing?.primaryViewManuallySelected == true &&
-        views.any((candidate) => candidate.id == existing?.primaryViewId);
-    final updated = ReplicateFullOutfitAsset(
-      id: existing?.id ?? outfitId,
-      personSlotIndex: personSlotIndex,
-      name:
-          existing?.name ??
-          '模特${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}完整穿搭',
-      views: views,
-      primaryViewId: keepManualPrimary
-          ? existing!.primaryViewId
-          : inferredPrimaryViewId,
-      primaryViewManuallySelected: keepManualPrimary,
-      enabled: existing?.enabled ?? true,
-    );
-    _repository.upsertShotGuide(
-      guide.copyWith(
-        fullOutfitAssets: [
-          for (final asset in guide.fullOutfitAssets)
-            if (asset.personSlotIndex != personSlotIndex) asset,
-          updated,
-        ],
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    _reloadShotGuides(value.selectedScriptId);
-  }
-
-  void removeFullOutfitView({
-    required String shotId,
-    required int personSlotIndex,
-    required ReplicateOutfitViewRole role,
-  }) {
-    final guide = _repository.getShotGuide(shotId);
-    final existing = guide?.fullOutfitAssets
-        .where((asset) => asset.personSlotIndex == personSlotIndex)
-        .firstOrNull;
-    if (guide == null || existing == null) return;
-    final views = existing.views
-        .where((view) => view.role != role)
-        .toList(growable: false);
-    final removedPrimary = existing.primaryView?.role == role;
-    final updatedAssets = [
-      for (final asset in guide.fullOutfitAssets)
-        if (asset.personSlotIndex != personSlotIndex)
-          asset
-        else if (views.isNotEmpty)
-          asset.copyWith(
-            views: views,
-            primaryViewId: removedPrimary ? '' : asset.primaryViewId,
-            primaryViewManuallySelected: removedPrimary
-                ? false
-                : asset.primaryViewManuallySelected,
-          ),
-    ];
-    _repository.upsertShotGuide(
-      guide.copyWith(
-        fullOutfitAssets: updatedAssets,
-        wearableProductLinks: views.length < 3
-            ? guide.wearableProductLinks
-                  .where((link) => link.personSlotIndex != personSlotIndex)
-                  .toList(growable: false)
-            : guide.wearableProductLinks,
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    _reloadShotGuides(value.selectedScriptId);
-  }
-
-  void setFullOutfitPrimaryView({
-    required String shotId,
-    required int personSlotIndex,
-    required String viewId,
-  }) {
-    final guide = _repository.getShotGuide(shotId);
-    final existing = guide?.fullOutfitAssets
-        .where((asset) => asset.personSlotIndex == personSlotIndex)
-        .firstOrNull;
-    if (guide == null ||
-        existing == null ||
-        !existing.views.any((view) => view.id == viewId)) {
-      return;
-    }
-    _repository.upsertShotGuide(
-      guide.copyWith(
-        fullOutfitAssets: [
-          for (final asset in guide.fullOutfitAssets)
-            asset.personSlotIndex == personSlotIndex
-                ? asset.copyWith(
-                    primaryViewId: viewId,
-                    primaryViewManuallySelected: true,
-                  )
-                : asset,
-        ],
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    _reloadShotGuides(value.selectedScriptId);
-  }
-
-  bool setWearableProductLinked({
-    required String shotId,
-    required int slotIndex,
-    required bool linked,
-  }) {
-    final guide = _repository.getShotGuide(shotId);
-    if (guide == null) return false;
-    final remaining = guide.wearableProductLinks
-        .where(
-          (item) =>
-              item.personSlotIndex != slotIndex &&
-              item.productSlotIndex != slotIndex,
-        )
-        .toList(growable: true);
-    if (linked) {
-      final outfit = guide.fullOutfitAssets
-          .where((asset) => asset.personSlotIndex == slotIndex)
-          .firstOrNull;
-      final person = guide.subjects
-          .where(
-            (subject) =>
-                subject.type == ReplicateSubjectType.person &&
-                subject.slotIndex == slotIndex,
-          )
-          .firstOrNull;
-      final product = guide.subjects
-          .where(
-            (subject) =>
-                subject.type == ReplicateSubjectType.product &&
-                subject.slotIndex == slotIndex,
-          )
-          .firstOrNull;
-      if (outfit == null ||
-          !outfit.hasIndependentThreeViewSet ||
-          outfit.primaryView == null ||
-          person?.decision != ReplicateSubjectDecision.replace ||
-          product?.decision != ReplicateSubjectDecision.replace) {
-        value = value.copyWith(errorMessage: '完整三视图、主视图以及同槽人物/产品“替换”状态齐全后才能联动');
-        return false;
-      }
-      remaining.add(
-        ReplicateWearableProductLink(
-          personSlotIndex: slotIndex,
-          productSlotIndex: slotIndex,
-          fullOutfitAssetId: outfit.id,
-        ),
-      );
-    }
-    _repository.upsertShotGuide(
-      guide.copyWith(
-        wearableProductLinks: remaining,
-        productMarkAuthorizations: linked
-            ? guide.productMarkAuthorizations
-                  .where(
-                    (authorization) =>
-                        authorization.productSlotIndex != slotIndex,
-                  )
-                  .toList(growable: false)
-            : guide.productMarkAuthorizations,
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    _reloadShotGuides(
-      value.selectedScriptId,
-      message: linked ? '已联动同槽模特与穿戴产品' : '已解除完整穿搭产品联动',
-    );
-    return true;
   }
 
   bool setProductMarkAuthorization({
@@ -1154,73 +916,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           : '产品标识白名单保持关闭',
     );
     return true;
-  }
-
-  Future<bool> splitFullOutfitCollage({
-    required String shotId,
-    required int personSlotIndex,
-    required String sourceScriptAssetId,
-    String subjectDirection = '',
-  }) async {
-    final bindingController = _assetBindingController;
-    final source = bindingController?.value.assetById(sourceScriptAssetId);
-    final scriptId = value.selectedScriptId;
-    if (bindingController == null || source == null || scriptId.isEmpty) {
-      value = value.copyWith(errorMessage: '请先为模特槽绑定横向三视图拼图');
-      return false;
-    }
-    try {
-      final outputDirectory = Directory(
-        p.join(
-          _directories.analyses.path,
-          'full_outfit_views',
-          _safeFileName(scriptId),
-          _safeFileName(shotId),
-        ),
-      );
-      final splitViews = await _fullOutfitCollageSplitter
-          .splitHorizontalThreeView(
-            source: File(source.path),
-            outputDirectory: outputDirectory,
-            outputStem: 'model_${personSlotIndex + 1}',
-          );
-      for (final splitView in splitViews) {
-        final roleLabel = switch (splitView.role) {
-          ReplicateOutfitViewRole.front => '正面',
-          ReplicateOutfitViewRole.side => '侧面',
-          ReplicateOutfitViewRole.back => '背面',
-          ReplicateOutfitViewRole.other => '其他',
-        };
-        final asset = bindingController.registerDerivedAssetToShot(
-          shotId: shotId,
-          path: splitView.path,
-          name: '${source.name} · $roleLabel',
-          description: '由横向完整穿搭三视图本地拆分；默认顺序为正面、侧面、背面',
-          type: ReplicateAssetType.character,
-          slotSortOrder: ScriptAssetPresetSlot.character(
-            personSlotIndex,
-          ).sortOrder,
-          slotLabel:
-              '模特${ScriptAssetSlotPolicy.characterSuffix(personSlotIndex)}完整穿搭$roleLabel',
-        );
-        if (asset == null) throw StateError('无法保存$roleLabel拆分资产');
-        setFullOutfitView(
-          shotId: shotId,
-          personSlotIndex: personSlotIndex,
-          role: splitView.role,
-          scriptAssetId: asset.id,
-          subjectDirection: subjectDirection,
-        );
-      }
-      value = value.copyWith(
-        message: '横向三视图已在本地拆为正面、侧面和背面，请复核角色与主视图',
-        errorMessage: '',
-      );
-      return true;
-    } catch (error) {
-      value = value.copyWith(errorMessage: '$error');
-      return false;
-    }
   }
 
   void addManualPreservedElement(String shotId, String label) {
@@ -2193,9 +1888,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
                   const <ReplicateProductMarkAuthorization>[],
               manifestAssetIdByReferenceAssetId: {
                 for (final reference in preparedReferences)
-                  reference.id: reference.manifestAssetId.isEmpty
-                      ? _logicalReferenceAssetId(reference.id)
-                      : reference.manifestAssetId,
+                  reference.id: _logicalReferenceAssetId(reference.id),
               },
             );
       }
@@ -5054,7 +4747,6 @@ $playbackSpeedBoundary
     required List<_ReplacementReference> references,
   }) {
     final modelAssets = <NanoBananaAssetInput>[];
-    final fullOutfitAssets = <NanoBananaAssetInput>[];
     final productAssets = <NanoBananaAssetInput>[];
     final productDetailAssets = <NanoBananaAssetInput>[];
     final sceneAssets = <NanoBananaAssetInput>[];
@@ -5079,29 +4771,11 @@ $playbackSpeedBoundary
     }
 
     for (final reference in references) {
-      final assetId = reference.manifestAssetId.isEmpty
-          ? _logicalReferenceAssetId(reference.id)
-          : reference.manifestAssetId;
-      final viewOrder = reference.manifestAssetId.isEmpty
-          ? _referenceViewOrder(reference.id)
-          : reference.viewOrder;
+      final assetId = _logicalReferenceAssetId(reference.id);
+      final viewOrder = _referenceViewOrder(reference.id);
       final characterSlot = _characterSlotIndex(reference.slotLabel);
       final productSlot = _productSlotIndex(reference.slotLabel);
       final detailSlot = _productDetailSlotIndex(reference.slotLabel);
-      if (reference.manifestKind == NanoBananaAssetKind.fullOutfit) {
-        fullOutfitAssets.add(
-          NanoBananaAssetInput.fullOutfit(
-            assetId: assetId,
-            path: reference.path,
-            personSlotIndex: reference.manifestSlotIndex ?? characterSlot ?? 0,
-            productSlotIndex: reference.linkedProductSlotIndex,
-            viewOrder: viewOrder,
-            viewRole: reference.viewRole,
-            isPrimaryView: reference.isPrimaryView,
-          ),
-        );
-        continue;
-      }
       if (reference.type == ReplicateAssetType.character) {
         final slot =
             characterSlot ??
@@ -5154,7 +4828,6 @@ $playbackSpeedBoundary
       sourceFrameId: '${shot.id}:source-frame',
       sourceFramePath: original.path,
       modelAssets: modelAssets,
-      fullOutfitAssets: fullOutfitAssets,
       productAssets: productAssets,
       productDetailAssets: productDetailAssets,
       sceneAssets: sceneAssets,
@@ -5171,10 +4844,7 @@ $playbackSpeedBoundary
     for (final entry in manifest.entries.skip(1)) {
       final index = remaining.indexWhere(
         (reference) =>
-            (reference.manifestAssetId.isEmpty
-                    ? _logicalReferenceAssetId(reference.id)
-                    : reference.manifestAssetId) ==
-                entry.assetId &&
+            _logicalReferenceAssetId(reference.id) == entry.assetId &&
             reference.path == entry.path,
       );
       if (index < 0) {
@@ -5194,25 +4864,6 @@ $playbackSpeedBoundary
   static int _referenceViewOrder(String id) =>
       int.tryParse(RegExp(r':view:(\d+)$').firstMatch(id)?.group(1) ?? '') ?? 0;
 
-  static NanoBananaAssetViewRole _nanoBananaViewRole(
-    ReplicateOutfitViewRole role,
-  ) => switch (role) {
-    ReplicateOutfitViewRole.front => NanoBananaAssetViewRole.front,
-    ReplicateOutfitViewRole.side => NanoBananaAssetViewRole.side,
-    ReplicateOutfitViewRole.back => NanoBananaAssetViewRole.back,
-    ReplicateOutfitViewRole.other => NanoBananaAssetViewRole.supplemental,
-  };
-
-  static String _nanoBananaViewRoleLabel(NanoBananaAssetViewRole role) =>
-      switch (role) {
-        NanoBananaAssetViewRole.primary => '',
-        NanoBananaAssetViewRole.front => '正面',
-        NanoBananaAssetViewRole.side => '侧面',
-        NanoBananaAssetViewRole.back => '背面',
-        NanoBananaAssetViewRole.detail => '细节',
-        NanoBananaAssetViewRole.supplemental => '补充',
-      };
-
   String? _replicationInputReadinessError({
     required ScriptShot shot,
     required ReplicateShotGuide? guide,
@@ -5229,32 +4880,6 @@ $playbackSpeedBoundary
           .join('、');
       return '请先为以下原帧主体选择“保留、替换或移除”：$labels';
     }
-    for (final outfit in guide.fullOutfitAssets.where(
-      (asset) => asset.enabled,
-    )) {
-      final personMustReplace = guide.subjects.any(
-        (subject) =>
-            subject.type == ReplicateSubjectType.person &&
-            subject.slotIndex == outfit.personSlotIndex &&
-            subject.decision == ReplicateSubjectDecision.replace,
-      );
-      if (!personMustReplace) continue;
-      if (!outfit.hasIndependentThreeViewSet || outfit.primaryView == null) {
-        return '${outfit.name}尚未形成可提交的正面、侧面、背面独立三视图，或缺少主视图';
-      }
-      final submittedViews = references
-          .where(
-            (reference) =>
-                reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
-                reference.manifestAssetId == outfit.id,
-          )
-          .toList(growable: false);
-      if (submittedViews.length != 3 ||
-          submittedViews.where((reference) => reference.isPrimaryView).length !=
-              1) {
-        return '${outfit.name}的三视图文件或镜头绑定已失效，请重新选择后再生成';
-      }
-    }
     for (final subject in guide.subjects) {
       if (subject.decision != ReplicateSubjectDecision.replace) continue;
       final hasReplacement = references.any((reference) {
@@ -5262,9 +4887,7 @@ $playbackSpeedBoundary
           ReplicateSubjectType.person =>
             _characterSlotIndex(reference.slotLabel) == subject.slotIndex,
           ReplicateSubjectType.product =>
-            _productSlotIndex(reference.slotLabel) == subject.slotIndex ||
-                (reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
-                    reference.linkedProductSlotIndex == subject.slotIndex),
+            _productSlotIndex(reference.slotLabel) == subject.slotIndex,
         };
       });
       if (!hasReplacement) {
@@ -5307,47 +4930,6 @@ $playbackSpeedBoundary
       bindings.add((link: link, asset: asset));
     }
     if (bindings.isEmpty) return const [];
-
-    final guide = _repository.getShotGuide(shotId);
-    final configuredOutfits = [
-      for (final outfit
-          in guide?.fullOutfitAssets ?? const <ReplicateFullOutfitAsset>[])
-        if (outfit.enabled) outfit,
-    ];
-    final outfitViewAssetIds = {
-      for (final outfit in configuredOutfits)
-        for (final view in outfit.views) view.scriptAssetId,
-    };
-    final confirmedAssetIds = {
-      for (final binding in bindings) binding.asset.id,
-    };
-    final usableOutfits = [
-      for (final outfit in configuredOutfits)
-        if (outfit.hasIndependentThreeViewSet &&
-            outfit.primaryView != null &&
-            outfit.views.every(
-              (view) =>
-                  confirmedAssetIds.contains(view.scriptAssetId) &&
-                  assetsById[view.scriptAssetId] != null,
-            ))
-          outfit,
-    ];
-    final configuredOutfitSlots = {
-      for (final outfit in configuredOutfits) outfit.personSlotIndex,
-    };
-    final linkedProductSlotByPersonSlot = {
-      for (final link
-          in guide?.wearableProductLinks ??
-              const <ReplicateWearableProductLink>[])
-        if (link.linked &&
-            usableOutfits.any(
-              (outfit) =>
-                  outfit.id == link.fullOutfitAssetId &&
-                  outfit.personSlotIndex == link.personSlotIndex,
-            ))
-          link.personSlotIndex: link.productSlotIndex,
-    };
-    final linkedProductSlots = linkedProductSlotByPersonSlot.values.toSet();
 
     final characterBindings = [
       for (final binding in bindings)
@@ -5437,16 +5019,6 @@ $playbackSpeedBoundary
       ({ScriptShotAssetLink link, ScriptAsset asset}) binding,
       String slotLabel,
     ) {
-      final characterSlot = _characterSlotIndex(slotLabel);
-      final productSlot = _productSlotIndex(slotLabel);
-      final detailSlot = _productDetailSlotIndex(slotLabel);
-      if (outfitViewAssetIds.contains(binding.asset.id) ||
-          (characterSlot != null &&
-              configuredOutfitSlots.contains(characterSlot)) ||
-          (productSlot != null && linkedProductSlots.contains(productSlot)) ||
-          (detailSlot != null && linkedProductSlots.contains(detailSlot))) {
-        return;
-      }
       if (!usedAssetIds.add(binding.asset.id)) return;
       references.add(
         _ReplacementReference(
@@ -5469,45 +5041,6 @@ $playbackSpeedBoundary
     for (final binding in remainingBindings) {
       addBinding(binding, '');
     }
-    final orderedOutfits = [...usableOutfits]
-      ..sort(
-        (left, right) => left.personSlotIndex.compareTo(right.personSlotIndex),
-      );
-    for (final outfit in orderedOutfits) {
-      final views = [...outfit.views]
-        ..sort((left, right) {
-          final leftPrimary = left.id == outfit.primaryViewId ? 0 : 1;
-          final rightPrimary = right.id == outfit.primaryViewId ? 0 : 1;
-          final primaryOrder = leftPrimary.compareTo(rightPrimary);
-          if (primaryOrder != 0) return primaryOrder;
-          final order = left.order.compareTo(right.order);
-          if (order != 0) return order;
-          return left.id.compareTo(right.id);
-        });
-      for (final view in views) {
-        final asset = assetsById[view.scriptAssetId]!;
-        if (!usedAssetIds.add(asset.id)) continue;
-        references.add(
-          _ReplacementReference(
-            id: asset.id,
-            type: ReplicateAssetType.character,
-            name: outfit.name,
-            description: asset.description,
-            path: asset.path,
-            slotLabel:
-                '模特${ScriptAssetSlotPolicy.characterSuffix(outfit.personSlotIndex)}',
-            manifestAssetId: outfit.id,
-            manifestKind: NanoBananaAssetKind.fullOutfit,
-            manifestSlotIndex: outfit.personSlotIndex,
-            linkedProductSlotIndex:
-                linkedProductSlotByPersonSlot[outfit.personSlotIndex],
-            viewOrder: view.order,
-            viewRole: _nanoBananaViewRole(view.role),
-            isPrimaryView: view.id == outfit.primaryViewId,
-          ),
-        );
-      }
-    }
     return references;
   }
 
@@ -5517,6 +5050,8 @@ $playbackSpeedBoundary
     ReplicateShotGuide? guide,
     bool hasPoseSkeleton = false,
   }) {
+    const multiAngleModelReferenceRule =
+        '若模特参考是一张包含同一人物多个角度的拼图，按图片1中该人物的可见朝向选择对应角度作为本帧主证据；其他角度仅用于身份与后续动作一致性补充，不得把拼图中的多个人影同时生成到画面。';
     final definitions = <String>[];
     final assetRequirements = <String>[];
     final characterSlotLabelsByIndex = <int, String>{};
@@ -5531,14 +5066,6 @@ $playbackSpeedBoundary
       final productIndex = _productSlotIndex(reference.slotLabel);
       if (productIndex != null) {
         productSlotLabelsByIndex[productIndex] = reference.slotLabel;
-      }
-      if (reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
-          reference.linkedProductSlotIndex != null) {
-        productSlotLabelsByIndex.putIfAbsent(
-          reference.linkedProductSlotIndex!,
-          () =>
-              '产品${ScriptAssetSlotPolicy.characterSuffix(reference.linkedProductSlotIndex!)}',
-        );
       }
     }
     final characterSlotLabels = characterSlotLabelsByIndex.values.toList(
@@ -5557,9 +5084,7 @@ $playbackSpeedBoundary
           ? ''
           : '，特征：${reference.description.trim()}';
       final roleLabel = reference.slotLabel.isNotEmpty
-          ? reference.manifestKind == NanoBananaAssetKind.fullOutfit
-                ? '${reference.slotLabel}完整穿搭${_nanoBananaViewRoleLabel(reference.viewRole)}${reference.isPrimaryView ? '主视图' : '补充视图'}'
-                : _productDetailSlotIndex(reference.slotLabel) != null
+          ? _productDetailSlotIndex(reference.slotLabel) != null
                 ? '产品细节参考'
                 : '${reference.slotLabel}参考'
           : _replacementTypeLabel(reference.type);
@@ -5575,45 +5100,25 @@ $playbackSpeedBoundary
           ? null
           : characterSlotLabelsByIndex[productSlotIndex];
       if (characterSlotIndex != null) {
-        if (reference.manifestKind != NanoBananaAssetKind.fullOutfit ||
-            reference.isPrimaryView) {
-          characterImageBySlot.putIfAbsent(
-            characterSlotIndex,
-            () => imageLabel,
-          );
-        }
+        characterImageBySlot.putIfAbsent(characterSlotIndex, () => imageLabel);
       }
       if (productSlotIndex != null) {
         productImageBySlot.putIfAbsent(productSlotIndex, () => imageLabel);
-      }
-      if (reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
-          reference.isPrimaryView &&
-          reference.linkedProductSlotIndex != null) {
-        productImageBySlot.putIfAbsent(
-          reference.linkedProductSlotIndex!,
-          () => imageLabel,
-        );
       }
       definitions.add(
         '$imageLabel 是$roleLabel“${reference.name}”$description。',
       );
       assetRequirements.add(switch ((reference.type, reference.slotLabel)) {
-        (_, _)
-            when reference.manifestKind == NanoBananaAssetKind.fullOutfit &&
-                reference.isPrimaryView =>
-          '${reference.slotLabel}以$imageLabel 为完整穿搭主视图：人物身份、脸部、发型、体型和整套服装必须整体使用${reference.linkedProductSlotIndex == null ? '' : '，并同时替换${productSlotLabelsByIndex[reference.linkedProductSlotIndex!] ?? '联动产品槽'}'}；其余正面、侧面、背面视图只补充不可见证据，不得拆分、混搭或覆盖主视图。',
-        (_, _) when reference.manifestKind == NanoBananaAssetKind.fullOutfit =>
-          '$imageLabel 是同组${_nanoBananaViewRoleLabel(reference.viewRole)}补充证据，只补充主视图不可见的衣物结构、材质和穿着关系；不得改变整体身份、轮廓、比例或颜色。',
         (_, _) when productDetailSlotIndex != null =>
           '$imageLabel 只补充“${reference.name}”的局部结构、接缝、边缘、材质和纹理；不得替代${productSlotLabelsByIndex[productDetailSlotIndex] ?? '对应产品主视图'}定义的整体外形与比例。',
         (_, final slotLabel)
             when characterSlotIndex != null && pairedProductLabel != null =>
           '$slotLabel 使用$imageLabel 的身份、脸部、发型和体型，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；身份不得与其他槽位交换。'
-              '服装、鞋帽和配饰以$pairedProductLabel为准：可穿戴商品须完整穿着，非穿戴商品保持图片1的持拿或展示关系。',
+              '服装、鞋帽和配饰以$pairedProductLabel为准：可穿戴商品须完整穿着，非穿戴商品保持图片1的持拿或展示关系。$multiAngleModelReferenceRule',
         (_, final slotLabel) when characterSlotIndex != null =>
-          '$slotLabel 使用$imageLabel 的身份、脸部、发型、体型和穿搭，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；不得继承原人物外观或与其他槽位交换。',
+          '$slotLabel 使用$imageLabel 的身份、脸部、发型、体型和穿搭，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；不得继承原人物外观或与其他槽位交换。$multiAngleModelReferenceRule',
         (ReplicateAssetType.character, _) =>
-          '人物使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型和穿搭；图片1只提供姿态与空间关系。',
+          '人物使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型和穿搭；图片1只提供姿态与空间关系。$multiAngleModelReferenceRule',
         (ReplicateAssetType.product, final slotLabel)
             when productSlotIndex != null && pairedCharacterLabel != null =>
           '$slotLabel 使用$imageLabel 中“${reference.name}”的整体轮廓、比例、结构、接缝、边缘、纹理、材质和反光；'
@@ -6520,13 +6025,6 @@ class _ReplacementReference {
     required this.description,
     required this.path,
     this.slotLabel = '',
-    this.manifestAssetId = '',
-    this.manifestKind,
-    this.manifestSlotIndex,
-    this.linkedProductSlotIndex,
-    this.viewOrder = 0,
-    this.viewRole = NanoBananaAssetViewRole.primary,
-    this.isPrimaryView = true,
   });
 
   final String id;
@@ -6535,11 +6033,4 @@ class _ReplacementReference {
   final String description;
   final String path;
   final String slotLabel;
-  final String manifestAssetId;
-  final NanoBananaAssetKind? manifestKind;
-  final int? manifestSlotIndex;
-  final int? linkedProductSlotIndex;
-  final int viewOrder;
-  final NanoBananaAssetViewRole viewRole;
-  final bool isPrimaryView;
 }

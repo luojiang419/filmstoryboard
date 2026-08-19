@@ -1399,7 +1399,7 @@ void main() {
     );
   });
 
-  testWidgets('完整穿搭联动显示在产品槽且改为保留前必须确认解除', (tester) async {
+  testWidgets('旧三视图数据不再显示面板且主体可直接自由选择', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1566,9 +1566,11 @@ void main() {
     );
     expect(
       find.byKey(ValueKey('full-outfit-panel-${shot.id}-0')),
-      findsOneWidget,
+      findsNothing,
     );
-    expect(find.textContaining('随模特A完整造型联动替换'), findsOneWidget);
+    expect(find.text('模特A · 完整穿搭三视图'), findsNothing);
+    expect(find.text('请补齐正面、侧面、背面三个独立视图。'), findsNothing);
+    expect(find.text('拆分横向拼图'), findsNothing);
 
     final decision = find.byKey(
       ValueKey('replicate-subject-decision-${shot.id}-product:0'),
@@ -1589,17 +1591,9 @@ void main() {
     await tester.tap(find.text('保留（沿用原视频帧）').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('解除完整穿搭联动？'), findsOneWidget);
-    expect(
-      repository.getShotGuide(shot.id)?.subjects.last.decision,
-      ReplicateSubjectDecision.replace,
-    );
-    await tester.tap(
-      find.byKey(ValueKey('confirm-unlink-full-outfit-${shot.id}-product:0')),
-    );
-    await tester.pumpAndSettle();
-
     final restored = repository.getShotGuide(shot.id)!;
+    expect(find.text('解除完整穿搭联动？'), findsNothing);
+    expect(restored.fullOutfitAssets, isEmpty);
     expect(restored.wearableProductLinks, isEmpty);
     expect(restored.subjects.last.decision, ReplicateSubjectDecision.keep);
   });
