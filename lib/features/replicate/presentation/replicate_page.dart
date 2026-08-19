@@ -6818,7 +6818,6 @@ class _ShotAssetDropRow extends StatelessWidget {
                   onToggleElement: onTogglePreservedElement,
                   onAddElement: onAddPreservedElement,
                 ),
-                const SizedBox(height: 8),
                 _ProductMarkAuthorizationPanel(
                   shot: shot,
                   guide: guide,
@@ -7537,7 +7536,6 @@ class _ProductMarkAuthorizationPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final linkedSlots = {
       for (final link
           in guide?.wearableProductLinks ??
@@ -7558,58 +7556,24 @@ class _ProductMarkAuthorizationPanel extends StatelessWidget {
               const <ReplicateProductMarkAuthorization>[])
         authorization.productSlotIndex: authorization,
     };
-    return DecoratedBox(
-      key: ValueKey('product-mark-authorization-panel-${shot.id}'),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.verified_user_outlined,
-                  size: 18,
-                  color: scheme.primary,
-                ),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    '产品文字与标识授权白名单',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-                const Chip(
-                  label: Text('默认关闭'),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Text(
-              '普通复刻说明不能授权产品 Logo、名称、型号或包装文字。只有逐产品选择参考图、准确位置并明确确认后，白名单才会生效。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            if (!isCurrent) ...[
-              const SizedBox(height: 6),
-              Text(
-                '原帧分析已过期，请重新解析后再配置授权。',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: scheme.error),
-              ),
-            ] else if (productSlots.isEmpty) ...[
-              const SizedBox(height: 6),
-              const Text('当前没有可配置的独立替换产品；完整穿搭联动产品不在此处单独授权。'),
-            ] else ...[
-              const SizedBox(height: 8),
+    if (!isCurrent || productSlots.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: DecoratedBox(
+        key: ValueKey('product-mark-authorization-panel-${shot.id}'),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               for (final slotIndex in productSlots) ...[
                 _buildSlotRow(
                   context,
@@ -7623,7 +7587,7 @@ class _ProductMarkAuthorizationPanel extends StatelessWidget {
                 if (slotIndex != productSlots.last) const SizedBox(height: 7),
               ],
             ],
-          ],
+          ),
         ),
       ),
     );

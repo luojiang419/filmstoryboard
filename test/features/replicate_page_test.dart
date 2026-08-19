@@ -2006,8 +2006,8 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pump();
-    expect(find.text('产品文字与标识授权白名单'), findsOneWidget);
-    expect(find.text('默认关闭'), findsOneWidget);
+    expect(find.text('产品文字与标识授权白名单'), findsNothing);
+    expect(find.text('默认关闭'), findsNothing);
     await tester.tap(configureProductMark);
     await tester.pumpAndSettle();
     expect(find.text('产品B标识授权'), findsOneWidget);
