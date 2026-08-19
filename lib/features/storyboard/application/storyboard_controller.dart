@@ -124,7 +124,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       'storyboardAssetNormalizationVersion';
   static const _assetNormalizationVersion = 1;
   static const highDefinitionRedrawModel = 'gemini-3-pro-image';
-  static const highDefinitionRedrawImageSize = '4K';
+  static const highDefinitionRedrawImageSize = '2K';
 
   final AppDatabase _database;
   final WorkspaceDirectories? _directories;
@@ -3244,7 +3244,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       '必须保持完全一致：画面裁切、景别、镜头角度、透视、主体位置、人物身份与脸部特征、姿态与表情、服装和配饰、道具、背景空间关系、光源方向、阴影、色温、曝光和故事连续性。',
       '只补回参考图有视觉证据支持的细节：自然的边缘、发丝、皮肤与毛发纹理、布料和材质纹理、建筑与环境细节、真实光影层次；细节应与原有焦点、景深和颗粒感一致。',
       '严格禁止：新增或删除人物、道具、文字、标识和背景元素；改变构图、动作、表情、年龄、身份、服装颜色或镜头语言；臆造看不见的内容；过度锐化、光晕、塑料皮肤、蜡像感、重复纹理、伪影和不自然的 HDR。原图文字、标识、图案若存在，按原样保留，不重写。',
-      '输出一张适合故事板演示的真实高清 $projectAspectRatioLabel 4K 图像，画面干净、边缘自然、纹理清晰，但不要添加任何新的创意元素或水印。',
+      '输出一张适合故事板演示的真实高清 $projectAspectRatioLabel 2K 图像，画面干净、边缘自然、纹理清晰，但不要添加任何新的创意元素或水印。',
       '格位：第 ${rowIndex + 1} 行，第 ${columnIndex + 1} 列。',
     ];
     final caption = item.caption.trim();

@@ -2343,13 +2343,14 @@ void main() {
       {'16:9'},
     );
     expect(imageService.requests.map((request) => request.imageSize).toSet(), {
-      '4K',
+      '2K',
     });
     expect(imageService.requests.map((request) => request.apiKey).toSet(), {
       'gemini-key-456',
     });
     expect(imageService.requests.first.prompt, contains('高清重绘'));
     expect(imageService.requests.first.prompt, contains('不是重新创作'));
+    expect(imageService.requests.first.prompt, contains('2K 图像'));
     expect(imageService.requests.first.prompt, contains('严格禁止'));
     expect(imageService.requests.first.prompt, contains('不得覆盖参考图视觉证据'));
     expect(imageService.requests.first.prompt, contains('第一格说明'));

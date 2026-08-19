@@ -112,7 +112,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Gemini 3 Pro Image'), findsOneWidget);
     expect(find.text('16:9'), findsOneWidget);
-    expect(find.text('4K'), findsOneWidget);
+    expect(find.text('2K'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('storyboard-hd-redraw-button')),
       findsOneWidget,
