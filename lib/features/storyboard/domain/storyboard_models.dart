@@ -616,6 +616,26 @@ class StoryboardSummary {
 
 enum StoryboardVisionTaskKind { analyze, reorder }
 
+enum StoryboardLineArtStyle {
+  pencil(
+    label: '专业铅笔分镜',
+    promptInstruction:
+        '使用专业电影分镜师的黑白铅笔线稿：线条有轻重和结构感，允许少量排线表达明暗，但不使用灰阶铺色、彩色或写实材质。',
+  ),
+  cleanInk(
+    label: '清晰墨线分镜',
+    promptInstruction: '使用清晰克制的黑白墨线分镜：轮廓明确、线条简洁、少量黑块辅助空间层次，不使用灰阶铺色、彩色或写实材质。',
+  );
+
+  const StoryboardLineArtStyle({
+    required this.label,
+    required this.promptInstruction,
+  });
+
+  final String label;
+  final String promptInstruction;
+}
+
 class StoryboardVisionTask {
   const StoryboardVisionTask({required this.boardId, required this.kind});
 

@@ -529,6 +529,57 @@ void main() {
     expect(duplicateScript.sourceStoryboardId, duplicate.id);
   });
 
+  test('故事板图片替换后拍摄脚本自动切换到新帧路径', () async {
+    final fixture = await _createFixture();
+    final storyboardController = StoryboardController(
+      database: fixture.database,
+      directories: fixture.directories,
+    );
+    addTearDown(storyboardController.dispose);
+    final syncController = StoryboardShootingScriptSyncController(
+      storyboardController: storyboardController,
+      shootingScriptController: fixture.controller,
+    );
+    addTearDown(syncController.dispose);
+    final source = await _writeImage(
+      fixture.directories.frames,
+      'source-frame.png',
+      img.ColorRgb8(40, 90, 180),
+    );
+    final generated = await _writeImage(
+      fixture.directories.frames,
+      'expanded-frame.png',
+      img.ColorRgb8(180, 90, 40),
+    );
+    const asset = StoryboardCutAsset(
+      id: 'source-frame-asset',
+      imageId: 'source-frame-image',
+      sourceName: '源帧',
+      path: 'source-frame.png',
+      indexNo: 1,
+    );
+    final board = storyboardController.value.selectedBoard!;
+    fixture.controller.createForStoryboard(board);
+    storyboardController.placeAssetAtSlot(asset, 0);
+    final oldItem = storyboardController.value.selectedBoard!.itemAtSlot(0)!;
+    final applied = await storyboardController.replaceItemImage(
+      item: oldItem,
+      imagePath: generated.path,
+    );
+
+    expect(applied, isTrue);
+    final updatedItem = storyboardController.value.selectedBoard!.itemAtSlot(
+      0,
+    )!;
+    expect(updatedItem.asset.path, isNot(oldItem.asset.path));
+    expect(File(updatedItem.asset.path).existsSync(), isTrue);
+    expect(updatedItem.asset.path, contains('手动替换'));
+    final shot = fixture.controller.value.shots.single;
+    expect(shot.sourceStoryboardAssetId, updatedItem.asset.id);
+    expect(shot.framePath, updatedItem.asset.path);
+    expect(shot.framePath, isNot(source.path));
+  });
+
   test('只有手动设置首帧到结束帧才会形成镜头组', () async {
     final fixture = await _createFixture();
     fixture.controller.createEmpty(name: '手动镜头组');

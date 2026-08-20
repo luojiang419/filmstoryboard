@@ -35,6 +35,8 @@ import 'widgets/image_generation_model_selector.dart';
 
 enum _StoryboardInspectorSection {
   analysis,
+  aspectExpansion,
+  lineArt,
   redraw,
   number,
   layout,
@@ -7534,11 +7536,13 @@ class _DialogStatusPanel extends StatelessWidget {
 
 class _DialogSelect extends StatelessWidget {
   const _DialogSelect({
+    super.key,
     required this.label,
     required this.value,
     required this.values,
     required this.onChanged,
     this.labels,
+    this.enabled = true,
   });
 
   final String label;
@@ -7546,6 +7550,7 @@ class _DialogSelect extends StatelessWidget {
   final List<String> values;
   final ValueChanged<String> onChanged;
   final Map<String, String>? labels;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -7561,11 +7566,13 @@ class _DialogSelect extends StatelessWidget {
             child: Text(labels?[item] ?? item, overflow: TextOverflow.ellipsis),
           ),
       ],
-      onChanged: (value) {
-        if (value != null) {
-          onChanged(value);
-        }
-      },
+      onChanged: enabled
+          ? (value) {
+              if (value != null) {
+                onChanged(value);
+              }
+            }
+          : null,
     );
   }
 }
@@ -8370,6 +8377,15 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
   final _rowsController = TextEditingController();
   final _columnsController = TextEditingController();
   final _nameController = TextEditingController();
+  String _aspectExpansionRatio =
+      StoryboardController.defaultFrameTransformationAspectRatio;
+  String _aspectExpansionImageSize =
+      StoryboardController.defaultFrameTransformationImageSize;
+  String _lineArtRatio =
+      StoryboardController.defaultFrameTransformationAspectRatio;
+  String _lineArtImageSize =
+      StoryboardController.defaultFrameTransformationImageSize;
+  StoryboardLineArtStyle _lineArtStyle = StoryboardLineArtStyle.pencil;
   bool _isExportingBoardImages = false;
 
   @override
@@ -8535,6 +8551,190 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
             ),
           ),
           const SizedBox(height: 10),
+          _StoryboardInspectorSectionPanel(
+            title: '扩展画幅',
+            icon: Icons.open_in_full_rounded,
+            expanded: _sectionExpanded(
+              _StoryboardInspectorSection.aspectExpansion,
+            ),
+            onToggle: () => widget.onToggleSection(
+              _StoryboardInspectorSection.aspectExpansion,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _InspectorSettingLine(
+                  icon: Icons.auto_awesome_rounded,
+                  label: '模型',
+                  value: ImageGenerationModelCatalog.labelFor(
+                    StoryboardController.frameTransformationModel,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogSelect(
+                        key: const ValueKey(
+                          'storyboard-aspect-expansion-ratio',
+                        ),
+                        label: '目标比例',
+                        value: _aspectExpansionRatio,
+                        values: StoryboardController
+                            .frameTransformationAspectRatios,
+                        enabled: !locked && !state.isGeneratingImage,
+                        onChanged: (value) =>
+                            setState(() => _aspectExpansionRatio = value),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _DialogSelect(
+                        key: const ValueKey('storyboard-aspect-expansion-size'),
+                        label: '分辨率',
+                        value: _aspectExpansionImageSize,
+                        values:
+                            StoryboardController.frameTransformationImageSizes,
+                        enabled: !locked && !state.isGeneratingImage,
+                        onChanged: (value) =>
+                            setState(() => _aspectExpansionImageSize = value),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const _InspectorSettingLine(
+                  icon: Icons.crop_free_rounded,
+                  label: '扩展方式',
+                  value: '保留原图，只补画外',
+                ),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  key: const ValueKey('storyboard-aspect-expansion-button'),
+                  onPressed:
+                      locked ||
+                          state.isGeneratingImage ||
+                          board.visibleItemCount == 0
+                      ? null
+                      : () => widget.controller
+                            .enqueueAspectExpansionForSelectedBoard(
+                              aspectRatio: _aspectExpansionRatio,
+                              imageSize: _aspectExpansionImageSize,
+                            ),
+                  icon: state.isGeneratingImage
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.open_in_full_rounded),
+                  label: Text(
+                    state.isGeneratingImage ? '图片任务进行中...' : '一键扩展当前画板',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _StoryboardInspectorSectionPanel(
+            title: '生成线稿分镜',
+            icon: Icons.draw_rounded,
+            expanded: _sectionExpanded(_StoryboardInspectorSection.lineArt),
+            onToggle: () =>
+                widget.onToggleSection(_StoryboardInspectorSection.lineArt),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _InspectorSettingLine(
+                  icon: Icons.auto_awesome_rounded,
+                  label: '模型',
+                  value: ImageGenerationModelCatalog.labelFor(
+                    StoryboardController.frameTransformationModel,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _DialogSelect(
+                        key: const ValueKey('storyboard-line-art-ratio'),
+                        label: '目标比例',
+                        value: _lineArtRatio,
+                        values: StoryboardController
+                            .frameTransformationAspectRatios,
+                        enabled: !locked && !state.isGeneratingImage,
+                        onChanged: (value) =>
+                            setState(() => _lineArtRatio = value),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _DialogSelect(
+                        key: const ValueKey('storyboard-line-art-size'),
+                        label: '分辨率',
+                        value: _lineArtImageSize,
+                        values:
+                            StoryboardController.frameTransformationImageSizes,
+                        enabled: !locked && !state.isGeneratingImage,
+                        onChanged: (value) =>
+                            setState(() => _lineArtImageSize = value),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text('线稿风格', style: Theme.of(context).textTheme.labelLarge),
+                const SizedBox(height: 6),
+                _CompactSegmentedControl<StoryboardLineArtStyle>(
+                  key: const ValueKey('storyboard-line-art-style-segmented'),
+                  options: [
+                    for (final style in StoryboardLineArtStyle.values)
+                      (value: style, label: style.label),
+                  ],
+                  selected: _lineArtStyle,
+                  onChanged: locked || state.isGeneratingImage
+                      ? null
+                      : (style) => setState(() => _lineArtStyle = style),
+                ),
+                const SizedBox(height: 8),
+                const _InspectorSettingLine(
+                  icon: Icons.accessibility_new_rounded,
+                  label: '人物',
+                  value: '统一专业分镜人偶',
+                ),
+                const SizedBox(height: 6),
+                const _InspectorSettingLine(
+                  icon: Icons.filter_alt_off_rounded,
+                  label: '画面净化',
+                  value: '移除非叙事干扰',
+                ),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  key: const ValueKey('storyboard-line-art-button'),
+                  onPressed:
+                      locked ||
+                          state.isGeneratingImage ||
+                          board.visibleItemCount == 0
+                      ? null
+                      : () => widget.controller
+                            .enqueueLineArtStoryboardForSelectedBoard(
+                              aspectRatio: _lineArtRatio,
+                              imageSize: _lineArtImageSize,
+                              style: _lineArtStyle,
+                            ),
+                  icon: state.isGeneratingImage
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.draw_rounded),
+                  label: Text(
+                    state.isGeneratingImage ? '图片任务进行中...' : '生成当前画板线稿',
+                  ),
+                ),
+              ],
+            ),
+          ),
           _StoryboardInspectorSectionPanel(
             title: '高清重绘',
             icon: Icons.high_quality_rounded,

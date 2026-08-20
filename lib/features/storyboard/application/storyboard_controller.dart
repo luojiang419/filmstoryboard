@@ -125,6 +125,19 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   static const _assetNormalizationVersion = 1;
   static const highDefinitionRedrawModel = 'gemini-3-pro-image';
   static const highDefinitionRedrawImageSize = '2K';
+  static const frameTransformationModel = 'gemini-3-pro-image';
+  static const frameTransformationAspectRatios = [
+    '1:1',
+    '4:3',
+    '3:4',
+    '3:2',
+    '2:3',
+    '16:9',
+    '9:16',
+  ];
+  static const frameTransformationImageSizes = ['1K', '2K', '4K'];
+  static const defaultFrameTransformationAspectRatio = '16:9';
+  static const defaultFrameTransformationImageSize = '2K';
 
   final AppDatabase _database;
   final WorkspaceDirectories? _directories;
@@ -3155,6 +3168,222 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       successMessage: successMessage ?? '图片修改完成，已替换当前格',
       changedMessage: changedMessage ?? '图片已生成，但当前格内容已变化，未自动替换',
     );
+  }
+
+  bool enqueueAspectExpansionForSelectedBoard({
+    String aspectRatio = defaultFrameTransformationAspectRatio,
+    String imageSize = defaultFrameTransformationImageSize,
+  }) {
+    return _enqueueFrameTransformationForSelectedBoard(
+      actionLabel: '扩展画幅',
+      aspectRatio: aspectRatio,
+      imageSize: imageSize,
+      emptyMessage: '当前画板没有可扩展画幅的图片',
+      missingMessage: '当前画板图片文件不存在，无法扩展画幅',
+      successMessage: '扩展画幅完成，已替换当前格并同步拍摄脚本',
+      changedMessage: '画幅已扩展，但当前格内容已变化，未自动替换',
+      buildPrompt: (board, item, sequenceNo, ratio, size) =>
+          _aspectExpansionPrompt(
+            board: board,
+            item: item,
+            sequenceNo: sequenceNo,
+            aspectRatio: ratio,
+            imageSize: size,
+          ),
+    );
+  }
+
+  bool enqueueLineArtStoryboardForSelectedBoard({
+    String aspectRatio = defaultFrameTransformationAspectRatio,
+    String imageSize = defaultFrameTransformationImageSize,
+    StoryboardLineArtStyle style = StoryboardLineArtStyle.pencil,
+  }) {
+    return _enqueueFrameTransformationForSelectedBoard(
+      actionLabel: '生成线稿分镜',
+      aspectRatio: aspectRatio,
+      imageSize: imageSize,
+      emptyMessage: '当前画板没有可生成线稿分镜的图片',
+      missingMessage: '当前画板图片文件不存在，无法生成线稿分镜',
+      successMessage: '线稿分镜生成完成，已替换当前格并同步拍摄脚本',
+      changedMessage: '线稿分镜已生成，但当前格内容已变化，未自动替换',
+      buildPrompt: (board, item, sequenceNo, ratio, size) =>
+          _lineArtStoryboardPrompt(
+            board: board,
+            item: item,
+            sequenceNo: sequenceNo,
+            aspectRatio: ratio,
+            imageSize: size,
+            style: style,
+          ),
+    );
+  }
+
+  bool _enqueueFrameTransformationForSelectedBoard({
+    required String actionLabel,
+    required String aspectRatio,
+    required String imageSize,
+    required String emptyMessage,
+    required String missingMessage,
+    required String successMessage,
+    required String changedMessage,
+    required String Function(
+      StoryboardBoard board,
+      StoryboardItem item,
+      int sequenceNo,
+      String aspectRatio,
+      String imageSize,
+    )
+    buildPrompt,
+  }) {
+    final board = value.selectedBoard;
+    if (board == null) {
+      value = value.copyWith(message: '请先创建故事板');
+      return false;
+    }
+    if (_guardLockedBoard(board, actionLabel)) {
+      return false;
+    }
+    final normalizedAspectRatio = aspectRatio.trim();
+    if (!frameTransformationAspectRatios.contains(normalizedAspectRatio)) {
+      value = value.copyWith(message: '请选择有效的$actionLabel画幅比例');
+      return false;
+    }
+    final normalizedImageSize = imageSize.trim().toUpperCase();
+    if (!frameTransformationImageSizes.contains(normalizedImageSize)) {
+      value = value.copyWith(message: '请选择有效的$actionLabel分辨率');
+      return false;
+    }
+    final items = _orderedVisibleItems(board);
+    if (items.isEmpty) {
+      value = value.copyWith(message: emptyMessage);
+      return false;
+    }
+    final descriptor = ImageGenerationModelCatalog.descriptorFor(
+      frameTransformationModel,
+    );
+    if (descriptor == null ||
+        !descriptor.aspectRatios.contains(normalizedAspectRatio) ||
+        !descriptor.resolutions.contains(normalizedImageSize)) {
+      value = value.copyWith(message: '$actionLabel模型不支持当前比例或分辨率');
+      return false;
+    }
+
+    final existingItems = <StoryboardItem>[];
+    var missingCount = 0;
+    for (final item in items) {
+      if (File(item.asset.path).existsSync()) {
+        existingItems.add(item);
+      } else {
+        missingCount++;
+      }
+    }
+    if (existingItems.isEmpty) {
+      value = value.copyWith(message: missingMessage);
+      return false;
+    }
+
+    final tasks = <_PreparedImageReplacementTask>[];
+    for (var index = 0; index < existingItems.length; index++) {
+      final item = existingItems[index];
+      final task = _prepareImageReplacementTask(
+        item: item,
+        prompt: buildPrompt(
+          board,
+          item,
+          index + 1,
+          normalizedAspectRatio,
+          normalizedImageSize,
+        ),
+        model: frameTransformationModel,
+        aspectRatio: normalizedAspectRatio,
+        imageSize: normalizedImageSize,
+        quality: 'auto',
+        extraReferenceImagePaths: const [],
+        successMessage: successMessage,
+        changedMessage: changedMessage,
+      );
+      if (task != null) {
+        tasks.add(task);
+      }
+    }
+    if (tasks.isEmpty) {
+      return false;
+    }
+
+    for (final task in tasks) {
+      unawaited(_runImageReplacementTask(task));
+    }
+    _syncVisionTaskState(
+      boardId: board.id,
+      message:
+          '已并发提交 ${tasks.length} 张$actionLabel任务（$normalizedAspectRatio，$normalizedImageSize）'
+          '${missingCount > 0 ? '，跳过 $missingCount 张缺失图片' : ''}',
+    );
+    return true;
+  }
+
+  String _aspectExpansionPrompt({
+    required StoryboardBoard board,
+    required StoryboardItem item,
+    required int sequenceNo,
+    required String aspectRatio,
+    required String imageSize,
+  }) {
+    final rowIndex = item.slotIndex ~/ board.columns;
+    final columnIndex = item.slotIndex % board.columns;
+    final parts = [
+      '这是故事板视频帧的扩展画幅（outpainting）任务。请以参考图为唯一视觉依据，把第 $sequenceNo 张分镜扩展为 $aspectRatio、$imageSize 画布。',
+      '原始参考图的全部像素内容都必须完整保留，禁止裁切、缩放变形、重构或覆盖原画面；仅在目标画布新增的空白区域向外延展。',
+      '延展区域必须自然续接原图的空间、透视、地平线、镜头焦段、景深、光源方向、阴影、色温、颗粒、材质和画风，边界不可出现接缝、重复纹理或突变。',
+      '人物和关键主体的身份、脸部、姿态、表情、服装、道具、位置与大小必须保持不变。画外补全只允许生成镜头原本可能延续的环境，不得新增人物、显眼道具、文字、标识、水印或新的叙事事件。',
+      '若需要补全被原边界截断的非关键环境结构，应遵循可见部分的几何证据；没有视觉依据时使用低信息量、自然且不抢主体的背景延展，严禁臆造重要内容。',
+      '最终只输出一张无边框、无留白、无色块填充的完整 $aspectRatio、$imageSize 故事板视频帧。',
+      '格位：第 ${rowIndex + 1} 行，第 ${columnIndex + 1} 列。',
+    ];
+    final caption = item.caption.trim();
+    if (caption.isNotEmpty) {
+      parts.add('辅助理解（不得改变原图叙事）- 当前分镜描述：$caption');
+    }
+    final rowCaption = board.rowCaptionAt(rowIndex).trim();
+    if (rowCaption.isNotEmpty) {
+      parts.add('辅助理解（不得改变原图叙事）- 当前行描述：$rowCaption');
+    }
+    return parts.join('\n');
+  }
+
+  String _lineArtStoryboardPrompt({
+    required StoryboardBoard board,
+    required StoryboardItem item,
+    required int sequenceNo,
+    required String aspectRatio,
+    required String imageSize,
+    required StoryboardLineArtStyle style,
+  }) {
+    final rowIndex = item.slotIndex ~/ board.columns;
+    final columnIndex = item.slotIndex % board.columns;
+    final parts = [
+      '这是导演审阅用的专业黑白线稿分镜转换任务。请把参考图中的第 $sequenceNo 张视频帧重绘为 $aspectRatio、$imageSize 的标准电影分镜图，不是照片滤镜，也不是简单边缘检测。',
+      style.promptInstruction,
+      '必须保留镜头叙事与调度：景别、机位、镜头角度、透视、地平线、主体在画面中的位置和大小、人物数量、人物之间的距离与朝向、动作姿态、视线方向、关键表情意图、必要道具以及场景空间关系。',
+      '所有人物统一替换为同一套专业分镜人偶：简化的人体块面和关节结构、无可识别真人肖像细节、服装只保留区分角色和动作所需的轮廓；不同人物通过体型、发型轮廓、服装外形或位置区分，禁止变成写实人物或杂乱卡通角色。',
+      '移除所有不帮助讲述故事和判断镜头的干扰：原始颜色、复杂光影、照片纹理、皮肤细节、品牌标识、水印、字幕、装饰性文字、背景杂物、噪点、压缩伪影和无关小物件。',
+      '场景只保留理解空间、动作与遮挡关系所必需的建筑轮廓、地面线、门窗、主要家具和关键道具；用简洁线条和少量排线建立前中后景，主体轮廓清楚，画面留白充足。',
+      '禁止添加分镜编号、镜头参数、对白框、箭头、边框、表格或任何文字。最终只输出单张纯黑白分镜画面，不要输出原图对比、彩色元素、灰色照片底、水印或说明。',
+      '格位：第 ${rowIndex + 1} 行，第 ${columnIndex + 1} 列。',
+    ];
+    final caption = item.caption.trim();
+    if (caption.isNotEmpty) {
+      parts.add('叙事判断依据（只用于决定应保留的元素）- 当前分镜描述：$caption');
+    }
+    final rowCaption = board.rowCaptionAt(rowIndex).trim();
+    if (rowCaption.isNotEmpty) {
+      parts.add('叙事判断依据（只用于决定应保留的元素）- 当前行描述：$rowCaption');
+    }
+    final outline = board.summary?.outline.trim() ?? '';
+    if (outline.isNotEmpty) {
+      parts.add('叙事判断依据（不得改变镜头内容）- 故事概述：$outline');
+    }
+    return parts.join('\n');
   }
 
   bool enqueueHighDefinitionRedrawForSelectedBoard() {

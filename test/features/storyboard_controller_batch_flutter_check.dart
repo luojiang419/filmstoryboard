@@ -2305,6 +2305,142 @@ void main() {
     expect(controller.value.generatingImageBoardIds, isEmpty);
   });
 
+  test('扩展画幅默认使用16比9和2K并并发替换当前画板', () async {
+    final fixture = await _createImageGenerationFixture(
+      imageServiceFactory: _ConcurrentImageGenerationService.new,
+    );
+    await fixture.settingsController.setImageGenerationSettings(
+      baseUrl: 'https://grsai.example.com',
+      grsaiApiKey: 'grsai-key-123',
+      geminiBaseUrl: 'https://generativelanguage.googleapis.com',
+      geminiApiKey: 'gemini-key-456',
+      model: 'nano-banana-fast',
+    );
+    final imageService =
+        fixture.imageService as _ConcurrentImageGenerationService;
+    final controller = fixture.controller;
+    final assets = [
+      await _registeredAsset(fixture.database, fixture.root, 1),
+      await _registeredAsset(fixture.database, fixture.root, 2),
+    ];
+    controller.setAssetsUsed(assets, true);
+    controller.updateCaption(0, '人物站在竖屏街景中央');
+
+    final accepted = controller.enqueueAspectExpansionForSelectedBoard();
+
+    expect(accepted, isTrue);
+    await imageService.bothStarted.future;
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests.map((request) => request.model).toSet(), {
+      'gemini-3-pro-image',
+    });
+    expect(
+      imageService.requests.map((request) => request.aspectRatio).toSet(),
+      {'16:9'},
+    );
+    expect(imageService.requests.map((request) => request.imageSize).toSet(), {
+      '2K',
+    });
+    expect(imageService.requests.map((request) => request.apiKey).toSet(), {
+      'gemini-key-456',
+    });
+    expect(imageService.requests.first.prompt, contains('扩展画幅'));
+    expect(imageService.requests.first.prompt, contains('outpainting'));
+    expect(imageService.requests.first.prompt, contains('禁止裁切'));
+    expect(imageService.requests.first.prompt, contains('仅在目标画布新增'));
+    expect(imageService.requests.first.prompt, contains('不得新增人物'));
+    expect(imageService.requests.first.prompt, contains('人物站在竖屏街景中央'));
+    expect(imageService.requests.first.referenceImagePaths, [assets[0].path]);
+    expect(imageService.requests.last.referenceImagePaths, [assets[1].path]);
+
+    imageService.releaseAll();
+    await _waitUntil(() {
+      final board = controller.value.selectedBoard;
+      return board != null &&
+          board.items.length == 2 &&
+          board.items.every(
+            (item) => item.asset.id.startsWith('generated-cut-'),
+          );
+    });
+    await _waitUntil(() => !controller.value.isGeneratingImage);
+
+    expect(controller.value.message, contains('扩展画幅完成'));
+    expect(
+      fixture.database.listImageGenerationRecords().where(
+        (record) => record.prompt.contains('扩展画幅'),
+      ),
+      hasLength(2),
+    );
+  });
+
+  test('生成线稿分镜默认统一为专业黑白铅笔人偶并批量替换', () async {
+    final fixture = await _createImageGenerationFixture(
+      imageServiceFactory: _ConcurrentImageGenerationService.new,
+    );
+    await fixture.settingsController.setImageGenerationSettings(
+      baseUrl: 'https://grsai.example.com',
+      grsaiApiKey: 'grsai-key-123',
+      geminiBaseUrl: 'https://generativelanguage.googleapis.com',
+      geminiApiKey: 'gemini-key-456',
+      model: 'nano-banana-fast',
+    );
+    final imageService =
+        fixture.imageService as _ConcurrentImageGenerationService;
+    final controller = fixture.controller;
+    final assets = [
+      await _registeredAsset(fixture.database, fixture.root, 1),
+      await _registeredAsset(fixture.database, fixture.root, 2),
+    ];
+    controller.setAssetsUsed(assets, true);
+    controller.updateCaption(0, '两个人在门口对视');
+
+    final accepted = controller.enqueueLineArtStoryboardForSelectedBoard();
+
+    expect(accepted, isTrue);
+    await imageService.bothStarted.future;
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests.map((request) => request.model).toSet(), {
+      'gemini-3-pro-image',
+    });
+    expect(
+      imageService.requests.map((request) => request.aspectRatio).toSet(),
+      {'16:9'},
+    );
+    expect(imageService.requests.map((request) => request.imageSize).toSet(), {
+      '2K',
+    });
+    final prompt = imageService.requests.first.prompt;
+    expect(prompt, contains('专业黑白线稿分镜'));
+    expect(prompt, contains('不是照片滤镜'));
+    expect(prompt, contains('黑白铅笔线稿'));
+    expect(prompt, contains('所有人物统一替换'));
+    expect(prompt, contains('专业分镜人偶'));
+    expect(prompt, contains('移除所有不帮助讲述故事'));
+    expect(prompt, contains('禁止添加分镜编号'));
+    expect(prompt, contains('两个人在门口对视'));
+    expect(imageService.requests.first.referenceImagePaths, [assets[0].path]);
+    expect(imageService.requests.last.referenceImagePaths, [assets[1].path]);
+
+    imageService.releaseAll();
+    await _waitUntil(() {
+      final board = controller.value.selectedBoard;
+      return board != null &&
+          board.items.length == 2 &&
+          board.items.every(
+            (item) => item.asset.id.startsWith('generated-cut-'),
+          );
+    });
+    await _waitUntil(() => !controller.value.isGeneratingImage);
+
+    expect(controller.value.message, contains('线稿分镜生成完成'));
+    expect(
+      fixture.database.listImageGenerationRecords().where(
+        (record) => record.prompt.contains('专业黑白线稿分镜'),
+      ),
+      hasLength(2),
+    );
+  });
+
   test('高清重绘当前画板固定使用Gemini Pro参数并并发替换', () async {
     final fixture = await _createImageGenerationFixture(
       imageServiceFactory: _ConcurrentImageGenerationService.new,

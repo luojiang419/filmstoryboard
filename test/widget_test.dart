@@ -107,6 +107,76 @@ void main() {
       controller.value.selectedBoard!.titleAlignment,
       StoryboardTitleAlignment.center,
     );
+    expect(find.text('扩展画幅'), findsOneWidget);
+    expect(find.text('生成线稿分镜'), findsOneWidget);
+    await tester.tap(find.text('扩展画幅'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<DropdownButtonFormField<String>>(
+            find.descendant(
+              of: find.byKey(
+                const ValueKey('storyboard-aspect-expansion-ratio'),
+              ),
+              matching: find.byType(DropdownButtonFormField<String>),
+            ),
+          )
+          .initialValue,
+      '16:9',
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<String>>(
+            find.descendant(
+              of: find.byKey(
+                const ValueKey('storyboard-aspect-expansion-size'),
+              ),
+              matching: find.byType(DropdownButtonFormField<String>),
+            ),
+          )
+          .initialValue,
+      '2K',
+    );
+    expect(find.text('保留原图，只补画外'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('storyboard-aspect-expansion-button')),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('扩展画幅'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('生成线稿分镜'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<DropdownButtonFormField<String>>(
+            find.descendant(
+              of: find.byKey(const ValueKey('storyboard-line-art-ratio')),
+              matching: find.byType(DropdownButtonFormField<String>),
+            ),
+          )
+          .initialValue,
+      '16:9',
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<String>>(
+            find.descendant(
+              of: find.byKey(const ValueKey('storyboard-line-art-size')),
+              matching: find.byType(DropdownButtonFormField<String>),
+            ),
+          )
+          .initialValue,
+      '2K',
+    );
+    expect(find.text('专业铅笔分镜'), findsOneWidget);
+    expect(find.text('统一专业分镜人偶'), findsOneWidget);
+    expect(find.text('移除非叙事干扰'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('storyboard-line-art-button')),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('生成线稿分镜'));
+    await tester.pumpAndSettle();
     expect(find.text('高清重绘'), findsOneWidget);
     await tester.tap(find.text('高清重绘'));
     await tester.pumpAndSettle();
@@ -2324,6 +2394,21 @@ void main() {
     expect(find.byTooltip('收起画板参数'), findsOneWidget);
     expect(find.text('自动重排序'), findsNothing);
     expect(find.text('导出画板图片'), findsOneWidget);
+    final inspectorScrollable = find
+        .descendant(
+          of: find.byKey(const ValueKey('storyboard-inspector-list')),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Scrollable &&
+                widget.axisDirection == AxisDirection.down,
+          ),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('图片编号'),
+      240,
+      scrollable: inspectorScrollable,
+    );
     expect(find.text('图片编号'), findsOneWidget);
     await tester.tap(find.text('图片编号').first);
     await tester.pumpAndSettle();
@@ -2378,16 +2463,6 @@ void main() {
     );
     expect(thumbnailSlider.value, 360);
     expect(thumbnailSlider.max, 360);
-    final inspectorScrollable = find
-        .descendant(
-          of: find.byKey(const ValueKey('storyboard-inspector-list')),
-          matching: find.byWidgetPredicate(
-            (widget) =>
-                widget is Scrollable &&
-                widget.axisDirection == AxisDirection.down,
-          ),
-        )
-        .first;
     await tester.scrollUntilVisible(
       find.text('间距与分割线'),
       240,
@@ -2412,7 +2487,11 @@ void main() {
 
     tester.state<ScrollableState>(inspectorScrollable).position.jumpTo(0);
     await tester.pumpAndSettle();
-    await tester.drag(inspectorScrollable, const Offset(0, -120));
+    await tester.scrollUntilVisible(
+      find.text('多宫格布局'),
+      180,
+      scrollable: inspectorScrollable,
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('多宫格布局'));
