@@ -1798,6 +1798,24 @@ class AppDatabase {
     );
   }
 
+  void updateExternalCutResult({
+    required String id,
+    required int indexNo,
+    required String path,
+    required int width,
+    required int height,
+  }) {
+    _database.execute(
+      '''
+      UPDATE cut_results
+      SET index_no = ?, path = ?, x = 0, y = 0,
+          width = ?, height = ?, selected = 1
+      WHERE id = ?;
+      ''',
+      [indexNo, path, width, height, id],
+    );
+  }
+
   void updateImportedImageStoredPath(String imageId, String path) {
     _database.execute(
       'UPDATE imported_images SET stored_path = ? WHERE id = ?;',

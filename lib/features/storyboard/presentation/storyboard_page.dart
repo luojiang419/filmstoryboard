@@ -840,6 +840,13 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       ref
           .read(shootingScriptControllerProvider)
           .applyBridgeShots(importedBoard, result.manifest.shots);
+      for (final obsolete in result.obsoleteFiles) {
+        try {
+          if (obsolete.existsSync()) await obsolete.delete();
+        } catch (_) {
+          // 清理失败不回滚已成功接收的故事板，下次接收会再次识别为旧文件。
+        }
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

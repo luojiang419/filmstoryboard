@@ -1931,6 +1931,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     final now = DateTime.now().toIso8601String();
     final first = validImages.first;
     final firstStoredPath = _toStoredPath(first.path);
+    final existingRecordsById = {
+      for (final record in _database.listCutResults())
+        if (record.taskId == taskId) record.id: record,
+    };
     _database
       ..upsertImportedImage(
         id: imageId,
@@ -1948,22 +1952,44 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         rows: 1,
         columns: validImages.length,
         confidence: 1,
-      )
-      ..deleteCutResultsForTask(taskId);
+      );
+    final desiredAssetIds = {
+      for (final image in validImages) 'external-cut:${image.stableId}',
+    };
+    _database.deleteCutResultsByIds(
+      existingRecordsById.keys.where((id) => !desiredAssetIds.contains(id)),
+    );
     for (var index = 0; index < validImages.length; index++) {
       final image = validImages[index];
-      _database.insertCutResult(
-        id: 'external-cut:${image.stableId}',
-        taskId: taskId,
-        imageId: imageId,
-        indexNo: index + 1,
-        path: _toStoredPath(image.path),
-        x: 0,
-        y: 0,
-        width: image.width,
-        height: image.height,
-        selected: true,
-      );
+      final assetId = 'external-cut:${image.stableId}';
+      final storedPath = _toStoredPath(image.path);
+      final existing = existingRecordsById[assetId];
+      if (existing == null) {
+        _database.insertCutResult(
+          id: assetId,
+          taskId: taskId,
+          imageId: imageId,
+          indexNo: index + 1,
+          path: storedPath,
+          x: 0,
+          y: 0,
+          width: image.width,
+          height: image.height,
+          selected: true,
+        );
+      } else if (existing.indexNo != index + 1 ||
+          existing.path != storedPath ||
+          existing.width != image.width ||
+          existing.height != image.height ||
+          !existing.selected) {
+        _database.updateExternalCutResult(
+          id: assetId,
+          indexNo: index + 1,
+          path: storedPath,
+          width: image.width,
+          height: image.height,
+        );
+      }
     }
 
     await _reloadAssets(
@@ -1975,6 +2001,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       for (final item in existingBoard?.items ?? const <StoryboardItem>[])
         item.asset.id: item.caption,
     };
+    final existingItemsByAssetId = {
+      for (final item in existingBoard?.items ?? const <StoryboardItem>[])
+        item.asset.id: item,
+    };
     final items = <StoryboardItem>[];
     for (var index = 0; index < validImages.length; index++) {
       final image = validImages[index];
@@ -1983,16 +2013,20 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         value = value.copyWith(message: '焦点帧资源注册失败，请重试');
         return null;
       }
+      final caption = _mergedExternalCaption(
+        incoming: image.caption,
+        existing: existingCaptionsByAssetId[asset.id],
+        preserveExisting: preserveExistingCaptions,
+      );
+      final existingItem = existingItemsByAssetId[asset.id];
       items.add(
-        StoryboardItem(
-          asset: asset,
-          caption: _mergedExternalCaption(
-            incoming: image.caption,
-            existing: existingCaptionsByAssetId[asset.id],
-            preserveExisting: preserveExistingCaptions,
-          ),
-          slotIndex: index,
-        ),
+        existingItem?.copyWith(
+              asset: asset,
+              caption: caption,
+              slotIndex: index,
+              resourceRemoved: false,
+            ) ??
+            StoryboardItem(asset: asset, caption: caption, slotIndex: index),
       );
     }
 

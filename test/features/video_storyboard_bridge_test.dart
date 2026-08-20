@@ -327,6 +327,15 @@ void main() {
           boardName: 'reference · 焦点镜头',
           images: images,
         );
+    final firstRecords = {
+      for (final record in database.listCutResults())
+        if (record.taskId == 'external-task:video:video-1') record.id: record,
+    };
+    final updatedSecondFrame = await _writeFrame(
+      directories.frames,
+      'frame-2-updated.png',
+      img.ColorRgb8(30, 210, 120),
+    );
     final secondBoardId = await controller
         .createOrReplaceBoardFromExternalImages(
           sourceId: 'video:video-1',
@@ -336,7 +345,7 @@ void main() {
             StoryboardExternalImage(
               stableId: images.last.stableId,
               sourceName: images.last.sourceName,
-              path: images.last.path,
+              path: updatedSecondFrame.path,
               width: images.last.width,
               height: images.last.height,
               caption: '更新后的产品纹理特写',
@@ -366,6 +375,65 @@ void main() {
         (record) => record.taskId == 'external-task:video:video-1',
       ),
       hasLength(2),
+    );
+    final secondRecords = {
+      for (final record in database.listCutResults())
+        if (record.taskId == 'external-task:video:video-1') record.id: record,
+    };
+    expect(
+      secondRecords['external-cut:video-frame:frame-1']!.path,
+      firstRecords['external-cut:video-frame:frame-1']!.path,
+    );
+    expect(
+      secondRecords['external-cut:video-frame:frame-1']!.createdAt,
+      firstRecords['external-cut:video-frame:frame-1']!.createdAt,
+    );
+    expect(
+      secondRecords['external-cut:video-frame:frame-2']!.path,
+      isNot(firstRecords['external-cut:video-frame:frame-2']!.path),
+    );
+    expect(
+      secondRecords['external-cut:video-frame:frame-2']!.createdAt,
+      firstRecords['external-cut:video-frame:frame-2']!.createdAt,
+    );
+
+    final thirdFrame = await _writeFrame(
+      directories.frames,
+      'frame-3.png',
+      img.ColorRgb8(180, 70, 210),
+    );
+    await controller.createOrReplaceBoardFromExternalImages(
+      sourceId: 'video:video-1',
+      boardName: 'reference · 焦点镜头',
+      images: [
+        StoryboardExternalImage(
+          stableId: images.last.stableId,
+          sourceName: images.last.sourceName,
+          path: updatedSecondFrame.path,
+          width: images.last.width,
+          height: images.last.height,
+          caption: '更新后的产品纹理特写',
+        ),
+        StoryboardExternalImage(
+          stableId: 'video-frame:frame-3',
+          sourceName: 'reference.mp4',
+          path: thirdFrame.path,
+          width: 64,
+          height: 36,
+          caption: '新增收尾镜头',
+        ),
+      ],
+    );
+    final thirdRecords = {
+      for (final record in database.listCutResults())
+        if (record.taskId == 'external-task:video:video-1') record.id: record,
+    };
+    expect(thirdRecords, hasLength(2));
+    expect(thirdRecords, isNot(contains('external-cut:video-frame:frame-1')));
+    expect(thirdRecords, contains('external-cut:video-frame:frame-3'));
+    expect(
+      thirdRecords['external-cut:video-frame:frame-2']!.createdAt,
+      secondRecords['external-cut:video-frame:frame-2']!.createdAt,
     );
   });
 }

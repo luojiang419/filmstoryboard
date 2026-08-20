@@ -51,10 +51,15 @@ class BridgeImportedFrame {
 }
 
 class BridgeImportResult {
-  const BridgeImportResult({required this.manifest, required this.frames});
+  const BridgeImportResult({
+    required this.manifest,
+    required this.frames,
+    this.obsoleteFiles = const [],
+  });
 
   final BridgeManifest manifest;
   final List<BridgeImportedFrame> frames;
+  final List<File> obsoleteFiles;
 }
 
 class BridgePackageService {
@@ -251,6 +256,7 @@ class BridgePackageService {
     );
     await targetDirectory.create(recursive: true);
     final imported = <BridgeImportedFrame>[];
+    final desiredPaths = <String>{};
     for (var index = 0; index < selectedFrames.length; index++) {
       final frame = selectedFrames[index];
       final entry = entries[frame.relativePath];
@@ -262,16 +268,31 @@ class BridgePackageService {
         throw FormatException('桥接图片无法读取：${frame.relativePath}');
       }
       final extension = _safeImageExtension(frame.relativePath);
+      final declaredChecksum =
+          manifest.checksums[frame.relativePath] ?? frame.sha256;
+      final checksum = declaredChecksum.length >= 16
+          ? declaredChecksum
+          : sha256.convert(entry.content).toString();
+      final stableSlug = sha256
+          .convert(utf8.encode(frame.stableId))
+          .toString()
+          .substring(0, 20);
       final output = File(
         p.join(
           targetDirectory.path,
-          'frame_${(index + 1).toString().padLeft(4, '0')}$extension',
+          'frame_${stableSlug}_${checksum.substring(0, 16)}$extension',
         ),
       );
-      final partial = File('${output.path}.partial');
-      await partial.writeAsBytes(entry.content, flush: true);
-      if (output.existsSync()) await output.delete();
-      await partial.rename(output.path);
+      desiredPaths.add(p.normalize(output.absolute.path));
+      final reusable =
+          output.existsSync() &&
+          sha256.convert(await output.readAsBytes()).toString() == checksum;
+      if (!reusable) {
+        final partial = File('${output.path}.partial');
+        await partial.writeAsBytes(entry.content, flush: true);
+        if (output.existsSync()) await output.delete();
+        await partial.rename(output.path);
+      }
       imported.add(
         BridgeImportedFrame(
           record: frame,
@@ -281,7 +302,18 @@ class BridgePackageService {
         ),
       );
     }
-    return BridgeImportResult(manifest: manifest, frames: imported);
+    final obsoleteFiles = targetDirectory
+        .listSync(followLinks: false)
+        .whereType<File>()
+        .where(
+          (file) => !desiredPaths.contains(p.normalize(file.absolute.path)),
+        )
+        .toList(growable: false);
+    return BridgeImportResult(
+      manifest: manifest,
+      frames: imported,
+      obsoleteFiles: obsoleteFiles,
+    );
   }
 
   bool _isSafeRelativePath(String value) {

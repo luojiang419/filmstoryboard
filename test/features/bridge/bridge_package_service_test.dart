@@ -5,6 +5,7 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
 
 import 'package:filmstoryboard/features/bridge/data/bridge_package_service.dart';
 import 'package:filmstoryboard/features/bridge/domain/bridge_manifest.dart';
@@ -207,6 +208,16 @@ void main() {
     );
     expect(result.frames, hasLength(1));
     expect(result.frames.single.file.existsSync(), isTrue);
+    expect(
+      p.basename(result.frames.single.file.path),
+      contains(checksum.substring(0, 16)),
+    );
+    final repeated = await const BridgePackageService().importShiyinToFilm(
+      packageFile: package,
+      destinationRoot: Directory('${directory.path}/imports'),
+    );
+    expect(repeated.frames.single.file.path, result.frames.single.file.path);
+    expect(repeated.obsoleteFiles, isEmpty);
     expect(result.manifest.shots.single.fields['prompt'], '人物转身');
     expect(result.manifest.selectedVariant, BridgeVariant.lineArt);
   });
