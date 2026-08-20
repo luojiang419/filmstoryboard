@@ -243,6 +243,16 @@ void main() {
       find.byKey(const ValueKey('replicate-new-prepare-assets-step')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey('replication-generation-mode')),
+      findsOneWidget,
+    );
+    expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
+    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsNothing);
+    expect(find.text('提取全部骨架'), findsNothing);
+    await tester.tap(find.text('精确'));
+    await tester.pump();
+    expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
     expect(find.byKey(const ValueKey('extract-all-dwpose')), findsOneWidget);
     expect(find.text('提取全部骨架'), findsOneWidget);
     expect(find.text('部署 DWPose'), findsNothing);
@@ -588,13 +598,16 @@ void main() {
       find.byKey(ValueKey('replicate-user-instructions-${shot.id}')),
       findsOneWidget,
     );
-    expect(find.text('步骤 1 · 匹配资产图'), findsOneWidget);
+    expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
+    await tester.tap(find.text('精确'));
+    await tester.pump();
+    expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('prepare-assets-right-asset-library-panel')),
       findsOneWidget,
     );
     expect(
-      find.descendant(of: prepareStep, matching: find.text('匹配资产图')),
+      find.descendant(of: prepareStep, matching: find.text('精确资产控制')),
       findsAtLeastNWidgets(1),
     );
     expect(
@@ -980,6 +993,8 @@ void main() {
     );
     replicateController.refresh();
     await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.text('精确'));
+    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('replicate-new-next-confirm')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(
@@ -1572,6 +1587,9 @@ void main() {
     expect(find.text('请补齐正面、侧面、背面三个独立视图。'), findsNothing);
     expect(find.text('拆分横向拼图'), findsNothing);
 
+    await tester.tap(find.text('精确'));
+    await tester.pump();
+
     final decision = find.byKey(
       ValueKey('replicate-subject-decision-${shot.id}-product:0'),
     );
@@ -1598,7 +1616,7 @@ void main() {
     expect(restored.subjects.last.decision, ReplicateSubjectDecision.keep);
   });
 
-  testWidgets('准备资产步骤改为匹配资产图并移除全局规则入口', (tester) async {
+  testWidgets('准备资产默认快速复刻且可切换精确资产控制', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1662,6 +1680,7 @@ void main() {
           ),
         ],
         personCount: 2,
+        analysisStatus: ProcessingStatus.completed,
         createdAt: guideNow,
         updatedAt: guideNow,
       ),
@@ -1837,11 +1856,140 @@ void main() {
       find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
       findsOneWidget,
     );
-    expect(find.text('步骤 1 · 匹配资产图'), findsOneWidget);
+    expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
     expect(
-      find.descendant(of: prepareStep, matching: find.text('匹配资产图')),
+      find.byKey(ValueKey('quick-reference-images-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(find.text('图1 · 原分镜'), findsOneWidget);
+    expect(find.text('补充说明（可选）'), findsOneWidget);
+    expect(find.textContaining('单镜头输入 1/'), findsOneWidget);
+    expect(find.textContaining('输入图片 1/'), findsOneWidget);
+    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('quick-parse-all-replication-frames')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('quick-parse-frame-${shot.id}')),
+      findsOneWidget,
+    );
+    expect(find.text('已解析 2 人'), findsOneWidget);
+    final modelASlot = find.byKey(
+      ValueKey('quick-template-slot-${shot.id}-character-1000'),
+    );
+    expect(modelASlot, findsOneWidget);
+    expect(
+      find.byKey(ValueKey('quick-template-slot-${shot.id}-product-2000')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('quick-template-slot-${shot.id}-character-1001')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('quick-template-slot-${shot.id}-product-2100')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('quick-template-slot-${shot.id}-scene-3000')),
+      findsOneWidget,
+    );
+    expect(find.text('模特A'), findsOneWidget);
+    expect(find.text('产品A'), findsOneWidget);
+    expect(find.text('模特B'), findsOneWidget);
+    expect(find.text('产品B'), findsOneWidget);
+    expect(find.text('场景（可选）'), findsOneWidget);
+    expect(find.byKey(ValueKey('quick-add-asset-${shot.id}')), findsOneWidget);
+    expect(find.text('添加其他资产图'), findsOneWidget);
+
+    await tester.tap(modelASlot);
+    await tester.pumpAndSettle();
+    final picker = find.byType(AlertDialog);
+    await tester.tap(
+      find.descendant(of: picker, matching: find.text('女模特')).first,
+    );
+    await tester.pumpAndSettle();
+    final quickLink = bindingController.value.links.single;
+    final quickCard = find.byKey(
+      ValueKey('quick-reference-${shot.id}-${quickLink.scriptAssetId}'),
+    );
+    expect(quickCard, findsOneWidget);
+    expect(
+      find.descendant(of: quickCard, matching: find.text('图2')),
+      findsOneWidget,
+    );
+    expect(quickLink.quickReferenceOrder, 1);
+    expect(quickLink.quickReferenceRole, QuickReferenceRole.model);
+    expect(quickLink.sortOrder, 1000);
+    expect(find.textContaining('单镜头输入 2/'), findsOneWidget);
+    expect(find.textContaining('输入图片 2/'), findsOneWidget);
+    final roleField = find.byKey(
+      ValueKey('quick-reference-role-${shot.id}-${quickLink.scriptAssetId}'),
+    );
+    await tester.tap(roleField);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('配饰').last);
+    await tester.pumpAndSettle();
+    expect(
+      bindingController.value.links.single.quickReferenceRole,
+      QuickReferenceRole.accessory,
+    );
+    final descriptionField = find.byKey(
+      ValueKey(
+        'quick-reference-description-${shot.id}-${quickLink.scriptAssetId}',
+      ),
+    );
+    await tester.enterText(descriptionField, '保持银色耳饰造型');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(bindingController.value.links.single.quickDescription, '保持银色耳饰造型');
+    replicateController.updateGenerationDefaults(
+      model: 'apimart:imagen-4.0-apimart',
+    );
+    await tester.pump();
+    expect(find.textContaining('不支持多图参考'), findsAtLeastNWidgets(1));
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(ValueKey('replicate-shot-image-${shot.id}')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('replicate-all-shot-images')),
+          )
+          .onPressed,
+      isNull,
+    );
+    await tester.scrollUntilVisible(
+      quickCard,
+      420,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('replicate-asset-library-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pump();
+    await tester.tap(
+      find.descendant(of: quickCard, matching: find.byTooltip('移除资产图')),
+    );
+    await tester.pump();
+    expect(bindingController.value.links, isEmpty);
+
+    await tester.tap(find.text('精确'));
+    await tester.pump();
+    expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
+    expect(
+      find.descendant(of: prepareStep, matching: find.text('精确资产控制')),
       findsAtLeastNWidgets(1),
     );
+    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('asset-library-upload-reference')),
       findsNothing,
@@ -1915,7 +2063,19 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('自动匹配此镜头'));
+    final autoMatchButton = find.byTooltip('自动匹配此镜头');
+    await tester.scrollUntilVisible(
+      autoMatchButton,
+      -420,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('replicate-asset-library-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pump();
+    await tester.tap(autoMatchButton);
     await tester.pump(const Duration(milliseconds: 220));
     final autoMatchedAsset = bindingController.value.assets.single;
     expect(autoMatchedAsset.type, ReplicateAssetType.character);

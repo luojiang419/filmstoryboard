@@ -39,6 +39,7 @@ import '../data/dwpose_model_manager.dart';
 import '../data/dwpose_service.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
+import '../data/quick_replication_prompt_planning_service.dart';
 import '../data/replication_frame_analysis_service.dart';
 import '../data/replication_generation_review_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
@@ -47,10 +48,15 @@ import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
 import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
+import '../domain/lightweight_replication_prompt_compiler.dart';
 import '../domain/nano_banana_asset_manifest.dart';
 import '../domain/nano_banana_product_detail_refill_protocol.dart';
 import '../domain/nano_banana_replication_prompt_compiler.dart';
+import '../domain/quick_replication_reference.dart';
+import '../domain/quick_replication_input_capacity.dart';
 import '../domain/replicate_models.dart';
+
+enum ReplicationGenerationMode { quick, precise }
 
 final replicateControllerProvider = Provider<ReplicateController>(
   (ref) {
@@ -192,6 +198,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         const SeedancePromptGenerationService(),
     ImageGenerationService? imageGenerationService,
     VisionStoryboardService? visionService,
+    QuickReplicationPromptPlanningService? quickPlanningService,
     ReplicationFrameAnalysisService? frameAnalysisService,
     ReplicationGenerationReviewService? generationReviewService,
     DwPoseModelManager? dwPoseModelManager,
@@ -226,6 +233,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _frameAnalysisService =
         frameAnalysisService ??
         ReplicationFrameAnalysisService(visionService: _visionService);
+    _quickPlanningService =
+        quickPlanningService ??
+        QuickReplicationPromptPlanningService(visionService: _visionService);
     _generationReviewService =
         generationReviewService ??
         ReplicationGenerationReviewService(visionService: _visionService);
@@ -258,6 +268,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsImageGenerationService;
   final VisionStoryboardService _visionService;
   final bool _ownsVisionService;
+  late final QuickReplicationPromptPlanningService _quickPlanningService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
   late final DwPoseModelManager _dwPoseModelManager;
@@ -364,6 +375,64 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   String get composePromptModelLabel => _composePromptModelRule.label;
 
+  QuickReplicationInputCapacity quickReplicationCapacityForShot(String shotId) {
+    final repository = _workflowRepository;
+    if (repository == null) {
+      return QuickReplicationInputCapacity.evaluate(
+        model: resolvedGenerationModel,
+        userReferenceCount: 0,
+        productReferenceCount: 0,
+      );
+    }
+    final assetsById = {
+      for (final asset in repository.listScriptAssets(value.selectedScriptId))
+        asset.id: asset,
+    };
+    final links = repository
+        .listLinksForShot(shotId)
+        .where((link) {
+          final asset = assetsById[link.scriptAssetId];
+          return link.confirmed &&
+              asset != null &&
+              _mediaKindForType(asset.type) == ReplicateMediaKind.image;
+        })
+        .toList(growable: false);
+    return _quickReplicationCapacityForLinks(
+      links,
+      roleForLink: (link) {
+        final asset = assetsById[link.scriptAssetId]!;
+        return link.quickReferenceRole ?? _defaultQuickRole(asset.type);
+      },
+    );
+  }
+
+  QuickReplicationInputCapacity quickReplicationCapacityForLinks(
+    Iterable<ScriptShotAssetLink> links,
+  ) => _quickReplicationCapacityForLinks(
+    links.where((link) => link.confirmed),
+    roleForLink: (link) => link.quickReferenceRole,
+  );
+
+  QuickReplicationInputCapacity _quickReplicationCapacityForLinks(
+    Iterable<ScriptShotAssetLink> links, {
+    required QuickReferenceRole? Function(ScriptShotAssetLink link) roleForLink,
+  }) {
+    final confirmedLinks = links.toList(growable: false);
+    var productReferenceCount = 0;
+    for (final link in confirmedLinks) {
+      final role = roleForLink(link);
+      if (role == QuickReferenceRole.product ||
+          role == QuickReferenceRole.productDetail) {
+        productReferenceCount++;
+      }
+    }
+    return QuickReplicationInputCapacity.evaluate(
+      model: resolvedGenerationModel,
+      userReferenceCount: confirmedLinks.length,
+      productReferenceCount: productReferenceCount,
+    );
+  }
+
   bool get usesOfficialH3PromptWriting =>
       _composePromptModelRule.format == ShotPromptFormat.h3;
 
@@ -411,7 +480,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     return guide.sourceFrameFingerprint == _sourceFrameFingerprint(shot);
   }
 
-  Future<void> analyzeReplicationFrame(String shotId) async {
+  Future<void> analyzeReplicationFrame(String shotId) =>
+      _analyzeReplicationFrame(shotId, quickMode: false);
+
+  Future<void> analyzeQuickReplicationFrame(String shotId) =>
+      _analyzeReplicationFrame(shotId, quickMode: true);
+
+  Future<void> _analyzeReplicationFrame(
+    String shotId, {
+    required bool quickMode,
+  }) async {
     final shot = _shotById(shotId);
     final scriptId = value.selectedScriptId;
     if (shot == null || scriptId.isEmpty) return;
@@ -429,7 +507,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         stored?.analysisStatus == ProcessingStatus.completed) {
       _reloadShotGuides(
         scriptId,
-        message: '镜头 ${shot.shotNumber} 原帧已分析，直接绑定资产后即可复刻，不会重复请求视觉模型',
+        message: quickMode
+            ? '镜头 ${shot.shotNumber} 已解析，快速资产槽位已按识别人数生成，不会重复请求视觉模型'
+            : '镜头 ${shot.shotNumber} 原帧已分析，直接绑定资产后即可复刻，不会重复请求视觉模型',
       );
       return;
     }
@@ -456,7 +536,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _repository.upsertShotGuide(running);
     _reloadShotGuides(
       scriptId,
-      message: '正在分析镜头 ${shot.shotNumber} 的配饰、关键道具与精确动作…',
+      message: quickMode
+          ? '正在一键解析镜头 ${shot.shotNumber} 的模特数量与画面主体…'
+          : '正在分析镜头 ${shot.shotNumber} 的配饰、关键道具与精确动作…',
     );
     try {
       final result = await _frameAnalysisService.analyze(
@@ -481,7 +563,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       _reloadShotGuides(
         scriptId,
-        message: '镜头 ${shot.shotNumber} 原帧分析完成，请选择主体替换/移除，并勾选唯一允许保留的配饰和道具',
+        message: quickMode
+            ? '镜头 ${shot.shotNumber} 一键解析完成：识别 ${result.personCount} 位模特，已生成对应模特、产品与可选场景槽位'
+            : '镜头 ${shot.shotNumber} 原帧分析完成，请选择主体替换/移除，并勾选唯一允许保留的配饰和道具',
       );
     } catch (error) {
       final friendlyError = _frameAnalysisErrorMessage(error);
@@ -494,7 +578,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       _reloadShotGuides(
         scriptId,
-        errorMessage: '镜头 ${shot.shotNumber} 原帧分析失败：$friendlyError',
+        errorMessage: quickMode
+            ? '镜头 ${shot.shotNumber} 一键解析失败：$friendlyError'
+            : '镜头 ${shot.shotNumber} 原帧分析失败：$friendlyError',
       );
     } finally {
       _finishFrameAnalysis(scriptId);
@@ -502,7 +588,13 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
   }
 
-  Future<void> analyzeAllReplicationFrames() async {
+  Future<void> analyzeAllReplicationFrames() =>
+      _analyzeAllReplicationFrames(quickMode: false);
+
+  Future<void> analyzeAllQuickReplicationFrames() =>
+      _analyzeAllReplicationFrames(quickMode: true);
+
+  Future<void> _analyzeAllReplicationFrames({required bool quickMode}) async {
     final shotIds = [
       for (final shot in value.confirmedShots)
         if (!isShotGuideCurrent(shot.id) ||
@@ -510,14 +602,17 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           shot.id,
     ];
     if (shotIds.isEmpty) {
-      value = value.copyWith(message: '所有原帧均已分析，请绑定资产后直接复刻', errorMessage: '');
+      value = value.copyWith(
+        message: quickMode ? '所有原帧均已解析，快速资产槽位已生成' : '所有原帧均已分析，请绑定资产后直接复刻',
+        errorMessage: '',
+      );
       return;
     }
     for (var offset = 0; offset < shotIds.length; offset += 4) {
       final end = (offset + 4).clamp(0, shotIds.length).toInt();
       await Future.wait([
         for (final shotId in shotIds.sublist(offset, end))
-          analyzeReplicationFrame(shotId),
+          _analyzeReplicationFrame(shotId, quickMode: quickMode),
       ]);
     }
   }
@@ -1615,7 +1710,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         : null;
   }
 
-  Future<bool> replicateShot(String shotId) async {
+  Future<bool> replicateShot(String shotId) =>
+      _replicateShot(shotId, mode: ReplicationGenerationMode.precise);
+
+  Future<bool> replicateShotQuick(String shotId) =>
+      _replicateShot(shotId, mode: ReplicationGenerationMode.quick);
+
+  Future<bool> _replicateShot(
+    String shotId, {
+    required ReplicationGenerationMode mode,
+  }) async {
     final context = _replicationContext();
     if (context == null) return false;
     final shot = _shotById(shotId);
@@ -1631,7 +1735,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     var succeededCount = 0;
     try {
       for (final target in shots) {
-        final succeeded = await _generateReplicatedShot(target, context);
+        final succeeded = await _generateReplicatedShot(
+          target,
+          context,
+          mode: mode,
+        );
         if (succeeded) succeededCount++;
       }
     } finally {
@@ -1663,6 +1771,25 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   Future<void> replicateAllShots({
     Duration stagger = defaultBatchReplicateStagger,
     int maxConcurrent = defaultBatchReplicateConcurrency,
+  }) => _replicateAllShots(
+    mode: ReplicationGenerationMode.precise,
+    stagger: stagger,
+    maxConcurrent: maxConcurrent,
+  );
+
+  Future<void> replicateAllShotsQuick({
+    Duration stagger = defaultBatchReplicateStagger,
+    int maxConcurrent = defaultBatchReplicateConcurrency,
+  }) => _replicateAllShots(
+    mode: ReplicationGenerationMode.quick,
+    stagger: stagger,
+    maxConcurrent: maxConcurrent,
+  );
+
+  Future<void> _replicateAllShots({
+    required ReplicationGenerationMode mode,
+    required Duration stagger,
+    required int maxConcurrent,
   }) async {
     final context = _replicationContext();
     if (context == null ||
@@ -1686,7 +1813,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     var completed = 0;
     var succeeded = 0;
     Future<bool> tracked(ScriptShot shot) async {
-      final result = await _generateReplicatedShot(shot, context);
+      final result = await _generateReplicatedShot(shot, context, mode: mode);
       completed++;
       if (result) succeeded++;
       _setReplicationMessage(
@@ -1743,18 +1870,34 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
 
   Future<bool> _generateReplicatedShot(
     ScriptShot shot,
-    _ReplicationContext context,
-  ) async {
+    _ReplicationContext context, {
+    ReplicationGenerationMode mode = ReplicationGenerationMode.precise,
+  }) async {
     final run = context.run;
     final original = File(shot.framePath);
     const String? fallbackReferenceShotId = null;
-    final references = _replacementReferences(
-      shot.id,
-      scriptId: context.scriptId,
-      stepAssets: context.assets,
-      fallbackShotId: fallbackReferenceShotId,
-    );
-    final guide = _currentShotGuide(shot);
+    final preciseMode = mode == ReplicationGenerationMode.precise;
+    var references = preciseMode
+        ? _replacementReferences(
+            shot.id,
+            scriptId: context.scriptId,
+            stepAssets: context.assets,
+            fallbackShotId: fallbackReferenceShotId,
+          )
+        : _quickReplacementReferences(
+            shot.id,
+            scriptId: context.scriptId,
+            stepAssets: context.assets,
+          );
+    QuickReplicationPlanningOutcome? quickPlanningOutcome;
+    if (!preciseMode && references.isNotEmpty) {
+      quickPlanningOutcome = await _planQuickReplication(
+        shot: shot,
+        references: references,
+      );
+      _persistQuickReplicationPlan(shot.id, quickPlanningOutcome.plan);
+    }
+    final guide = preciseMode ? _currentShotGuide(shot) : null;
     final skeletonPath = guide?.poseStatus == ProcessingStatus.completed
         ? guide!.skeletonPath.trim()
         : '';
@@ -1764,7 +1907,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
     final model = _resolvedGenerationModel(run);
-    if (existing != null && !existing.generationRecovery.isEmpty) {
+    if (preciseMode &&
+        existing != null &&
+        !existing.generationRecovery.isEmpty) {
       try {
         return await _resumeInterruptedReplicatedShot(
           shot: shot,
@@ -1791,13 +1936,19 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       originalFramePath: shot.framePath,
       generatedFramePath: existing?.generatedFramePath ?? '',
       assetIds: [for (final reference in references) reference.id],
-      prompt: _generationPrompt(
-        shot,
-        references,
-        model,
-        guide: guide,
-        hasPoseSkeleton: skeleton != null,
-      ),
+      prompt: preciseMode
+          ? _generationPrompt(
+              shot,
+              references,
+              model,
+              guide: guide,
+              hasPoseSkeleton: skeleton != null,
+            )
+          : _lightweightGenerationPrompt(
+              shot,
+              references,
+              plan: quickPlanningOutcome?.plan,
+            ),
       model: model,
       rawResponse: '',
       status: ProcessingStatus.running,
@@ -1814,7 +1965,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _saveReplicatedImage(record);
       return false;
     }
-    if (references.isEmpty) {
+    if (preciseMode && references.isEmpty) {
       final hasExplicitSubjectDecision =
           guide != null &&
           guide.subjects.isNotEmpty &&
@@ -1831,11 +1982,13 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         return false;
       }
     }
-    final readinessError = _replicationInputReadinessError(
-      shot: shot,
-      guide: guide,
-      references: references,
-    );
+    final readinessError = preciseMode
+        ? _replicationInputReadinessError(
+            shot: shot,
+            guide: guide,
+            references: references,
+          )
+        : _lightweightReplicationInputError(shot, references);
     if (readinessError != null) {
       record = record.copyWith(
         status: ProcessingStatus.failed,
@@ -1851,15 +2004,19 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       if (descriptor == null) {
         throw FormatException('不支持的图片生成模型：$model');
       }
-      final decisionReferences = _referencesForSubjectDecisions(
-        references,
-        guide,
-      );
+      if (!preciseMode && !descriptor.supportsReferenceImages) {
+        throw FormatException(
+          '${descriptor.label} 不支持多图参考，请切换到 Nano Banana 图片模型',
+        );
+      }
+      final decisionReferences = preciseMode
+          ? _referencesForSubjectDecisions(references, guide)
+          : references;
       var preparedReferences = decisionReferences;
       NanoBananaAssetManifest? nanoBananaManifest;
       NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol;
       NanoBananaProductDetailRefillProtocol? productDetailRefillProtocol;
-      if (NanoBananaProModelCapability.supports(model)) {
+      if (preciseMode && NanoBananaProModelCapability.supports(model)) {
         nanoBananaManifest = _nanoBananaAssetManifest(
           shot: shot,
           original: original,
@@ -1892,27 +2049,30 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               },
             );
       }
-      final prompt = _finalizeGenerationPrompt(
-        shot: shot,
-        model: model,
-        automaticPrompt: _generationPrompt(
-          shot,
-          preparedReferences,
-          model,
-          guide: guide,
-          hasPoseSkeleton: skeleton != null,
-        ),
-        hasPoseSkeleton: skeleton != null,
-        nanoBananaManifest: nanoBananaManifest,
-        nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
-        authorizedProductMarks:
-            productDetailRefillProtocol?.authorizedMarks ?? const [],
-      );
+      final prompt = preciseMode
+          ? _finalizeGenerationPrompt(
+              shot: shot,
+              model: model,
+              automaticPrompt: _generationPrompt(
+                shot,
+                preparedReferences,
+                model,
+                guide: guide,
+                hasPoseSkeleton: skeleton != null,
+              ),
+              hasPoseSkeleton: skeleton != null,
+              nanoBananaManifest: nanoBananaManifest,
+              nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
+              authorizedProductMarks:
+                  productDetailRefillProtocol?.authorizedMarks ?? const [],
+            )
+          : _lightweightGenerationPrompt(
+              shot,
+              preparedReferences,
+              plan: quickPlanningOutcome?.plan,
+            );
       record = record.copyWith(
-        assetIds: preparedReferences
-            .map((reference) => reference.id)
-            .toSet()
-            .toList(),
+        assetIds: [for (final reference in preparedReferences) reference.id],
         prompt: prompt,
         updatedAt: DateTime.now().toUtc(),
       );
@@ -4693,6 +4853,137 @@ $playbackSpeedBoundary
     ];
   }
 
+  List<_ReplacementReference> _quickReplacementReferences(
+    String shotId, {
+    String? scriptId,
+    List<ReplicateAsset>? stepAssets,
+  }) {
+    final repository = _workflowRepository;
+    final selectedScriptId = scriptId ?? value.selectedScriptId;
+    if (repository == null || selectedScriptId.isEmpty) {
+      return _replacementReferences(
+        shotId,
+        scriptId: scriptId,
+        stepAssets: stepAssets,
+      );
+    }
+    final assetsById = {
+      for (final asset in repository.listScriptAssets(selectedScriptId))
+        asset.id: asset,
+    };
+    final bindings = <({ScriptShotAssetLink link, ScriptAsset asset})>[];
+    for (final link in repository.listLinksForShot(shotId)) {
+      final asset = assetsById[link.scriptAssetId];
+      if (!link.confirmed ||
+          asset == null ||
+          _mediaKindForType(asset.type) != ReplicateMediaKind.image ||
+          asset.path.trim().isEmpty ||
+          !File(asset.path).existsSync()) {
+        continue;
+      }
+      bindings.add((link: link, asset: asset));
+    }
+    bindings.sort((left, right) {
+      final order = (left.link.quickReferenceOrder ?? 1 << 30).compareTo(
+        right.link.quickReferenceOrder ?? 1 << 30,
+      );
+      return order != 0
+          ? order
+          : left.link.createdAt.compareTo(right.link.createdAt);
+    });
+    return [
+      for (var index = 0; index < bindings.length; index++)
+        _ReplacementReference(
+          id: bindings[index].asset.id,
+          type: bindings[index].asset.type,
+          name: bindings[index].asset.name,
+          description: bindings[index].link.quickDescription,
+          path: bindings[index].asset.path,
+          quickRole:
+              bindings[index].link.quickReferenceRole ??
+              _defaultQuickRole(bindings[index].asset.type),
+          quickOrder: index + 1,
+          quickGroupAnchorAssetId: bindings[index].link.quickGroupAnchorAssetId,
+        ),
+    ];
+  }
+
+  Future<QuickReplicationPlanningOutcome> _planQuickReplication({
+    required ScriptShot shot,
+    required List<_ReplacementReference> references,
+  }) {
+    final quickReferences = [
+      for (var index = 0; index < references.length; index++)
+        QuickReplicationReference(
+          assetId: references[index].id,
+          imageNumber: index + 2,
+          order: references[index].quickOrder ?? index + 1,
+          role:
+              references[index].quickRole ??
+              _defaultQuickRole(references[index].type),
+          name: references[index].name,
+          description: references[index].description,
+          groupAnchorAssetId: references[index].quickGroupAnchorAssetId,
+        ),
+    ];
+    final supplement = shot.replicationInstructions.trim();
+    return _quickPlanningService.plan(
+      settings: _settingsController.value,
+      references: quickReferences,
+      imageFilesByAssetId: {
+        for (final reference in references) reference.id: File(reference.path),
+      },
+      supplement: supplement,
+    );
+  }
+
+  void _persistQuickReplicationPlan(String shotId, QuickReplicationPlan plan) {
+    final repository = _workflowRepository;
+    if (repository == null) return;
+    final linksByAssetId = {
+      for (final link in repository.listLinksForShot(shotId))
+        link.scriptAssetId: link,
+    };
+    final now = DateTime.now().toUtc();
+    var changed = false;
+    for (final assignment in plan.assignments) {
+      final link = linksByAssetId[assignment.assetId];
+      if (link == null) continue;
+      final updated = link.copyWith(
+        quickDescription: assignment.normalizedDescription,
+        quickGroupAnchorAssetId: assignment.groupAnchorAssetId,
+        clearQuickGroupAnchorAssetId: assignment.groupAnchorAssetId == null,
+        quickGroupConfidence: assignment.confidence,
+        clearQuickGroupConfidence:
+            assignment.groupAnchorAssetId == null &&
+            assignment.role != QuickReferenceRole.product,
+        quickGroupWarning: assignment.warning,
+        updatedAt: now,
+      );
+      if (link.quickDescription == updated.quickDescription &&
+          link.quickGroupAnchorAssetId == updated.quickGroupAnchorAssetId &&
+          link.quickGroupConfidence == updated.quickGroupConfidence &&
+          link.quickGroupWarning == updated.quickGroupWarning) {
+        continue;
+      }
+      repository.upsertLink(updated);
+      changed = true;
+    }
+    if (changed) _assetBindingController?.refresh();
+  }
+
+  static QuickReferenceRole _defaultQuickRole(ReplicateAssetType type) =>
+      switch (type) {
+        ReplicateAssetType.character => QuickReferenceRole.model,
+        ReplicateAssetType.scene => QuickReferenceRole.scene,
+        ReplicateAssetType.product => QuickReferenceRole.product,
+        ReplicateAssetType.prop => QuickReferenceRole.prop,
+        ReplicateAssetType.video ||
+        ReplicateAssetType.audio ||
+        ReplicateAssetType.reference ||
+        ReplicateAssetType.other => QuickReferenceRole.otherReference,
+      };
+
   List<_ReplacementReference> _referencesForSubjectDecisions(
     List<_ReplacementReference> references,
     ReplicateShotGuide? guide,
@@ -5042,6 +5333,45 @@ $playbackSpeedBoundary
       addBinding(binding, '');
     }
     return references;
+  }
+
+  String? _lightweightReplicationInputError(
+    ScriptShot shot,
+    List<_ReplacementReference> references,
+  ) {
+    final capacity = quickReplicationCapacityForShot(shot.id);
+    if (!capacity.isWithinLimits) return capacity.error;
+    if (references.isEmpty) {
+      return '镜头 ${shot.shotNumber} 至少需要绑定一张人物、服装/产品、场景或其他参考图';
+    }
+    return null;
+  }
+
+  String _lightweightGenerationPrompt(
+    ScriptShot shot,
+    List<_ReplacementReference> references, {
+    QuickReplicationPlan? plan,
+  }) {
+    final instruction =
+        [shot.replicationInstructions, shot.content, shot.visual]
+            .map((item) => item.trim())
+            .firstWhere((item) => item.isNotEmpty, orElse: () => '根据参考图复刻这张分镜');
+    final compiler = const LightweightReplicationPromptCompiler();
+    if (plan != null) {
+      return compiler.compilePlan(instruction: instruction, plan: plan);
+    }
+    return compiler.compile(
+      instruction: instruction,
+      references: [
+        for (var index = 0; index < references.length; index++)
+          LightweightReplicationReference(
+            imageNumber: index + 2,
+            type: references[index].type,
+            name: references[index].name,
+            slotLabel: references[index].slotLabel,
+          ),
+      ],
+    );
   }
 
   String _replacementPrompt(
@@ -6025,6 +6355,9 @@ class _ReplacementReference {
     required this.description,
     required this.path,
     this.slotLabel = '',
+    this.quickRole,
+    this.quickOrder,
+    this.quickGroupAnchorAssetId,
   });
 
   final String id;
@@ -6033,4 +6366,7 @@ class _ReplacementReference {
   final String description;
   final String path;
   final String slotLabel;
+  final QuickReferenceRole? quickRole;
+  final int? quickOrder;
+  final String? quickGroupAnchorAssetId;
 }

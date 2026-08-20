@@ -58,6 +58,19 @@ class ScriptAsset {
 
 enum ScriptAssetMatchSource { manual, rule, model }
 
+enum QuickReferenceRole {
+  model,
+  scene,
+  clothing,
+  shoes,
+  accessory,
+  product,
+  productDetail,
+  prop,
+  styleReference,
+  otherReference,
+}
+
 class ScriptShotAssetLink {
   const ScriptShotAssetLink({
     required this.shotId,
@@ -68,6 +81,12 @@ class ScriptShotAssetLink {
     required this.confirmed,
     required this.locked,
     required this.sortOrder,
+    this.quickReferenceOrder,
+    this.quickReferenceRole,
+    this.quickDescription = '',
+    this.quickGroupAnchorAssetId,
+    this.quickGroupConfidence,
+    this.quickGroupWarning = '',
     required this.createdAt,
     required this.updatedAt,
   });
@@ -80,6 +99,12 @@ class ScriptShotAssetLink {
   final bool confirmed;
   final bool locked;
   final int sortOrder;
+  final int? quickReferenceOrder;
+  final QuickReferenceRole? quickReferenceRole;
+  final String quickDescription;
+  final String? quickGroupAnchorAssetId;
+  final double? quickGroupConfidence;
+  final String quickGroupWarning;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -90,6 +115,14 @@ class ScriptShotAssetLink {
     bool? confirmed,
     bool? locked,
     int? sortOrder,
+    int? quickReferenceOrder,
+    QuickReferenceRole? quickReferenceRole,
+    String? quickDescription,
+    String? quickGroupAnchorAssetId,
+    bool clearQuickGroupAnchorAssetId = false,
+    double? quickGroupConfidence,
+    bool clearQuickGroupConfidence = false,
+    String? quickGroupWarning,
     DateTime? updatedAt,
   }) => ScriptShotAssetLink(
     shotId: shotId,
@@ -100,6 +133,16 @@ class ScriptShotAssetLink {
     confirmed: confirmed ?? this.confirmed,
     locked: locked ?? this.locked,
     sortOrder: sortOrder ?? this.sortOrder,
+    quickReferenceOrder: quickReferenceOrder ?? this.quickReferenceOrder,
+    quickReferenceRole: quickReferenceRole ?? this.quickReferenceRole,
+    quickDescription: quickDescription ?? this.quickDescription,
+    quickGroupAnchorAssetId: clearQuickGroupAnchorAssetId
+        ? null
+        : quickGroupAnchorAssetId ?? this.quickGroupAnchorAssetId,
+    quickGroupConfidence: clearQuickGroupConfidence
+        ? null
+        : quickGroupConfidence ?? this.quickGroupConfidence,
+    quickGroupWarning: quickGroupWarning ?? this.quickGroupWarning,
     createdAt: createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
   );

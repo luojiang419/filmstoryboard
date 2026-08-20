@@ -387,6 +387,84 @@ void main() {
     expect(controller.isShotGuideCurrent(shot.id), isTrue);
   });
 
+  test('快速一键解析识别多模特并复用已完成结果', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'quick_replication_frame_parse_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final shootingController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    )..createEmpty(name: '快速一键解析测试');
+    final frame = File(p.join(root.path, 'two-models.jpg'))
+      ..writeAsBytesSync([1, 2, 3]);
+    final shot = shootingController.addShot()!;
+    shootingController.updateShot(shot.copyWith(framePath: frame.path));
+    final analysisService = _QueuedFrameAnalysisService([
+      const ReplicationFrameAnalysisResult(
+        elements: [],
+        subjects: [
+          ReplicateDetectedSubject(
+            id: 'person:0',
+            type: ReplicateSubjectType.person,
+            label: '左侧模特',
+            slotIndex: 0,
+          ),
+          ReplicateDetectedSubject(
+            id: 'person:1',
+            type: ReplicateSubjectType.person,
+            label: '右侧模特',
+            slotIndex: 1,
+          ),
+        ],
+        actionDescription: '两位模特并排站立',
+        poseConstraints: '',
+        personCount: 2,
+        rawResponse: '{}',
+      ),
+    ]);
+    final controller = ReplicateController(
+      repository: ReplicateRepository(database),
+      shootingScriptController: shootingController,
+      directories: directories,
+      settingsController: settingsController,
+      frameAnalysisService: analysisService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      shootingController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    await controller.analyzeQuickReplicationFrame(shot.id);
+    final guide = controller.shotGuideFor(shot.id)!;
+    expect(guide.analysisStatus, ProcessingStatus.completed);
+    expect(guide.personCount, 2);
+    expect(
+      guide.subjects.where(
+        (subject) => subject.type == ReplicateSubjectType.person,
+      ),
+      hasLength(2),
+    );
+    expect(controller.value.message, contains('识别 2 位模特'));
+    expect(analysisService.previousSelections, hasLength(1));
+
+    await controller.analyzeQuickReplicationFrame(shot.id);
+    expect(analysisService.previousSelections, hasLength(1));
+    expect(controller.value.message, contains('不会重复请求视觉模型'));
+
+    await controller.analyzeAllQuickReplicationFrames();
+    expect(controller.value.message, contains('快速资产槽位已生成'));
+  });
+
   test('单张模特多视图拼图无需拆分即可生成并原样提交', () async {
     final root = await Directory.systemTemp.createTemp(
       'replicate_free_model_reference_',
@@ -1682,6 +1760,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.characterSortOrderBase,
+        quickReferenceOrder: 2,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1694,6 +1773,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.characterSortOrderBase + 1,
+        quickReferenceOrder: 1,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1706,6 +1786,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.productSortOrder,
+        quickReferenceOrder: 4,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1718,6 +1799,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.productSortOrderForIndex(1),
+        quickReferenceOrder: 6,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1730,6 +1812,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.productDetailSortOrder,
+        quickReferenceOrder: 5,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1742,6 +1825,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.productDetailSortOrderForIndex(1),
+        quickReferenceOrder: 7,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1754,6 +1838,7 @@ void main() {
         confirmed: true,
         locked: true,
         sortOrder: ScriptAssetSlotPolicy.sceneSortOrder,
+        quickReferenceOrder: 3,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1895,6 +1980,68 @@ void main() {
     );
     expect(controller.value.run?.multiViewEnhancementEnabled, isFalse);
     final generationModel = controller.resolvedGenerationModel;
+    expect(await controller.replicateShotQuick(first.id), isTrue);
+    expect(imageService.requests, hasLength(1));
+    final quickRequest = imageService.requests.single;
+    expect(quickRequest.referenceImagePaths, [
+      frame1.path,
+      characterB.path,
+      character.path,
+      scene.path,
+      product.path,
+      productDetail.path,
+      productB.path,
+      productDetailB.path,
+    ]);
+    expect(
+      controller.value.replicatedImages
+          .singleWhere((image) => image.scriptShotId == first.id)
+          .assetIds,
+      [
+        characterBAssetId,
+        characterAssetId,
+        sceneAssetId,
+        productAssetId,
+        productDetailAssetId,
+        productBAssetId,
+        productDetailBAssetId,
+      ],
+    );
+    expect(quickRequest.referenceImagePaths, isNot(contains(skeleton.path)));
+    expect(quickRequest.prompt, contains('图片4是新场景与背景的唯一权威来源'));
+    expect(quickRequest.prompt, contains('必须完整替换图片1的原背景'));
+    expect(quickRequest.prompt, contains('不得继承图片1的场景、背景或环境光'));
+    expect(quickRequest.prompt, contains('模特A与产品A一一对应'));
+    expect(quickRequest.prompt, contains('模特B与产品B一一对应'));
+    expect(quickRequest.prompt, contains('图片2'));
+    expect(quickRequest.prompt, isNot(contains('确定性精准复刻协议')));
+    expect(quickRequest.prompt, isNot(contains('DWPose')));
+    expect(quickRequest.prompt.length, lessThan(1400));
+    expect(visionService.completionPrompts, isEmpty);
+    expect(generationReviewService.inputs, isEmpty);
+    imageService.requests.clear();
+    await controller.replicateAllShotsQuick(
+      stagger: Duration.zero,
+      maxConcurrent: 1,
+    );
+    expect(imageService.requests, hasLength(2));
+    expect(imageService.requests[0].referenceImagePaths, [
+      frame1.path,
+      characterB.path,
+      character.path,
+      scene.path,
+      product.path,
+      productDetail.path,
+      productB.path,
+      productDetailB.path,
+    ]);
+    expect(imageService.requests[1].referenceImagePaths, [
+      frame2.path,
+      product.path,
+    ]);
+    expect(visionService.completionPrompts, isEmpty);
+    expect(generationReviewService.inputs, isEmpty);
+    imageService.requests.clear();
     controller.setDetectedSubjectDecision(
       first.id,
       'product:1',

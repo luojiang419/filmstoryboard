@@ -29,6 +29,7 @@ import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import '../application/replicate_controller.dart';
 import '../data/seedance_prompt_generation_service.dart';
 import '../domain/h3_prompt_style.dart';
+import '../domain/quick_replication_input_capacity.dart';
 import '../domain/replicate_models.dart';
 import 'replicate_pose_editor_dialog.dart';
 import 'replicate_shot_navigation_controller.dart';
@@ -5365,7 +5366,7 @@ class _NewInlineCellState extends State<_NewInlineCell> {
   );
 }
 
-class _NewPrepareAssetsStep extends StatelessWidget {
+class _NewPrepareAssetsStep extends StatefulWidget {
   const _NewPrepareAssetsStep({
     super.key,
     required this.state,
@@ -5389,15 +5390,59 @@ class _NewPrepareAssetsStep extends StatelessWidget {
   final bool externalizeRightPanel;
 
   @override
+  State<_NewPrepareAssetsStep> createState() => _NewPrepareAssetsStepState();
+}
+
+class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
+  ReplicationGenerationMode _mode = ReplicationGenerationMode.quick;
+
+  @override
   Widget build(BuildContext context) {
+    final state = widget.state;
+    final controller = widget.controller;
+    final analysisState = widget.analysisState;
+    final assetBindingController = widget.assetBindingController;
+    final assetLibraryState = widget.assetLibraryState;
+    final onImportLocalAsset = widget.onImportLocalAsset;
+    final onManageAssets = widget.onManageAssets;
+    final externalizeRightPanel = widget.externalizeRightPanel;
+    final preciseMode = _mode == ReplicationGenerationMode.precise;
     final canContinue = state.assets.any(
       (item) =>
           item.status == ProcessingStatus.completed && item.path.isNotEmpty,
     );
     final bindingState = assetBindingController.value;
+    QuickReplicationInputCapacity quickCapacityForShot(String shotId) =>
+        controller.quickReplicationCapacityForLinks(
+          bindingState.linksForShot(shotId),
+        );
     final hasConfirmedBinding = bindingState.links.any(
       (link) => link.confirmed,
     );
+    final baseCanGenerate = preciseMode
+        ? canContinue || hasConfirmedBinding
+        : hasConfirmedBinding;
+    String quickBatchLimitError = '';
+    var maximumQuickInputCount = 1;
+    QuickReplicationInputCapacity? quickModelCapacity;
+    if (!preciseMode) {
+      for (final shot in state.confirmedShots) {
+        final capacity = quickCapacityForShot(shot.id);
+        quickModelCapacity ??= capacity;
+        maximumQuickInputCount = math.max(
+          maximumQuickInputCount,
+          capacity.totalInputCount,
+        );
+        if (quickBatchLimitError.isEmpty && !capacity.isWithinLimits) {
+          quickBatchLimitError = '镜头${shot.shotNumber}：${capacity.error}';
+        }
+      }
+      quickModelCapacity ??= controller.quickReplicationCapacityForLinks(
+        const [],
+      );
+    }
+    final canGenerate =
+        baseCanGenerate && (preciseMode || quickBatchLimitError.isEmpty);
     final isExtractingDwPose = state.shotGuides.any(
       (guide) => guide.poseStatus == ProcessingStatus.running,
     );
@@ -5418,6 +5463,7 @@ class _NewPrepareAssetsStep extends StatelessWidget {
           assetBindingController: assetBindingController,
           assetLibraryState: assetLibraryState,
           onImportLocalAsset: onImportLocalAsset,
+          mode: _mode,
         ),
       ],
     );
@@ -5425,68 +5471,117 @@ class _NewPrepareAssetsStep extends StatelessWidget {
       child: Column(
         children: [
           _StepToolbar(
-            title: '步骤 1 · 匹配资产图',
-            subtitle: '原帧只分析一次；资产格生成后直接添加参考资产，复刻时复用已保存结果，不再调用视觉模型。',
+            title: preciseMode ? '步骤 1 · 精确匹配资产' : '步骤 1 · 快速多图复刻',
+            subtitle: preciseMode
+                ? '适合严格产品替换：分析主体、锁定姿势并逐项控制保留、替换或移除。'
+                : '可一键解析原帧人数并生成模特、产品与可选场景槽；也可直接添加编号参考图。',
             actions: [
-              OutlinedButton.icon(
-                key: const ValueKey('analyze-all-replication-frames'),
-                onPressed:
-                    state.shots.isEmpty ||
-                        state.isAnalyzingFrames ||
-                        unanalyzedFrameCount == 0
+              SegmentedButton<ReplicationGenerationMode>(
+                key: const ValueKey('replication-generation-mode'),
+                segments: const [
+                  ButtonSegment(
+                    value: ReplicationGenerationMode.quick,
+                    icon: Icon(Icons.flash_on_rounded),
+                    label: Text('快速'),
+                  ),
+                  ButtonSegment(
+                    value: ReplicationGenerationMode.precise,
+                    icon: Icon(Icons.tune_rounded),
+                    label: Text('精确'),
+                  ),
+                ],
+                selected: {_mode},
+                onSelectionChanged: state.isBusy
                     ? null
-                    : controller.analyzeAllReplicationFrames,
-                icon: state.isAnalyzingFrames
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.center_focus_strong_rounded),
-                label: Text(
-                  state.isAnalyzingFrames
-                      ? '分析原帧中…'
-                      : unanalyzedFrameCount == 0 && state.shots.isNotEmpty
-                      ? '原帧均已分析'
-                      : '分析全部原帧',
+                    : (selection) => setState(() => _mode = selection.single),
+                showSelectedIcon: false,
+              ),
+              if (preciseMode)
+                OutlinedButton.icon(
+                  key: const ValueKey('analyze-all-replication-frames'),
+                  onPressed:
+                      state.shots.isEmpty ||
+                          state.isAnalyzingFrames ||
+                          unanalyzedFrameCount == 0
+                      ? null
+                      : controller.analyzeAllReplicationFrames,
+                  icon: state.isAnalyzingFrames
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.center_focus_strong_rounded),
+                  label: Text(
+                    state.isAnalyzingFrames
+                        ? '分析原帧中…'
+                        : unanalyzedFrameCount == 0 && state.shots.isNotEmpty
+                        ? '原帧均已分析'
+                        : '分析全部原帧',
+                  ),
                 ),
-              ),
-              OutlinedButton.icon(
-                key: const ValueKey('extract-all-dwpose'),
-                onPressed: state.shots.isEmpty || isExtractingDwPose
-                    ? null
-                    : controller.extractDwPoseForAllShots,
-                icon: isExtractingDwPose
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.accessibility_new_rounded),
-                label: Text(isExtractingDwPose ? '提取骨架中…' : '提取全部骨架'),
-              ),
-              OutlinedButton.icon(
-                key: const ValueKey('script-auto-match-assets'),
-                onPressed: assetBindingController.value.isBusy
-                    ? null
-                    : () => assetBindingController.autoMatchAll(
-                        preferredAssets: state.assets,
-                        maximumProductCountsByShotId: {
-                          for (final guide in state.shotGuides)
-                            guide.shotId: guide.subjects
-                                .where(
-                                  (subject) =>
-                                      subject.type ==
-                                      ReplicateSubjectType.product,
-                                )
-                                .length,
-                        },
-                      ),
-                icon: const Icon(Icons.auto_awesome_rounded),
-                label: Text(
-                  assetBindingController.value.isBusy ? '匹配中…' : '自动匹配资产',
+              if (!preciseMode)
+                OutlinedButton.icon(
+                  key: const ValueKey('quick-parse-all-replication-frames'),
+                  onPressed:
+                      state.shots.isEmpty ||
+                          state.isAnalyzingFrames ||
+                          unanalyzedFrameCount == 0
+                      ? null
+                      : controller.analyzeAllQuickReplicationFrames,
+                  icon: state.isAnalyzingFrames
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.document_scanner_outlined),
+                  label: Text(
+                    state.isAnalyzingFrames
+                        ? '解析原帧中…'
+                        : unanalyzedFrameCount == 0 && state.shots.isNotEmpty
+                        ? '原帧均已解析'
+                        : '全部一键解析',
+                  ),
                 ),
-              ),
+              if (preciseMode)
+                OutlinedButton.icon(
+                  key: const ValueKey('extract-all-dwpose'),
+                  onPressed: state.shots.isEmpty || isExtractingDwPose
+                      ? null
+                      : controller.extractDwPoseForAllShots,
+                  icon: isExtractingDwPose
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.accessibility_new_rounded),
+                  label: Text(isExtractingDwPose ? '提取骨架中…' : '提取全部骨架'),
+                ),
+              if (preciseMode)
+                OutlinedButton.icon(
+                  key: const ValueKey('script-auto-match-assets'),
+                  onPressed: assetBindingController.value.isBusy
+                      ? null
+                      : () => assetBindingController.autoMatchAll(
+                          preferredAssets: state.assets,
+                          maximumProductCountsByShotId: {
+                            for (final guide in state.shotGuides)
+                              guide.shotId: guide.subjects
+                                  .where(
+                                    (subject) =>
+                                        subject.type ==
+                                        ReplicateSubjectType.product,
+                                  )
+                                  .length,
+                          },
+                        ),
+                  icon: const Icon(Icons.auto_awesome_rounded),
+                  label: Text(
+                    assetBindingController.value.isBusy ? '匹配中…' : '自动匹配资产',
+                  ),
+                ),
               OutlinedButton.icon(
                 key: const ValueKey('replicate-generation-parameters'),
                 onPressed: state.isBusy
@@ -5508,17 +5603,44 @@ class _NewPrepareAssetsStep extends StatelessWidget {
                   icon: const Icon(Icons.stop_circle_outlined),
                   label: const Text('取消匹配'),
                 ),
+              if (!preciseMode && quickModelCapacity != null)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 280),
+                  child: Text(
+                    quickBatchLimitError.isEmpty
+                        ? '单镜头输入 $maximumQuickInputCount/${quickModelCapacity.maximumTotalInputCount} 张'
+                        : quickBatchLimitError,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: quickBatchLimitError.isEmpty
+                          ? Theme.of(context).colorScheme.onSurfaceVariant
+                          : Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
               FilledButton.icon(
                 key: const ValueKey('replicate-all-shot-images'),
-                onPressed: (canContinue || hasConfirmedBinding) && !state.isBusy
-                    ? () => _confirmReplicateAll(context, state, controller)
+                onPressed: canGenerate && !state.isBusy
+                    ? () => _confirmReplicateAll(
+                        context,
+                        state,
+                        controller,
+                        mode: _mode,
+                      )
                     : null,
                 icon: const Icon(Icons.auto_awesome_motion_rounded),
-                label: Text(state.isBusy ? '复刻中…' : '一键复刻'),
+                label: Text(
+                  state.isBusy
+                      ? '复刻中…'
+                      : preciseMode
+                      ? '精确复刻'
+                      : '快速复刻',
+                ),
               ),
               FilledButton.icon(
                 key: const ValueKey('replicate-new-next-confirm'),
-                onPressed: (canContinue || hasConfirmedBinding)
+                onPressed: canGenerate
                     ? () => controller.moveToStep(ReplicateStep.confirmShots)
                     : null,
                 icon: const Icon(Icons.arrow_forward_rounded),
@@ -5943,6 +6065,7 @@ class _PrepareAssetsContent extends StatelessWidget {
     required this.assetBindingController,
     required this.assetLibraryState,
     required this.onImportLocalAsset,
+    required this.mode,
   });
 
   final ReplicateState state;
@@ -5953,6 +6076,7 @@ class _PrepareAssetsContent extends StatelessWidget {
   final ShootingAssetLibraryState assetLibraryState;
   final Future<ReplicateAsset?> Function(ReplicateAssetType type)
   onImportLocalAsset;
+  final ReplicationGenerationMode mode;
 
   @override
   Widget build(BuildContext context) {
@@ -6003,6 +6127,7 @@ class _PrepareAssetsContent extends StatelessWidget {
             );
           },
       onRemove: assetBindingController.removeAssetFromShot,
+      onUpdateLink: assetBindingController.updateLink,
       onMatchShot: (shotId) => assetBindingController.autoMatchShot(
         shotId,
         preferredAssets: state.assets,
@@ -6017,7 +6142,9 @@ class _PrepareAssetsContent extends StatelessWidget {
       ),
       guideForShot: controller.shotGuideFor,
       isGuideCurrent: controller.isShotGuideCurrent,
-      onAnalyzeFrame: controller.analyzeReplicationFrame,
+      onAnalyzeFrame: mode == ReplicationGenerationMode.quick
+          ? controller.analyzeQuickReplicationFrame
+          : controller.analyzeReplicationFrame,
       onExtractPose: controller.extractDwPoseForShot,
       onRemovePose: controller.removeDwPoseForShot,
       onSaveEditablePose: controller.saveEditablePoseForShot,
@@ -6030,7 +6157,12 @@ class _PrepareAssetsContent extends StatelessWidget {
           ),
       onRemoveSubject: controller.removeDetectedSubject,
       onAddPreservedElement: controller.addManualPreservedElement,
-      onReplicateShot: controller.replicateShot,
+      onReplicateShot: mode == ReplicationGenerationMode.quick
+          ? controller.replicateShotQuick
+          : controller.replicateShot,
+      quickCapacityForShot: (shotId) => controller
+          .quickReplicationCapacityForLinks(bindingState.linksForShot(shotId)),
+      mode: mode,
       onOpenOriginalFrame: (shot) {
         final index = state.shots.indexWhere(
           (candidate) => candidate.id == shot.id,
@@ -6073,6 +6205,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.onSelectLibraryAsset,
     required this.onSelectLocalAsset,
     required this.onRemove,
+    required this.onUpdateLink,
     required this.onMatchShot,
     required this.onUpdateInstructions,
     required this.guideForShot,
@@ -6087,8 +6220,10 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.onRemoveSubject,
     required this.onAddPreservedElement,
     required this.onReplicateShot,
+    required this.quickCapacityForShot,
     required this.onOpenOriginalFrame,
     required this.onOpenReplicatedFrame,
+    required this.mode,
   });
 
   final ReplicateState state;
@@ -6131,6 +6266,7 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   )
   onSelectLocalAsset;
   final void Function(String shotId, String scriptAssetId) onRemove;
+  final ValueChanged<ScriptShotAssetLink> onUpdateLink;
   final Future<void> Function(String shotId) onMatchShot;
   final void Function(ScriptShot shot, String instructions)
   onUpdateInstructions;
@@ -6160,8 +6296,11 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   final void Function(String shotId, String subjectId) onRemoveSubject;
   final void Function(String shotId, String label) onAddPreservedElement;
   final Future<bool> Function(String shotId) onReplicateShot;
+  final QuickReplicationInputCapacity Function(String shotId)
+  quickCapacityForShot;
   final ValueChanged<ScriptShot> onOpenOriginalFrame;
   final ValueChanged<ScriptShot> onOpenReplicatedFrame;
+  final ReplicationGenerationMode mode;
 
   @override
   State<_ShotAssetBindingBoard> createState() => _ShotAssetBindingBoardState();
@@ -6213,6 +6352,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
   Widget build(BuildContext context) {
     super.build(context);
     final scheme = Theme.of(context).colorScheme;
+    final preciseMode = widget.mode == ReplicationGenerationMode.precise;
     final shotIds = widget.rows.map((shot) => shot.id).toSet();
     final areAllExpanded =
         shotIds.isNotEmpty && _expandedShotIds.containsAll(shotIds);
@@ -6249,13 +6389,17 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
               children: [
                 Expanded(
                   child: Text(
-                    '匹配资产图',
+                    preciseMode ? '精确资产控制' : '参考图片',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
-                Text('默认展开脚本内容', style: Theme.of(context).textTheme.labelSmall),
+                if (preciseMode)
+                  Text(
+                    '默认展开脚本内容',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
                 const SizedBox(width: 4),
                 TextButton.icon(
                   key: ValueKey(
@@ -6276,7 +6420,9 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
             ),
             const SizedBox(height: 3),
             Text(
-              '分析原帧后会按识别到的人物和产品创建资产格；在每个格子下方选择保留、替换或移除。保留会沿用原视频帧且无需绑定资产；替换时可点击格子选择资产，也可从资产库拖入。',
+              preciseMode
+                  ? '分析原帧后会按识别到的人物和产品创建资产格；逐项选择保留、替换或移除。'
+                  : '图片1固定为原分镜；依次添加人物、服装/产品、背景或其他参考图，再用一句话说明它们的关系。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             if (showReplicationProgress)
@@ -6371,6 +6517,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                         slotLabel,
                       ),
                   onRemove: (assetId) => widget.onRemove(shot.id, assetId),
+                  onUpdateLink: widget.onUpdateLink,
                   onMatch: () => widget.onMatchShot(shot.id),
                   onUpdateInstructions: (instructions) =>
                       widget.onUpdateInstructions(shot, instructions),
@@ -6393,8 +6540,10 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                       widget.onAddPreservedElement(shot.id, label),
                   replicatedImage: replicatedByShotId[shot.id],
                   onReplicate: () => widget.onReplicateShot(shot.id),
+                  quickCapacity: widget.quickCapacityForShot(shot.id),
                   onOpenOriginalFrame: widget.onOpenOriginalFrame,
                   onOpenReplicatedFrame: widget.onOpenReplicatedFrame,
+                  mode: widget.mode,
                 ),
                 if (shot != widget.rows.last) const SizedBox(height: 8),
               ],
@@ -6404,6 +6553,8 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
     );
   }
 }
+
+typedef _QuickBindingEntry = ({ScriptShotAssetLink link, ScriptAsset asset});
 
 class _ShotAssetDropRow extends StatelessWidget {
   const _ShotAssetDropRow({
@@ -6423,6 +6574,7 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onSelectLibraryAsset,
     required this.onSelectLocalAsset,
     required this.onRemove,
+    required this.onUpdateLink,
     required this.onMatch,
     required this.onUpdateInstructions,
     required this.guide,
@@ -6438,8 +6590,10 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.onAddPreservedElement,
     required this.replicatedImage,
     required this.onReplicate,
+    required this.quickCapacity,
     required this.onOpenOriginalFrame,
     required this.onOpenReplicatedFrame,
+    required this.mode,
   });
 
   final ScriptShot shot;
@@ -6482,6 +6636,7 @@ class _ShotAssetDropRow extends StatelessWidget {
   )
   onSelectLocalAsset;
   final ValueChanged<String> onRemove;
+  final ValueChanged<ScriptShotAssetLink> onUpdateLink;
   final VoidCallback onMatch;
   final ValueChanged<String> onUpdateInstructions;
   final ReplicateShotGuide? guide;
@@ -6500,12 +6655,15 @@ class _ShotAssetDropRow extends StatelessWidget {
   final ValueChanged<String> onAddPreservedElement;
   final ReplicatedShotImage? replicatedImage;
   final Future<bool> Function() onReplicate;
+  final QuickReplicationInputCapacity quickCapacity;
   final ValueChanged<ScriptShot> onOpenOriginalFrame;
   final ValueChanged<ScriptShot> onOpenReplicatedFrame;
+  final ReplicationGenerationMode mode;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final preciseMode = mode == ReplicationGenerationMode.precise;
     final analysisRunning = guide?.analysisStatus == ProcessingStatus.running;
     final hasAnalysisResult =
         guide?.analysisStatus == ProcessingStatus.completed;
@@ -6514,7 +6672,9 @@ class _ShotAssetDropRow extends StatelessWidget {
     final poseReady =
         guide?.poseStatus == ProcessingStatus.completed &&
         (guide?.skeletonPath.trim().isNotEmpty ?? false);
-    final assetSlots = _buildAssetSlots(context);
+    final assetSlots = preciseMode
+        ? _buildAssetSlots(context)
+        : _buildQuickAssetSlots(context);
     final frameStrip = _ShotAssetFrameStrip(
       shot: shot,
       tailShot: tailShot,
@@ -6525,11 +6685,13 @@ class _ShotAssetDropRow extends StatelessWidget {
       startEndFrameMode: startEndFrameMode,
       onOpenOriginalFrame: onOpenOriginalFrame,
       onOpenReplicatedFrame: onOpenReplicatedFrame,
+      numberedOriginal: !preciseMode,
     );
     final instructionsField = _ShotReplicationInstructionsField(
       key: ValueKey('replicate-user-instructions-${shot.id}'),
       value: shot.replicationInstructions,
       onCommit: onUpdateInstructions,
+      quickMode: !preciseMode,
     );
     final replicationStatus = replicatedImage == null
         ? null
@@ -6565,12 +6727,13 @@ class _ShotAssetDropRow extends StatelessWidget {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    IconButton(
-                      key: ValueKey('toggle-shot-script-${shot.id}'),
-                      tooltip: '折叠分镜脚本',
-                      onPressed: onToggleExpanded,
-                      icon: const Icon(Icons.keyboard_arrow_up_rounded),
-                    ),
+                    if (preciseMode)
+                      IconButton(
+                        key: ValueKey('toggle-shot-script-${shot.id}'),
+                        tooltip: '折叠分镜脚本',
+                        onPressed: onToggleExpanded,
+                        icon: const Icon(Icons.keyboard_arrow_up_rounded),
+                      ),
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.only(top: 5),
@@ -6601,62 +6764,124 @@ class _ShotAssetDropRow extends StatelessWidget {
                     ),
                     // ignore: use_null_aware_elements
                     if (replicationStatus != null) replicationStatus,
-                    OutlinedButton.icon(
-                      key: ValueKey('analyze-replication-frame-${shot.id}'),
-                      onPressed: analysisRunning || analysisReady
-                          ? null
-                          : onAnalyzeFrame,
-                      icon: analysisRunning
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(
-                              Icons.center_focus_strong_rounded,
-                              size: 16,
-                            ),
-                      label: Text(
-                        analysisReady
-                            ? '原帧已分析'
-                            : guide?.analysisStatus == ProcessingStatus.failed
-                            ? '重试分析原帧'
-                            : '分析原帧',
+                    if (preciseMode)
+                      OutlinedButton.icon(
+                        key: ValueKey('analyze-replication-frame-${shot.id}'),
+                        onPressed: analysisRunning || analysisReady
+                            ? null
+                            : onAnalyzeFrame,
+                        icon: analysisRunning
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.center_focus_strong_rounded,
+                                size: 16,
+                              ),
+                        label: Text(
+                          analysisReady
+                              ? '原帧已分析'
+                              : guide?.analysisStatus == ProcessingStatus.failed
+                              ? '重试分析原帧'
+                              : '分析原帧',
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    OutlinedButton.icon(
-                      key: ValueKey('extract-dwpose-${shot.id}'),
-                      onPressed: poseRunning || !guideIsCurrent
-                          ? null
-                          : onExtractPose,
-                      icon: poseRunning
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.device_hub_rounded, size: 16),
-                      label: Text(poseReady ? '重新提取骨架' : '提取骨架'),
-                    ),
+                    if (!preciseMode)
+                      OutlinedButton.icon(
+                        key: ValueKey('quick-parse-frame-${shot.id}'),
+                        onPressed: analysisRunning || analysisReady
+                            ? null
+                            : onAnalyzeFrame,
+                        icon: analysisRunning
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.document_scanner_outlined,
+                                size: 16,
+                              ),
+                        label: Text(
+                          analysisRunning
+                              ? '解析中…'
+                              : analysisReady
+                              ? '已解析 ${guide?.personCount ?? 0} 人'
+                              : guide?.analysisStatus == ProcessingStatus.failed
+                              ? '重试解析'
+                              : '一键解析',
+                        ),
+                      ),
+                    if (preciseMode) const SizedBox(width: 6),
+                    if (preciseMode)
+                      OutlinedButton.icon(
+                        key: ValueKey('extract-dwpose-${shot.id}'),
+                        onPressed: poseRunning || !guideIsCurrent
+                            ? null
+                            : onExtractPose,
+                        icon: poseRunning
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.device_hub_rounded, size: 16),
+                        label: Text(poseReady ? '重新提取骨架' : '提取骨架'),
+                      ),
                     const SizedBox(width: 6),
                     OutlinedButton.icon(
                       key: ValueKey('replicate-shot-image-${shot.id}'),
                       onPressed:
-                          links.isNotEmpty ||
-                              (guideIsCurrent &&
-                                  (guide?.subjects.isNotEmpty ?? false))
+                          (preciseMode || quickCapacity.isWithinLimits) &&
+                              (links.isNotEmpty ||
+                                  (preciseMode &&
+                                      guideIsCurrent &&
+                                      (guide?.subjects.isNotEmpty ?? false)))
                           ? onReplicate
                           : null,
                       icon: const Icon(Icons.compare_arrows_rounded, size: 16),
                       label: Text(
-                        startEndFrameMode && tailShot != null
+                        !preciseMode
+                            ? '生成复刻'
+                            : startEndFrameMode && tailShot != null
                             ? '复刻首尾帧'
                             : '一键替换产品',
                       ),
                     ),
                   ],
                 ),
+                if (!preciseMode)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 48, top: 4),
+                    child: Row(
+                      children: [
+                        Text(
+                          '输入图片 ${quickCapacity.totalInputCount}/${quickCapacity.maximumTotalInputCount}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (!quickCapacity.isWithinLimits) ...[
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              quickCapacity.error,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: scheme.error),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 LayoutBuilder(
                   key: ValueKey('shot-asset-visual-row-${shot.id}'),
@@ -6692,20 +6917,22 @@ class _ShotAssetDropRow extends StatelessWidget {
                   },
                 ),
                 const SizedBox(height: 8),
-                _ShotFrameGuidePanel(
-                  shot: shot,
-                  guide: guide,
-                  isCurrent: guideIsCurrent,
-                  onToggleElement: onTogglePreservedElement,
-                  onAddElement: onAddPreservedElement,
-                ),
-                _ProductMarkAuthorizationPanel(
-                  shot: shot,
-                  guide: guide,
-                  isCurrent: guideIsCurrent,
-                  referenceOptions: _productMarkReferenceOptions(),
-                  onSave: onSetProductMarkAuthorization,
-                ),
+                if (preciseMode) ...[
+                  _ShotFrameGuidePanel(
+                    shot: shot,
+                    guide: guide,
+                    isCurrent: guideIsCurrent,
+                    onToggleElement: onTogglePreservedElement,
+                    onAddElement: onAddPreservedElement,
+                  ),
+                  _ProductMarkAuthorizationPanel(
+                    shot: shot,
+                    guide: guide,
+                    isCurrent: guideIsCurrent,
+                    referenceOptions: _productMarkReferenceOptions(),
+                    onSave: onSetProductMarkAuthorization,
+                  ),
+                ],
               ],
             )
           : LayoutBuilder(
@@ -6762,6 +6989,249 @@ class _ShotAssetDropRow extends StatelessWidget {
             ),
     );
   }
+
+  Widget _buildQuickAssetSlots(BuildContext context) {
+    final entries = <_QuickBindingEntry>[];
+    for (final link in links) {
+      final asset = bindingState.assetById(link.scriptAssetId);
+      if (asset != null) entries.add((link: link, asset: asset));
+    }
+    entries.sort((left, right) {
+      final order = (left.link.quickReferenceOrder ?? 1 << 30).compareTo(
+        right.link.quickReferenceOrder ?? 1 << 30,
+      );
+      return order != 0
+          ? order
+          : left.link.createdAt.compareTo(right.link.createdAt);
+    });
+
+    final imageNumberByAssetId = <String, int>{
+      for (var index = 0; index < entries.length; index++)
+        entries[index].asset.id: index + 2,
+    };
+    final templateReady =
+        guideIsCurrent && guide?.analysisStatus == ProcessingStatus.completed;
+    final detectedPersonCount = templateReady
+        ? guide!.subjects
+              .where((subject) => subject.type == ReplicateSubjectType.person)
+              .length
+        : 0;
+    final characterCount = templateReady
+        ? math
+              .max(guide?.personCount ?? 0, detectedPersonCount)
+              .clamp(0, 20)
+              .toInt()
+        : 0;
+    final templates = <({ScriptAssetPresetSlot slot, QuickReferenceRole role})>[
+      if (templateReady)
+        for (var index = 0; index < characterCount; index++) ...[
+          (
+            slot: ScriptAssetPresetSlot.character(index),
+            role: QuickReferenceRole.model,
+          ),
+          (
+            slot: ScriptAssetPresetSlot.product(index),
+            role: QuickReferenceRole.product,
+          ),
+        ],
+      if (templateReady)
+        (
+          slot: const ScriptAssetPresetSlot.scene(),
+          role: QuickReferenceRole.scene,
+        ),
+    ];
+    final assignedAssetIds = <String>{};
+
+    _QuickBindingEntry? takeTemplateEntry(
+      ScriptAssetPresetSlot slot,
+      QuickReferenceRole role,
+    ) {
+      _QuickBindingEntry? selected;
+      for (final entry in entries) {
+        if (assignedAssetIds.contains(entry.asset.id) ||
+            entry.link.sortOrder != slot.sortOrder ||
+            _effectiveQuickRole(entry) != role) {
+          continue;
+        }
+        selected = entry;
+        break;
+      }
+      if (selected == null) {
+        for (final entry in entries) {
+          if (assignedAssetIds.contains(entry.asset.id) ||
+              _effectiveQuickRole(entry) != role) {
+            continue;
+          }
+          selected = entry;
+          break;
+        }
+      }
+      if (selected != null) assignedAssetIds.add(selected.asset.id);
+      return selected;
+    }
+
+    Widget buildCard(
+      _QuickBindingEntry entry, {
+      ScriptAssetPresetSlot? templateSlot,
+    }) {
+      final imageNumber = imageNumberByAssetId[entry.asset.id]!;
+      final bindingLabel = templateSlot == null
+          ? null
+          : _quickTemplateLabel(templateSlot);
+      return _QuickAssetBindingCard(
+        key: ValueKey('quick-reference-${shot.id}-${entry.link.scriptAssetId}'),
+        asset: entry.asset,
+        link: entry.link,
+        imageNumber: imageNumber,
+        groupLabel: _quickGroupLabel(entry, entries),
+        onTap: () => _openAssetPicker(
+          context,
+          replaceScriptAssetId: entry.link.scriptAssetId,
+          presetSlot: templateSlot,
+          bindingLabel: bindingLabel,
+          pickerTitle: bindingLabel == null
+              ? '替换图$imageNumber资产'
+              : '替换$bindingLabel资产图',
+        ),
+        onDrop: (item) => onDrop(
+          item,
+          entry.link.scriptAssetId,
+          templateSlot?.sortOrder ?? entry.link.sortOrder,
+          bindingLabel,
+        ),
+        onRemove: () => onRemove(entry.link.scriptAssetId),
+        onRoleChanged: (role) => onUpdateLink(
+          entry.link.copyWith(
+            quickReferenceRole: role,
+            clearQuickGroupAnchorAssetId: true,
+            clearQuickGroupConfidence: true,
+            quickGroupWarning: '',
+          ),
+        ),
+        onDescriptionChanged: (description) => onUpdateLink(
+          entry.link.copyWith(
+            quickDescription: description,
+            clearQuickGroupAnchorAssetId: true,
+            clearQuickGroupConfidence: true,
+            quickGroupWarning: '',
+          ),
+        ),
+      );
+    }
+
+    Widget buildEmptyTemplateSlot(
+      ScriptAssetPresetSlot slot,
+      QuickReferenceRole role,
+    ) {
+      final label = _quickTemplateLabel(slot);
+      return _EmptyAssetBindingSlot(
+        key: ValueKey(
+          'quick-template-slot-${shot.id}-${slot.kind.name}-${slot.sortOrder}',
+        ),
+        label: label,
+        icon: switch (role) {
+          QuickReferenceRole.model => Icons.person_add_alt_1_outlined,
+          QuickReferenceRole.product => Icons.inventory_2_outlined,
+          QuickReferenceRole.scene => Icons.landscape_outlined,
+          _ => Icons.add_photo_alternate_outlined,
+        },
+        accepts: (item) => slot.acceptsAsset(
+          type: item.type,
+          name: item.name,
+          description: item.description,
+          aliases: item.aliases,
+        ),
+        onTap: () => _openAssetPicker(
+          context,
+          presetSlot: slot,
+          bindingLabel: label,
+          pickerTitle: '选择$label资产图',
+        ),
+        onDrop: (item) => onDrop(item, null, slot.sortOrder, label),
+      );
+    }
+
+    return Wrap(
+      key: ValueKey('quick-reference-images-${shot.id}'),
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final template in templates)
+          if (takeTemplateEntry(template.slot, template.role) case final entry?)
+            buildCard(entry, templateSlot: template.slot)
+          else
+            buildEmptyTemplateSlot(template.slot, template.role),
+        for (final entry in entries)
+          if (!assignedAssetIds.contains(entry.asset.id)) buildCard(entry),
+        _EmptyAssetBindingSlot(
+          key: ValueKey('quick-add-asset-${shot.id}'),
+          label: templateReady ? '添加其他资产图' : '添加资产图',
+          icon: Icons.add_photo_alternate_outlined,
+          accepts: (_) => true,
+          onTap: () => _openAssetPicker(
+            context,
+            pickerTitle: templateReady ? '添加其他资产图' : '添加资产图',
+          ),
+          onDrop: (item) => onDrop(item, null, null, null),
+        ),
+      ],
+    );
+  }
+
+  String? _quickGroupLabel(
+    _QuickBindingEntry entry,
+    List<_QuickBindingEntry> entries,
+  ) {
+    final role = entry.link.quickReferenceRole;
+    if (role != QuickReferenceRole.product &&
+        role != QuickReferenceRole.productDetail) {
+      return null;
+    }
+    final anchorId = entry.link.quickGroupAnchorAssetId;
+    if (anchorId == null || anchorId.isEmpty) return '待自动归组';
+    var productIndex = 0;
+    for (final candidate in entries) {
+      if (candidate.link.quickReferenceRole != QuickReferenceRole.product) {
+        continue;
+      }
+      if (candidate.asset.id == anchorId) {
+        final label = _alphabeticLabel(productIndex);
+        return role == QuickReferenceRole.product
+            ? '产品$label'
+            : '产品$label · 已归组';
+      }
+      productIndex++;
+    }
+    return '待重新归组';
+  }
+
+  static String _alphabeticLabel(int index) => index < 26
+      ? String.fromCharCode('A'.codeUnitAt(0) + index)
+      : '${index + 1}';
+
+  static QuickReferenceRole _effectiveQuickRole(_QuickBindingEntry entry) =>
+      entry.link.quickReferenceRole ??
+      switch (entry.asset.type) {
+        ReplicateAssetType.character => QuickReferenceRole.model,
+        ReplicateAssetType.scene => QuickReferenceRole.scene,
+        ReplicateAssetType.product => QuickReferenceRole.product,
+        ReplicateAssetType.prop => QuickReferenceRole.prop,
+        ReplicateAssetType.video ||
+        ReplicateAssetType.audio ||
+        ReplicateAssetType.reference ||
+        ReplicateAssetType.other => QuickReferenceRole.otherReference,
+      };
+
+  static String _quickTemplateLabel(ScriptAssetPresetSlot slot) =>
+      switch (slot.kind) {
+        ScriptAssetPresetSlotKind.character =>
+          '模特${ScriptAssetSlotPolicy.characterSuffix(slot.characterIndex)}',
+        ScriptAssetPresetSlotKind.product =>
+          '产品${ScriptAssetSlotPolicy.characterSuffix(slot.productIndex)}',
+        ScriptAssetPresetSlotKind.productDetail =>
+          '产品细节${ScriptAssetSlotPolicy.characterSuffix(slot.productIndex)}',
+        ScriptAssetPresetSlotKind.scene => '场景（可选）',
+      };
 
   Widget _buildAssetSlots(BuildContext context) {
     final assetsByLink = <ScriptShotAssetLink, ScriptAsset>{};
@@ -8009,10 +8479,12 @@ class _ShotReplicationInstructionsField extends StatefulWidget {
     super.key,
     required this.value,
     required this.onCommit,
+    this.quickMode = false,
   });
 
   final String value;
   final ValueChanged<String> onCommit;
+  final bool quickMode;
 
   @override
   State<_ShotReplicationInstructionsField> createState() =>
@@ -8075,12 +8547,14 @@ class _ShotReplicationInstructionsFieldState
         _commit();
         _focus.unfocus();
       },
-      decoration: const InputDecoration(
-        labelText: '复刻补充说明',
-        hintText: '仅影响本镜头之后的复刻…',
+      decoration: InputDecoration(
+        labelText: widget.quickMode ? '补充说明（可选）' : '复刻补充说明',
+        hintText: widget.quickMode
+            ? '例如：图3的模特穿图4的裤子，在图2的场景中做图1的动作'
+            : '仅影响本镜头之后的复刻…',
         alignLabelWithHint: true,
         isDense: true,
-        contentPadding: EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
       ),
       style: Theme.of(context).textTheme.bodySmall,
     );
@@ -8096,6 +8570,7 @@ class _ShotAssetFrameStrip extends StatelessWidget {
     required this.startEndFrameMode,
     required this.onOpenOriginalFrame,
     required this.onOpenReplicatedFrame,
+    this.numberedOriginal = false,
   });
 
   final ScriptShot shot;
@@ -8105,6 +8580,7 @@ class _ShotAssetFrameStrip extends StatelessWidget {
   final bool startEndFrameMode;
   final ValueChanged<ScriptShot> onOpenOriginalFrame;
   final ValueChanged<ScriptShot> onOpenReplicatedFrame;
+  final bool numberedOriginal;
 
   @override
   Widget build(BuildContext context) {
@@ -8118,7 +8594,7 @@ class _ShotAssetFrameStrip extends StatelessWidget {
               child: _ShotFrameThumbnail(
                 key: ValueKey('prepare-asset-original-frame-${shot.id}'),
                 path: shot.framePath,
-                label: '原视频帧',
+                label: numberedOriginal ? '图1 · 原分镜' : '原视频帧',
                 emptyIcon: Icons.video_library_outlined,
                 onTap: () => onOpenOriginalFrame(shot),
               ),
@@ -8227,6 +8703,245 @@ class _ShotAssetChoice {
   String get description => stepAsset?.description ?? libraryItem!.description;
   String get path => stepAsset?.path ?? libraryItem!.path;
   ReplicateAssetType get type => stepAsset?.type ?? libraryItem!.type;
+}
+
+class _QuickAssetBindingCard extends StatefulWidget {
+  const _QuickAssetBindingCard({
+    super.key,
+    required this.asset,
+    required this.link,
+    required this.imageNumber,
+    required this.groupLabel,
+    required this.onTap,
+    required this.onRemove,
+    required this.onDrop,
+    required this.onRoleChanged,
+    required this.onDescriptionChanged,
+  });
+
+  final ScriptAsset asset;
+  final ScriptShotAssetLink link;
+  final int imageNumber;
+  final String? groupLabel;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
+  final ValueChanged<ShootingAssetLibraryItem> onDrop;
+  final ValueChanged<QuickReferenceRole> onRoleChanged;
+  final ValueChanged<String> onDescriptionChanged;
+
+  @override
+  State<_QuickAssetBindingCard> createState() => _QuickAssetBindingCardState();
+}
+
+class _QuickAssetBindingCardState extends State<_QuickAssetBindingCard> {
+  late final TextEditingController _description;
+  late final FocusNode _descriptionFocus;
+  late String _lastDescription;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastDescription = widget.link.quickDescription;
+    _description = TextEditingController(text: _lastDescription);
+    _descriptionFocus = FocusNode()..addListener(_handleDescriptionFocus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _QuickAssetBindingCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final value = widget.link.quickDescription;
+    if (!_descriptionFocus.hasFocus && _description.text != value) {
+      _description.text = value;
+      _lastDescription = value;
+    }
+  }
+
+  @override
+  void dispose() {
+    _descriptionFocus
+      ..removeListener(_handleDescriptionFocus)
+      ..dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  void _handleDescriptionFocus() {
+    if (!_descriptionFocus.hasFocus) _commitDescription();
+  }
+
+  void _commitDescription() {
+    final value = _description.text.trim();
+    if (value == _lastDescription) return;
+    _lastDescription = value;
+    widget.onDescriptionChanged(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DragTarget<ShootingAssetLibraryItem>(
+      onWillAcceptWithDetails: (_) => true,
+      onAcceptWithDetails: (details) => widget.onDrop(details.data),
+      builder: (context, candidateData, _) {
+        final active = candidateData.isNotEmpty;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          width: 190,
+          height: 286,
+          padding: const EdgeInsets.all(7),
+          decoration: BoxDecoration(
+            color: active ? scheme.primaryContainer : scheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: active ? scheme.primary : scheme.outlineVariant,
+              width: active ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                height: 26,
+                child: Row(
+                  children: [
+                    Text(
+                      '图${widget.imageNumber}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: '移除资产图',
+                      onPressed: widget.onRemove,
+                      icon: const Icon(Icons.close_rounded, size: 16),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 26,
+                        minHeight: 26,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Material(
+                  color: scheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(6),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: widget.onTap,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: _BindingAssetPreview(
+                        path: widget.asset.path,
+                        label: widget.asset.name,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                widget.asset.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 5),
+              DropdownButtonFormField<QuickReferenceRole>(
+                key: ValueKey(
+                  'quick-reference-role-${widget.link.shotId}-${widget.link.scriptAssetId}',
+                ),
+                initialValue:
+                    widget.link.quickReferenceRole ??
+                    QuickReferenceRole.otherReference,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '类型',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 7,
+                  ),
+                ),
+                items: [
+                  for (final role in QuickReferenceRole.values)
+                    DropdownMenuItem(value: role, child: Text(role.label)),
+                ],
+                onChanged: (role) {
+                  if (role != null && role != widget.link.quickReferenceRole) {
+                    widget.onRoleChanged(role);
+                  }
+                },
+              ),
+              const SizedBox(height: 5),
+              TextField(
+                key: ValueKey(
+                  'quick-reference-description-${widget.link.shotId}-${widget.link.scriptAssetId}',
+                ),
+                controller: _description,
+                focusNode: _descriptionFocus,
+                minLines: 1,
+                maxLines: 2,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _commitDescription(),
+                onTapOutside: (_) {
+                  _commitDescription();
+                  _descriptionFocus.unfocus();
+                },
+                decoration: const InputDecoration(
+                  labelText: '描述（可选）',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 7,
+                  ),
+                ),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (widget.groupLabel != null) ...[
+                const SizedBox(height: 5),
+                Tooltip(
+                  message: widget.link.quickGroupWarning.isEmpty
+                      ? '系统自动归组结果'
+                      : widget.link.quickGroupWarning,
+                  child: Row(
+                    children: [
+                      Icon(
+                        widget.link.quickGroupWarning.isEmpty
+                            ? Icons.account_tree_outlined
+                            : Icons.warning_amber_rounded,
+                        size: 14,
+                        color: widget.link.quickGroupWarning.isEmpty
+                            ? scheme.primary
+                            : scheme.error,
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          widget.groupLabel!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _AssetBindingSlot extends StatelessWidget {
@@ -8559,8 +9274,9 @@ class _BindingAssetPreview extends StatelessWidget {
 Future<void> _confirmReplicateAll(
   BuildContext context,
   ReplicateState state,
-  ReplicateController controller,
-) async {
+  ReplicateController controller, {
+  ReplicationGenerationMode mode = ReplicationGenerationMode.precise,
+}) async {
   final confirmed = state.confirmedShots.length;
   final existing = state.replicatedImages
       .where((image) => image.status == ProcessingStatus.completed)
@@ -8568,8 +9284,11 @@ Future<void> _confirmReplicateAll(
   final accepted = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('确认一键复刻'),
+      title: Text(
+        mode == ReplicationGenerationMode.quick ? '确认快速复刻' : '确认精确复刻',
+      ),
       content: Text(
+        '${mode == ReplicationGenerationMode.quick ? '每个镜头提交原帧、编号参考图和一句话说明；已完成的一键解析只用于生成快速资产槽位，不执行骨架与自动纠偏。\n\n' : ''}'
         '将按镜号顺序提交 $confirmed 个镜头，任务之间间隔约 '
         '${ReplicateController.defaultBatchReplicateStagger.inMilliseconds} 毫秒，'
         '最多同时处理 '
@@ -8591,7 +9310,11 @@ Future<void> _confirmReplicateAll(
       ],
     ),
   );
-  if (accepted == true) await controller.replicateAllShots();
+  if (accepted == true) {
+    mode == ReplicationGenerationMode.quick
+        ? await controller.replicateAllShotsQuick()
+        : await controller.replicateAllShots();
+  }
 }
 
 String _replicationStatusLabel(ProcessingStatus status) => switch (status) {
@@ -10054,6 +10777,21 @@ class _AssetEditorResult {
   final ReplicateAssetType type;
   final String name;
   final String description;
+}
+
+extension on QuickReferenceRole {
+  String get label => switch (this) {
+    QuickReferenceRole.model => '模特',
+    QuickReferenceRole.scene => '场景',
+    QuickReferenceRole.clothing => '服装',
+    QuickReferenceRole.shoes => '鞋子',
+    QuickReferenceRole.accessory => '配饰',
+    QuickReferenceRole.product => '产品',
+    QuickReferenceRole.productDetail => '产品细节',
+    QuickReferenceRole.prop => '道具',
+    QuickReferenceRole.styleReference => '风格参考',
+    QuickReferenceRole.otherReference => '其他参考',
+  };
 }
 
 extension on ReplicateAssetType {

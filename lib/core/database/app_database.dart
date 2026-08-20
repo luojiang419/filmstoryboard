@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 27;
+  static const currentSchemaVersion = 28;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -720,6 +720,12 @@ class AppDatabase {
           confirmed INTEGER NOT NULL DEFAULT 0,
           locked INTEGER NOT NULL DEFAULT 0,
           sort_order INTEGER NOT NULL DEFAULT 0,
+          quick_reference_order INTEGER,
+          quick_reference_role TEXT,
+          quick_description TEXT NOT NULL DEFAULT '',
+          quick_group_anchor_asset_id TEXT,
+          quick_group_confidence REAL,
+          quick_group_warning TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           PRIMARY KEY(shot_id, script_asset_id)
@@ -1104,6 +1110,29 @@ class AppDatabase {
       }
       _database.execute('PRAGMA user_version = 27;');
     }
+    if (version < 28) {
+      if (_tableExists('script_shot_asset_links')) {
+        _ensureNullableIntegerColumn(
+          'script_shot_asset_links',
+          'quick_reference_order',
+        );
+        _ensureNullableTextColumn(
+          'script_shot_asset_links',
+          'quick_reference_role',
+        );
+        _ensureTextColumn('script_shot_asset_links', 'quick_description');
+        _ensureNullableTextColumn(
+          'script_shot_asset_links',
+          'quick_group_anchor_asset_id',
+        );
+        _ensureNullableRealColumn(
+          'script_shot_asset_links',
+          'quick_group_confidence',
+        );
+        _ensureTextColumn('script_shot_asset_links', 'quick_group_warning');
+      }
+      _database.execute('PRAGMA user_version = 28;');
+    }
   }
 
   bool _tableExists(String tableName) => _database.select(
@@ -1216,6 +1245,20 @@ class AppDatabase {
       return;
     }
     _database.execute('ALTER TABLE $tableName ADD COLUMN $columnName TEXT;');
+  }
+
+  void _ensureNullableIntegerColumn(String tableName, String columnName) {
+    if (_columnExists(tableName, columnName)) {
+      return;
+    }
+    _database.execute('ALTER TABLE $tableName ADD COLUMN $columnName INTEGER;');
+  }
+
+  void _ensureNullableRealColumn(String tableName, String columnName) {
+    if (_columnExists(tableName, columnName)) {
+      return;
+    }
+    _database.execute('ALTER TABLE $tableName ADD COLUMN $columnName REAL;');
   }
 
   void _ensureIntegerColumn(String tableName, String columnName) {

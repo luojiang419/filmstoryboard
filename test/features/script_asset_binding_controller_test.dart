@@ -11,6 +11,7 @@ import 'package:filmstoryboard/features/shooting_script/application/shooting_scr
 import 'package:filmstoryboard/features/shooting_script/data/shooting_asset_library_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
 import 'package:filmstoryboard/features/shooting_script/data/shooting_script_workflow_repository.dart';
+import 'package:filmstoryboard/features/shooting_script/domain/shooting_asset_library_models.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/script_asset_slot_policy.dart';
 import 'package:filmstoryboard/features/shooting_script/domain/shooting_script_workflow_models.dart';
 import 'package:test/test.dart';
@@ -77,10 +78,159 @@ void main() {
     expect(link.locked, isTrue);
     expect(link.matchSource, ScriptAssetMatchSource.manual);
     expect(link.sortOrder, 1001);
+    expect(link.quickReferenceOrder, 1);
+    expect(link.quickReferenceRole, QuickReferenceRole.model);
     expect(link.matchReason, contains('模特B'));
 
     bindingController.refresh();
     expect(bindingController.value.links.single.sortOrder, 1001);
+
+    final genericProductFile = File(p.join(root.path, 'generic-product.png'));
+    final genericSceneFile = File(p.join(root.path, 'generic-scene.png'));
+    await genericProductFile.writeAsBytes([4, 5, 6]);
+    await genericSceneFile.writeAsBytes([7, 8, 9]);
+    final genericProduct = await libraryController.importItem(
+      sourcePath: genericProductFile.path,
+      type: ReplicateAssetType.reference,
+      name: '参考图甲',
+      description: '',
+    );
+    final genericScene = await libraryController.importItem(
+      sourcePath: genericSceneFile.path,
+      type: ReplicateAssetType.reference,
+      name: '参考图乙',
+      description: '',
+    );
+    await bindingController.addLibraryAssetToShot(
+      genericProduct!,
+      shot.id,
+      slotSortOrder: ScriptAssetSlotPolicy.productSortOrderForIndex(0),
+      slotLabel: '产品A',
+    );
+    await bindingController.addLibraryAssetToShot(
+      genericScene!,
+      shot.id,
+      slotSortOrder: ScriptAssetSlotPolicy.sceneSortOrder,
+      slotLabel: '场景（可选）',
+    );
+    final productLink = bindingController.value.links.singleWhere(
+      (link) => link.sortOrder == ScriptAssetSlotPolicy.productSortOrder,
+    );
+    final sceneLink = bindingController.value.links.singleWhere(
+      (link) => link.sortOrder == ScriptAssetSlotPolicy.sceneSortOrder,
+    );
+    expect(productLink.quickReferenceRole, QuickReferenceRole.product);
+    expect(sceneLink.quickReferenceRole, QuickReferenceRole.scene);
+  });
+
+  test('快速引用按加入顺序编号，替换保留图位且删除后连续重编号', () async {
+    final root = await Directory.systemTemp.createTemp('quick_asset_order_');
+    addTearDown(() => root.delete(recursive: true));
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final scriptController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    scriptController.createEmpty(name: '快速顺序测试脚本');
+    final shot = scriptController.addShot()!;
+    final libraryController = ShootingAssetLibraryController(
+      repository: ShootingAssetLibraryRepository(
+        database: database,
+        directories: directories,
+      ),
+      directories: directories,
+    );
+    final items = <ShootingAssetLibraryItem>[];
+    for (var index = 0; index < 4; index++) {
+      final file = File(p.join(root.path, 'asset-$index.png'));
+      await file.writeAsBytes([index + 1]);
+      items.add(
+        (await libraryController.importItem(
+          sourcePath: file.path,
+          type: index == 0
+              ? ReplicateAssetType.character
+              : ReplicateAssetType.product,
+          name: '资产$index',
+          description: '',
+        ))!,
+      );
+    }
+    final bindingController = ShootingScriptAssetBindingController(
+      shootingScriptController: scriptController,
+      libraryController: libraryController,
+      repository: ShootingScriptWorkflowRepository(database),
+      settingsController: settingsController,
+    );
+    addTearDown(() {
+      bindingController.dispose();
+      libraryController.dispose();
+      scriptController.dispose();
+      settingsController.dispose();
+    });
+
+    for (final item in items.take(3)) {
+      await bindingController.addLibraryAssetToShot(item, shot.id);
+    }
+    var ordered = bindingController.value.links.toList()
+      ..sort(
+        (left, right) =>
+            left.quickReferenceOrder!.compareTo(right.quickReferenceOrder!),
+      );
+    expect(ordered.map((link) => link.quickReferenceOrder), [1, 2, 3]);
+    final middleId = ordered[1].scriptAssetId;
+
+    final replacement = await bindingController.replaceLibraryAssetOnShot(
+      items[3],
+      shot.id,
+      replaceScriptAssetId: middleId,
+    );
+    final replacementLink = bindingController.value.links.singleWhere(
+      (link) => link.scriptAssetId == replacement!.id,
+    );
+    expect(replacementLink.quickReferenceOrder, 2);
+
+    final detailLink = bindingController.value.links.singleWhere(
+      (link) => link.quickReferenceOrder == 3,
+    );
+    bindingController.updateLink(
+      detailLink.copyWith(
+        quickReferenceRole: QuickReferenceRole.productDetail,
+        quickDescription: '产品A的腰头细节',
+        clearQuickGroupAnchorAssetId: true,
+        clearQuickGroupConfidence: true,
+      ),
+    );
+    final groupedDetail = bindingController.value.links.singleWhere(
+      (link) => link.scriptAssetId == detailLink.scriptAssetId,
+    );
+    expect(
+      groupedDetail.quickGroupAnchorAssetId,
+      replacementLink.scriptAssetId,
+    );
+    expect(groupedDetail.quickGroupConfidence, 1);
+
+    bindingController.removeAssetFromShot(
+      shot.id,
+      replacementLink.scriptAssetId,
+    );
+    ordered = bindingController.value.links.toList()
+      ..sort(
+        (left, right) =>
+            left.quickReferenceOrder!.compareTo(right.quickReferenceOrder!),
+      );
+    expect(ordered.map((link) => link.quickReferenceOrder), [1, 2]);
+    final orphanedDetail = ordered.singleWhere(
+      (link) => link.scriptAssetId == detailLink.scriptAssetId,
+    );
+    expect(orphanedDetail.quickGroupAnchorAssetId, isNull);
+    expect(orphanedDetail.quickGroupWarning, contains('没有产品主图'));
   });
 
   test('自动匹配会按识别数量把单人物的三个产品写入产品A到产品C槽位', () async {

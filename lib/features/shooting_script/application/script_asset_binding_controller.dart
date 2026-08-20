@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../replicate/domain/quick_replication_reference.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../replicate/domain/replicate_models.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
@@ -188,6 +189,7 @@ class ShootingScriptAssetBindingController
     int? slotSortOrder,
     String? slotLabel,
   }) async {
+    final previousQuickPlan = _localQuickPlanForShot(shotId);
     final script = _shootingScriptController.value.selectedScript;
     if (script == null ||
         !_shootingScriptController.value.shots.any(
@@ -211,6 +213,14 @@ class ShootingScriptAssetBindingController
       _repository.deleteLink(shotId, replaced.scriptAssetId);
     }
     final now = DateTime.now().toUtc();
+    final inheritedQuickLink = replaced ?? existing;
+    final quickReferenceOrder =
+        inheritedQuickLink?.quickReferenceOrder ??
+        _nextQuickReferenceOrder(links);
+    final quickReferenceRole =
+        _quickRoleForPresetSlot(slotSortOrder) ??
+        inheritedQuickLink?.quickReferenceRole ??
+        _quickRoleForType(asset.type);
     _repository.upsertLink(
       existing?.copyWith(
             matchSource: ScriptAssetMatchSource.manual,
@@ -220,6 +230,18 @@ class ShootingScriptAssetBindingController
             locked: true,
             sortOrder:
                 slotSortOrder ?? replaced?.sortOrder ?? existing.sortOrder,
+            quickReferenceOrder: quickReferenceOrder,
+            quickReferenceRole: quickReferenceRole,
+            quickDescription:
+                replaced?.quickDescription ?? existing.quickDescription,
+            clearQuickGroupAnchorAssetId:
+                replaced != null && replaced.scriptAssetId != asset.id,
+            clearQuickGroupConfidence:
+                replaced != null && replaced.scriptAssetId != asset.id,
+            quickGroupWarning:
+                replaced != null && replaced.scriptAssetId != asset.id
+                ? ''
+                : existing.quickGroupWarning,
             updatedAt: now,
           ) ??
           ScriptShotAssetLink(
@@ -235,10 +257,14 @@ class ShootingScriptAssetBindingController
             confirmed: true,
             locked: true,
             sortOrder: slotSortOrder ?? replaced?.sortOrder ?? links.length,
+            quickReferenceOrder: quickReferenceOrder,
+            quickReferenceRole: quickReferenceRole,
+            quickDescription: replaced?.quickDescription ?? '',
             createdAt: now,
             updatedAt: now,
           ),
     );
+    _applyLocalQuickPlan(shotId, previousPlan: previousQuickPlan);
     refresh();
     value = value.copyWith(
       message: replaced == null
@@ -267,6 +293,8 @@ class ShootingScriptAssetBindingController
       return null;
     }
     final now = DateTime.now().toUtc();
+    final previousQuickPlan = _localQuickPlanForShot(shotId);
+    final links = value.linksForShot(shotId);
     final asset = ScriptAsset(
       id: _uuid.v4(),
       scriptId: script.id,
@@ -290,22 +318,42 @@ class ShootingScriptAssetBindingController
         confirmed: true,
         locked: true,
         sortOrder: slotSortOrder,
+        quickReferenceOrder: _nextQuickReferenceOrder(links),
+        quickReferenceRole: _quickRoleForType(type),
         createdAt: now,
         updatedAt: now,
       ),
     );
+    _applyLocalQuickPlan(shotId, previousPlan: previousQuickPlan);
     refresh();
     return asset;
   }
 
   void removeAssetFromShot(String shotId, String scriptAssetId) {
+    final previousQuickPlan = _localQuickPlanForShot(shotId);
     _repository.deleteLink(shotId, scriptAssetId);
+    final remaining = _repository.listLinksForShot(shotId)
+      ..sort((left, right) {
+        final leftOrder = left.quickReferenceOrder ?? 1 << 30;
+        final rightOrder = right.quickReferenceOrder ?? 1 << 30;
+        final order = leftOrder.compareTo(rightOrder);
+        return order != 0 ? order : left.createdAt.compareTo(right.createdAt);
+      });
+    for (var index = 0; index < remaining.length; index++) {
+      if (remaining[index].quickReferenceOrder == index + 1) continue;
+      _repository.upsertLink(
+        remaining[index].copyWith(quickReferenceOrder: index + 1),
+      );
+    }
+    _applyLocalQuickPlan(shotId, previousPlan: previousQuickPlan);
     refresh();
     value = value.copyWith(message: '已移除镜头资产绑定');
   }
 
   void updateLink(ScriptShotAssetLink link) {
+    final previousQuickPlan = _localQuickPlanForShot(link.shotId);
     _repository.upsertLink(link.copyWith(updatedAt: DateTime.now().toUtc()));
+    _applyLocalQuickPlan(link.shotId, previousPlan: previousQuickPlan);
     refresh();
   }
 
@@ -384,6 +432,7 @@ class ShootingScriptAssetBindingController
     List<ShootingAssetLibraryItem> preferredItems = const [],
     int? maximumProductCount,
   }) async {
+    final previousQuickPlan = _localQuickPlanForShot(shot.id);
     final preferredResult = preferredItems.isEmpty
         ? const ScriptAssetMatchResult(candidates: [], usedModel: false)
         : await _matchingService.match(
@@ -412,6 +461,9 @@ class ShootingScriptAssetBindingController
     final occupiedSortOrders = {
       for (final link in value.linksForShot(shot.id)) link.sortOrder,
     };
+    var nextQuickReferenceOrder = _nextQuickReferenceOrder(
+      value.linksForShot(shot.id),
+    );
     final reservedParticipantCount = occupiedSortOrders
         .map(ScriptAssetSlotPolicy.presetSlotForSortOrder)
         .whereType<ScriptAssetPresetSlot>()
@@ -478,11 +530,14 @@ class ShootingScriptAssetBindingController
               confirmed: candidate.confidence >= 0.82,
               locked: false,
               sortOrder: sortOrder,
+              quickReferenceOrder: nextQuickReferenceOrder++,
+              quickReferenceRole: _quickRoleForType(scriptAsset.type),
               createdAt: now,
               updatedAt: now,
             ),
       );
     }
+    _applyLocalQuickPlan(shot.id, previousPlan: previousQuickPlan);
     return result;
   }
 
@@ -537,6 +592,122 @@ class ShootingScriptAssetBindingController
     value = value.copyWith(assets: [...value.assets, asset]);
     return asset;
   }
+
+  static int _nextQuickReferenceOrder(List<ScriptShotAssetLink> links) {
+    var maximum = 0;
+    for (final link in links) {
+      maximum = math.max(maximum, link.quickReferenceOrder ?? 0);
+    }
+    return maximum + 1;
+  }
+
+  static QuickReferenceRole _quickRoleForType(ReplicateAssetType type) =>
+      switch (type) {
+        ReplicateAssetType.character => QuickReferenceRole.model,
+        ReplicateAssetType.scene => QuickReferenceRole.scene,
+        ReplicateAssetType.product => QuickReferenceRole.product,
+        ReplicateAssetType.prop => QuickReferenceRole.prop,
+        ReplicateAssetType.video ||
+        ReplicateAssetType.audio ||
+        ReplicateAssetType.reference ||
+        ReplicateAssetType.other => QuickReferenceRole.otherReference,
+      };
+
+  static QuickReferenceRole? _quickRoleForPresetSlot(int? sortOrder) {
+    if (sortOrder == null) return null;
+    final slot = ScriptAssetSlotPolicy.presetSlotForSortOrder(sortOrder);
+    return switch (slot?.kind) {
+      ScriptAssetPresetSlotKind.character => QuickReferenceRole.model,
+      ScriptAssetPresetSlotKind.product => QuickReferenceRole.product,
+      ScriptAssetPresetSlotKind.productDetail =>
+        QuickReferenceRole.productDetail,
+      ScriptAssetPresetSlotKind.scene => QuickReferenceRole.scene,
+      null => null,
+    };
+  }
+
+  QuickReplicationPlan? _localQuickPlanForShot(String shotId) {
+    final script = _shootingScriptController.value.selectedScript;
+    if (script == null) return null;
+    final assetsById = {
+      for (final asset in _repository.listScriptAssets(script.id))
+        asset.id: asset,
+    };
+    final bindings = <({ScriptShotAssetLink link, ScriptAsset asset})>[];
+    for (final link in _repository.listLinksForShot(shotId)) {
+      final asset = assetsById[link.scriptAssetId];
+      if (asset != null) bindings.add((link: link, asset: asset));
+    }
+    bindings.sort((left, right) {
+      final order = (left.link.quickReferenceOrder ?? 1 << 30).compareTo(
+        right.link.quickReferenceOrder ?? 1 << 30,
+      );
+      return order != 0
+          ? order
+          : left.link.createdAt.compareTo(right.link.createdAt);
+    });
+    return const QuickReplicationLocalPlanner().plan(
+      references: [
+        for (var index = 0; index < bindings.length; index++)
+          QuickReplicationReference(
+            assetId: bindings[index].asset.id,
+            imageNumber: index + 2,
+            order: index + 1,
+            role:
+                bindings[index].link.quickReferenceRole ??
+                _quickRoleForType(bindings[index].asset.type),
+            name: bindings[index].asset.name,
+            description: bindings[index].link.quickDescription,
+            groupAnchorAssetId: bindings[index].link.quickGroupAnchorAssetId,
+            groupConfidence: bindings[index].link.quickGroupConfidence,
+            groupWarning: bindings[index].link.quickGroupWarning,
+          ),
+      ],
+    );
+  }
+
+  void _applyLocalQuickPlan(
+    String shotId, {
+    QuickReplicationPlan? previousPlan,
+  }) {
+    final current = _localQuickPlanForShot(shotId);
+    if (current == null) return;
+    final replanned = const QuickReplicationLocalPlanner().plan(
+      references: current.references,
+      previousPlan: previousPlan,
+    );
+    final linksByAssetId = {
+      for (final link in _repository.listLinksForShot(shotId))
+        link.scriptAssetId: link,
+    };
+    final now = DateTime.now().toUtc();
+    for (final assignment in replanned.assignments) {
+      final link = linksByAssetId[assignment.assetId];
+      if (link == null) continue;
+      final updated = link.copyWith(
+        quickDescription: assignment.normalizedDescription,
+        quickGroupAnchorAssetId: assignment.groupAnchorAssetId,
+        clearQuickGroupAnchorAssetId: assignment.groupAnchorAssetId == null,
+        quickGroupConfidence: assignment.confidence,
+        clearQuickGroupConfidence:
+            assignment.groupAnchorAssetId == null &&
+            assignment.role != QuickReferenceRole.product,
+        quickGroupWarning: assignment.warning,
+        updatedAt: now,
+      );
+      if (_sameQuickPlanFields(link, updated)) continue;
+      _repository.upsertLink(updated);
+    }
+  }
+
+  static bool _sameQuickPlanFields(
+    ScriptShotAssetLink left,
+    ScriptShotAssetLink right,
+  ) =>
+      left.quickDescription == right.quickDescription &&
+      left.quickGroupAnchorAssetId == right.quickGroupAnchorAssetId &&
+      left.quickGroupConfidence == right.quickGroupConfidence &&
+      left.quickGroupWarning == right.quickGroupWarning;
 
   List<ShootingAssetLibraryItem> _stepAssetCandidates(
     List<ReplicateAsset> assets,

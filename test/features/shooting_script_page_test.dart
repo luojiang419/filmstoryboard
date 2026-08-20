@@ -221,6 +221,13 @@ void main() {
       find.descendant(of: libraryItemCard, matching: find.text('女模特')),
       findsNWidgets(2),
     );
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('replication-generation-mode')),
+        matching: find.text('精确'),
+      ),
+    );
+    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('script-auto-match-assets')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(assetBindingController.value.links, hasLength(1));

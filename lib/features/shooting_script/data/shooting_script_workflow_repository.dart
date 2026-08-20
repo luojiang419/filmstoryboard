@@ -59,36 +59,44 @@ class ShootingScriptWorkflowRepository {
     ]);
   }
 
-  List<ScriptShotAssetLink> listLinksForScript(String scriptId) => _database
-      .selectRows(
-        '''
+  List<ScriptShotAssetLink> listLinksForScript(String scriptId) {
+    final rows = _database.selectRows(
+      '''
         SELECT link.*
+          , asset.asset_type AS linked_asset_type
         FROM script_shot_asset_links link
         INNER JOIN script_assets asset ON asset.id = link.script_asset_id
         WHERE asset.script_id = ?
         ORDER BY link.shot_id, link.sort_order, link.created_at;
-        ''',
-        [scriptId],
-      )
-      .map(_linkFromRow)
-      .toList();
+      ''',
+      [scriptId],
+    );
+    return _linksWithBackfilledQuickMetadata(rows);
+  }
 
-  List<ScriptShotAssetLink> listLinksForShot(String shotId) => _database
-      .selectRows(
-        'SELECT * FROM script_shot_asset_links WHERE shot_id = ? '
-        'ORDER BY sort_order, created_at;',
-        [shotId],
-      )
-      .map(_linkFromRow)
-      .toList();
+  List<ScriptShotAssetLink> listLinksForShot(String shotId) {
+    final rows = _database.selectRows(
+      '''
+      SELECT link.*, asset.asset_type AS linked_asset_type
+      FROM script_shot_asset_links link
+      INNER JOIN script_assets asset ON asset.id = link.script_asset_id
+      WHERE link.shot_id = ?
+      ORDER BY link.sort_order, link.created_at;
+      ''',
+      [shotId],
+    );
+    return _linksWithBackfilledQuickMetadata(rows);
+  }
 
   void upsertLink(ScriptShotAssetLink link) {
     _database.executeStatement(
       '''
       INSERT INTO script_shot_asset_links(
         shot_id, script_asset_id, match_source, confidence, match_reason,
-        confirmed, locked, sort_order, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        confirmed, locked, sort_order, quick_reference_order,
+        quick_reference_role, quick_description, quick_group_anchor_asset_id,
+        quick_group_confidence, quick_group_warning, created_at, updated_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(shot_id, script_asset_id) DO UPDATE SET
         match_source = excluded.match_source,
         confidence = excluded.confidence,
@@ -96,6 +104,12 @@ class ShootingScriptWorkflowRepository {
         confirmed = excluded.confirmed,
         locked = excluded.locked,
         sort_order = excluded.sort_order,
+        quick_reference_order = excluded.quick_reference_order,
+        quick_reference_role = excluded.quick_reference_role,
+        quick_description = excluded.quick_description,
+        quick_group_anchor_asset_id = excluded.quick_group_anchor_asset_id,
+        quick_group_confidence = excluded.quick_group_confidence,
+        quick_group_warning = excluded.quick_group_warning,
         updated_at = excluded.updated_at;
       ''',
       [
@@ -107,6 +121,12 @@ class ShootingScriptWorkflowRepository {
         link.confirmed ? 1 : 0,
         link.locked ? 1 : 0,
         link.sortOrder,
+        link.quickReferenceOrder,
+        link.quickReferenceRole?.name,
+        link.quickDescription,
+        link.quickGroupAnchorAssetId,
+        link.quickGroupConfidence,
+        link.quickGroupWarning,
         link.createdAt.toIso8601String(),
         link.updatedAt.toIso8601String(),
       ],
@@ -213,9 +233,65 @@ class ShootingScriptWorkflowRepository {
         confirmed: (row['confirmed'] as int) == 1,
         locked: (row['locked'] as int) == 1,
         sortOrder: row['sort_order'] as int,
+        quickReferenceOrder: row['quick_reference_order'] as int?,
+        quickReferenceRole: _quickReferenceRole(
+          row['quick_reference_role'] as String?,
+        ),
+        quickDescription: row['quick_description'] as String? ?? '',
+        quickGroupAnchorAssetId: row['quick_group_anchor_asset_id'] as String?,
+        quickGroupConfidence: (row['quick_group_confidence'] as num?)
+            ?.toDouble(),
+        quickGroupWarning: row['quick_group_warning'] as String? ?? '',
         createdAt: DateTime.parse(row['created_at'] as String),
         updatedAt: DateTime.parse(row['updated_at'] as String),
       );
+
+  List<ScriptShotAssetLink> _linksWithBackfilledQuickMetadata(
+    List<Map<String, Object?>> rows,
+  ) {
+    final result = <ScriptShotAssetLink>[];
+    for (var start = 0; start < rows.length;) {
+      final shotId = rows[start]['shot_id'] as String;
+      var end = start + 1;
+      while (end < rows.length && rows[end]['shot_id'] == shotId) {
+        end++;
+      }
+      final shotRows = rows.sublist(start, end);
+      final needsOrderBackfill = shotRows.any(
+        (row) => row['quick_reference_order'] == null,
+      );
+      for (var index = 0; index < shotRows.length; index++) {
+        final row = shotRows[index];
+        final storedRole = _quickReferenceRole(
+          row['quick_reference_role'] as String?,
+        );
+        final fallbackRole = _defaultQuickReferenceRole(
+          _assetType(row['linked_asset_type'] as String?),
+        );
+        final role = storedRole ?? fallbackRole;
+        final order = needsOrderBackfill
+            ? index + 1
+            : row['quick_reference_order'] as int;
+        if (needsOrderBackfill || storedRole == null) {
+          _database.executeStatement(
+            '''
+            UPDATE script_shot_asset_links
+            SET quick_reference_order = ?, quick_reference_role = ?
+            WHERE shot_id = ? AND script_asset_id = ?;
+            ''',
+            [order, role.name, shotId, row['script_asset_id']],
+          );
+        }
+        result.add(
+          _linkFromRow(
+            row,
+          ).copyWith(quickReferenceOrder: order, quickReferenceRole: role),
+        );
+      }
+      start = end;
+    }
+    return result;
+  }
 
   ScriptShotAnalysisRecord _analysisFromRow(Map<String, Object?> row) {
     return ScriptShotAnalysisRecord(
@@ -242,6 +318,27 @@ class ShootingScriptWorkflowRepository {
         (type) => type.name == value,
         orElse: () => ReplicateAssetType.reference,
       );
+
+  static QuickReferenceRole? _quickReferenceRole(String? value) {
+    if (value == null || value.isEmpty) return null;
+    for (final role in QuickReferenceRole.values) {
+      if (role.name == value) return role;
+    }
+    return null;
+  }
+
+  static QuickReferenceRole _defaultQuickReferenceRole(
+    ReplicateAssetType type,
+  ) => switch (type) {
+    ReplicateAssetType.character => QuickReferenceRole.model,
+    ReplicateAssetType.scene => QuickReferenceRole.scene,
+    ReplicateAssetType.product => QuickReferenceRole.product,
+    ReplicateAssetType.prop => QuickReferenceRole.prop,
+    ReplicateAssetType.video ||
+    ReplicateAssetType.audio ||
+    ReplicateAssetType.reference ||
+    ReplicateAssetType.other => QuickReferenceRole.otherReference,
+  };
 
   static Map<String, String> _stringMap(String value) {
     try {
