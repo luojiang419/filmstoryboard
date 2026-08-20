@@ -144,6 +144,8 @@ void main() {
     );
     await tester.tap(find.text('扩展画幅'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('生成线稿分镜'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('生成线稿分镜'));
     await tester.pumpAndSettle();
     expect(
@@ -187,6 +189,12 @@ void main() {
       find.byKey(const ValueKey('storyboard-hd-redraw-button')),
       findsOneWidget,
     );
+    await tester.fling(
+      find.byKey(const ValueKey('storyboard-inspector-list')),
+      const Offset(0, 1800),
+      1200,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('居右'));
     await tester.pumpAndSettle();
     expect(

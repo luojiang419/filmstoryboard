@@ -23,6 +23,7 @@ import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
 import '../../../core/widgets/viewport_lazy_grid.dart';
 import '../../exporter/data/storyboard_export_service.dart';
+import '../../bridge/data/bridge_loopback_client.dart';
 import '../../bridge/data/bridge_package_service.dart';
 import '../../bridge/domain/bridge_manifest.dart';
 import '../../settings/domain/app_settings.dart';
@@ -639,19 +640,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   }
 
   Future<void> _exportShiyinBridge(StoryboardBoard board) async {
-    final settings = ref.read(settingsControllerProvider).value;
-    final location = await ref
-        .read(desktopFileDialogServiceProvider)
-        .getSaveLocation(
-          source: 'storyboard.export_shiyin_bridge',
-          initialDirectory: settings.exportDirectory,
-          suggestedName: '${board.name}_shiyin.filmbridge.zip',
-          acceptedTypeGroups: const [
-            XTypeGroup(label: 'SHIYIN 桥接包', extensions: ['zip']),
-          ],
-          confirmButtonText: '导出桥接包',
-        );
-    if (location == null) return;
     final scriptState = ref.read(shootingScriptControllerProvider).value;
     final script = scriptState.selectedScript;
     final shotsByNumber = {
@@ -721,8 +709,16 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
           },
         ),
     ];
+    final directories = ref.read(projectDirectoriesProvider);
+    await directories.temp.create(recursive: true);
+    final temporaryPackage = File(
+      p.join(
+        directories.temp.path,
+        'film_to_shiyin_${DateTime.now().microsecondsSinceEpoch}.filmbridge.zip',
+      ),
+    );
     await const BridgePackageService().exportFilmToShiyin(
-      outputFile: File(location.path),
+      outputFile: temporaryPackage,
       projectId: ref.read(currentProjectIdProvider),
       projectName: ref.read(currentProjectNameProvider),
       boardId: board.id,
@@ -732,6 +728,55 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       scriptId: script?.id,
       scriptName: script?.name,
     );
+    final loopback = BridgeLoopbackClient();
+    try {
+      final result = await loopback.sendPackage(
+        packageFile: temporaryPackage,
+        canvasTitle: board.name,
+      );
+      if (Platform.isWindows) {
+        try {
+          await Process.start('explorer.exe', [result.editorUri.toString()]);
+        } catch (_) {
+          // 已成功发送；打开浏览器失败不应触发重复文件导出。
+        }
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已发送 ${result.frameCount} 张分镜到 SHIYIN-AI 无限画布'),
+          ),
+        );
+      }
+      return;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('未发现可接收的 SHIYIN-AI，已切换为桥接包文件导出')),
+        );
+      }
+      final settings = ref.read(settingsControllerProvider).value;
+      final location = await ref
+          .read(desktopFileDialogServiceProvider)
+          .getSaveLocation(
+            source: 'storyboard.export_shiyin_bridge',
+            initialDirectory: settings.exportDirectory,
+            suggestedName: '${board.name}_shiyin.filmbridge.zip',
+            acceptedTypeGroups: const [
+              XTypeGroup(label: 'SHIYIN 桥接包', extensions: ['zip']),
+            ],
+            confirmButtonText: '导出桥接包',
+          );
+      if (location != null) {
+        final output = File(location.path);
+        await output.parent.create(recursive: true);
+        if (output.existsSync()) await output.delete();
+        await temporaryPackage.copy(output.path);
+      }
+    } finally {
+      loopback.close();
+      if (temporaryPackage.existsSync()) await temporaryPackage.delete();
+    }
   }
 
   Future<void> _importShiyinBridge(StoryboardBoard currentBoard) async {
