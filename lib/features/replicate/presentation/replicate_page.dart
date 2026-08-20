@@ -7061,7 +7061,12 @@ class _ShotAssetDropRow extends StatelessWidget {
       if (selected == null) {
         for (final entry in entries) {
           if (assignedAssetIds.contains(entry.asset.id) ||
-              _effectiveQuickRole(entry) != role) {
+              _effectiveQuickRole(entry) != role ||
+              templates.any(
+                (template) =>
+                    template.role == role &&
+                    template.slot.sortOrder == entry.link.sortOrder,
+              )) {
             continue;
           }
           selected = entry;
@@ -7085,6 +7090,7 @@ class _ShotAssetDropRow extends StatelessWidget {
         asset: entry.asset,
         link: entry.link,
         imageNumber: imageNumber,
+        selectedRoleLabel: bindingLabel,
         groupLabel: _quickGroupLabel(entry, entries),
         onTap: () => _openAssetPicker(
           context,
@@ -8713,6 +8719,7 @@ class _QuickAssetBindingCard extends StatefulWidget {
     required this.asset,
     required this.link,
     required this.imageNumber,
+    required this.selectedRoleLabel,
     required this.groupLabel,
     required this.onTap,
     required this.onRemove,
@@ -8724,6 +8731,7 @@ class _QuickAssetBindingCard extends StatefulWidget {
   final ScriptAsset asset;
   final ScriptShotAssetLink link;
   final int imageNumber;
+  final String? selectedRoleLabel;
   final String? groupLabel;
   final VoidCallback onTap;
   final VoidCallback onRemove;
@@ -8876,6 +8884,15 @@ class _QuickAssetBindingCardState extends State<_QuickAssetBindingCard> {
                 items: [
                   for (final role in QuickReferenceRole.values)
                     DropdownMenuItem(value: role, child: Text(role.label)),
+                ],
+                selectedItemBuilder: (context) => [
+                  for (final role in QuickReferenceRole.values)
+                    Text(
+                      role == QuickReferenceRole.model &&
+                              widget.selectedRoleLabel != null
+                          ? widget.selectedRoleLabel!
+                          : role.label,
+                    ),
                 ],
                 onChanged: (role) {
                   if (role != null && role != widget.link.quickReferenceRole) {

@@ -1878,15 +1878,15 @@ void main() {
     final modelASlot = find.byKey(
       ValueKey('quick-template-slot-${shot.id}-character-1000'),
     );
+    final modelBQuickSlot = find.byKey(
+      ValueKey('quick-template-slot-${shot.id}-character-1001'),
+    );
     expect(modelASlot, findsOneWidget);
     expect(
       find.byKey(ValueKey('quick-template-slot-${shot.id}-product-2000')),
       findsOneWidget,
     );
-    expect(
-      find.byKey(ValueKey('quick-template-slot-${shot.id}-character-1001')),
-      findsOneWidget,
-    );
+    expect(modelBQuickSlot, findsOneWidget);
     expect(
       find.byKey(ValueKey('quick-template-slot-${shot.id}-product-2100')),
       findsOneWidget,
@@ -1922,6 +1922,10 @@ void main() {
     expect(quickLink.quickReferenceOrder, 1);
     expect(quickLink.quickReferenceRole, QuickReferenceRole.model);
     expect(quickLink.sortOrder, 1000);
+    expect(
+      find.descendant(of: quickCard, matching: find.text('模特A')),
+      findsOneWidget,
+    );
     expect(find.textContaining('单镜头输入 2/'), findsOneWidget);
     expect(find.textContaining('输入图片 2/'), findsOneWidget);
     final roleField = find.byKey(
@@ -1978,6 +1982,30 @@ void main() {
     await tester.pump();
     await tester.tap(
       find.descendant(of: quickCard, matching: find.byTooltip('移除资产图')),
+    );
+    await tester.pump();
+    expect(bindingController.value.links, isEmpty);
+
+    await tester.ensureVisible(modelBQuickSlot);
+    await tester.pumpAndSettle();
+    await tester.tap(modelBQuickSlot);
+    await tester.pumpAndSettle();
+    final modelBQuickPicker = find.byType(AlertDialog);
+    await tester.tap(
+      find.descendant(of: modelBQuickPicker, matching: find.text('女模特')).first,
+    );
+    await tester.pumpAndSettle();
+    final modelBQuickLink = bindingController.value.links.single;
+    final modelBQuickCard = find.byKey(
+      ValueKey('quick-reference-${shot.id}-${modelBQuickLink.scriptAssetId}'),
+    );
+    expect(modelBQuickLink.sortOrder, 1001);
+    expect(
+      find.descendant(of: modelBQuickCard, matching: find.text('模特B')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.descendant(of: modelBQuickCard, matching: find.byTooltip('移除资产图')),
     );
     await tester.pump();
     expect(bindingController.value.links, isEmpty);
