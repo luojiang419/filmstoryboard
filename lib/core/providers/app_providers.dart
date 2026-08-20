@@ -70,6 +70,11 @@ final currentProjectNameProvider = Provider<String>(
   dependencies: [],
 );
 
+final currentProjectIdProvider = Provider<String>(
+  (ref) => '',
+  dependencies: [],
+);
+
 final projectAspectControllerProvider = Provider<ProjectAspectController>((
   ref,
 ) {

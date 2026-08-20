@@ -10,6 +10,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
@@ -22,6 +23,8 @@ import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
 import '../../../core/widgets/viewport_lazy_grid.dart';
 import '../../exporter/data/storyboard_export_service.dart';
+import '../../bridge/data/bridge_package_service.dart';
+import '../../bridge/domain/bridge_manifest.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../settings/presentation/cut_image_number_controls.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
@@ -468,6 +471,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                                 expandedSections: _expandedInspectorSections,
                                 onToggleSection: _toggleInspectorSection,
                                 onExportBoardImages: _exportBoardImages,
+                                onExportShiyinBridge: _exportShiyinBridge,
                                 onCollapse: () => _setInspectorExpanded(false),
                               ),
                             )
@@ -631,6 +635,102 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         outputDirectory: path,
       );
     } catch (_) {}
+  }
+
+  Future<void> _exportShiyinBridge(StoryboardBoard board) async {
+    final settings = ref.read(settingsControllerProvider).value;
+    final location = await ref
+        .read(desktopFileDialogServiceProvider)
+        .getSaveLocation(
+          source: 'storyboard.export_shiyin_bridge',
+          initialDirectory: settings.exportDirectory,
+          suggestedName: '${board.name}_shiyin.filmbridge.zip',
+          acceptedTypeGroups: const [
+            XTypeGroup(label: 'SHIYIN 桥接包', extensions: ['zip']),
+          ],
+          confirmButtonText: '导出桥接包',
+        );
+    if (location == null) return;
+    final scriptState = ref.read(shootingScriptControllerProvider).value;
+    final script = scriptState.selectedScript;
+    final shotsByNumber = {
+      for (final shot in scriptState.shots) shot.shotNumber: shot,
+    };
+    final frames = <BridgeFrameSource>[];
+    final orderedItems = board.items.toList()
+      ..sort((a, b) => a.slotIndex.compareTo(b.slotIndex));
+    for (final item in orderedItems) {
+      final file = File(item.asset.path);
+      if (!file.existsSync()) {
+        throw FormatException('故事板图片不存在：${file.path}');
+      }
+      final decoded = img.decodeImage(await file.readAsBytes());
+      if (decoded == null) {
+        throw FormatException('无法读取故事板图片：${file.path}');
+      }
+      final shotNumber = item.slotIndex + 1;
+      final shot = shotsByNumber[shotNumber];
+      frames.add(
+        BridgeFrameSource(
+          path: file,
+          sourceName: item.asset.sourceName,
+          slotIndex: item.slotIndex,
+          shotNumber: shotNumber,
+          frameIndex: item.slotIndex,
+          timestampMs: 0,
+          width: decoded.width,
+          height: decoded.height,
+          caption: item.caption,
+          metadata: {
+            'source_storyboard_asset_id': item.asset.id,
+            'source_video_frame_id': shot?.sourceVideoFrameId ?? '',
+          },
+        ),
+      );
+    }
+    final bridgeShots = [
+      for (final shot in scriptState.shots)
+        BridgeShotRecord(
+          stableId: BridgeManifest.stableShotId(board.id, shot.shotNumber),
+          shotNumber: shot.shotNumber,
+          frameStableId: BridgeManifest.stableFrameId(
+            board.id,
+            shot.shotNumber - 1,
+            BridgeVariant.original,
+          ),
+          durationSeconds: shot.durationSeconds,
+          fields: {
+            'visual': shot.visual,
+            'content': shot.content,
+            'free_creation_description': shot.freeCreationDescription,
+            'shot_size': shot.shotSize,
+            'camera_movement': shot.cameraMovement,
+            'camera_notes': shot.cameraNotes,
+            'composition': shot.composition,
+            'camera_angle': shot.cameraAngle,
+            'lighting_mood': shot.lightingMood,
+            'color_palette': shot.colorPalette,
+            'visual_focus': shot.visualFocus,
+            'transition_hint': shot.transitionHint,
+            'movement_trend': shot.movementTrend,
+            'action_stage': shot.actionStage,
+            'dialogue': shot.dialogue,
+            'sound': shot.sound,
+            'prompt': shot.prompt,
+          },
+        ),
+    ];
+    await const BridgePackageService().exportFilmToShiyin(
+      outputFile: File(location.path),
+      projectId: ref.read(currentProjectIdProvider),
+      projectName: ref.read(currentProjectNameProvider),
+      boardId: board.id,
+      boardName: board.name,
+      frames: frames,
+      shots: bridgeShots,
+      scriptId: script?.id,
+      scriptName: script?.name,
+    );
   }
 
   Future<void> _openAssetFolderDirectory(StoryboardFolder folder) async {
@@ -8349,6 +8449,7 @@ class _StoryboardInspector extends StatefulWidget {
     required this.expandedSections,
     required this.onToggleSection,
     required this.onExportBoardImages,
+    required this.onExportShiyinBridge,
     required this.onCollapse,
   });
 
@@ -8356,6 +8457,7 @@ class _StoryboardInspector extends StatefulWidget {
   final Set<_StoryboardInspectorSection> expandedSections;
   final ValueChanged<_StoryboardInspectorSection> onToggleSection;
   final Future<void> Function(StoryboardBoard board) onExportBoardImages;
+  final Future<void> Function(StoryboardBoard board) onExportShiyinBridge;
   final VoidCallback onCollapse;
 
   @override
@@ -8387,6 +8489,7 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
       StoryboardController.defaultFrameTransformationImageSize;
   StoryboardLineArtStyle _lineArtStyle = StoryboardLineArtStyle.pencil;
   bool _isExportingBoardImages = false;
+  bool _isExportingShiyinBridge = false;
 
   @override
   void dispose() {
@@ -8537,6 +8640,35 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                     )
                   : const Icon(Icons.drive_folder_upload_rounded),
               label: Text(_isExportingBoardImages ? '正在导出...' : '导出画板图片'),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed:
+                  state.isAnalyzing ||
+                      _isExportingShiyinBridge ||
+                      board.visibleItemCount == 0
+                  ? null
+                  : () async {
+                      setState(() => _isExportingShiyinBridge = true);
+                      try {
+                        await widget.onExportShiyinBridge(board);
+                      } finally {
+                        if (mounted) {
+                          setState(() => _isExportingShiyinBridge = false);
+                        }
+                      }
+                    },
+              icon: _isExportingShiyinBridge
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send_rounded),
+              label: Text(_isExportingShiyinBridge ? '正在准备桥接包...' : '发送到无限画布'),
             ),
           ),
           const SizedBox(height: 8),

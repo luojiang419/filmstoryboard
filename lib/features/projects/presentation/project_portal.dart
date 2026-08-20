@@ -95,6 +95,9 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
           projectDatabaseProvider.overrideWithValue(session.database),
           projectDirectoriesProvider.overrideWithValue(session.directories),
           currentProjectNameProvider.overrideWithValue(session.manifest.name),
+          currentProjectIdProvider.overrideWithValue(
+            session.manifest.projectId,
+          ),
         ],
         child: AppShell(
           projectName: session.manifest.name,
