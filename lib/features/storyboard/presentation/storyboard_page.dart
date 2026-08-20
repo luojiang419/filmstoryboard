@@ -24,6 +24,7 @@ import '../../../core/widgets/value_listenable_selector_builder.dart';
 import '../../../core/widgets/viewport_lazy_grid.dart';
 import '../../exporter/data/storyboard_export_service.dart';
 import '../../bridge/data/bridge_loopback_client.dart';
+import '../../bridge/data/bridge_loopback_receiver.dart';
 import '../../bridge/data/bridge_package_service.dart';
 import '../../bridge/domain/bridge_manifest.dart';
 import '../../settings/domain/app_settings.dart';
@@ -267,17 +268,44 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   final _assetSidebarKey = GlobalKey<_AssetSidebarState>();
   final _folderDropCoordinator = _StoryboardFolderDropCoordinator();
   final _expandedInspectorSections = <_StoryboardInspectorSection>{};
+  BridgeLoopbackReceiver? _bridgeLoopbackReceiver;
 
   @override
   void initState() {
     super.initState();
     _restoreUiState();
+    unawaited(_startBridgeLoopbackReceiver());
   }
 
   @override
   void dispose() {
     _folderDropCoordinator.dispose();
+    unawaited(_bridgeLoopbackReceiver?.stop());
     super.dispose();
+  }
+
+  Future<void> _startBridgeLoopbackReceiver() async {
+    try {
+      final directories = ref.read(projectDirectoriesProvider);
+      final receiver = BridgeLoopbackReceiver(
+        directory: directories.temp,
+        onPackage: (file) async {
+          final result = await _applyShiyinBridgeFile(file);
+          return {
+            'board_id': result.manifest.bridgeId,
+            'frame_count': result.frames.length,
+          };
+        },
+      );
+      await receiver.start();
+      if (mounted) {
+        _bridgeLoopbackReceiver = receiver;
+      } else {
+        await receiver.stop();
+      }
+    } catch (_) {
+      // 端口被占用时保留文件导入，不影响故事板页面其他功能。
+    }
   }
 
   @override
@@ -796,70 +824,85 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         );
     if (selected == null) return;
     try {
-      final result = await const BridgePackageService().importShiyinToFilm(
-        packageFile: File(selected.path),
-        destinationRoot: directories.imports,
+      await _applyShiyinBridgeFile(
+        File(selected.path),
+        fallbackBoard: currentBoard,
       );
-      final variantLabel = switch (result.manifest.selectedVariant) {
-        BridgeVariant.original => '原始帧',
-        BridgeVariant.expanded16x9 => '16:9 扩展',
-        BridgeVariant.lineArt => '线稿分镜',
-        BridgeVariant.replicated => '复刻帧',
-      };
-      final boardName = result.manifest.boardName.trim().isEmpty
-          ? '${currentBoard.name} · $variantLabel'
-          : '${result.manifest.boardName} · $variantLabel';
-      final storyboardController = ref.read(storyboardControllerProvider);
-      final boardId = await storyboardController
-          .createOrReplaceBoardFromExternalImages(
-            sourceId: 'shiyin-bridge:${result.manifest.bridgeId}',
-            boardName: boardName,
-            images: [
-              for (final frame in result.frames)
-                StoryboardExternalImage(
-                  stableId: frame.record.stableId,
-                  sourceName: frame.record.sourceName,
-                  path: frame.file.path,
-                  width: frame.width,
-                  height: frame.height,
-                  caption: frame.record.caption,
-                ),
-            ],
-            selectBoard: true,
-            preserveExistingCaptions: false,
-          );
-      if (boardId == null) {
-        throw const FormatException('回传图片已解包，但故事板创建失败');
-      }
-      final importedBoard = storyboardController.value.boards
-          .cast<StoryboardBoard?>()
-          .firstWhere((board) => board?.id == boardId, orElse: () => null);
-      if (importedBoard == null) {
-        throw const FormatException('无法读取刚创建的 SHIYIN 故事板');
-      }
-      ref
-          .read(shootingScriptControllerProvider)
-          .applyBridgeShots(importedBoard, result.manifest.shots);
-      for (final obsolete in result.obsoleteFiles) {
-        try {
-          if (obsolete.existsSync()) await obsolete.delete();
-        } catch (_) {
-          // 清理失败不回滚已成功接收的故事板，下次接收会再次识别为旧文件。
-        }
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已接收 ${result.frames.length} 张$variantLabel，并同步拍摄脚本'),
-          ),
-        );
-      }
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('接收 SHIYIN 回传失败：$error')));
     }
+  }
+
+  Future<BridgeImportResult> _applyShiyinBridgeFile(
+    File packageFile, {
+    StoryboardBoard? fallbackBoard,
+  }) async {
+    final directories = ref.read(projectDirectoriesProvider);
+    final result = await const BridgePackageService().importShiyinToFilm(
+      packageFile: packageFile,
+      destinationRoot: directories.imports,
+    );
+    final variantLabel = switch (result.manifest.selectedVariant) {
+      BridgeVariant.original => '原始帧',
+      BridgeVariant.expanded16x9 => '16:9 扩展',
+      BridgeVariant.lineArt => '线稿分镜',
+      BridgeVariant.replicated => '复刻帧',
+    };
+    final currentBoard =
+        fallbackBoard ??
+        ref.read(storyboardControllerProvider).value.selectedBoard;
+    final boardName = result.manifest.boardName.trim().isEmpty
+        ? '${currentBoard?.name ?? 'SHIYIN 故事板'} · $variantLabel'
+        : '${result.manifest.boardName} · $variantLabel';
+    final storyboardController = ref.read(storyboardControllerProvider);
+    final boardId = await storyboardController
+        .createOrReplaceBoardFromExternalImages(
+          sourceId: 'shiyin-bridge:${result.manifest.bridgeId}',
+          boardName: boardName,
+          images: [
+            for (final frame in result.frames)
+              StoryboardExternalImage(
+                stableId: frame.record.stableId,
+                sourceName: frame.record.sourceName,
+                path: frame.file.path,
+                width: frame.width,
+                height: frame.height,
+                caption: frame.record.caption,
+              ),
+          ],
+          selectBoard: true,
+          preserveExistingCaptions: false,
+        );
+    if (boardId == null) {
+      throw const FormatException('回传图片已解包，但故事板创建失败');
+    }
+    final importedBoard = storyboardController.value.boards
+        .cast<StoryboardBoard?>()
+        .firstWhere((board) => board?.id == boardId, orElse: () => null);
+    if (importedBoard == null) {
+      throw const FormatException('无法读取刚创建的 SHIYIN 故事板');
+    }
+    ref
+        .read(shootingScriptControllerProvider)
+        .applyBridgeShots(importedBoard, result.manifest.shots);
+    for (final obsolete in result.obsoleteFiles) {
+      try {
+        if (obsolete.existsSync()) await obsolete.delete();
+      } catch (_) {
+        // 清理失败不回滚已成功接收的故事板，下次接收会再次识别为旧文件。
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已接收 ${result.frames.length} 张$variantLabel，并同步拍摄脚本'),
+        ),
+      );
+    }
+    return result;
   }
 
   Future<void> _openAssetFolderDirectory(StoryboardFolder folder) async {
