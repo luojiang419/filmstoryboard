@@ -39,6 +39,7 @@ import '../data/dwpose_model_manager.dart';
 import '../data/dwpose_service.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
+import '../data/quick_replication_person_count_service.dart';
 import '../data/quick_replication_prompt_planning_service.dart';
 import '../data/replication_frame_analysis_service.dart';
 import '../data/replication_generation_review_service.dart';
@@ -199,6 +200,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     ImageGenerationService? imageGenerationService,
     VisionStoryboardService? visionService,
     QuickReplicationPromptPlanningService? quickPlanningService,
+    QuickReplicationPersonCountService? quickPersonCountService,
     ReplicationFrameAnalysisService? frameAnalysisService,
     ReplicationGenerationReviewService? generationReviewService,
     DwPoseModelManager? dwPoseModelManager,
@@ -236,6 +238,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _quickPlanningService =
         quickPlanningService ??
         QuickReplicationPromptPlanningService(visionService: _visionService);
+    _quickPersonCountService =
+        quickPersonCountService ??
+        QuickReplicationPersonCountService(visionService: _visionService);
     _generationReviewService =
         generationReviewService ??
         ReplicationGenerationReviewService(visionService: _visionService);
@@ -256,6 +261,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   static const freeCreationVisionRequestTimeout = Duration(minutes: 10);
   static const defaultBatchReplicateConcurrency = 1000;
   static const defaultBatchReplicateStagger = Duration(milliseconds: 20);
+  static const _quickPersonCountAnalysisMarker = 'quick-person-count-v1';
 
   final ReplicateRepository _repository;
   final ShootingScriptController _shootingScriptController;
@@ -269,6 +275,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final VisionStoryboardService _visionService;
   final bool _ownsVisionService;
   late final QuickReplicationPromptPlanningService _quickPlanningService;
+  late final QuickReplicationPersonCountService _quickPersonCountService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
   late final DwPoseModelManager _dwPoseModelManager;
@@ -480,6 +487,21 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     return guide.sourceFrameFingerprint == _sourceFrameFingerprint(shot);
   }
 
+  bool isQuickReplicationAnalysisReady(String shotId) {
+    final guide = shotGuideFor(shotId);
+    return isShotGuideCurrent(shotId) &&
+        guide?.analysisStatus == ProcessingStatus.completed;
+  }
+
+  bool isPreciseReplicationAnalysisReady(String shotId) {
+    final guide = shotGuideFor(shotId);
+    return isQuickReplicationAnalysisReady(shotId) &&
+        !_isQuickPersonCountGuide(guide!);
+  }
+
+  static bool _isQuickPersonCountGuide(ReplicateShotGuide guide) =>
+      guide.analysisModel.startsWith(_quickPersonCountAnalysisMarker);
+
   Future<void> analyzeReplicationFrame(String shotId) =>
       _analyzeReplicationFrame(shotId, quickMode: false);
 
@@ -503,8 +525,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final stored = _repository.getShotGuide(shot.id);
     final now = DateTime.now().toUtc();
     final fingerprint = _sourceFrameFingerprint(shot);
-    if (stored?.sourceFrameFingerprint == fingerprint &&
-        stored?.analysisStatus == ProcessingStatus.completed) {
+    final storedIsReady =
+        stored?.sourceFrameFingerprint == fingerprint &&
+        stored?.analysisStatus == ProcessingStatus.completed &&
+        (quickMode || !_isQuickPersonCountGuide(stored!));
+    if (storedIsReady) {
       _reloadShotGuides(
         scriptId,
         message: quickMode
@@ -525,7 +550,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       poseConstraints: previous?.poseConstraints ?? '',
       personCount: previous?.personCount ?? 0,
       skeletonPath: previous?.skeletonPath ?? '',
-      analysisModel: _settingsController.value.visionModel.trim(),
+      analysisModel: quickMode
+          ? '$_quickPersonCountAnalysisMarker:${_settingsController.value.visionModel.trim()}'
+          : _settingsController.value.visionModel.trim(),
       analysisStatus: ProcessingStatus.running,
       poseStatus: previous?.poseStatus ?? ProcessingStatus.pending,
       rawResponse: previous?.rawResponse ?? '',
@@ -537,10 +564,47 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _reloadShotGuides(
       scriptId,
       message: quickMode
-          ? '正在一键解析镜头 ${shot.shotNumber} 的模特数量与画面主体…'
+          ? '正在识别镜头 ${shot.shotNumber} 的模特数量…'
           : '正在分析镜头 ${shot.shotNumber} 的配饰、关键道具与精确动作…',
     );
     try {
+      if (quickMode) {
+        final result = await _quickPersonCountService.analyze(
+          settings: _settingsController.value,
+          imageFile: imageFile,
+          shotNumber: shot.shotNumber,
+        );
+        final people = [
+          for (var index = 0; index < result.personCount; index++)
+            ReplicateDetectedSubject(
+              id: '${ReplicateSubjectType.person.name}:$index',
+              type: ReplicateSubjectType.person,
+              label: '模特${ScriptAssetSlotPolicy.characterSuffix(index)}',
+              slotIndex: index,
+              location: '画面从左到右第${index + 1}位',
+              confidence: 1,
+            ),
+        ];
+        _repository.upsertShotGuide(
+          running.copyWith(
+            elements: const [],
+            subjects: people,
+            actionDescription: '',
+            poseConstraints: '',
+            personCount: result.personCount,
+            analysisStatus: ProcessingStatus.completed,
+            rawResponse: result.rawResponse,
+            errorMessage: '',
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+        _reloadShotGuides(
+          scriptId,
+          message:
+              '镜头 ${shot.shotNumber} 一键解析完成：识别 ${result.personCount} 位模特，已按从左到右生成模特A至模特N对应槽位',
+        );
+        return;
+      }
       final result = await _frameAnalysisService.analyze(
         settings: _settingsController.value,
         imageFile: imageFile,
@@ -563,9 +627,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       _reloadShotGuides(
         scriptId,
-        message: quickMode
-            ? '镜头 ${shot.shotNumber} 一键解析完成：识别 ${result.personCount} 位模特，已生成对应模特、产品与可选场景槽位'
-            : '镜头 ${shot.shotNumber} 原帧分析完成，请选择主体替换/移除，并勾选唯一允许保留的配饰和道具',
+        message: '镜头 ${shot.shotNumber} 原帧分析完成，请选择主体替换/移除，并勾选唯一允许保留的配饰和道具',
       );
     } catch (error) {
       final friendlyError = _frameAnalysisErrorMessage(error);
@@ -597,8 +659,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   Future<void> _analyzeAllReplicationFrames({required bool quickMode}) async {
     final shotIds = [
       for (final shot in value.confirmedShots)
-        if (!isShotGuideCurrent(shot.id) ||
-            shotGuideFor(shot.id)?.analysisStatus != ProcessingStatus.completed)
+        if (quickMode
+            ? !isQuickReplicationAnalysisReady(shot.id)
+            : !isPreciseReplicationAnalysisReady(shot.id))
           shot.id,
     ];
     if (shotIds.isEmpty) {

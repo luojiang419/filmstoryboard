@@ -5447,9 +5447,9 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
       (guide) => guide.poseStatus == ProcessingStatus.running,
     );
     final unanalyzedFrameCount = state.confirmedShots.where((shot) {
-      final guide = controller.shotGuideFor(shot.id);
-      return !controller.isShotGuideCurrent(shot.id) ||
-          guide?.analysisStatus != ProcessingStatus.completed;
+      return preciseMode
+          ? !controller.isPreciseReplicationAnalysisReady(shot.id)
+          : !controller.isQuickReplicationAnalysisReady(shot.id);
     }).length;
     final content = ListView(
       key: const ValueKey('replicate-asset-library-scroll'),
@@ -6141,7 +6141,9 @@ class _PrepareAssetsContent extends StatelessWidget {
         shot.copyWith(replicationInstructions: instructions),
       ),
       guideForShot: controller.shotGuideFor,
-      isGuideCurrent: controller.isShotGuideCurrent,
+      isGuideCurrent: mode == ReplicationGenerationMode.quick
+          ? controller.isQuickReplicationAnalysisReady
+          : controller.isPreciseReplicationAnalysisReady,
       onAnalyzeFrame: mode == ReplicationGenerationMode.quick
           ? controller.analyzeQuickReplicationFrame
           : controller.analyzeReplicationFrame,

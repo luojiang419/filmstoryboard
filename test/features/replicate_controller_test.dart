@@ -10,6 +10,7 @@ import 'package:filmstoryboard/features/replicate/application/replicate_controll
 import 'package:filmstoryboard/features/replicate/data/dwpose_model_manager.dart';
 import 'package:filmstoryboard/features/replicate/data/dwpose_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
+import 'package:filmstoryboard/features/replicate/data/quick_replication_person_count_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replication_frame_analysis_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replication_generation_review_service.dart';
 import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
@@ -406,6 +407,12 @@ void main() {
       ..writeAsBytesSync([1, 2, 3]);
     final shot = shootingController.addShot()!;
     shootingController.updateShot(shot.copyWith(framePath: frame.path));
+    final quickPersonCountService = _QueuedQuickPersonCountService([
+      const QuickReplicationPersonCountResult(
+        personCount: 2,
+        rawResponse: '{"person_count":2}',
+      ),
+    ]);
     final analysisService = _QueuedFrameAnalysisService([
       const ReplicationFrameAnalysisResult(
         elements: [],
@@ -423,7 +430,7 @@ void main() {
             slotIndex: 1,
           ),
         ],
-        actionDescription: '两位模特并排站立',
+        actionDescription: '精确模式动作',
         poseConstraints: '',
         personCount: 2,
         rawResponse: '{}',
@@ -435,6 +442,7 @@ void main() {
       directories: directories,
       settingsController: settingsController,
       frameAnalysisService: analysisService,
+      quickPersonCountService: quickPersonCountService,
     );
     addTearDown(() async {
       controller.dispose();
@@ -454,15 +462,27 @@ void main() {
       ),
       hasLength(2),
     );
+    expect(guide.subjects.map((subject) => subject.label), ['模特A', '模特B']);
+    expect(guide.elements, isEmpty);
+    expect(guide.actionDescription, isEmpty);
+    expect(controller.isQuickReplicationAnalysisReady(shot.id), isTrue);
+    expect(controller.isPreciseReplicationAnalysisReady(shot.id), isFalse);
     expect(controller.value.message, contains('识别 2 位模特'));
-    expect(analysisService.previousSelections, hasLength(1));
+    expect(quickPersonCountService.callCount, 1);
+    expect(analysisService.previousSelections, isEmpty);
 
     await controller.analyzeQuickReplicationFrame(shot.id);
-    expect(analysisService.previousSelections, hasLength(1));
+    expect(quickPersonCountService.callCount, 1);
+    expect(analysisService.previousSelections, isEmpty);
     expect(controller.value.message, contains('不会重复请求视觉模型'));
 
     await controller.analyzeAllQuickReplicationFrames();
     expect(controller.value.message, contains('快速资产槽位已生成'));
+
+    await controller.analyzeReplicationFrame(shot.id);
+    expect(analysisService.previousSelections, hasLength(1));
+    expect(controller.isPreciseReplicationAnalysisReady(shot.id), isTrue);
+    expect(controller.shotGuideFor(shot.id)?.actionDescription, '精确模式动作');
   });
 
   test('单张模特多视图拼图无需拆分即可生成并原样提交', () async {
@@ -4223,6 +4243,24 @@ class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {
   }) async {
     previousSelections.add([...previousElements]);
     this.previousSubjects.add([...previousSubjects]);
+    return results.removeAt(0);
+  }
+}
+
+class _QueuedQuickPersonCountService
+    extends QuickReplicationPersonCountService {
+  _QueuedQuickPersonCountService(this.results);
+
+  final List<QuickReplicationPersonCountResult> results;
+  var callCount = 0;
+
+  @override
+  Future<QuickReplicationPersonCountResult> analyze({
+    required AppSettings settings,
+    required File imageFile,
+    required int shotNumber,
+  }) async {
+    callCount++;
     return results.removeAt(0);
   }
 }
