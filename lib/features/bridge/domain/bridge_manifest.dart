@@ -119,6 +119,40 @@ class BridgeShotRecord {
     'duration_seconds': durationSeconds,
     ...fields,
   };
+
+  factory BridgeShotRecord.fromJson(Map<String, Object?> json) {
+    const fieldNames = <String>{
+      'visual',
+      'content',
+      'free_creation_description',
+      'shot_size',
+      'camera_movement',
+      'camera_notes',
+      'composition',
+      'camera_angle',
+      'lighting_mood',
+      'color_palette',
+      'visual_focus',
+      'transition_hint',
+      'movement_trend',
+      'action_stage',
+      'dialogue',
+      'sound',
+      'prompt',
+      'replication_instructions',
+    };
+    return BridgeShotRecord(
+      stableId: '${json['stable_id'] ?? ''}',
+      shotNumber: (json['shot_number'] as num?)?.toInt() ?? 0,
+      frameStableId: '${json['frame_stable_id'] ?? ''}',
+      durationSeconds: (json['duration_seconds'] as num?)?.toDouble() ?? 0,
+      fields: {
+        for (final name in fieldNames)
+          if ('${json[name] ?? ''}'.trim().isNotEmpty)
+            name: '${json[name] ?? ''}',
+      },
+    );
+  }
 }
 
 class BridgeManifest {
@@ -189,6 +223,15 @@ class BridgeManifest {
     final variants = ((storyboard['variants'] as List?) ?? const [])
         .map((item) => BridgeVariant.parse('$item'))
         .toList(growable: false);
+    final shots = ((json['shots'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((item) => BridgeShotRecord.fromJson(item.cast<String, Object?>()))
+        .toList(growable: false);
+    final directionValue = '${json['direction'] ?? ''}';
+    if (directionValue != 'film-to-shiyin' &&
+        directionValue != 'shiyin-to-film') {
+      throw FormatException('不支持的桥接方向：$directionValue');
+    }
     return BridgeManifest(
       bridgeId: '${json['bridge_id'] ?? ''}',
       direction: '${json['direction'] ?? ''}' == 'film-to-shiyin'
@@ -205,7 +248,7 @@ class BridgeManifest {
       ),
       variants: variants,
       frames: frames,
-      shots: const [],
+      shots: shots,
       checksums:
           (json['checksums'] as Map?)?.map(
             (key, value) => MapEntry('$key', '$value'),
@@ -217,8 +260,9 @@ class BridgeManifest {
   static String stableBridgeId(String projectId, String boardId) {
     final project = projectId.trim();
     final board = boardId.trim();
-    if (project.isEmpty || board.isEmpty)
+    if (project.isEmpty || board.isEmpty) {
       throw ArgumentError('projectId 和 boardId 不能为空');
+    }
     return 'film:$project:$board';
   }
 

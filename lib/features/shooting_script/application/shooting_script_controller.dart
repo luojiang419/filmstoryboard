@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../exporter/data/shooting_script_export_service.dart';
+import '../../bridge/domain/bridge_manifest.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../../video_analysis/data/video_analysis_repository.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
@@ -546,6 +547,76 @@ class ShootingScriptController extends ValueNotifier<ShootingScriptState> {
           : '',
       message: '',
       selectScript: value.selectedScriptId == script.id,
+    );
+    return true;
+  }
+
+  bool applyBridgeShots(StoryboardBoard board, List<BridgeShotRecord> records) {
+    var script = _primaryScriptForStoryboard(board.id);
+    script ??= createForStoryboard(board);
+    if (records.isEmpty) return true;
+    final byNumber = {for (final record in records) record.shotNumber: record};
+    final shots = _repository.listShots(script.id);
+    final now = DateTime.now().toUtc();
+    String field(BridgeShotRecord record, String name, String current) {
+      final incoming = record.fields[name]?.trim() ?? '';
+      return incoming.isEmpty ? current : incoming;
+    }
+
+    final updated = [
+      for (final shot in shots)
+        if (byNumber[shot.shotNumber] case final record?)
+          shot.copyWith(
+            durationSeconds: record.durationSeconds > 0
+                ? record.durationSeconds
+                : shot.durationSeconds,
+            visual: field(record, 'visual', shot.visual),
+            content: field(record, 'content', shot.content),
+            freeCreationDescription: field(
+              record,
+              'free_creation_description',
+              shot.freeCreationDescription,
+            ),
+            shotSize: field(record, 'shot_size', shot.shotSize),
+            cameraMovement: field(
+              record,
+              'camera_movement',
+              shot.cameraMovement,
+            ),
+            cameraNotes: field(record, 'camera_notes', shot.cameraNotes),
+            composition: field(record, 'composition', shot.composition),
+            cameraAngle: field(record, 'camera_angle', shot.cameraAngle),
+            lightingMood: field(record, 'lighting_mood', shot.lightingMood),
+            colorPalette: field(record, 'color_palette', shot.colorPalette),
+            visualFocus: field(record, 'visual_focus', shot.visualFocus),
+            transitionHint: field(
+              record,
+              'transition_hint',
+              shot.transitionHint,
+            ),
+            movementTrend: field(record, 'movement_trend', shot.movementTrend),
+            actionStage: field(record, 'action_stage', shot.actionStage),
+            dialogue: field(record, 'dialogue', shot.dialogue),
+            sound: field(record, 'sound', shot.sound),
+            prompt: field(record, 'prompt', shot.prompt),
+            replicationInstructions: field(
+              record,
+              'replication_instructions',
+              shot.replicationInstructions,
+            ),
+            updatedAt: now,
+          )
+        else
+          shot,
+    ];
+    _saveShots(
+      script,
+      updated,
+      selectShotId: value.selectedScriptId == script.id
+          ? value.selectedShotId
+          : '',
+      message: '已同步 ${records.length} 个 SHIYIN 镜头字段',
+      selectScript: true,
     );
     return true;
   }

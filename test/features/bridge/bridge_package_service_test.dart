@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 import 'package:filmstoryboard/features/bridge/data/bridge_package_service.dart';
 import 'package:filmstoryboard/features/bridge/domain/bridge_manifest.dart';
@@ -142,5 +144,70 @@ void main() {
       ),
       throwsA(isA<FormatException>()),
     );
+  });
+
+  test('imports selected SHIYIN variant and parses shot fields', () async {
+    final directory = await Directory.systemTemp.createTemp('bridge-import-');
+    addTearDown(() => directory.delete(recursive: true));
+    final imageBytes = File('${directory.path}/frame.png')
+      ..writeAsBytesSync(img.encodePng(img.Image(width: 1, height: 1)));
+    final bytes = await imageBytes.readAsBytes();
+    final relativePath = 'images/line-art/0001.png';
+    final checksum = sha256.convert(bytes).toString();
+    final manifest = BridgeManifest(
+      bridgeId: 'film:project-1:board-1',
+      direction: BridgeDirection.shiyinToFilm,
+      exportedAt: DateTime.now().toUtc(),
+      source: const {'app': 'shiyin-ai', 'board_id': 'board-1'},
+      boardName: '线稿故事板',
+      selectedVariant: BridgeVariant.lineArt,
+      variants: const [BridgeVariant.lineArt],
+      frames: [
+        BridgeFrameRecord(
+          stableId: 'frame:board-1:0000:line-art',
+          shotStableId: 'shot:board-1:1',
+          slotIndex: 0,
+          shotNumber: 1,
+          frameIndex: 0,
+          timestampMs: 0,
+          sourceName: '线稿 01',
+          relativePath: relativePath,
+          width: 1,
+          height: 1,
+          variant: BridgeVariant.lineArt,
+          sha256: checksum,
+        ),
+      ],
+      shots: const [
+        BridgeShotRecord(
+          stableId: 'shot:board-1:1',
+          shotNumber: 1,
+          frameStableId: 'frame:board-1:0000:line-art',
+          fields: {'prompt': '人物转身', 'shot_size': '中景'},
+        ),
+      ],
+      checksums: {relativePath: checksum},
+    );
+    final archive = Archive()
+      ..addFile(ArchiveFile.bytes(relativePath, bytes))
+      ..addFile(
+        ArchiveFile.bytes('manifest.json', utf8.encode(manifest.encode())),
+      )
+      ..addFile(
+        ArchiveFile.bytes(
+          'checksums.json',
+          utf8.encode(jsonEncode({relativePath: checksum})),
+        ),
+      );
+    final package = File('${directory.path}/return.filmbridge.zip')
+      ..writeAsBytesSync(ZipEncoder().encodeBytes(archive));
+    final result = await const BridgePackageService().importShiyinToFilm(
+      packageFile: package,
+      destinationRoot: Directory('${directory.path}/imports'),
+    );
+    expect(result.frames, hasLength(1));
+    expect(result.frames.single.file.existsSync(), isTrue);
+    expect(result.manifest.shots.single.fields['prompt'], '人物转身');
+    expect(result.manifest.selectedVariant, BridgeVariant.lineArt);
   });
 }
