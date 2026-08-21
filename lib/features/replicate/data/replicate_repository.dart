@@ -281,8 +281,9 @@ class ReplicateRepository {
       INSERT INTO replicated_shot_images(
         id, run_id, script_shot_id, shot_number, original_frame_path,
         generated_frame_path, asset_ids_json, prompt, model, raw_response,
-        generation_recovery_json, status, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        generation_recovery_json, color_style_fingerprint, status,
+        error_message, created_at, updated_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         original_frame_path = excluded.original_frame_path,
         generated_frame_path = excluded.generated_frame_path,
@@ -291,6 +292,7 @@ class ReplicateRepository {
         model = excluded.model,
         raw_response = excluded.raw_response,
         generation_recovery_json = excluded.generation_recovery_json,
+        color_style_fingerprint = excluded.color_style_fingerprint,
         status = excluded.status,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at;
@@ -307,6 +309,7 @@ class ReplicateRepository {
         image.model,
         image.rawResponse,
         jsonEncode(image.generationRecovery.toJson()),
+        image.colorStyleFingerprint,
         image.status.name,
         image.errorMessage,
         image.createdAt.toUtc().toIso8601String(),
@@ -350,6 +353,7 @@ class ReplicateRepository {
       model: row['model'] as String? ?? '',
       rawResponse: row['raw_response'] as String? ?? '',
       generationRecovery: recovery(),
+      colorStyleFingerprint: row['color_style_fingerprint'] as String? ?? '',
       status: ProcessingStatus.fromStorage(row['status']),
       errorMessage: row['error_message'] as String? ?? '',
       createdAt: date(row['created_at']),

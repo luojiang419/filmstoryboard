@@ -47,8 +47,11 @@ import '../data/seedance_prompt_generation_service.dart';
 import '../data/free_creation_video_prompt_writing_service.dart';
 import '../data/h3_prompt_writing_service.dart';
 import '../data/h3_skill_library.dart';
+import '../data/line_art_color_style_repository.dart';
+import '../data/line_art_color_style_thumbnail_service.dart';
 import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
+import '../domain/line_art_color_style_catalog.dart';
 import '../domain/lightweight_replication_prompt_compiler.dart';
 import '../domain/nano_banana_asset_manifest.dart';
 import '../domain/nano_banana_product_detail_refill_protocol.dart';
@@ -63,6 +66,13 @@ final replicateControllerProvider = Provider<ReplicateController>(
   (ref) {
     final controller = ReplicateController(
       repository: ReplicateRepository(ref.watch(appDatabaseProvider)),
+      colorStyleRepository: LineArtColorStyleRepository(
+        ref.watch(appDatabaseProvider),
+      ),
+      colorStyleThumbnailService: LineArtColorStyleThumbnailService(
+        projectRoot: ref.watch(projectDirectoriesProvider).workspaceRoot,
+        projectAssetsRoot: ref.watch(projectDirectoriesProvider).assets,
+      ),
       shootingScriptController: ref.watch(shootingScriptControllerProvider),
       directories: ref.watch(projectDirectoriesProvider),
       settingsController: ref.watch(settingsControllerProvider),
@@ -94,6 +104,7 @@ class ReplicateState {
     this.replicatedImages = const [],
     this.prompts = const [],
     this.shotGuides = const [],
+    this.colorStylePresets = const [],
     this.isBusy = false,
     this.isAnalyzingFrames = false,
     this.message = '',
@@ -108,6 +119,7 @@ class ReplicateState {
   final List<ReplicatedShotImage> replicatedImages;
   final List<ShotPrompt> prompts;
   final List<ReplicateShotGuide> shotGuides;
+  final List<LineArtColorStylePreset> colorStylePresets;
   final bool isBusy;
   final bool isAnalyzingFrames;
   final String message;
@@ -137,6 +149,7 @@ class ReplicateState {
     List<ReplicatedShotImage>? replicatedImages,
     List<ShotPrompt>? prompts,
     List<ReplicateShotGuide>? shotGuides,
+    List<LineArtColorStylePreset>? colorStylePresets,
     bool? isBusy,
     bool? isAnalyzingFrames,
     String? message,
@@ -150,6 +163,7 @@ class ReplicateState {
     replicatedImages: replicatedImages ?? this.replicatedImages,
     prompts: prompts ?? this.prompts,
     shotGuides: shotGuides ?? this.shotGuides,
+    colorStylePresets: colorStylePresets ?? this.colorStylePresets,
     isBusy: isBusy ?? this.isBusy,
     isAnalyzingFrames: isAnalyzingFrames ?? this.isAnalyzingFrames,
     message: message ?? this.message,
@@ -190,6 +204,8 @@ class _ComposePromptModelRule {
 class ReplicateController extends ValueNotifier<ReplicateState> {
   ReplicateController({
     required ReplicateRepository repository,
+    LineArtColorStyleRepository? colorStyleRepository,
+    LineArtColorStyleThumbnailService? colorStyleThumbnailService,
     required ShootingScriptController shootingScriptController,
     required WorkspaceDirectories directories,
     required SettingsController settingsController,
@@ -214,6 +230,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     bool enforceFreeCreationMode = false,
     Uuid uuid = const Uuid(),
   }) : _repository = repository,
+       _colorStyleRepository = colorStyleRepository,
+       _colorStyleThumbnailService = colorStyleThumbnailService,
        _shootingScriptController = shootingScriptController,
        _directories = directories,
        _settingsController = settingsController,
@@ -264,6 +282,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   static const _quickPersonCountAnalysisMarker = 'quick-person-count-v1';
 
   final ReplicateRepository _repository;
+  final LineArtColorStyleRepository? _colorStyleRepository;
+  final LineArtColorStyleThumbnailService? _colorStyleThumbnailService;
   final ShootingScriptController _shootingScriptController;
   final WorkspaceDirectories _directories;
   final SettingsController _settingsController;
@@ -333,6 +353,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     bool? multiViewEnhancementEnabled,
     String? imageSize,
     String? quality,
+    ReplicateSourceFrameMode? sourceFrameMode,
+    String? colorStylePresetId,
   }) {
     final run = value.run;
     if (run == null) return;
@@ -357,6 +379,25 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       descriptor.qualities,
       preferred: 'high',
     );
+    final selectedSourceFrameMode = sourceFrameMode ?? run.sourceFrameMode;
+    if (selectedSourceFrameMode == ReplicateSourceFrameMode.autoDetect) {
+      throw ArgumentError('自动识别只能提供建议，保存时必须选择彩色原帧或线稿');
+    }
+    var selectedColorStylePresetId = '';
+    LineArtColorStyleSelectionSnapshot? selectedColorStyleSnapshot;
+    if (selectedSourceFrameMode == ReplicateSourceFrameMode.lineArt) {
+      selectedColorStylePresetId =
+          (colorStylePresetId ?? run.colorStylePresetId).trim();
+      if (selectedColorStylePresetId.isEmpty) {
+        selectedColorStylePresetId = LineArtColorStyleCatalog.defaultPresetId;
+      }
+      final preset = _resolveColorStylePreset(selectedColorStylePresetId);
+      if (preset == null) {
+        throw ArgumentError('找不到色彩预设：$selectedColorStylePresetId');
+      }
+      selectedColorStyleSnapshot =
+          LineArtColorStyleSelectionSnapshot.fromPreset(preset);
+    }
     _persistRun(
       run.copyWith(
         generationModel: selectedModel,
@@ -367,10 +408,164 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
             multiViewEnhancementEnabled ?? run.multiViewEnhancementEnabled,
         generationImageSize: selectedImageSize,
         generationQuality: selectedQuality,
+        sourceFrameMode: selectedSourceFrameMode,
+        colorStylePresetId: selectedColorStylePresetId,
+        colorStyleSnapshot: selectedColorStyleSnapshot,
+        clearColorStyleSnapshot: selectedColorStyleSnapshot == null,
         updatedAt: DateTime.now().toUtc(),
       ),
       message: '已保存一键复刻默认生成参数',
     );
+  }
+
+  LineArtColorStylePreset? colorStylePresetById(String id) =>
+      _resolveColorStylePreset(id);
+
+  bool get isSelectedColorStyleChanged {
+    final run = value.run;
+    final snapshot = run?.colorStyleSnapshot;
+    if (run == null || snapshot == null) return false;
+    final preset = _resolveColorStylePreset(run.colorStylePresetId);
+    if (preset == null) return true;
+    return LineArtColorStyleSelectionSnapshot.fromPreset(preset).fingerprint !=
+        snapshot.fingerprint;
+  }
+
+  String saveCustomColorStylePreset({
+    String? id,
+    required String name,
+    required String description,
+    required String prompt,
+    required List<String> swatches,
+    LineArtColorStyleUseCase useCase = LineArtColorStyleUseCase.fashion,
+  }) {
+    final repository = _requireColorStyleRepository();
+    final normalizedId = id?.trim() ?? '';
+    final existing = normalizedId.isEmpty
+        ? null
+        : repository.getCustomPreset(normalizedId);
+    final now = DateTime.now().toUtc();
+    final presetId = existing?.id ?? 'custom-${_uuid.v4()}';
+    final semanticChanged =
+        existing != null &&
+        (existing.name != name.trim() ||
+            existing.description != description.trim() ||
+            existing.prompt != prompt.trim() ||
+            !listEquals(existing.swatches, swatches) ||
+            existing.useCase != useCase);
+    final preset = LineArtColorStylePreset(
+      id: presetId,
+      name: name.trim(),
+      description: description.trim(),
+      prompt: prompt.trim(),
+      swatches: List<String>.unmodifiable(
+        swatches
+            .map((color) => color.trim())
+            .where((color) => color.isNotEmpty),
+      ),
+      useCase: useCase,
+      isBuiltIn: false,
+      version: existing == null
+          ? 1
+          : semanticChanged
+          ? existing.version + 1
+          : existing.version,
+      thumbnail: existing?.thumbnail,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    );
+    repository.upsertCustomPreset(preset);
+    _reloadColorStylePresets(message: existing == null ? '已创建色彩预设' : '已保存色彩预设');
+    return presetId;
+  }
+
+  String duplicateColorStylePreset(String sourcePresetId, {String? name}) {
+    final source = _resolveColorStylePreset(sourcePresetId);
+    if (source == null) throw ArgumentError('找不到要复制的色彩预设');
+    return saveCustomColorStylePreset(
+      name: name?.trim().isNotEmpty == true
+          ? name!.trim()
+          : '${source.name} 副本',
+      description: source.description,
+      prompt: source.prompt,
+      swatches: source.swatches,
+      useCase: source.useCase,
+    );
+  }
+
+  Future<void> deleteCustomColorStylePreset(
+    String id, {
+    bool force = false,
+  }) async {
+    final repository = _requireColorStyleRepository();
+    final preset = repository.getCustomPreset(id);
+    if (preset == null) return;
+    if (value.run?.colorStylePresetId == id && !force) {
+      throw StateError('当前任务正在使用该预设，确认后可删除并保留任务冻结快照');
+    }
+    repository.deleteCustomPreset(id);
+    _reloadColorStylePresets(message: '已删除自定义色彩预设');
+    final thumbnail = preset.thumbnail;
+    if (thumbnail != null &&
+        thumbnail.type == ColorStyleThumbnailType.projectFile) {
+      await _removeManagedColorStyleThumbnail(thumbnail);
+    }
+  }
+
+  Future<void> importColorStyleThumbnail({
+    required String presetId,
+    required File source,
+  }) async {
+    final repository = _requireColorStyleRepository();
+    final thumbnailService = _requireColorStyleThumbnailService();
+    final preset = _resolveColorStylePreset(presetId);
+    if (preset == null) throw ArgumentError('找不到色彩预设：$presetId');
+    final previous =
+        preset.thumbnail?.type == ColorStyleThumbnailType.projectFile
+        ? preset.thumbnail
+        : null;
+    final imported = await thumbnailService.importThumbnail(
+      presetId: presetId,
+      source: source,
+    );
+    final now = DateTime.now().toUtc();
+    if (preset.isBuiltIn) {
+      repository.setThumbnailOverride(
+        presetId: presetId,
+        thumbnail: imported.reference,
+        updatedAt: now,
+      );
+    } else {
+      repository.upsertCustomPreset(
+        preset.copyWith(thumbnail: imported.reference, updatedAt: now),
+      );
+    }
+    _reloadColorStylePresets(message: '已更新色彩预设缩略图');
+    if (previous != null && previous.path != imported.reference.path) {
+      await _removeManagedColorStyleThumbnail(previous);
+    }
+  }
+
+  Future<void> removeColorStyleThumbnail(String presetId) async {
+    final repository = _requireColorStyleRepository();
+    final preset = _resolveColorStylePreset(presetId);
+    if (preset == null) return;
+    final previous =
+        preset.thumbnail?.type == ColorStyleThumbnailType.projectFile
+        ? preset.thumbnail
+        : null;
+    if (preset.isBuiltIn) {
+      repository.removeThumbnailOverride(presetId);
+    } else {
+      repository.upsertCustomPreset(
+        preset.copyWith(
+          clearThumbnail: true,
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+    }
+    _reloadColorStylePresets(message: '已移除项目缩略图');
+    if (previous != null) await _removeManagedColorStyleThumbnail(previous);
   }
 
   String get resolvedGenerationModel {
@@ -4465,6 +4660,7 @@ $playbackSpeedBoundary
       replicatedImages: replicatedImages,
       prompts: prompts,
       shotGuides: shotGuides,
+      colorStylePresets: _effectiveColorStylePresets(),
       isBusy: isReplicating || isBuilding,
       isAnalyzingFrames: _isAnalyzingFrames(scriptId),
       message: isBuilding
@@ -4512,6 +4708,44 @@ $playbackSpeedBoundary
       errorMessage: errorMessage,
       isBusy: _isScriptBusy(value.selectedScriptId),
     );
+  }
+
+  List<LineArtColorStylePreset> _effectiveColorStylePresets() =>
+      _colorStyleRepository?.listEffectivePresets() ??
+      LineArtColorStyleCatalog.builtInPresets;
+
+  LineArtColorStylePreset? _resolveColorStylePreset(String id) {
+    final normalized = id.trim();
+    if (normalized.isEmpty) return null;
+    final stored = _colorStyleRepository?.resolvePreset(normalized);
+    if (stored != null) return stored;
+    for (final preset in LineArtColorStyleCatalog.builtInPresets) {
+      if (preset.id == normalized) return preset;
+    }
+    return null;
+  }
+
+  LineArtColorStyleRepository _requireColorStyleRepository() =>
+      _colorStyleRepository ?? (throw StateError('当前控制器未配置色彩预设仓库'));
+
+  LineArtColorStyleThumbnailService _requireColorStyleThumbnailService() =>
+      _colorStyleThumbnailService ?? (throw StateError('当前控制器未配置色彩缩略图服务'));
+
+  void _reloadColorStylePresets({String message = ''}) {
+    if (_disposed) return;
+    value = value.copyWith(
+      colorStylePresets: _effectiveColorStylePresets(),
+      message: message,
+      errorMessage: '',
+    );
+  }
+
+  Future<void> _removeManagedColorStyleThumbnail(
+    ColorStyleThumbnailReference thumbnail,
+  ) async {
+    final service = _colorStyleThumbnailService;
+    if (service == null) return;
+    await service.removeManagedThumbnail(thumbnail);
   }
 
   void _refreshRunData({

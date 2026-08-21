@@ -223,7 +223,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 28;
+  static const currentSchemaVersion = 29;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -1132,6 +1132,48 @@ class AppDatabase {
         _ensureTextColumn('script_shot_asset_links', 'quick_group_warning');
       }
       _database.execute('PRAGMA user_version = 28;');
+    }
+    if (version < 29) {
+      if (_tableExists('replicate_runs')) {
+        _ensureTextColumn('replicate_runs', 'source_frame_mode');
+        _ensureTextColumn('replicate_runs', 'color_style_preset_id');
+        _ensureTextColumn('replicate_runs', 'color_style_snapshot_json');
+        _database
+          ..execute(
+            "UPDATE replicate_runs SET source_frame_mode = 'colorReference' "
+            "WHERE trim(source_frame_mode) = '';",
+          )
+          ..execute(
+            "UPDATE replicate_runs SET color_style_snapshot_json = '{}' "
+            "WHERE trim(color_style_snapshot_json) = '';",
+          );
+      }
+      if (_tableExists('replicated_shot_images')) {
+        _ensureTextColumn('replicated_shot_images', 'color_style_fingerprint');
+      }
+      _database
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS replicate_color_style_presets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            prompt TEXT NOT NULL,
+            swatches_json TEXT NOT NULL DEFAULT '[]',
+            use_case TEXT NOT NULL DEFAULT 'fashion',
+            version INTEGER NOT NULL DEFAULT 1,
+            thumbnail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+        ''')
+        ..execute('''
+          CREATE TABLE IF NOT EXISTS replicate_color_style_thumbnail_overrides (
+            preset_id TEXT PRIMARY KEY,
+            thumbnail_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+        ''')
+        ..execute('PRAGMA user_version = 29;');
     }
   }
 

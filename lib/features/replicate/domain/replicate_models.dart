@@ -1,7 +1,9 @@
 import '../../video_analysis/domain/video_analysis_models.dart';
 import 'replicate_asset_preparation_models.dart';
+import 'line_art_color_style_preset.dart';
 
 export 'replicate_asset_preparation_models.dart';
+export 'line_art_color_style_preset.dart';
 
 enum ReplicateStep {
   confirmShots,
@@ -39,6 +41,9 @@ class ReplicateRun {
     this.multiViewEnhancementEnabled = false,
     this.generationImageSize = '',
     this.generationQuality = '',
+    this.sourceFrameMode = ReplicateSourceFrameMode.colorReference,
+    this.colorStylePresetId = '',
+    this.colorStyleSnapshot,
     this.confirmedShotIds = const [],
     this.imageReferenceCount = 0,
     this.videoReferenceCount = 0,
@@ -74,6 +79,9 @@ class ReplicateRun {
   final bool multiViewEnhancementEnabled;
   final String generationImageSize;
   final String generationQuality;
+  final ReplicateSourceFrameMode sourceFrameMode;
+  final String colorStylePresetId;
+  final LineArtColorStyleSelectionSnapshot? colorStyleSnapshot;
   final List<String> confirmedShotIds;
   final int imageReferenceCount;
   final int videoReferenceCount;
@@ -104,6 +112,10 @@ class ReplicateRun {
     bool? multiViewEnhancementEnabled,
     String? generationImageSize,
     String? generationQuality,
+    ReplicateSourceFrameMode? sourceFrameMode,
+    String? colorStylePresetId,
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
+    bool clearColorStyleSnapshot = false,
     List<String>? confirmedShotIds,
     int? imageReferenceCount,
     int? videoReferenceCount,
@@ -137,6 +149,11 @@ class ReplicateRun {
         multiViewEnhancementEnabled ?? this.multiViewEnhancementEnabled,
     generationImageSize: generationImageSize ?? this.generationImageSize,
     generationQuality: generationQuality ?? this.generationQuality,
+    sourceFrameMode: sourceFrameMode ?? this.sourceFrameMode,
+    colorStylePresetId: colorStylePresetId ?? this.colorStylePresetId,
+    colorStyleSnapshot: clearColorStyleSnapshot
+        ? null
+        : colorStyleSnapshot ?? this.colorStyleSnapshot,
     confirmedShotIds: confirmedShotIds ?? this.confirmedShotIds,
     imageReferenceCount: imageReferenceCount ?? this.imageReferenceCount,
     videoReferenceCount: videoReferenceCount ?? this.videoReferenceCount,
@@ -441,6 +458,7 @@ class ReplicatedShotImage {
     required this.model,
     required this.rawResponse,
     this.generationRecovery = ReplicatedShotGenerationRecovery.empty,
+    this.colorStyleFingerprint = '',
     required this.status,
     required this.errorMessage,
     required this.createdAt,
@@ -458,6 +476,7 @@ class ReplicatedShotImage {
   final String model;
   final String rawResponse;
   final ReplicatedShotGenerationRecovery generationRecovery;
+  final String colorStyleFingerprint;
   final ProcessingStatus status;
   final String errorMessage;
   final DateTime createdAt;
@@ -472,6 +491,7 @@ class ReplicatedShotImage {
     String? model,
     String? rawResponse,
     ReplicatedShotGenerationRecovery? generationRecovery,
+    String? colorStyleFingerprint,
     ProcessingStatus? status,
     String? errorMessage,
     DateTime? updatedAt,
@@ -487,6 +507,7 @@ class ReplicatedShotImage {
     model: model ?? this.model,
     rawResponse: rawResponse ?? this.rawResponse,
     generationRecovery: generationRecovery ?? this.generationRecovery,
+    colorStyleFingerprint: colorStyleFingerprint ?? this.colorStyleFingerprint,
     status: status ?? this.status,
     errorMessage: errorMessage ?? this.errorMessage,
     createdAt: createdAt,

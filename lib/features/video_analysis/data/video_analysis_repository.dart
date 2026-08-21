@@ -527,14 +527,15 @@ class VideoAnalysisRepository {
         replication_instructions, free_creation_enabled, free_creation_story_override,
         generation_model, generation_aspect_ratio, inherit_source_aspect_ratio,
         multi_view_enhancement_enabled, generation_image_size,
-        generation_quality,
+        generation_quality, source_frame_mode, color_style_preset_id,
+        color_style_snapshot_json,
         confirmed_shot_ids_json,
         image_reference_count, video_reference_count,
         audio_reference_count, current_step, status, confirm_shots_status,
         prepare_assets_status, compose_prompts_status, completed_count,
         generate_videos_status,
         total_count, error_message, created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         video_id = excluded.video_id,
         script_id = excluded.script_id,
@@ -549,6 +550,9 @@ class VideoAnalysisRepository {
         multi_view_enhancement_enabled = excluded.multi_view_enhancement_enabled,
         generation_image_size = excluded.generation_image_size,
         generation_quality = excluded.generation_quality,
+        source_frame_mode = excluded.source_frame_mode,
+        color_style_preset_id = excluded.color_style_preset_id,
+        color_style_snapshot_json = excluded.color_style_snapshot_json,
         confirmed_shot_ids_json = excluded.confirmed_shot_ids_json,
         image_reference_count = excluded.image_reference_count,
         video_reference_count = excluded.video_reference_count,
@@ -579,6 +583,9 @@ class VideoAnalysisRepository {
         run.multiViewEnhancementEnabled ? 1 : 0,
         run.generationImageSize,
         run.generationQuality,
+        run.sourceFrameMode.name,
+        run.colorStylePresetId,
+        jsonEncode(run.colorStyleSnapshot?.toJson() ?? const {}),
         jsonEncode(run.confirmedShotIds),
         run.imageReferenceCount,
         run.videoReferenceCount,
@@ -873,6 +880,22 @@ class VideoAnalysisRepository {
     final confirmedJson = jsonDecode(
       row['confirmed_shot_ids_json'] as String? ?? '[]',
     );
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot() {
+      try {
+        final decoded = jsonDecode(
+          row['color_style_snapshot_json'] as String? ?? '{}',
+        );
+        if (decoded is Map && decoded.isNotEmpty) {
+          return LineArtColorStyleSelectionSnapshot.fromJson(
+            decoded.map((key, value) => MapEntry('$key', value)),
+          );
+        }
+      } on FormatException {
+        // 旧版或损坏的快照不应阻止任务加载。
+      }
+      return null;
+    }
+
     return ReplicateRun(
       id: row['id'] as String,
       videoId: row['video_id'] as String?,
@@ -894,6 +917,12 @@ class VideoAnalysisRepository {
           (row['multi_view_enhancement_enabled'] as int? ?? 0) != 0,
       generationImageSize: row['generation_image_size'] as String? ?? '',
       generationQuality: row['generation_quality'] as String? ?? '',
+      sourceFrameMode: ReplicateSourceFrameMode.values.firstWhere(
+        (value) => value.name == row['source_frame_mode'],
+        orElse: () => ReplicateSourceFrameMode.colorReference,
+      ),
+      colorStylePresetId: row['color_style_preset_id'] as String? ?? '',
+      colorStyleSnapshot: colorStyleSnapshot(),
       confirmedShotIds: confirmedJson is List
           ? confirmedJson.map((value) => '$value').toList()
           : const [],
