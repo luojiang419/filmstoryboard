@@ -2413,8 +2413,15 @@ void main() {
     expect(prompt, contains('专业黑白线稿分镜'));
     expect(prompt, contains('不是照片滤镜'));
     expect(prompt, contains('黑白铅笔线稿'));
-    expect(prompt, contains('所有人物统一替换'));
-    expect(prompt, contains('专业分镜人偶'));
+    expect(prompt, contains('无身份、无外貌、无服装特征'));
+    expect(prompt, contains('中性分镜人偶'));
+    expect(prompt, contains('头部是光滑的空白椭圆体'));
+    expect(prompt, contains('身体由简洁连续的几何体块和圆柱状四肢组成'));
+    expect(prompt, contains('不绘制服装或穿搭设计'));
+    expect(prompt, contains('不同人物只能通过人数、相对身高或体块尺度'));
+    expect(prompt, contains('人物和场景统一使用白底上的细黑线或深灰线'));
+    expect(prompt, isNot(contains('服装只保留区分角色和动作所需的轮廓')));
+    expect(prompt, isNot(contains('发型轮廓或服装外形区分')));
     expect(prompt, contains('移除所有不帮助讲述故事'));
     expect(prompt, contains('禁止添加分镜编号'));
     expect(prompt, contains('两个人在门口对视'));

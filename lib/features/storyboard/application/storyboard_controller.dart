@@ -28,6 +28,7 @@ import '../domain/image_generation_provider_resolver.dart';
 import '../data/vision_run_logger.dart';
 import '../data/vision_storyboard_service.dart';
 import '../domain/storyboard_models.dart';
+import '../domain/storyboard_line_art_prompt_rules.dart';
 
 final storyboardControllerProvider = Provider<StoryboardController>(
   (ref) {
@@ -3398,8 +3399,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     final parts = [
       '这是导演审阅用的专业黑白线稿分镜转换任务。请把参考图中的第 $sequenceNo 张视频帧重绘为 $aspectRatio、$imageSize 的标准电影分镜图，不是照片滤镜，也不是简单边缘检测。',
       style.promptInstruction,
-      '必须保留镜头叙事与调度：景别、机位、镜头角度、透视、地平线、主体在画面中的位置和大小、人物数量、人物之间的距离与朝向、动作姿态、视线方向、关键表情意图、必要道具以及场景空间关系。',
-      '所有人物统一替换为同一套专业分镜人偶：简化的人体块面和关节结构、无可识别真人肖像细节、服装只保留区分角色和动作所需的轮廓；不同人物通过体型、发型轮廓、服装外形或位置区分，禁止变成写实人物或杂乱卡通角色。',
+      StoryboardLineArtPromptRules.preservedStructure,
+      StoryboardLineArtPromptRules.neutralFigure,
+      StoryboardLineArtPromptRules.clothingFree,
+      StoryboardLineArtPromptRules.identityBoundary,
+      StoryboardLineArtPromptRules.lineTreatment,
       '移除所有不帮助讲述故事和判断镜头的干扰：原始颜色、复杂光影、照片纹理、皮肤细节、品牌标识、水印、字幕、装饰性文字、背景杂物、噪点、压缩伪影和无关小物件。',
       '场景只保留理解空间、动作与遮挡关系所必需的建筑轮廓、地面线、门窗、主要家具和关键道具；用简洁线条和少量排线建立前中后景，主体轮廓清楚，画面留白充足。',
       '禁止添加分镜编号、镜头参数、对白框、箭头、边框、表格或任何文字。最终只输出单张纯黑白分镜画面，不要输出原图对比、彩色元素、灰色照片底、水印或说明。',

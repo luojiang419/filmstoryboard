@@ -9035,7 +9035,7 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                 const _InspectorSettingLine(
                   icon: Icons.accessibility_new_rounded,
                   label: '人物',
-                  value: '统一专业分镜人偶',
+                  value: '统一无特征中性人偶',
                 ),
                 const SizedBox(height: 6),
                 const _InspectorSettingLine(

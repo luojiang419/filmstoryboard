@@ -171,7 +171,7 @@ void main() {
       '2K',
     );
     expect(find.text('专业铅笔分镜'), findsOneWidget);
-    expect(find.text('统一专业分镜人偶'), findsOneWidget);
+    expect(find.text('统一无特征中性人偶'), findsOneWidget);
     expect(find.text('移除非叙事干扰'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('storyboard-line-art-button')),
