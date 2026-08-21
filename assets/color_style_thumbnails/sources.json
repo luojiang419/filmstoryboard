@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "downloadedAt": "2026-08-21",
+  "repository": {
+    "name": "YouMind-OpenLab/awesome-nano-banana-pro-prompts",
+    "url": "https://github.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts",
+    "license": "CC BY 4.0",
+    "licenseUrl": "https://github.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts/blob/main/LICENSE"
+  },
+  "transform": "Center-cropped to 16:9, resized to 960x540, and encoded as JPEG quality 88 for offline preset-card thumbnails.",
+  "thumbnails": [
+    {
+      "presetId": "natural_cinema",
+      "file": "natural_cinema.jpg",
+      "entry": "No. 88: Product Marketing - Detailed Yacht Lifestyle Photography",
+      "author": "Picts by AI",
+      "authorUrl": "https://x.com/pictsbyai",
+      "sourcePostUrl": "https://x.com/pictsbyai/status/2089627862232166456",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787120740801_s53z87_HPv4tHSWYAAWEoE.jpg",
+      "originalSha256": "adad152fdc9e421ae27716222c7aebc076df66e6cec216792783ed3d5f7a13ad",
+      "derivedSha256": "cf7a4d54e9bb6ea3abdd39607728aa54c949b57b6c693d64eec67516a79eb0d9"
+    },
+    {
+      "presetId": "warm_analog",
+      "file": "warm_analog.jpg",
+      "entry": "No. 15: Profile / Avatar - Golden Hour Tennis Court Portrait",
+      "author": "Picts by AI",
+      "authorUrl": "https://x.com/pictsbyai",
+      "sourcePostUrl": "https://x.com/pictsbyai/status/2089265474370781219",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787034149543_ccbenf_HPv4iy4XIAAzYOH.jpg",
+      "originalSha256": "eb91f843c3c6a6243d32641fb39ab0945e99ccecc395b56fd4e33fb3388503c5",
+      "derivedSha256": "d7756b73eb1e38eb71ad0eba57f17449a1b36a536b1f103823784ccb7dcec881"
+    },
+    {
+      "presetId": "blue_gold_twilight",
+      "file": "blue_gold_twilight.jpg",
+      "entry": "No. 94: Product Marketing - Elegant Men's Twilight Editorial",
+      "author": "Aatif J",
+      "authorUrl": "https://x.com/aatif_j",
+      "sourcePostUrl": "https://x.com/aatif_j/status/2088931467048915165",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1786947850636_69ebah_HP1gF84XoAA1rLd.jpg",
+      "originalSha256": "2231885ede6b2cafb5bd5633f0cb35ee34477d936f4a9c5a18c359e9fdd67741",
+      "derivedSha256": "74517a05f3632ed8c4cd87252abb26f1d7599f7c2f9d97a53f9d71ef5ade7cb9"
+    },
+    {
+      "presetId": "tungsten_night",
+      "file": "tungsten_night.jpg",
+      "entry": "No. 91: Product Marketing - Candid Night Street Motion Blur",
+      "author": "H A J R A",
+      "authorUrl": "https://x.com/codewithhajra",
+      "sourcePostUrl": "https://x.com/codewithhajra/status/2089296806156914995",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787034147170_9rws8b_HP6sXzkXsAAUziL.jpg",
+      "originalSha256": "e0c1ab5ab4d0c0d1dc65753a729e38b82f65c69a5ac16a99ffe7c1f5497104a5",
+      "derivedSha256": "8548d3e23fddcc7997a1bf35d901d789349c422de3952b03f78090b49e439a55"
+    },
+    {
+      "presetId": "cyan_amber_epic",
+      "file": "cyan_amber_epic.jpg",
+      "entry": "No. 75: Comic / Storyboard - Subterranean Cathedral and Mechanical Whale",
+      "author": "mini singh",
+      "authorUrl": "https://x.com/KaminiKamini222",
+      "sourcePostUrl": "https://x.com/KaminiKamini222/status/2088132331458695315",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1786774881748_bj7z5c_HPqJSFKaAAAM2X4.jpg",
+      "originalSha256": "8e10c9dcc9119b5f9500f46ad3f73fd914945035f63476fabd3ff9e26b177cda",
+      "derivedSha256": "e883e0fee8dfc4e4a27a6e60b873761fa6ea41dad18e3d9c4ec0cc3a2d9e3553"
+    },
+    {
+      "presetId": "desaturated_prestige",
+      "file": "desaturated_prestige.jpg",
+      "entry": "No. 90: Product Marketing - Fashion Editorial Reference Portrait",
+      "author": "Omer DEDO",
+      "authorUrl": "https://x.com/0m3RDED0",
+      "sourcePostUrl": "https://x.com/0m3RDED0/status/2089413194087297318",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787034146947_ccdiiv_HP8WOO4XIAAsZSl.jpg",
+      "originalSha256": "b32d4b29eef9d3cc99e893d54bc8f5e991c3a40b85d15febb1eedb7e23454672",
+      "derivedSha256": "41e019382e3f0c0f422ac2f26105870430d1da81ed1778f17c8121e6bcfc187a"
+    },
+    {
+      "presetId": "pastel_dream",
+      "file": "pastel_dream.jpg",
+      "entry": "No. 28: Social Media Post - Pastel Arachnid Surreal Masterpiece",
+      "author": "timedoctor.eth",
+      "authorUrl": "https://x.com/timedoctor_nft",
+      "sourcePostUrl": "https://x.com/timedoctor_nft/status/2089721749562683708",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787120735922_0thggg_HQAu2vRXcAAXq0F.jpg",
+      "originalSha256": "393cdfe33cbb93bc4c2afa86c1fc2a04dc05a7454c9d3a4c591977f2f9a3af61",
+      "derivedSha256": "8737e8e3900717469bd3837a868292e9e9546f2ee0ba774f9746e6ea61702986"
+    },
+    {
+      "presetId": "forest_warmth",
+      "file": "forest_warmth.jpg",
+      "entry": "No. 22: Social Media Post - Cinematic Village Girl Portrait",
+      "author": "Ayla | AI & Tech",
+      "authorUrl": "https://x.com/AylaTechAI",
+      "sourcePostUrl": "https://x.com/AylaTechAI/status/2090270630377910286",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787208880874_xkr1ls_HQIh-auaoAAcqZf.jpg",
+      "originalSha256": "bb6d5f7f77626ddc8512b9b0dab737c8a9253bae47971d2256d0b408629a823a",
+      "derivedSha256": "b2e4ac6239c2afa73cf51a97c46b61594dc624fde902300719f81382ff131beb"
+    },
+    {
+      "presetId": "cool_commercial",
+      "file": "cool_commercial.jpg",
+      "entry": "No. 96: E-commerce Main Image - Surreal Beauty Product Hair Roller",
+      "author": "Maddox",
+      "authorUrl": "https://x.com/Maddox_Digital",
+      "sourcePostUrl": "https://x.com/Maddox_Digital/status/2088836197498143054",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1786947850240_ttctun_HP0JcjGa0AASb60.jpg",
+      "originalSha256": "3f4f4391ff7d98279b04bca445f48397cd94c3edfd191f87dfc8572d8ab23b58",
+      "derivedSha256": "840a92e7f0cfc8d4187979a94acd19a575301daca79f569da33642071a017f26"
+    },
+    {
+      "presetId": "silver_noir",
+      "file": "silver_noir.jpg",
+      "entry": "No. 69: Comic / Storyboard - Surreal Flamingo in Tutu",
+      "author": "Heather Green",
+      "authorUrl": "https://x.com/heathergreen",
+      "sourcePostUrl": "https://x.com/heathergreen/status/2089532739124887591",
+      "originalImageUrl": "https://cms-assets.youmind.com/media/1787120731915_pmg62t_HPcwmoQWcAAuU2T.jpg",
+      "originalSha256": "6282326db49064fe48090f5813a639ed7f750c5eea8eb2a0c15725c2ac9baf39",
+      "derivedSha256": "3b69b6d2099bb6d6936515c60b1d2565dfbd03185cbadb9130b852eea15e495d"
+    }
+  ],
+  "placeholderPresetIds": []
+}

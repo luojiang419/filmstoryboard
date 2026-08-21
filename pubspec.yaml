@@ -83,6 +83,7 @@ flutter:
   assets:
     - docs/视觉模型api.md
     - docs/拍摄脚本模版.xlsx
+    - assets/color_style_thumbnails/
     - assets/minimax_h3_skills/SOURCE.md
     - assets/minimax_h3_skills/skills/h3-prompt-writing/
     - assets/minimax_h3_skills/skills/h3-prompt-writing/references/
