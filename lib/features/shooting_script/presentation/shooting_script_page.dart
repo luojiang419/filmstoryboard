@@ -541,28 +541,17 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     );
   }
 
-  Future<void> _pickLibraryFiles(
+  Future<List<XFile>> _pickLibraryFiles(
     BuildContext context,
-    ShootingAssetLibraryController controller,
     ReplicateAssetType type,
   ) async {
-    final files = await ref
+    return ref
         .read(desktopFileDialogServiceProvider)
         .openFiles(
           source: 'shooting_script.asset_library',
           acceptedTypeGroups: const [ShootingScriptPage._assetTypes],
           initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
         );
-    await controller.importItems([
-      for (final file in files)
-        (
-          sourcePath: file.path,
-          type: type,
-          name: '',
-          description: '',
-          aliases: const <String>[],
-        ),
-    ]);
   }
 
   Future<void> _manualAddLibraryAsset(
@@ -1287,9 +1276,8 @@ class _AssetManagerPage extends StatefulWidget {
 
   final ShootingAssetLibraryController libraryController;
   final ReplicateController replicateController;
-  final Future<void> Function(
+  final Future<List<XFile>> Function(
     BuildContext context,
-    ShootingAssetLibraryController controller,
     ReplicateAssetType type,
   )
   onPickFiles;
@@ -1329,7 +1317,8 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
     }
     setState(() => _isOpeningFilePicker = true);
     try {
-      await widget.onPickFiles(context, widget.libraryController, _type);
+      final files = await widget.onPickFiles(context, _type);
+      await _openBatchImportDialog(files);
     } finally {
       if (mounted) {
         setState(() => _isOpeningFilePicker = false);
@@ -1339,16 +1328,27 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
 
   Future<void> _importDroppedFiles(DropDoneDetails details) async {
     setState(() => _isDraggingOver = false);
-    await widget.libraryController.importItems([
-      for (final file in details.files)
-        (
-          sourcePath: file.path,
-          type: _type,
-          name: '',
-          description: '',
-          aliases: const <String>[],
-        ),
-    ]);
+    await _openBatchImportDialog(details.files);
+  }
+
+  Future<void> _openBatchImportDialog(Iterable<XFile> files) async {
+    final paths = files
+        .map((file) => file.path.trim())
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    if (paths.isEmpty || !mounted) {
+      return;
+    }
+    final requests = await showDialog<List<_LibraryImportRequest>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) =>
+          _BatchLibraryAssetImportDialog(paths: paths, initialType: _type),
+    );
+    if (requests == null || requests.isEmpty || !mounted) {
+      return;
+    }
+    await widget.libraryController.importItems(requests);
   }
 
   Future<void> _generateAsset() async {
@@ -1549,6 +1549,239 @@ class _AssetManagerPageState extends State<_AssetManagerPage> {
     );
   }
 }
+
+typedef _LibraryImportRequest = ({
+  String sourcePath,
+  ReplicateAssetType type,
+  String name,
+  String description,
+  List<String> aliases,
+});
+
+class _PendingLibraryAssetEditor {
+  _PendingLibraryAssetEditor({required this.path, required this.type})
+    : nameController = TextEditingController(
+        text: p.basenameWithoutExtension(path),
+      ),
+      descriptionController = TextEditingController(),
+      aliasesController = TextEditingController();
+
+  final String path;
+  ReplicateAssetType type;
+  final TextEditingController nameController;
+  final TextEditingController descriptionController;
+  final TextEditingController aliasesController;
+
+  void dispose() {
+    nameController.dispose();
+    descriptionController.dispose();
+    aliasesController.dispose();
+  }
+}
+
+class _BatchLibraryAssetImportDialog extends StatefulWidget {
+  const _BatchLibraryAssetImportDialog({
+    required this.paths,
+    required this.initialType,
+  });
+
+  final List<String> paths;
+  final ReplicateAssetType initialType;
+
+  @override
+  State<_BatchLibraryAssetImportDialog> createState() =>
+      _BatchLibraryAssetImportDialogState();
+}
+
+class _BatchLibraryAssetImportDialogState
+    extends State<_BatchLibraryAssetImportDialog> {
+  late final List<_PendingLibraryAssetEditor> _editors = [
+    for (final path in widget.paths)
+      _PendingLibraryAssetEditor(path: path, type: widget.initialType),
+  ];
+
+  @override
+  void dispose() {
+    for (final editor in _editors) {
+      editor.dispose();
+    }
+    super.dispose();
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(<_LibraryImportRequest>[
+      for (final editor in _editors)
+        (
+          sourcePath: editor.path,
+          type: editor.type,
+          name: editor.nameController.text.trim(),
+          description: editor.descriptionController.text.trim(),
+          aliases: _parseLibraryAliases(editor.aliasesController.text),
+        ),
+    ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AlertDialog(
+      key: const ValueKey('batch-asset-import-dialog'),
+      title: Row(
+        children: [
+          const Expanded(child: Text('编辑待入库资产')),
+          Text(
+            '${_editors.length} 项',
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 760,
+        height: 620,
+        child: ListView.separated(
+          itemCount: _editors.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 12),
+          itemBuilder: (context, index) {
+            final editor = _editors[index];
+            return Card(
+              key: ValueKey('batch-asset-item-$index'),
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      height: 190,
+                      child: _PendingLibraryAssetPreview(
+                        path: editor.path,
+                        type: editor.type,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      p.basename(editor.path),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<ReplicateAssetType>(
+                            key: ValueKey('batch-asset-type-$index'),
+                            initialValue: editor.type,
+                            decoration: const InputDecoration(
+                              labelText: '资产类型',
+                            ),
+                            items: [
+                              for (final type in ReplicateAssetType.values)
+                                DropdownMenuItem(
+                                  value: type,
+                                  child: Text(type.label),
+                                ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => editor.type = value);
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            key: ValueKey('batch-asset-name-$index'),
+                            controller: editor.nameController,
+                            decoration: const InputDecoration(
+                              labelText: '资产名称',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: ValueKey('batch-asset-description-$index'),
+                      controller: editor.descriptionController,
+                      minLines: 2,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        labelText: '特征描述',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: ValueKey('batch-asset-aliases-$index'),
+                      controller: editor.aliasesController,
+                      decoration: const InputDecoration(
+                        labelText: '匹配别名（用逗号分隔）',
+                        helperText: '用于故事板名称自动绑定，不参与视觉识别',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          key: const ValueKey('batch-asset-import-submit'),
+          onPressed: _submit,
+          icon: const Icon(Icons.inventory_2_outlined),
+          label: const Text('入库'),
+        ),
+      ],
+    );
+  }
+}
+
+class _PendingLibraryAssetPreview extends StatelessWidget {
+  const _PendingLibraryAssetPreview({required this.path, required this.type});
+
+  final String path;
+  final ReplicateAssetType type;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!type.isImageType) {
+      return _AssetTypeIcon(type);
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Image(
+        image: previewFileImageProvider(
+          path: path,
+          logicalWidth: 700,
+          devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+          maxCacheWidth: 1400,
+        ),
+        fit: BoxFit.contain,
+        errorBuilder: (_, _, _) => _AssetTypeIcon(type),
+      ),
+    );
+  }
+}
+
+List<String> _parseLibraryAliases(String value) => value
+    .split(RegExp(r'[,，;；\n\r]+'))
+    .map((item) => item.trim())
+    .where((item) => item.isNotEmpty)
+    .toSet()
+    .toList(growable: false);
 
 class _ManagedLibraryAssetCard extends StatelessWidget {
   const _ManagedLibraryAssetCard({
