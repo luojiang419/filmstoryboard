@@ -70,4 +70,38 @@ void main() {
     expect(prompt, isNot(contains('全片统一色彩圣经')));
     expect(prompt, isNot(contains('线稿原帧权威边界')));
   });
+
+  test('10镜头等价链路始终复用同一冻结色彩块和指纹', () {
+    const compiler = LightweightReplicationPromptCompiler();
+    final prompts = [
+      for (var shot = 1; shot <= 10; shot++)
+        compiler.compile(
+          instruction: '高端服装广告镜头$shot',
+          references: const [
+            LightweightReplicationReference(
+              imageNumber: 2,
+              type: ReplicateAssetType.character,
+              name: '模特',
+            ),
+          ],
+          sourceFrameMode: ReplicateSourceFrameMode.lineArt,
+          colorStyleSnapshot: snapshot,
+        ),
+    ];
+    final block = const LineArtColorStylePromptCompiler().compileBlock(
+      sourceFrameMode: ReplicateSourceFrameMode.lineArt,
+      snapshot: snapshot,
+    );
+    expect(prompts, hasLength(10));
+    expect(prompts.every((prompt) => prompt.contains(block)), isTrue);
+    expect(
+      prompts
+          .map(
+            (prompt) =>
+                RegExp(r'冻结指纹 ([0-9a-f]{64})').firstMatch(prompt)?.group(1),
+          )
+          .toSet(),
+      {snapshot.fingerprint},
+    );
+  });
 }
