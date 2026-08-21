@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
@@ -668,12 +669,9 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   }
 
   Future<void> _exportShiyinBridge(StoryboardBoard board) async {
-    final scriptState = ref.read(shootingScriptControllerProvider).value;
-    final script = scriptState.selectedScript;
-    final shotsByNumber = {
-      for (final shot in scriptState.shots) shot.shotNumber: shot,
-    };
-    final frames = <BridgeFrameSource>[];
+    final frames = <Map<String, Object?>>[];
+    final uploads = <BridgeDirectUpload>[];
+    final checksums = <String, String>{};
     final orderedItems = board.items.toList()
       ..sort((a, b) => a.slotIndex.compareTo(b.slotIndex));
     for (final item in orderedItems) {
@@ -686,80 +684,74 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         throw FormatException('无法读取故事板图片：${file.path}');
       }
       final shotNumber = item.slotIndex + 1;
-      final shot = shotsByNumber[shotNumber];
-      frames.add(
-        BridgeFrameSource(
-          path: file,
-          sourceName: item.asset.sourceName,
-          slotIndex: item.slotIndex,
-          shotNumber: shotNumber,
-          frameIndex: item.slotIndex,
-          timestampMs: 0,
-          width: decoded.width,
-          height: decoded.height,
-          caption: item.caption,
-          metadata: {
-            'source_storyboard_asset_id': item.asset.id,
-            'source_video_frame_id': shot?.sourceVideoFrameId ?? '',
-          },
-        ),
+      final bytes = await file.readAsBytes();
+      final checksum = sha256.convert(bytes).toString();
+      final extension = p.extension(file.path).toLowerCase().isEmpty
+          ? '.png'
+          : p.extension(file.path).toLowerCase();
+      final uploadName = 'frame_${item.slotIndex.toString().padLeft(4, '0')}$extension';
+      final relativePath = 'images/original/${item.slotIndex.toString().padLeft(4, '0')}$extension';
+      final stableId = BridgeManifest.stableFrameId(
+        board.id,
+        item.slotIndex,
+        BridgeVariant.original,
       );
+      frames.add({
+        'stable_id': stableId,
+        'shot_stable_id': BridgeManifest.stableShotId(board.id, shotNumber),
+        'slot_index': item.slotIndex,
+        'shot_number': shotNumber,
+        'frame_index': item.slotIndex,
+        'timestamp_ms': 0,
+        'source_name': item.asset.sourceName,
+        'relative_path': relativePath,
+        'upload_name': uploadName,
+        'width': decoded.width,
+        'height': decoded.height,
+        'variant': BridgeVariant.original.wireName,
+        'caption': item.caption,
+        'sha256': checksum,
+        'metadata': {
+          'source_storyboard_asset_id': item.asset.id,
+        },
+      });
+      checksums[relativePath] = checksum;
+      uploads.add(BridgeDirectUpload(file: file, uploadName: uploadName));
     }
-    final bridgeShots = [
-      for (final shot in scriptState.shots)
-        BridgeShotRecord(
-          stableId: BridgeManifest.stableShotId(board.id, shot.shotNumber),
-          shotNumber: shot.shotNumber,
-          frameStableId: BridgeManifest.stableFrameId(
-            board.id,
-            shot.shotNumber - 1,
-            BridgeVariant.original,
-          ),
-          durationSeconds: shot.durationSeconds,
-          fields: {
-            'visual': shot.visual,
-            'content': shot.content,
-            'free_creation_description': shot.freeCreationDescription,
-            'shot_size': shot.shotSize,
-            'camera_movement': shot.cameraMovement,
-            'camera_notes': shot.cameraNotes,
-            'composition': shot.composition,
-            'camera_angle': shot.cameraAngle,
-            'lighting_mood': shot.lightingMood,
-            'color_palette': shot.colorPalette,
-            'visual_focus': shot.visualFocus,
-            'transition_hint': shot.transitionHint,
-            'movement_trend': shot.movementTrend,
-            'action_stage': shot.actionStage,
-            'dialogue': shot.dialogue,
-            'sound': shot.sound,
-            'prompt': shot.prompt,
-          },
-        ),
-    ];
-    final directories = ref.read(projectDirectoriesProvider);
-    await directories.temp.create(recursive: true);
-    final temporaryPackage = File(
-      p.join(
-        directories.temp.path,
-        'film_to_shiyin_${DateTime.now().microsecondsSinceEpoch}.filmbridge.zip',
+    if (frames.isEmpty) {
+      throw const FormatException('当前故事板没有可发送的图片');
+    }
+    final manifest = <String, Object?>{
+      'schema': bridgeSchema,
+      'schema_version': bridgeSchemaVersion,
+      'bridge_id': BridgeManifest.stableBridgeId(
+        ref.read(currentProjectIdProvider),
+        board.id,
       ),
-    );
-    await const BridgePackageService().exportFilmToShiyin(
-      outputFile: temporaryPackage,
-      projectId: ref.read(currentProjectIdProvider),
-      projectName: ref.read(currentProjectNameProvider),
-      boardId: board.id,
-      boardName: board.name,
-      frames: frames,
-      shots: bridgeShots,
-      scriptId: script?.id,
-      scriptName: script?.name,
-    );
+      'direction': 'film-to-shiyin',
+      'exported_at': DateTime.now().toUtc().toIso8601String(),
+      'source': {
+        'app': 'filmstoryboard',
+        'project_id': ref.read(currentProjectIdProvider),
+        'project_name': ref.read(currentProjectNameProvider),
+        'board_id': board.id,
+      },
+      'canvas': {'create_prompt_nodes': false},
+      'storyboard': {
+        'board_name': board.name,
+        'selected_variant': BridgeVariant.original.wireName,
+        'variants': [BridgeVariant.original.wireName],
+        'frames': frames,
+      },
+      // 拍摄脚本互动功能后续开发，本次只发送故事板图片。
+      'shots': <Object?>[],
+      'checksums': checksums,
+    };
     final loopback = BridgeLoopbackClient();
     try {
-      final result = await loopback.sendPackage(
-        packageFile: temporaryPackage,
+      final result = await loopback.sendDirect(
+        manifest: manifest,
+        uploads: uploads,
         canvasTitle: board.name,
       );
       if (Platform.isWindows) {
@@ -772,38 +764,18 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('已发送 ${result.frameCount} 张分镜到 SHIYIN-AI 无限画布'),
+            content: Text('已直接发送 ${result.frameCount} 张分镜到 SHIYIN-AI 画布'),
           ),
         );
       }
-      return;
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('未发现可接收的 SHIYIN-AI，已切换为桥接包文件导出')),
+          SnackBar(content: Text('发送到 SHIYIN-AI 画布失败：$error')),
         );
-      }
-      final settings = ref.read(settingsControllerProvider).value;
-      final location = await ref
-          .read(desktopFileDialogServiceProvider)
-          .getSaveLocation(
-            source: 'storyboard.export_shiyin_bridge',
-            initialDirectory: settings.exportDirectory,
-            suggestedName: '${board.name}_shiyin.filmbridge.zip',
-            acceptedTypeGroups: const [
-              XTypeGroup(label: 'SHIYIN 桥接包', extensions: ['zip']),
-            ],
-            confirmButtonText: '导出桥接包',
-          );
-      if (location != null) {
-        final output = File(location.path);
-        await output.parent.create(recursive: true);
-        if (output.existsSync()) await output.delete();
-        await temporaryPackage.copy(output.path);
       }
     } finally {
       loopback.close();
-      if (temporaryPackage.existsSync()) await temporaryPackage.delete();
     }
   }
 
@@ -8843,7 +8815,7 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.send_rounded),
-              label: Text(_isExportingShiyinBridge ? '正在准备桥接包...' : '发送到无限画布'),
+              label: Text(_isExportingShiyinBridge ? '正在发送到画布...' : '发送到画布'),
             ),
           ),
           const SizedBox(height: 8),

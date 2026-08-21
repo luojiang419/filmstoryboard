@@ -57,4 +57,46 @@ void main() {
     expect(bridge.discover(), throwsA(isA<BridgeLoopbackException>()));
     bridge.close();
   });
+
+  test('sends storyboard manifest and image files directly', () async {
+    final directory = await Directory.systemTemp.createTemp('bridge-direct-');
+    addTearDown(() => directory.delete(recursive: true));
+    final image = File('${directory.path}/frame.png')..writeAsBytesSync([1, 2, 3]);
+    final requests = <Uri>[];
+    final client = MockClient((request) async {
+      requests.add(request.url);
+      if (request.url.path.endsWith('/capabilities')) {
+        return http.Response(
+          jsonEncode({
+            'app': 'shiyin-ai',
+            'schema': 'shiyin-film-bridge',
+            'automatic_receive': true,
+            'direct_receive': true,
+            'active_canvas_id': 'canvas-open',
+          }),
+          200,
+        );
+      }
+      return http.Response(
+        jsonEncode({
+          'ok': true,
+          'canvas_id': 'canvas-open',
+          'group_id': 'group-1',
+          'frame_count': 1,
+          'editor_url': '/static/canvas.html?id=canvas-open',
+        }),
+        200,
+      );
+    });
+    final bridge = BridgeLoopbackClient(client: client, ports: const [3000]);
+    final result = await bridge.sendDirect(
+      manifest: const {'bridge_id': 'film:p:b'},
+      uploads: [BridgeDirectUpload(file: image, uploadName: 'frame_0000.png')],
+      canvasTitle: '直接故事板',
+    );
+    expect(result.canvasId, 'canvas-open');
+    expect(result.frameCount, 1);
+    expect(requests, hasLength(2));
+    bridge.close();
+  });
 }
