@@ -53,6 +53,7 @@ import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
 import '../domain/line_art_color_style_catalog.dart';
 import '../domain/lightweight_replication_prompt_compiler.dart';
+import '../domain/line_art_color_style_prompt_compiler.dart';
 import '../domain/nano_banana_asset_manifest.dart';
 import '../domain/nano_banana_product_detail_refill_protocol.dart';
 import '../domain/nano_banana_replication_prompt_compiler.dart';
@@ -429,6 +430,23 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (preset == null) return true;
     return LineArtColorStyleSelectionSnapshot.fromPreset(preset).fingerprint !=
         snapshot.fingerprint;
+  }
+
+  /// 已有成图使用旧色彩指纹时，下一次批量/单镜头生成必须重新生成，不能静默沿用旧图。
+  bool get hasReplicatedImagesWithStaleColorStyle {
+    final run = value.run;
+    final snapshot = run?.colorStyleSnapshot;
+    if (run == null ||
+        run.sourceFrameMode != ReplicateSourceFrameMode.lineArt) {
+      return false;
+    }
+    final fingerprint = snapshot?.fingerprint.trim() ?? '';
+    if (fingerprint.isEmpty) return false;
+    return value.replicatedImages.any(
+      (image) =>
+          image.generatedFramePath.trim().isNotEmpty &&
+          image.colorStyleFingerprint != fingerprint,
+    );
   }
 
   String saveCustomColorStylePreset({
@@ -2167,9 +2185,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
     final model = _resolvedGenerationModel(run);
+    final colorStyleSnapshot = _frozenColorStyleSnapshot(run);
     if (preciseMode &&
         existing != null &&
-        !existing.generationRecovery.isEmpty) {
+        !existing.generationRecovery.isEmpty &&
+        existing.colorStyleFingerprint ==
+            (colorStyleSnapshot?.fingerprint ?? '')) {
       try {
         return await _resumeInterruptedReplicatedShot(
           shot: shot,
@@ -2203,14 +2224,19 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               model,
               guide: guide,
               hasPoseSkeleton: skeleton != null,
+              sourceFrameMode: run.sourceFrameMode,
+              colorStyleSnapshot: colorStyleSnapshot,
             )
           : _lightweightGenerationPrompt(
               shot,
               references,
               plan: quickPlanningOutcome?.plan,
+              sourceFrameMode: run.sourceFrameMode,
+              colorStyleSnapshot: colorStyleSnapshot,
             ),
       model: model,
       rawResponse: '',
+      colorStyleFingerprint: colorStyleSnapshot?.fingerprint ?? '',
       status: ProcessingStatus.running,
       errorMessage: '',
       createdAt: existing?.createdAt ?? now,
@@ -2325,15 +2351,20 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
               authorizedProductMarks:
                   productDetailRefillProtocol?.authorizedMarks ?? const [],
+              sourceFrameMode: run.sourceFrameMode,
+              colorStyleSnapshot: colorStyleSnapshot,
             )
           : _lightweightGenerationPrompt(
               shot,
               preparedReferences,
               plan: quickPlanningOutcome?.plan,
+              sourceFrameMode: run.sourceFrameMode,
+              colorStyleSnapshot: colorStyleSnapshot,
             );
       record = record.copyWith(
         assetIds: [for (final reference in preparedReferences) reference.id],
         prompt: prompt,
+        colorStyleFingerprint: colorStyleSnapshot?.fingerprint ?? '',
         updatedAt: DateTime.now().toUtc(),
       );
       _saveReplicatedImage(record);
@@ -3188,6 +3219,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     NanoBananaAssetManifest? nanoBananaManifest,
     NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol,
     List<NanoBananaAuthorizedProductMark> authorizedProductMarks = const [],
+    ReplicateSourceFrameMode sourceFrameMode =
+        ReplicateSourceFrameMode.colorReference,
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
   }) {
     if (NanoBananaProModelCapability.supports(model)) {
       final manifest = nanoBananaManifest;
@@ -3205,6 +3239,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               : const [],
           firstRoundProtocol: nanoBananaFirstRoundProtocol,
           authorizedProductMarks: authorizedProductMarks,
+          sourceFrameMode: sourceFrameMode,
+          colorStyleSnapshot: colorStyleSnapshot,
         ),
       );
     }
@@ -3215,7 +3251,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
             automaticPrompt: automaticPrompt,
             instructions: instructions,
           );
-    return _appendFinalTextSafetyCheck(prompt);
+    final withColor = const LineArtColorStylePromptCompiler().append(
+      prompt: prompt,
+      sourceFrameMode: sourceFrameMode,
+      snapshot: colorStyleSnapshot,
+    );
+    return _appendFinalTextSafetyCheck(
+      sourceFrameMode == ReplicateSourceFrameMode.lineArt
+          ? '${LineArtColorStylePromptCompiler.lineArtSourceFrameAuthority}\n$withColor'
+          : withColor,
+    );
   }
 
   static String _userPriorityFallbackPrompt({
@@ -3240,6 +3285,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     String model, {
     ReplicateShotGuide? guide,
     bool hasPoseSkeleton = false,
+    ReplicateSourceFrameMode sourceFrameMode =
+        ReplicateSourceFrameMode.colorReference,
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
   }) {
     final base = _replacementPrompt(
       shot,
@@ -3250,13 +3298,18 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (NanoBananaProModelCapability.supports(model)) {
       return base;
     }
-    return usesGemini3ImagePrompting(model)
+    final compiled = usesGemini3ImagePrompting(model)
         ? buildGeminiStoryboardPrompt(
             base,
             hasReferenceImages: references.isNotEmpty,
             preserveReferenceComposition: true,
           )
         : base;
+    return const LineArtColorStylePromptCompiler().append(
+      prompt: compiled,
+      sourceFrameMode: sourceFrameMode,
+      snapshot: colorStyleSnapshot,
+    );
   }
 
   Future<String> _persistGeneratedFrame({
@@ -4727,6 +4780,17 @@ $playbackSpeedBoundary
     return null;
   }
 
+  LineArtColorStyleSelectionSnapshot? _frozenColorStyleSnapshot(
+    ReplicateRun run,
+  ) {
+    if (run.sourceFrameMode != ReplicateSourceFrameMode.lineArt) return null;
+    final snapshot = run.colorStyleSnapshot;
+    if (snapshot == null || !snapshot.hasValidFingerprint) {
+      throw StateError('线稿模式任务缺少有效的冻结色彩快照，请重新保存生成参数');
+    }
+    return snapshot;
+  }
+
   LineArtColorStyleRepository _requireColorStyleRepository() =>
       _colorStyleRepository ?? (throw StateError('当前控制器未配置色彩预设仓库'));
 
@@ -5650,6 +5714,9 @@ $playbackSpeedBoundary
     ScriptShot shot,
     List<_ReplacementReference> references, {
     QuickReplicationPlan? plan,
+    ReplicateSourceFrameMode sourceFrameMode =
+        ReplicateSourceFrameMode.colorReference,
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
   }) {
     final instruction =
         [shot.replicationInstructions, shot.content, shot.visual]
@@ -5657,7 +5724,12 @@ $playbackSpeedBoundary
             .firstWhere((item) => item.isNotEmpty, orElse: () => '根据参考图复刻这张分镜');
     final compiler = const LightweightReplicationPromptCompiler();
     if (plan != null) {
-      return compiler.compilePlan(instruction: instruction, plan: plan);
+      return compiler.compilePlan(
+        instruction: instruction,
+        plan: plan,
+        sourceFrameMode: sourceFrameMode,
+        colorStyleSnapshot: colorStyleSnapshot,
+      );
     }
     return compiler.compile(
       instruction: instruction,
@@ -5670,6 +5742,8 @@ $playbackSpeedBoundary
             slotLabel: references[index].slotLabel,
           ),
       ],
+      sourceFrameMode: sourceFrameMode,
+      colorStyleSnapshot: colorStyleSnapshot,
     );
   }
 

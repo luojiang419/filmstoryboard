@@ -1,6 +1,8 @@
 import '../../storyboard/domain/image_generation_model_catalog.dart';
 import 'nano_banana_asset_manifest.dart';
 import 'nano_banana_product_detail_refill_protocol.dart';
+import 'line_art_color_style_preset.dart';
+import 'line_art_color_style_prompt_compiler.dart';
 import 'replicate_asset_preparation_models.dart';
 import 'replication_authority_policy.dart';
 
@@ -21,6 +23,8 @@ class NanoBananaReplicationPromptInput {
     this.productOverridesWardrobeAppearance = false,
     this.firstRoundProtocol,
     this.authorizedProductMarks = const [],
+    this.sourceFrameMode = ReplicateSourceFrameMode.colorReference,
+    this.colorStyleSnapshot,
   });
 
   final String model;
@@ -33,6 +37,8 @@ class NanoBananaReplicationPromptInput {
   final bool productOverridesWardrobeAppearance;
   final NanoBananaFirstRoundProtocol? firstRoundProtocol;
   final List<NanoBananaAuthorizedProductMark> authorizedProductMarks;
+  final ReplicateSourceFrameMode sourceFrameMode;
+  final LineArtColorStyleSelectionSnapshot? colorStyleSnapshot;
 }
 
 class NanoBananaReplicationPromptCompiler {
@@ -132,6 +138,8 @@ class NanoBananaReplicationPromptCompiler {
         input.manifest.entries.first,
         context,
         imageNumber: imageNumberByEntry[input.manifest.entries.first]!,
+        lineArtSourceFrame:
+            input.sourceFrameMode == ReplicateSourceFrameMode.lineArt,
       ),
       for (var index = 0; index < descriptions.length; index++)
         '图片${index + 2}是结构辅助图：${descriptions[index].trim()}。'
@@ -141,6 +149,8 @@ class NanoBananaReplicationPromptCompiler {
           entry,
           context,
           imageNumber: imageNumberByEntry[entry]!,
+          lineArtSourceFrame:
+              input.sourceFrameMode == ReplicateSourceFrameMode.lineArt,
           primaryImageNumber:
               imageNumberByEntry[input.manifest.entries.firstWhere(
                 (candidate) =>
@@ -165,11 +175,19 @@ class NanoBananaReplicationPromptCompiler {
           ].join('\n');
     final sceneRule = context.hasSceneAsset
         ? '已提供新场景资产：图片1中的原场景外观、装饰、材质、颜色与照明风格均未获授权；只保留图片1的空间布局、机位、透视、主体位置、遮挡和接触关系，并由场景资产提供环境外观。'
+        : input.sourceFrameMode == ReplicateSourceFrameMode.lineArt
+        ? '线稿模式未提供新场景资产：图片1仍只提供空间布局、机位、透视、主体位置、遮挡和接触关系；图片1原环境外观、材质、颜色与环境光色均不得继承，必须按主体资产与全片色彩圣经重建。'
         : '未提供新场景资产：图片1可继续提供原环境外观与环境光色，但不得因此恢复任何未被主体处理计划明确保留的原人物、原产品、配饰或道具。';
+    final colorBlock = const LineArtColorStylePromptCompiler().compileBlock(
+      sourceFrameMode: input.sourceFrameMode,
+      snapshot: input.colorStyleSnapshot,
+    );
 
     return <String>[
       '【Nano Banana Pro 确定性精准复刻协议】',
       '这是多图受控编辑与合成任务，不是自由创作、风格迁移、相似画面重做或素材平均融合。请按图片编号逐一使用来源，并把每张素材只用于其被授权的视觉属性。',
+      if (input.sourceFrameMode == ReplicateSourceFrameMode.lineArt)
+        LineArtColorStylePromptCompiler.lineArtSourceFrameAuthority,
       '【逐图角色与唯一权威来源】',
       ...authorityLines,
       sceneRule,
@@ -178,6 +196,7 @@ class NanoBananaReplicationPromptCompiler {
       markWhitelist,
       '【确定性复刻正文】',
       automaticPrompt,
+      if (colorBlock.isNotEmpty) colorBlock,
       if (userInstructions.isNotEmpty) ...[
         '【用户补充说明：确定性合并】$userInstructions',
         '冲突处理：用户补充说明可覆盖镜头脚本中的普通描述，但不得改变逐图权威来源或取消“原帧主体处理计划”；只有计划中明确标记保留的原人物或原产品才能沿用，不得把其他主体或未勾选元素改为保留，也不得恢复未授权原场景。只有补充说明明确给出需要逐字出现的具体文本时，才允许该段指定文本。',
@@ -234,6 +253,7 @@ class NanoBananaReplicationPromptCompiler {
     ReplicationAuthorityContext context, {
     required int imageNumber,
     int? primaryImageNumber,
+    bool lineArtSourceFrame = false,
   }) {
     final authorityScopes = {
       ...ReplicationAuthorityPolicy.scopesFor(
@@ -249,7 +269,20 @@ class NanoBananaReplicationPromptCompiler {
           slotIndex: entry.linkedProductSlotIndex,
         ),
     };
-    final scopes = authorityScopes
+    final effectiveScopes =
+        lineArtSourceFrame && entry.kind == NanoBananaAssetKind.sourceFrame
+        ? authorityScopes.where(
+            (scope) => const {
+              ReplicationAuthorityScope.canvasAndAspectRatio,
+              ReplicationAuthorityScope.shotSizeAndCamera,
+              ReplicationAuthorityScope.compositionAndPerspective,
+              ReplicationAuthorityScope.poseAndOrientation,
+              ReplicationAuthorityScope.placementScaleAndBalance,
+              ReplicationAuthorityScope.contactAndOcclusion,
+            }.contains(scope),
+          )
+        : authorityScopes;
+    final scopes = effectiveScopes
         .map(_scopeLabel)
         .where((label) => label.isNotEmpty)
         .join('、');
@@ -267,7 +300,7 @@ class NanoBananaReplicationPromptCompiler {
     }
     return switch (entry.kind) {
       NanoBananaAssetKind.sourceFrame =>
-        '图片$imageNumber是原帧编辑底图，也是以下属性的唯一权威来源：$scopes。原帧主体处理计划中明确标记保留的主体可完整沿用其对应外观；其他原人物身份/外观、原产品外观不得继承，且未勾选配饰或道具没有任何继承权限。',
+        '${entrySourceFrameAuthorityPrefix(imageNumber, scopes)}原帧主体处理计划中明确标记保留的主体可完整沿用其对应外观；其他原人物身份/外观、原产品外观不得继承，且未勾选配饰或道具没有任何继承权限。',
       NanoBananaAssetKind.model =>
         '图片$imageNumber是模特资产$slot（$view），是以下属性的唯一权威来源：$scopes。忽略其背景、构图、姿态、光照与调色。',
       NanoBananaAssetKind.fullOutfit =>
@@ -280,6 +313,11 @@ class NanoBananaReplicationPromptCompiler {
         '图片$imageNumber是新场景资产（$view），是以下属性的唯一权威来源：$scopes。忽略其构图与主体布局，服从图片1的机位、透视、位置、遮挡和接触关系。',
     };
   }
+
+  static String entrySourceFrameAuthorityPrefix(
+    int imageNumber,
+    String scopes,
+  ) => '图片$imageNumber是原帧编辑底图，也是以下属性的唯一权威来源：$scopes。';
 
   static String _assetKindLabel(NanoBananaAssetKind kind) => switch (kind) {
     NanoBananaAssetKind.sourceFrame => '原帧',

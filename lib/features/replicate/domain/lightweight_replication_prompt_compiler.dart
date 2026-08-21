@@ -1,4 +1,5 @@
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
+import 'line_art_color_style_prompt_compiler.dart';
 import 'replicate_models.dart';
 import 'quick_replication_reference.dart';
 
@@ -22,6 +23,9 @@ class LightweightReplicationPromptCompiler {
   String compilePlan({
     required String instruction,
     required QuickReplicationPlan plan,
+    ReplicateSourceFrameMode sourceFrameMode =
+        ReplicateSourceFrameMode.colorReference,
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
   }) {
     final normalizedInstruction = instruction.trim();
     if (normalizedInstruction.isEmpty) {
@@ -37,10 +41,14 @@ class LightweightReplicationPromptCompiler {
 
     final lines = <String>[
       '只输出一张完成的分镜图。画面目标：$normalizedInstruction',
+      if (sourceFrameMode == ReplicateSourceFrameMode.lineArt)
+        LineArtColorStylePromptCompiler.lineArtSourceFrameAuthority,
       if (hasSceneReference)
         '复刻图片1的主体动作、人物与产品位置、景别、机位、构图和透视；不得继承图片1的场景、背景或环境光。'
       else
-        '复刻图片1的动作、构图、机位和光影，并保持主体位置、景别、透视和光影方向。',
+        sourceFrameMode == ReplicateSourceFrameMode.lineArt
+            ? '复刻图片1的动作、构图、机位、主体位置、景别和透视；图片1不提供颜色、材质、环境外观或环境光色。'
+            : '复刻图片1的动作、构图、机位和光影，并保持主体位置、景别、透视和光影方向。',
     ];
     _addSceneReplacementLines(lines, sceneImageNumbers);
     _addModelLines(lines, plan);
@@ -91,6 +99,11 @@ class LightweightReplicationPromptCompiler {
       described.add('图片${assignment.imageNumber}说明：$description');
     }
     if (described.isNotEmpty) lines.add('${described.join('；')}。');
+    _addColorStyleBlock(
+      lines,
+      sourceFrameMode: sourceFrameMode,
+      snapshot: colorStyleSnapshot,
+    );
     final supplement = plan.normalizedSupplement.trim();
     if (supplement.isNotEmpty && supplement != normalizedInstruction) {
       lines.add('补充关系：$supplement');
@@ -98,6 +111,8 @@ class LightweightReplicationPromptCompiler {
     lines.add(
       hasSceneReference
           ? '统一保持真实比例与透视、自然接触与穿戴、正确遮挡和清晰材质细节；环境光、色温、阴影与空间氛围以场景参考图为准，让人物和产品自然融入新背景。'
+          : sourceFrameMode == ReplicateSourceFrameMode.lineArt
+          ? '统一保持真实比例与透视、自然接触与穿戴、正确遮挡和清晰材质细节；环境外观与环境光色由主体/场景资产和全片色彩圣经决定。'
           : '统一保持真实比例与透视、自然接触与穿戴、正确遮挡、清晰材质细节，以及与图片1一致的光照方向和空间关系。',
     );
     return lines.join('\n');
@@ -106,6 +121,9 @@ class LightweightReplicationPromptCompiler {
   String compile({
     required String instruction,
     required List<LightweightReplicationReference> references,
+    ReplicateSourceFrameMode sourceFrameMode =
+        ReplicateSourceFrameMode.colorReference,
+    LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
   }) {
     final normalizedInstruction = instruction.trim();
     if (normalizedInstruction.isEmpty) {
@@ -120,17 +138,41 @@ class LightweightReplicationPromptCompiler {
         if (reference.type == ReplicateAssetType.scene) reference.imageNumber,
     ];
     final hasSceneReference = sceneImageNumbers.isNotEmpty;
-    return <String>[
+    final lines = <String>[
       normalizedInstruction,
+      if (sourceFrameMode == ReplicateSourceFrameMode.lineArt)
+        LineArtColorStylePromptCompiler.lineArtSourceFrameAuthority,
       if (clauses.isNotEmpty) '${clauses.join('，')}。',
       if (hasSceneReference) ...[
         '复刻图片1的主体动作、人物与产品位置、景别、机位、构图和透视；不得继承图片1的场景、背景或环境光。',
         ..._sceneReplacementLines(sceneImageNumbers),
         '环境光、色温和阴影以场景参考图为准，让人物与产品自然融入新背景。',
       ] else
-        '复刻图片1的动作、构图、机位和光影，让所有参考元素自然处于同一画面。',
-      '只输出一张完成的分镜图。',
-    ].join('\n');
+        sourceFrameMode == ReplicateSourceFrameMode.lineArt
+            ? '复刻图片1的动作、构图、机位和主体位置，让所有参考元素自然处于同一画面；图片1不提供颜色、材质、环境外观或环境光色。'
+            : '复刻图片1的动作、构图、机位和光影，让所有参考元素自然处于同一画面。',
+    ];
+    _addColorStyleBlock(
+      lines,
+      sourceFrameMode: sourceFrameMode,
+      snapshot: colorStyleSnapshot,
+    );
+    lines.add('只输出一张完成的分镜图。');
+    return lines.join('\n');
+  }
+
+  static void _addColorStyleBlock(
+    List<String> lines, {
+    required ReplicateSourceFrameMode sourceFrameMode,
+    required LineArtColorStyleSelectionSnapshot? snapshot,
+  }) {
+    if (sourceFrameMode != ReplicateSourceFrameMode.lineArt) return;
+    lines.add(
+      const LineArtColorStylePromptCompiler().compileBlock(
+        sourceFrameMode: ReplicateSourceFrameMode.lineArt,
+        snapshot: snapshot,
+      ),
+    );
   }
 
   static String _referenceClause(LightweightReplicationReference reference) {

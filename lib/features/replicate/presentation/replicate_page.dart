@@ -6018,6 +6018,17 @@ class _ReplicateGenerationParametersDialogState
                       ),
                     ),
                   ],
+                  if (widget
+                      .controller
+                      .hasReplicatedImagesWithStaleColorStyle) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '已有成图使用旧色彩指纹；保存新预设后，相关镜头需要重新生成。',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),
