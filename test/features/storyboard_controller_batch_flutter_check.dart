@@ -2420,6 +2420,9 @@ void main() {
     expect(prompt, contains('不绘制服装或穿搭设计'));
     expect(prompt, contains('不同人物只能通过人数、相对身高或体块尺度'));
     expect(prompt, contains('人物和场景统一使用白底上的细黑线或深灰线'));
+    expect(prompt, contains('背景采用简洁的电影分镜线稿处理'));
+    expect(prompt, contains('跳过细碎纹理、重复支架结构、线缆缠绕'));
+    expect(prompt, contains('避免杂乱线条抢夺人物与动作的视觉焦点'));
     expect(prompt, isNot(contains('服装只保留区分角色和动作所需的轮廓')));
     expect(prompt, isNot(contains('发型轮廓或服装外形区分')));
     expect(prompt, contains('移除所有不帮助讲述故事'));
