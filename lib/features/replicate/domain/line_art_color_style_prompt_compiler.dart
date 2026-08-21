@@ -24,6 +24,7 @@ class LineArtColorStylePromptCompiler {
       '色彩预设“${frozen.presetName}”（v${frozen.presetVersion}）：${frozen.prompt}',
       if (swatches.isNotEmpty) '参考色板（仅作全局分级方向，不是主体换色指令）：$swatches。',
       '该色彩圣经只控制全局色彩关系、对比、阴影、高光、滚降与颗粒；不得重定义人物身份、肤色、服装/产品本色、Logo、文字、构图、动作、姿态、位置、接触或遮挡。人物、产品、服装和场景资产的局部本色与材质证据优先于全局分级。',
+      lineArtOutputStyleAuthority,
     ].join('\n');
   }
 
@@ -46,4 +47,11 @@ class LineArtColorStylePromptCompiler {
   /// 线稿模式下图片1的结构权威声明。颜色、材质和环境外观必须显式剥离。
   static const lineArtSourceFrameAuthority =
       '【线稿原帧权威边界】线稿模式下，图片1只提供画幅、机位、景别、透视、构图、人物/产品姿态、位置、尺度、接触和遮挡关系；图片1不提供颜色、材质、环境外观、环境光色、色温、阴影、反射或颗粒权威。上述被剥离的视觉属性必须来自对应人物/产品/场景资产与冻结的全片色彩圣经。';
+
+  /// 线稿只负责结构参考，最终交付仍必须是可用于影视沟通的真实摄影质感。
+  ///
+  /// 该约束放在统一编译器中，确保快速复刻、精准复刻和 Nano Banana Pro
+  /// 不会因为只修改了图片 1 的来源权限，就把输出媒介误生成成线稿。
+  static const lineArtOutputStyleAuthority =
+      '【线稿模式最终成图风格硬约束】线稿仅作为结构参考，最终必须输出电影级真实摄影质感的分镜静帧（photorealistic live-action cinematic storyboard still），具有极致清晰的皮肤、面部、手指、织物、皮革、金属、玻璃、木材和环境纹理细节，真实光照、材质反射、景深、空气透视与自然细颗粒；色彩按冻结的全片色彩圣经执行（允许其定义的电影级黑白调色）。严禁输出黑白线稿、铅笔稿、墨线、边缘描线、漫画、插画、卡通、扁平色块、草图、姿态人偶、分镜板框线或任何绘画滤镜。';
 }

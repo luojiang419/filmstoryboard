@@ -18,6 +18,12 @@ void main() {
     expect(block, contains(snapshot.fingerprint));
     expect(block, contains('人物、产品、服装和场景资产的局部本色与材质证据优先'));
     expect(
+      block,
+      contains('photorealistic live-action cinematic storyboard still'),
+    );
+    expect(block, contains('极致清晰的皮肤、面部、手指'));
+    expect(block, contains('严禁输出黑白线稿、铅笔稿、墨线'));
+    expect(
       () => compiler.compileBlock(
         sourceFrameMode: ReplicateSourceFrameMode.lineArt,
         snapshot: LineArtColorStyleSelectionSnapshot(
@@ -58,6 +64,10 @@ void main() {
     );
     expect(prompt, contains(block));
     expect(prompt, isNot(contains('图片1提供原环境外观')));
+    expect(
+      prompt,
+      contains(LineArtColorStylePromptCompiler.lineArtOutputStyleAuthority),
+    );
   });
 
   test('彩色原帧不注入线稿色彩块', () {
