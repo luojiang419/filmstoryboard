@@ -222,6 +222,7 @@ class VisionShotMotionAnalysis {
     required this.cameraAngle,
     required this.evidence,
     required this.rawResponse,
+    this.shotSegments = const [],
   });
 
   final bool isSameShot;
@@ -236,6 +237,29 @@ class VisionShotMotionAnalysis {
   final String cameraAngle;
   final String evidence;
   final String rawResponse;
+  final List<VisionShotSegmentAnalysis> shotSegments;
+}
+
+class VisionShotSegmentAnalysis {
+  const VisionShotSegmentAnalysis({
+    required this.shotIndex,
+    required this.startFrame,
+    required this.endFrame,
+    required this.scene,
+    required this.shotSize,
+    required this.cameraMovement,
+    required this.action,
+    required this.transitionToNext,
+  });
+
+  final int shotIndex;
+  final int startFrame;
+  final int endFrame;
+  final String scene;
+  final String shotSize;
+  final String cameraMovement;
+  final String action;
+  final String transitionToNext;
 }
 
 class VisionStoryboardCaptionRewriteResult {
@@ -837,40 +861,95 @@ class VisionStoryboardService {
   VisionShotMotionAnalysis _shotMotionFromJson(
     Map<String, dynamic> json, {
     required String rawResponse,
-  }) => VisionShotMotionAnalysis(
-    isSameShot: _boolValue(json, const ['is_same_shot', 'isSameShot']),
-    cameraMovement: _firstStringValue(json, const [
-      'observed_camera_movement',
-      'observedCameraMovement',
-      'camera_movement',
-      'cameraMovement',
-    ]),
-    designedCameraMovement: _firstStringValue(json, const [
-      'designed_camera_movement',
-      'designedCameraMovement',
-    ]),
-    cameraPurpose: _firstStringValue(json, const [
-      'camera_purpose',
-      'cameraPurpose',
-    ]),
-    speedCurve: _firstStringValue(json, const ['speed_curve', 'speedCurve']),
-    startComposition: _firstStringValue(json, const [
-      'start_composition',
-      'startComposition',
-    ]),
-    endComposition: _firstStringValue(json, const [
-      'end_composition',
-      'endComposition',
-    ]),
-    focusPath: _firstStringValue(json, const ['focus_path', 'focusPath']),
-    transitionExecution: _firstStringValue(json, const [
-      'transition_execution',
-      'transitionExecution',
-    ]),
-    cameraAngle: _firstStringValue(json, const ['camera_angle', 'cameraAngle']),
-    evidence: _stringValue(json, 'evidence'),
-    rawResponse: rawResponse,
-  );
+  }) {
+    final rawSegments = json['shot_segments'] ?? json['shotSegments'];
+    final shotSegments = <VisionShotSegmentAnalysis>[];
+    if (rawSegments is List) {
+      for (final rawSegment in rawSegments.whereType<Map>()) {
+        final segment = <String, dynamic>{
+          for (final entry in rawSegment.entries) '${entry.key}': entry.value,
+        };
+        final shotIndex = _intValue(segment, const ['shot_index', 'shotIndex']);
+        final startFrame = _intValue(segment, const [
+          'start_frame',
+          'startFrame',
+        ]);
+        final endFrame = _intValue(segment, const ['end_frame', 'endFrame']);
+        if (shotIndex <= 0 || startFrame <= 0 || endFrame < startFrame) {
+          continue;
+        }
+        shotSegments.add(
+          VisionShotSegmentAnalysis(
+            shotIndex: shotIndex,
+            startFrame: startFrame,
+            endFrame: endFrame,
+            scene: _firstStringValue(segment, const ['scene']),
+            shotSize: _firstStringValue(segment, const [
+              'shot_size',
+              'shotSize',
+            ]),
+            cameraMovement: _firstStringValue(segment, const [
+              'camera_movement',
+              'cameraMovement',
+            ]),
+            action: _firstStringValue(segment, const ['action']),
+            transitionToNext: _firstStringValue(segment, const [
+              'transition_to_next',
+              'transitionToNext',
+            ]),
+          ),
+        );
+      }
+    }
+    return VisionShotMotionAnalysis(
+      isSameShot: _boolValue(json, const ['is_same_shot', 'isSameShot']),
+      cameraMovement: _firstStringValue(json, const [
+        'observed_camera_movement',
+        'observedCameraMovement',
+        'camera_movement',
+        'cameraMovement',
+      ]),
+      designedCameraMovement: _firstStringValue(json, const [
+        'designed_camera_movement',
+        'designedCameraMovement',
+      ]),
+      cameraPurpose: _firstStringValue(json, const [
+        'camera_purpose',
+        'cameraPurpose',
+      ]),
+      speedCurve: _firstStringValue(json, const ['speed_curve', 'speedCurve']),
+      startComposition: _firstStringValue(json, const [
+        'start_composition',
+        'startComposition',
+      ]),
+      endComposition: _firstStringValue(json, const [
+        'end_composition',
+        'endComposition',
+      ]),
+      focusPath: _firstStringValue(json, const ['focus_path', 'focusPath']),
+      transitionExecution: _firstStringValue(json, const [
+        'transition_execution',
+        'transitionExecution',
+      ]),
+      cameraAngle: _firstStringValue(json, const [
+        'camera_angle',
+        'cameraAngle',
+      ]),
+      evidence: _stringValue(json, 'evidence'),
+      rawResponse: rawResponse,
+      shotSegments: List.unmodifiable(shotSegments),
+    );
+  }
+
+  int _intValue(Map<String, dynamic> json, List<String> keys) {
+    for (final key in keys) {
+      final value = json[key];
+      if (value is num) return value.toInt();
+      final parsed = int.tryParse('$value'.trim());
+      if (parsed != null) return parsed;
+    }
+    return 0;
+  }
 
   Future<VisionStoryboardCaptionRewriteResult> rewriteStoryboardCaptions({
     required AppSettings settings,
@@ -1553,21 +1632,22 @@ JSON 字段：
       neighboringCameraPlan: neighboringCameraPlan,
     );
     return '''
-你正在为第 $shotNumber 个连续镜头组完成一次性多帧视觉解析和导演式运镜设计。
-本次请求按时间顺序提供 $frameCount 张图片；两张时为首帧、尾帧，三张或更多时为首帧、中间帧、尾帧的完整时间序列。
-必须同时对比全部图片后再判断主体动作、空间连续性、构图变化和运镜，不要把它们当成互不相关的独立分镜。
+你正在为第 $shotNumber 个分镜条目完成一次性多帧视觉解析、物理镜头边界判断和导演式多镜头设计。
+本次请求按时间顺序提供 $frameCount 张图片。它们既可能是同一物理镜头的首帧/中间帧/尾帧，也可能是用户归入同一分镜条目的多个场景、多个机位或多个剪辑镜头。
+必须同时对比全部图片后再判断主体动作、场景连续性、构图变化、物理镜头边界与逐镜运镜；不得预设它们一定属于同一镜头，也不得把每张图片机械等同于一个镜头。
 $_cameraMovementGuide
 $_professionalCameraPlanningGuide
 ${_playbackSpeedRule(allowSlowMotion)}
 $directorContext
 $_narrativeStyleExecutionGuide
 
-多帧连续动作契约（最高优先级）：
-1. 全部图片默认是同一物理镜头内按时间排序的阶段抽帧，不是各自独立的分镜或新镜头首帧；除非剧情描述明确要求不同景别切换/切镜，才能判定为多镜头。
-2. 逐帧建立同一条动作状态链：前一帧结束姿态就是后一帧动作起点；保持运动方向、重心转移、肢体相位、视线、表情发展、道具接触和空间位置连续。
-3. 禁止每帧重新开始同一动作、倒退到早期姿态、重复抬腿/伸手/转头，或用“切换到下一张构图”掩盖不连续；caption/detail/body_action/movement_trend/action_stage 必须体现不可逆的阶段推进。
-4. designed_camera_movement 必须是一条跨越全部阶段帧的连续路径，摄影机跟随主体趋势并自然抵达尾帧构图；不得按 Picture/帧编号重启运镜。
-5. 若景别或主体尺度变化可由主体靠近/远离、摄影机连续推拉/升降/摇移解释，优先解释为镜内连续变化，不得擅自切镜。
+物理镜头分段契约（最高优先级）：
+1. 先逐对判断相邻图片能否由同一台摄影机在连续时空中完成。背景结构、地点、时间、主体组合或空间轴线突变，明显的正反打/机位跳变，或无法由推拉摇移跟升降解释的景别与构图跃迁，均是切镜证据；即使用户文字没有明确写“切镜”，也必须据可见变化识别多镜头。
+2. 仅当场景、主体身份、空间关系和动作因果连续，且构图变化能由连续运镜或主体移动解释时，才把相邻图片归入同一物理镜头。轻微裁切、主体尺度变化或镜内动作阶段变化本身不等于切镜。
+3. shot_segments 必须覆盖图片1至图片$frameCount且连续无遗漏、无重叠。相邻多张图可归入同一段；不得把图片数量机械等同于镜头数量。
+4. 每个镜头段内部建立不可逆动作状态链：前一帧结束姿态就是后一帧动作起点，保持运动方向、重心、肢体相位、视线、表情、道具接触和空间位置连续；不得逐帧重启动作。
+5. 同一镜头段的 camera_movement 必须是一条连续路径，写清起势、路径、幅度、速度和落点。不同镜头段分别设计自己的景别、机位与运镜，并在 transition_to_next 写明硬切、动作匹配切、视线匹配切、声音桥或其他可执行衔接。
+6. is_same_shot 只有在 shot_segments 恰好一段且覆盖全部图片时为 true；两段或以上必须为 false。designed_camera_movement 在单镜头时写连续运镜，在多镜头时按“镜头1…；镜头2…”汇总逐镜方案，不得伪装成一条连续运镜。
 
 返回一个 JSON 对象，不要 Markdown，不要解释。
 frames 数组必须严格按输入图片顺序返回 $frameCount 项，每项必须包含：
@@ -1581,11 +1661,15 @@ continues_to_next。
 motion 对象必须综合全部帧，包含：
 is_same_shot, observed_camera_movement, designed_camera_movement,
 camera_purpose, speed_curve, start_composition, end_composition, focus_path,
-transition_execution, camera_angle, evidence。
+transition_execution, camera_angle, evidence, shot_segments。
+
+shot_segments 每项必须包含：
+shot_index, start_frame, end_frame, scene, shot_size, camera_movement,
+action, transition_to_next。
 
 designed_camera_movement 要写清起始状态、主路径与幅度、速度变化和结束落点；先用 observed_camera_movement 记录多帧可证实的原始运镜。
 每个 frame 的 sound_design 必须根据该动作阶段写清可听事件与触发动作；跨帧动作按图片顺序连续安排，所有音效按真实时间速度逐次贴合画面，保持自然音高和正常瞬态，禁止慢放、时间拉伸、低沉变调、拖尾或过长混响，不写对白或背景音乐。
-对同一镜头，背景、场景、主体身份和空间关系应连续；只有可见内容突然切换时才将 is_same_shot 设为 false。
+对单一物理镜头，背景、场景、主体身份和空间关系必须连续；只要可见证据要求两段或以上物理镜头，就把 is_same_shot 设为 false，并完整返回逐镜 shot_segments。
 
 JSON 结构：
 下方 frames 内容只示意单项字段；实际返回时必须按图片顺序重复为 $frameCount 项，不得少项。
@@ -1593,7 +1677,7 @@ JSON 结构：
   "frames": [
     {"caption":"", "detail":"", "scene":"", "props":"", "people":"", "expression":"", "body_action":"", "movement_trend":"", "sound_design":"", "shot_size":"", "composition":"", "subject_direction":"", "gaze_direction":"", "action_stage":"", "spatial_relation":"", "chronology_cue":"", "camera_angle":"", "visual_focus":"", "lighting_mood":"", "color_palette":"", "narrative_function":"", "transition_hint":"", "continues_from_previous":false, "continues_to_next":true}
   ],
-  "motion": {"is_same_shot":true, "observed_camera_movement":"", "designed_camera_movement":"", "camera_purpose":"", "speed_curve":"", "start_composition":"", "end_composition":"", "focus_path":"", "transition_execution":"", "camera_angle":"", "evidence":""}
+  "motion": {"is_same_shot":true, "observed_camera_movement":"", "designed_camera_movement":"", "camera_purpose":"", "speed_curve":"", "start_composition":"", "end_composition":"", "focus_path":"", "transition_execution":"", "camera_angle":"", "evidence":"", "shot_segments":[{"shot_index":1,"start_frame":1,"end_frame":$frameCount,"scene":"","shot_size":"","camera_movement":"","action":"","transition_to_next":""}]}
 }
 ''';
   }

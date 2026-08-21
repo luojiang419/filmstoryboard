@@ -244,21 +244,34 @@ class ScriptMultimodalAnalysisService {
       throw const FormatException('镜头组缺少视觉分析结果');
     }
     final last = analyses.last;
-    final cameraMovement = motion.designedCameraMovement.trim().isNotEmpty
+    final shotSegments = _resolvedShotSegments(
+      analyses: analyses,
+      motion: motion,
+    );
+    final isMultiShot = !motion.isSameShot && shotSegments.length > 1;
+    final cameraMovement = isMultiShot
+        ? _multiShotCameraMovement(shotSegments)
+        : motion.designedCameraMovement.trim().isNotEmpty
         ? motion.designedCameraMovement
         : motion.cameraMovement.trim().isNotEmpty
         ? motion.cameraMovement
         : _designCameraMovement(last, creativeBrief: creativeBrief);
-    final shotSize = _groupShotSize(analyses);
-    final composition = _cameraComposition(
-      start: motion.startComposition,
-      end: motion.endComposition,
-      fallback: _groupComposition(analyses),
-    );
+    final shotSize = isMultiShot
+        ? _multiShotField(shotSegments, (segment) => segment.shotSize)
+        : _groupShotSize(analyses);
+    final composition = isMultiShot
+        ? _multiShotComposition(shotSegments, analyses)
+        : _cameraComposition(
+            start: motion.startComposition,
+            end: motion.endComposition,
+            fallback: _groupComposition(analyses),
+          );
     final visualFocus = motion.focusPath.trim().isNotEmpty
         ? motion.focusPath
         : _mergeOrdered(analyses.map((item) => item.visualFocus));
-    final transitionHint = motion.transitionExecution.trim().isNotEmpty
+    final transitionHint = isMultiShot
+        ? _multiShotTransitions(shotSegments)
+        : motion.transitionExecution.trim().isNotEmpty
         ? motion.transitionExecution
         : last.transitionHint;
     final cameraNotes = _cameraNotes(
@@ -282,9 +295,27 @@ class ScriptMultimodalAnalysisService {
       confidence[field] = score;
     }
 
-    add('visual', _mergeOrdered(analyses.map((item) => item.caption)), 0.88);
-    add('content', _mergeOrdered(analyses.map((item) => item.detail)), 0.86);
-    add('scene', _firstNonEmpty(analyses.map((item) => item.scene)), 0.82);
+    add(
+      'visual',
+      isMultiShot
+          ? _multiShotField(shotSegments, (segment) => segment.action)
+          : _mergeOrdered(analyses.map((item) => item.caption)),
+      0.88,
+    );
+    add(
+      'content',
+      isMultiShot
+          ? _multiShotContent(shotSegments, analyses)
+          : _mergeOrdered(analyses.map((item) => item.detail)),
+      0.86,
+    );
+    add(
+      'scene',
+      isMultiShot
+          ? _multiShotField(shotSegments, (segment) => segment.scene)
+          : _firstNonEmpty(analyses.map((item) => item.scene)),
+      0.82,
+    );
     add('shotSize', shotSize, 0.80);
     add('cameraMovement', cameraMovement, 0.90);
     add('cameraAngle', motion.cameraAngle, 0.86);
@@ -351,6 +382,130 @@ class ScriptMultimodalAnalysisService {
       ].where((item) => item.trim().isNotEmpty).join('\n'),
     );
   }
+
+  static List<VisionShotSegmentAnalysis> _resolvedShotSegments({
+    required List<VisionImageAnalysis> analyses,
+    required VisionShotMotionAnalysis motion,
+  }) {
+    final provided = [...motion.shotSegments]
+      ..sort((first, second) => first.shotIndex.compareTo(second.shotIndex));
+    var expectedStart = 1;
+    final valid = <VisionShotSegmentAnalysis>[];
+    for (final segment in provided) {
+      if (segment.startFrame != expectedStart ||
+          segment.endFrame < segment.startFrame ||
+          segment.endFrame > analyses.length) {
+        valid.clear();
+        break;
+      }
+      valid.add(segment);
+      expectedStart = segment.endFrame + 1;
+    }
+    if (valid.isNotEmpty && expectedStart == analyses.length + 1) {
+      return List.unmodifiable(valid);
+    }
+    if (motion.isSameShot) {
+      return [
+        VisionShotSegmentAnalysis(
+          shotIndex: 1,
+          startFrame: 1,
+          endFrame: analyses.length,
+          scene: _firstNonEmpty(analyses.map((item) => item.scene)),
+          shotSize: _groupShotSize(analyses),
+          cameraMovement: motion.designedCameraMovement.trim().isNotEmpty
+              ? motion.designedCameraMovement
+              : motion.cameraMovement,
+          action: _mergeOrdered(analyses.map((item) => item.detail)),
+          transitionToNext: '',
+        ),
+      ];
+    }
+    return [
+      for (var index = 0; index < analyses.length; index++)
+        VisionShotSegmentAnalysis(
+          shotIndex: index + 1,
+          startFrame: index + 1,
+          endFrame: index + 1,
+          scene: analyses[index].scene,
+          shotSize: analyses[index].shotSize,
+          cameraMovement: analyses[index].cameraDesign.trim().isNotEmpty
+              ? analyses[index].cameraDesign
+              : analyses[index].cameraMovement,
+          action: _firstNonEmpty([
+            analyses[index].detail,
+            analyses[index].caption,
+          ]),
+          transitionToNext: analyses[index].transitionHint,
+        ),
+    ];
+  }
+
+  static String _multiShotContent(
+    List<VisionShotSegmentAnalysis> segments,
+    List<VisionImageAnalysis> analyses,
+  ) => segments
+      .map((segment) {
+        final frames = analyses.sublist(
+          segment.startFrame - 1,
+          segment.endFrame,
+        );
+        final action = _firstNonEmpty([
+          segment.action,
+          _mergeOrdered(frames.map((item) => item.detail)),
+          _mergeOrdered(frames.map((item) => item.caption)),
+        ]);
+        final parts = [
+          segment.shotSize.trim(),
+          segment.scene.trim(),
+          action,
+          if (segment.cameraMovement.trim().isNotEmpty)
+            '运镜：${segment.cameraMovement.trim()}',
+          if (segment.transitionToNext.trim().isNotEmpty)
+            '衔接：${segment.transitionToNext.trim()}',
+        ].where((part) => part.trim().isNotEmpty).join('，');
+        return '镜头${segment.shotIndex}：$parts';
+      })
+      .join('\n');
+
+  static String _multiShotCameraMovement(
+    List<VisionShotSegmentAnalysis> segments,
+  ) => _multiShotField(segments, (segment) => segment.cameraMovement);
+
+  static String _multiShotTransitions(
+    List<VisionShotSegmentAnalysis> segments,
+  ) => segments
+      .where((segment) => segment.transitionToNext.trim().isNotEmpty)
+      .map(
+        (segment) =>
+            '镜头${segment.shotIndex}到镜头${segment.shotIndex + 1}：${segment.transitionToNext.trim()}',
+      )
+      .join('；');
+
+  static String _multiShotComposition(
+    List<VisionShotSegmentAnalysis> segments,
+    List<VisionImageAnalysis> analyses,
+  ) => segments
+      .map((segment) {
+        final frames = analyses.sublist(
+          segment.startFrame - 1,
+          segment.endFrame,
+        );
+        final value = _mergeOrdered(frames.map((item) => item.composition));
+        return value.isEmpty ? '' : '镜头${segment.shotIndex}：$value';
+      })
+      .where((value) => value.isNotEmpty)
+      .join('；');
+
+  static String _multiShotField(
+    List<VisionShotSegmentAnalysis> segments,
+    String Function(VisionShotSegmentAnalysis segment) select,
+  ) => segments
+      .map((segment) {
+        final value = select(segment).trim();
+        return value.isEmpty ? '' : '镜头${segment.shotIndex}：$value';
+      })
+      .where((value) => value.isNotEmpty)
+      .join('；');
 
   static String _groupShotSize(List<VisionImageAnalysis> analyses) {
     final first = _firstNonEmpty(analyses.map((item) => item.shotSize));

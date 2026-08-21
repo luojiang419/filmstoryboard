@@ -43,6 +43,7 @@ import '../domain/h3_video_prompt_adapter.dart';
 import '../domain/generated_video_trim_range.dart';
 import '../domain/kling_duration_matcher.dart';
 import '../domain/kling_video_prompt_adapter.dart';
+import '../domain/video_multi_shot_intent.dart';
 import '../domain/source_video_preview_range.dart';
 import '../domain/video_action_sequence.dart';
 import '../domain/video_generation_models.dart';
@@ -2357,7 +2358,14 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
                   )
                 : usesLibTv
                 ? libTvParameters!
-                : _parametersForSubmission(profile!.parameters, model: model!),
+                : _parametersForSubmission(
+                    profile!.parameters,
+                    model: model!,
+                    preferMultiShots: VideoMultiShotIntent.fromSequence(
+                      sequence.shots,
+                      sourcePrompt: draft.selectedPrompt,
+                    ),
+                  ),
             durationSeconds: duration,
             promptMode: draft.promptMode,
             prompt: prompt,
@@ -3407,6 +3415,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   Map<String, String> _parametersForSubmission(
     Map<String, String> parameters, {
     required KlingModelSpec model,
+    bool preferMultiShots = false,
   }) {
     final declaredParameters = {
       for (final argument in model.arguments)
@@ -3418,6 +3427,9 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
         if (declaredParameters.contains(_parameterLookupKey(entry.key)))
           entry.key: entry.value,
     };
+    if (preferMultiShots && declaredParameters.contains('prefermultishots')) {
+      adjusted['prefer_multi_shots'] = 'true';
+    }
     return adjusted;
   }
 
@@ -3600,20 +3612,13 @@ class _GenerationImageReference {
   String get promptDescription {
     final asset = this.asset;
     if (asset == null) return _sequencePromptDescription;
-    final name = asset.name.trim();
-    return '图片$imageNumber为${_assetTypeLabel(asset.type)}参考'
-        '${name.isEmpty ? '' : '（$name）'}';
+    return '图片$imageNumber为${_assetTypeLabel(asset.type)}参考';
   }
 
   String get h3PromptDescription {
     final asset = this.asset;
     if (asset == null) return _sequenceH3PromptDescription;
-    final parts = [
-      '@图片$imageNumber是${_assetTypeLabel(asset.type)}资产参考',
-      if (asset.name.trim().isNotEmpty) '名称：${asset.name.trim()}',
-      if (asset.description.trim().isNotEmpty) '说明：${asset.description.trim()}',
-    ];
-    return parts.join('，');
+    return '@图片$imageNumber是${_assetTypeLabel(asset.type)}资产参考';
   }
 
   String get _sequencePromptDescription {

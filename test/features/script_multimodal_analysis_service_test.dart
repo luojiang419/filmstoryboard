@@ -361,6 +361,85 @@ void main() {
     expect(patch.values['durationSeconds'], '4.5');
   });
 
+  test('多场景参考帧会按视觉切点写成可直接生成的多镜头脚本', () {
+    final analyses = [
+      _multiShotAnalysis(
+        caption: '咖啡座全景，女模特横向走过',
+        scene: '临街咖啡座',
+        shotSize: '全景',
+        composition: '人物从右向左穿过',
+      ),
+      _multiShotAnalysis(
+        caption: '十字街口背影，女模特逐渐走远',
+        scene: '城市十字街口',
+        shotSize: '中景',
+        composition: '人物背对镜头居中',
+      ),
+      _multiShotAnalysis(
+        caption: '回到咖啡座，墨镜女模特拿包起身',
+        scene: '临街咖啡座桌面区域',
+        shotSize: '近景',
+        composition: '桌面前景与人物上半身',
+      ),
+    ];
+    final patch = ScriptMultimodalAnalysisService.fromShotGroupAnalysis(
+      shots: [
+        _shot('multi-1', 1, 0),
+        _shot('multi-2', 2, 0),
+        _shot('multi-3', 3, 0),
+      ],
+      analyses: analyses,
+      motion: const VisionShotMotionAnalysis(
+        isSameShot: false,
+        cameraMovement: '',
+        designedCameraMovement: '镜头1固定；镜头2固定；镜头3轻微上摇',
+        cameraAngle: '多机位',
+        evidence: '地点和构图在相邻图片间发生不可连续解释的切换',
+        rawResponse: '{}',
+        shotSegments: [
+          VisionShotSegmentAnalysis(
+            shotIndex: 1,
+            startFrame: 1,
+            endFrame: 1,
+            scene: '临街咖啡座',
+            shotSize: '全景',
+            cameraMovement: '固定机位',
+            action: '女模特从右向左穿过咖啡座',
+            transitionToNext: '硬切',
+          ),
+          VisionShotSegmentAnalysis(
+            shotIndex: 2,
+            startFrame: 2,
+            endFrame: 2,
+            scene: '城市十字街口',
+            shotSize: '中景',
+            cameraMovement: '固定机位',
+            action: '女模特背对镜头向前走远',
+            transitionToNext: '动作匹配切',
+          ),
+          VisionShotSegmentAnalysis(
+            shotIndex: 3,
+            startFrame: 3,
+            endFrame: 3,
+            scene: '临街咖啡座桌面区域',
+            shotSize: '近景',
+            cameraMovement: '轻微上摇',
+            action: '墨镜女模特拿起包快速起身',
+            transitionToNext: '',
+          ),
+        ],
+      ),
+    );
+
+    expect(patch.values['content'], contains('镜头1：全景，临街咖啡座'));
+    expect(patch.values['content'], contains('镜头2：中景，城市十字街口'));
+    expect(patch.values['content'], contains('镜头3：近景，临街咖啡座桌面区域'));
+    expect(patch.values['cameraMovement'], contains('镜头3：轻微上摇'));
+    expect(patch.values['transitionHint'], contains('镜头1到镜头2：硬切'));
+    expect(patch.values['transitionHint'], contains('镜头2到镜头3：动作匹配切'));
+    expect(patch.values['scene'], contains('镜头2：城市十字街口'));
+  });
+
   test('构建脚本保留人工填写的小于三秒时长', () {
     final analysis = VisionImageAnalysis(
       caption: '人物快速转身',
@@ -436,7 +515,9 @@ void main() {
       middle.path,
       last.path,
     ]);
-    expect(visionService.lastPrompt, contains('首帧、中间帧、尾帧'));
+    expect(visionService.lastPrompt, contains('同一物理镜头的首帧/中间帧/尾帧'));
+    expect(visionService.lastPrompt, contains('shot_segments'));
+    expect(visionService.lastPrompt, contains('不得预设它们一定属于同一镜头'));
     expect(visionService.lastPrompt, contains('sound_design'));
     expect(visionService.lastPrompt, contains('真实时间速度逐次贴合画面'));
     expect(visionService.lastPrompt, contains('品牌宣传短片'));
@@ -556,6 +637,30 @@ class _FakeGroupVisionService extends VisionStoryboardService {
     'transition_hint': '动作连续',
   };
 }
+
+VisionImageAnalysis _multiShotAnalysis({
+  required String caption,
+  required String scene,
+  required String shotSize,
+  required String composition,
+}) => VisionImageAnalysis(
+  caption: caption,
+  detail: caption,
+  scene: scene,
+  props: '',
+  people: '两位女模特',
+  expression: '自然',
+  bodyAction: caption,
+  movementTrend: '动作向前推进',
+  shotSize: shotSize,
+  composition: composition,
+  subjectDirection: '按画面可见方向',
+  gazeDirection: '按动作目标',
+  actionStage: '推进',
+  spatialRelation: composition,
+  chronologyCue: '按图片顺序',
+  rawResponse: '{}',
+);
 
 ScriptShot _shot(String id, int number, double durationSeconds) => ScriptShot(
   id: id,

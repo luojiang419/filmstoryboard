@@ -1,4 +1,5 @@
 import '../../shooting_script/domain/shooting_script_models.dart';
+import 'video_multi_shot_intent.dart';
 
 class H3VideoPromptAdapter {
   const H3VideoPromptAdapter();
@@ -22,6 +23,10 @@ class H3VideoPromptAdapter {
     final sequence = actionSequence.isEmpty
         ? <ScriptShot>[shot]
         : actionSequence;
+    final prefersMultiShots = VideoMultiShotIntent.fromSequence(
+      sequence,
+      sourcePrompt: sourcePrompt,
+    );
     final sequenceDuration = _sequenceDuration(sequence);
     final references = _referenceText(
       sequence: sequence,
@@ -29,6 +34,7 @@ class H3VideoPromptAdapter {
       availableVideoReferences: availableVideoReferences,
       availableAudioReferences: availableAudioReferences,
       referenceDefinitions: referenceDefinitions,
+      prefersMultiShots: prefersMultiShots,
     );
     final creative = _creativeText(
       shot: shot,
@@ -38,7 +44,7 @@ class H3VideoPromptAdapter {
       sourcePrompt: sourcePrompt,
     );
     final process = sequence.length > 1
-        ? _sequenceProcess(sequence)
+        ? _sequenceProcess(sequence, prefersMultiShots: prefersMultiShots)
         : _singleShotProcess(shot);
     final styleLock = _compactText(
       _withoutExactTimingDirectives(narrativeStyle),
@@ -66,12 +72,14 @@ class H3VideoPromptAdapter {
     required int availableVideoReferences,
     required int availableAudioReferences,
     required List<String> referenceDefinitions,
+    bool prefersMultiShots = false,
   }) {
     final lines = <String>[];
     if (sequence.length > 1 && availableImageReferences >= sequence.length) {
       lines.add(
-        '@图片1至@图片$availableImageReferences是同一连续镜头的顺序动作参考，'
-        '保持主体、场景、构图与光影连续，不要求逐帧精确到达。',
+        prefersMultiShots
+            ? '@图片1至@图片$availableImageReferences按顺序对应多镜头画面参考；每张图片分别约束对应镜头的场景、构图、主体状态和动作阶段，按切镜顺序生成一条完整短片。'
+            : '@图片1至@图片$availableImageReferences是同一连续镜头的顺序动作参考，保持主体、场景、构图与光影连续，不要求逐帧精确到达。',
       );
     } else if (availableImageReferences > 0) {
       lines.add('@图片1是画面参考，用于保持主体、场景、构图与整体视觉质感。');
@@ -125,7 +133,14 @@ class H3VideoPromptAdapter {
     return '画面：$parts。';
   }
 
-  static String _sequenceProcess(List<ScriptShot> sequence) {
+  static String _sequenceProcess(
+    List<ScriptShot> sequence, {
+    bool prefersMultiShots = false,
+  }) {
+    final structured = _compactText(sequence.first.content, maxChars: 1200);
+    if (prefersMultiShots && _containsNumberedShotPlan(structured)) {
+      return structured;
+    }
     final lines = <String>[];
     for (var index = 0; index < sequence.length; index++) {
       final shot = sequence[index];
@@ -138,10 +153,19 @@ class H3VideoPromptAdapter {
         if (shot.dialogue.trim().isNotEmpty)
           '台词：${_compactText(_dialogueText(shot.dialogue), maxChars: 80)}',
       ]);
-      lines.add('${_sequenceStageLabel(index, sequence.length)}：$parts。');
+      lines.add(
+        prefersMultiShots
+            ? '镜头${index + 1}：$parts。'
+            : '${_sequenceStageLabel(index, sequence.length)}：$parts。',
+      );
     }
     return lines.join('\n');
   }
+
+  static bool _containsNumberedShotPlan(String value) => RegExp(
+    r'(?:^|[；;。])\s*镜头\s*1\s*(?:[-—:：]).*'
+    r'(?:镜头\s*2\s*(?:[-—:：]))',
+  ).hasMatch(value);
 
   static String _sequenceStageLabel(int index, int length) {
     if (index == 0) return '开头';

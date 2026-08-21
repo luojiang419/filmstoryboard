@@ -1133,7 +1133,7 @@ void main() {
     expect(storedPrompt.prompt, isNot(contains('旧版提示词')));
     expect(storedPrompt.prompt, isNot(contains('原视频蓝色包装瓶')));
     final storedRaw = jsonDecode(storedPrompt.rawResponse) as Map;
-    expect(storedRaw['promptRulesVersion'], 19);
+    expect(storedRaw['promptRulesVersion'], 20);
     expect(
       shootingController.value.shots.single.prompt,
       isNot(contains('旧版提示词')),

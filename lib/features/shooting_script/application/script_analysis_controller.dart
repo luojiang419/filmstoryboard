@@ -94,7 +94,7 @@ class ScriptAnalysisState {
 
 class ShootingScriptAnalysisController
     extends ValueNotifier<ScriptAnalysisState> {
-  static const _analysisRuleVersion = 9;
+  static const _analysisRuleVersion = 10;
   static const _maximumLegacyAutoDurationSeconds = 5.0;
 
   ShootingScriptAnalysisController({

@@ -9,6 +9,7 @@ import 'package:filmstoryboard/features/video_generation/domain/h3_video_prompt_
 import 'package:filmstoryboard/features/video_generation/domain/kling_duration_matcher.dart';
 import 'package:filmstoryboard/features/video_generation/domain/kling_video_prompt_adapter.dart';
 import 'package:filmstoryboard/features/video_generation/domain/source_video_preview_range.dart';
+import 'package:filmstoryboard/features/video_generation/domain/video_multi_shot_intent.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -288,6 +289,45 @@ void main() {
     expect(prompt, isNot(contains('原镜头')));
     expect(prompt, isNot(contains('镜头4')));
     expect(prompt, isNot(matches(RegExp(r'\d+(?:\.\d+)?(?:秒|s)[-—至到]'))));
+  });
+
+  test('多场景镜头组会生成逐镜引用规则而不是误判为单镜连续帧', () {
+    final first = _shot().copyWith(
+      content:
+          '镜头1：咖啡座全景固定机位，女模特横向走过；镜头2：十字街口中景固定机位，女模特背对镜头走远；镜头3：咖啡座近景轻微上摇，另一位女模特快速起身。',
+      cameraMovement: '镜头1：固定；镜头2：固定；镜头3：轻微上摇',
+      transitionHint: '镜头1到镜头2：硬切；镜头2到镜头3：动作匹配切',
+    );
+    final sequence = [
+      first,
+      _shot().copyWith(shotNumber: 2, content: '女模特背对镜头走远'),
+      _shot().copyWith(shotNumber: 3, content: '另一位女模特快速起身'),
+    ];
+
+    final kling = const KlingVideoPromptAdapter().adapt(
+      first,
+      actionSequence: sequence,
+      availableImageReferences: 3,
+    );
+    final h3 = const H3VideoPromptAdapter().adapt(
+      first,
+      actionSequence: sequence,
+      availableImageReferences: 3,
+    );
+
+    expect(kling, contains('图片1至图片3作为按顺序对应的多镜头画面参考'));
+    expect(kling, contains('镜头1：咖啡座全景'));
+    expect(kling, contains('镜头3：咖啡座近景'));
+    expect(kling, isNot(contains('同一连续动作的顺序参考')));
+    expect(h3, contains('@图片1至@图片3按顺序对应多镜头画面参考'));
+    expect(h3, contains('镜头2：十字街口中景'));
+    expect(h3, isNot(contains('同一连续镜头的顺序动作参考')));
+  });
+
+  test('多镜头意图识别会排除否定要求和裸露条目编号', () {
+    expect(VideoMultiShotIntent.fromText('不要切镜，不得出现第二个镜头；人物继续向前行走。'), isFalse);
+    expect(VideoMultiShotIntent.fromText('镜头 3 的当前剧情描述'), isFalse);
+    expect(VideoMultiShotIntent.fromText('镜头1：咖啡座全景；镜头2：硬切到街口中景'), isTrue);
   });
 
   test('旧版输入图片可灵提示词会归一为图片1引用', () {

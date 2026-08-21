@@ -490,7 +490,8 @@ void main() {
           .toList(),
       [p.normalize(heroAsset.path)],
     );
-    expect(fixture.fakeCli.submittedPrompts.single, contains('图片2为角色参考（女主角）'));
+    expect(fixture.fakeCli.submittedPrompts.single, contains('图片2为角色参考'));
+    expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('（女主角）')));
     expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('红色外套')));
     expect(
       fixture.fakeCli.submittedPrompts.single,
@@ -646,7 +647,8 @@ void main() {
     );
     expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('镜头2组内')));
     expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('镜头3组内')));
-    expect(fixture.fakeCli.submittedPrompts.single, contains('图片4为角色参考（女主角）'));
+    expect(fixture.fakeCli.submittedPrompts.single, contains('图片4为角色参考'));
+    expect(fixture.fakeCli.submittedPrompts.single, isNot(contains('（女主角）')));
     expect(
       fixture.fakeCli.submittedPrompts.single,
       isNot(contains('尾帧和动作结果参考')),
@@ -669,7 +671,7 @@ void main() {
       shot.copyWith(
         framePath: frame.path,
         durationSeconds: 5,
-        prompt: '以图片1作为首帧和主体外观参考，镜头缓慢推进。',
+        prompt: '以图片1作为主体外观参考。镜头1：咖啡座全景固定机位，女模特走过；镜头2：硬切到街口中景，女模特背对镜头走远。',
       ),
     );
     await Future<void>.delayed(Duration.zero);
@@ -746,7 +748,6 @@ void main() {
       ),
     );
     fixture.controller.selectModel('kling-video-v3_0_omni');
-    fixture.controller.updateParameter('prefer_multi_shots', 'true');
     fixture.controller.updateParameter('enable_audio', 'true');
     fixture.controller.updateParameter('minimax_api_aspect_ratio', '16:9');
     fixture.controller.updateParameter(

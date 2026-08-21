@@ -273,7 +273,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   }
 
   static const promptModel = 'Seedance 2';
-  static const _promptRulesVersion = 19;
+  static const _promptRulesVersion = 20;
   static const _freeCreationPromptRulesVersion = 27;
   static const defaultComposePromptConcurrency = 4;
   static const klingComposePromptConcurrency = 2;

@@ -198,7 +198,7 @@ void main() {
       record?.sourceImageFingerprint,
       'sha256:${sha256.convert([4, 5, 6])}',
     );
-    expect(record?.analysisRuleVersion, 9);
+    expect(record?.analysisRuleVersion, 10);
   });
 
   test('解析分镜缺少复刻图时不回退原视频帧', () async {

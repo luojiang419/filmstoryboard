@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
+import 'video_multi_shot_intent.dart';
 
 class KlingVideoPromptAdapter {
   const KlingVideoPromptAdapter();
@@ -22,13 +23,20 @@ class KlingVideoPromptAdapter {
     if (_canPassThrough(providedPrompt, sequenceLength: sequence.length)) {
       return providedPrompt;
     }
+    final prefersMultiShots = VideoMultiShotIntent.fromSequence(
+      sequence,
+      sourcePrompt: sourcePrompt ?? '',
+    );
 
     final reference = _referenceInstruction(
       sequenceLength: sequence.length,
       availableImageReferences: availableImageReferences,
+      prefersMultiShots: prefersMultiShots,
     );
     final action = sequence.length > 1
-        ? _sequenceAction(sequence)
+        ? prefersMultiShots
+              ? _multiShotAction(sequence)
+              : _sequenceAction(sequence)
         : _stageAction(shot, maxChars: 100);
     final camera = _joinUnique([
       _shotText(shot.shotSize, maxChars: 18),
@@ -92,6 +100,7 @@ class KlingVideoPromptAdapter {
   static String _referenceInstruction({
     required int sequenceLength,
     required int availableImageReferences,
+    bool prefersMultiShots = false,
   }) {
     if (availableImageReferences <= 0) return '';
     final sequenceReferences = math.min(
@@ -99,6 +108,10 @@ class KlingVideoPromptAdapter {
       availableImageReferences,
     );
     if (sequenceLength > 1 && sequenceReferences > 1) {
+      if (prefersMultiShots) {
+        return '图片1至图片$sequenceReferences作为按顺序对应的多镜头画面参考；'
+            '每张图片约束对应镜头的场景、构图、主体状态与动作阶段，按提示词中的切镜顺序生成一条完整短片。';
+      }
       return '图片1至图片$sequenceReferences为同一连续动作的顺序参考；'
           '保持主体、场景、构图与光影连续，不要求逐帧精确到达。';
     }
@@ -116,6 +129,25 @@ class KlingVideoPromptAdapter {
     }
     return stages.join('');
   }
+
+  static String _multiShotAction(List<ScriptShot> sequence) {
+    final structured = _shotText(sequence.first.content, maxChars: 300);
+    if (_containsNumberedShotPlan(structured)) return structured;
+    final shots = <String>[];
+    for (var index = 0; index < sequence.length; index++) {
+      final shot = sequence[index];
+      final action = _stageAction(shot, maxChars: 82);
+      if (action.isEmpty) continue;
+      final camera = _shotText(shot.cameraMovement, maxChars: 54);
+      shots.add('镜头${index + 1}：$action${camera.isEmpty ? '' : '，$camera'}。');
+    }
+    return shots.join('');
+  }
+
+  static bool _containsNumberedShotPlan(String value) => RegExp(
+    r'(?:^|[；;。])\s*镜头\s*1\s*(?:[-—:：]).*'
+    r'(?:镜头\s*2\s*(?:[-—:：]))',
+  ).hasMatch(value);
 
   static String _stageLabel(int index, int length) {
     if (index == 0) return '开头';

@@ -346,6 +346,18 @@ void main() {
               'is_same_shot': true,
               'observed_camera_movement': '升降',
               'designed_camera_movement': '从首帧连续升降至结束帧',
+              'shot_segments': [
+                {
+                  'shot_index': 1,
+                  'start_frame': 1,
+                  'end_frame': 4,
+                  'scene': '同一室内场景',
+                  'shot_size': '中景到近景',
+                  'camera_movement': '连续升降',
+                  'action': '人物完成同一条连续动作',
+                  'transition_to_next': '',
+                },
+              ],
             },
           }),
         );
@@ -376,13 +388,18 @@ void main() {
       '第 3 帧',
       '第 4 帧',
     ]);
+    expect(result.motion.shotSegments, hasLength(1));
+    expect(result.motion.shotSegments.single.startFrame, 1);
+    expect(result.motion.shotSegments.single.endFrame, 4);
+    expect(result.motion.shotSegments.single.cameraMovement, '连续升降');
     final content = requests.single['messages'][0]['content'] as List<dynamic>;
     final prompt = (content.first as Map<String, dynamic>)['text'] as String;
     expect(prompt, contains('按时间顺序提供 4 张图片'));
-    expect(prompt, contains('全部图片默认是同一物理镜头内按时间排序的阶段抽帧'));
+    expect(prompt, contains('不得预设它们一定属于同一镜头'));
+    expect(prompt, contains('不得把图片数量机械等同于镜头数量'));
     expect(prompt, contains('前一帧结束姿态就是后一帧动作起点'));
-    expect(prompt, contains('禁止每帧重新开始同一动作'));
-    expect(prompt, contains('不得按 Picture/帧编号重启运镜'));
+    expect(prompt, contains('不得逐帧重启动作'));
+    expect(prompt, contains('shot_segments'));
     final imageParts = content
         .whereType<Map<String, dynamic>>()
         .where((part) => part['type'] == 'image_url')
