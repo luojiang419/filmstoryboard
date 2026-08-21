@@ -31,6 +31,7 @@ import '../data/seedance_prompt_generation_service.dart';
 import '../domain/h3_prompt_style.dart';
 import '../domain/quick_replication_input_capacity.dart';
 import '../domain/replicate_models.dart';
+import 'line_art_color_style_picker.dart';
 import 'replicate_pose_editor_dialog.dart';
 import 'replicate_shot_navigation_controller.dart';
 
@@ -93,6 +94,10 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
       'flac',
       'ogg',
     ],
+  );
+  static const _colorStyleThumbnailTypes = XTypeGroup(
+    label: '色彩预设缩略图',
+    extensions: ['png', 'jpg', 'jpeg', 'webp'],
   );
 
   late final ReplicateController _controller;
@@ -267,6 +272,8 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
                       assetBindingController: assetBindingController,
                       assetLibraryState: assetLibraryState,
                       onImportLocalAsset: _importSingleAsset,
+                      projectRoot: controller.workspaceRoot,
+                      onPickColorStyleThumbnail: _pickColorStyleThumbnail,
                       onManageAssets: widget.onManageAssets,
                       externalizeRightPanel: externalizeStepRightPanel,
                     ),
@@ -414,6 +421,31 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('打开文件选择器失败：$error')));
+      }
+      return null;
+    } finally {
+      if (mounted) setState(() => _isOpeningAssetPicker = false);
+    }
+  }
+
+  Future<File?> _pickColorStyleThumbnail() async {
+    if (_isOpeningAssetPicker) return null;
+    setState(() => _isOpeningAssetPicker = true);
+    try {
+      if (!mounted) return null;
+      final selected = await ref
+          .read(desktopFileDialogServiceProvider)
+          .openFile(
+            source: 'replicate.color_style_thumbnail',
+            acceptedTypeGroups: const [_colorStyleThumbnailTypes],
+            initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
+          );
+      return selected == null ? null : File(selected.path);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开缩略图选择器失败：$error')));
       }
       return null;
     } finally {
@@ -5375,6 +5407,8 @@ class _NewPrepareAssetsStep extends StatefulWidget {
     required this.assetBindingController,
     required this.assetLibraryState,
     required this.onImportLocalAsset,
+    required this.projectRoot,
+    required this.onPickColorStyleThumbnail,
     required this.onManageAssets,
     required this.externalizeRightPanel,
   });
@@ -5386,6 +5420,8 @@ class _NewPrepareAssetsStep extends StatefulWidget {
   final ShootingAssetLibraryState assetLibraryState;
   final Future<ReplicateAsset?> Function(ReplicateAssetType type)
   onImportLocalAsset;
+  final Directory projectRoot;
+  final Future<File?> Function() onPickColorStyleThumbnail;
   final VoidCallback? onManageAssets;
   final bool externalizeRightPanel;
 
@@ -5592,6 +5628,8 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
                             _ReplicateGenerationParametersDialog(
                               controller: controller,
                               run: state.run!,
+                              projectRoot: widget.projectRoot,
+                              onPickThumbnail: widget.onPickColorStyleThumbnail,
                             ),
                       ),
                 icon: const Icon(Icons.tune_rounded),
@@ -5683,10 +5721,14 @@ class _ReplicateGenerationParametersDialog extends StatefulWidget {
   const _ReplicateGenerationParametersDialog({
     required this.controller,
     required this.run,
+    required this.projectRoot,
+    required this.onPickThumbnail,
   });
 
   final ReplicateController controller;
   final ReplicateRun run;
+  final Directory projectRoot;
+  final Future<File?> Function() onPickThumbnail;
 
   @override
   State<_ReplicateGenerationParametersDialog> createState() =>
@@ -5700,6 +5742,8 @@ class _ReplicateGenerationParametersDialogState
   late bool _inheritSourceAspectRatio;
   late String _imageSize;
   late String _quality;
+  late ReplicateSourceFrameMode _sourceFrameMode;
+  late String _colorStylePresetId;
 
   List<String> get _aspectRatioOptions =>
       StoryDesignController.aspectRatioOptionsFor(_model);
@@ -5727,116 +5771,257 @@ class _ReplicateGenerationParametersDialogState
       _imageSizeOptions,
     );
     _quality = _normalizedOption(widget.run.generationQuality, _qualityOptions);
+    _sourceFrameMode =
+        widget.run.sourceFrameMode == ReplicateSourceFrameMode.lineArt
+        ? ReplicateSourceFrameMode.lineArt
+        : ReplicateSourceFrameMode.colorReference;
+    _colorStylePresetId = widget.run.colorStylePresetId.trim().isEmpty
+        ? 'natural_cinema'
+        : widget.run.colorStylePresetId;
+    widget.controller.addListener(_handleControllerChanged);
+    _normalizeSelectedPreset();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleControllerChanged);
+    super.dispose();
+  }
+
+  void _handleControllerChanged() {
+    if (!mounted) return;
+    setState(_normalizeSelectedPreset);
+  }
+
+  void _normalizeSelectedPreset() {
+    final presets = widget.controller.value.colorStylePresets;
+    if (presets.isEmpty) return;
+    if (!presets.any((preset) => preset.id == _colorStylePresetId)) {
+      _colorStylePresetId = presets.first.id;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final supportsQuality = StoryDesignController.supportsQuality(_model);
+    final contentWidth = math.min(
+      900.0,
+      math.max(280.0, MediaQuery.sizeOf(context).width - 160),
+    );
+    final stackGenerationFields = contentWidth < 680;
     return AlertDialog(
       key: const ValueKey('replicate-generation-parameters-dialog'),
       title: const Text('生成参数'),
       content: SizedBox(
-        width: 460,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              '当前图片模型：${ImageGenerationModelCatalog.labelFor(_model)}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            SwitchListTile.adaptive(
-              key: const ValueKey('replicate-inherit-source-aspect-ratio'),
-              contentPadding: EdgeInsets.zero,
-              title: const Text('跟随原帧画幅'),
-              subtitle: const Text('每个镜头自动选择最接近原图的模型支持比例'),
-              value: _inheritSourceAspectRatio,
-              onChanged: (value) =>
-                  setState(() => _inheritSourceAspectRatio = value),
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              key: const ValueKey('replicate-generation-aspect-ratio'),
-              initialValue: _aspectRatioOptions.contains(_aspectRatio)
-                  ? _aspectRatio
-                  : null,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: '比例',
-                prefixIcon: Icon(Icons.aspect_ratio_rounded),
-              ),
-              items: [
-                for (final ratio in _aspectRatioOptions)
-                  DropdownMenuItem(
-                    value: ratio,
-                    child: Text(ratio, overflow: TextOverflow.ellipsis),
-                  ),
-              ],
-              onChanged: _inheritSourceAspectRatio
-                  ? null
-                  : (ratio) {
-                      if (ratio == null) return;
-                      setState(() {
-                        _aspectRatio = ratio;
-                        _imageSize = _normalizedOption('', _imageSizeOptions);
-                      });
-                    },
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              key: ValueKey('replicate-generation-image-size-$_aspectRatio'),
-              initialValue: _imageSizeOptions.contains(_imageSize)
-                  ? _imageSize
-                  : null,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: '分辨率',
-                prefixIcon: Icon(Icons.photo_size_select_large_rounded),
-              ),
-              items: [
-                for (final size in _imageSizeOptions)
-                  DropdownMenuItem(
-                    value: size,
-                    child: Text(
-                      _imageSizeLabels?[size] ?? size,
-                      overflow: TextOverflow.ellipsis,
+        width: contentWidth,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.76,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '当前图片模型：${ImageGenerationModelCatalog.labelFor(_model)}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  '原帧类型',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                SegmentedButton<ReplicateSourceFrameMode>(
+                  key: const ValueKey('replicate-source-frame-mode'),
+                  segments: const [
+                    ButtonSegment(
+                      value: ReplicateSourceFrameMode.colorReference,
+                      icon: Icon(Icons.photo_outlined),
+                      label: Text('彩色原帧'),
                     ),
-                  ),
-              ],
-              onChanged: (size) {
-                if (size != null) setState(() => _imageSize = size);
-              },
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              key: const ValueKey('replicate-generation-quality'),
-              initialValue: _qualityOptions.contains(_quality)
-                  ? _quality
-                  : null,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: '质量',
-                prefixIcon: Icon(Icons.high_quality_rounded),
-              ),
-              items: [
-                for (final quality in _qualityOptions)
-                  DropdownMenuItem(
-                    value: quality,
-                    child: Text(
-                      GptImageGenerationPreset.qualityLabels[quality] ??
-                          quality,
-                      overflow: TextOverflow.ellipsis,
+                    ButtonSegment(
+                      value: ReplicateSourceFrameMode.lineArt,
+                      icon: Icon(Icons.gesture_rounded),
+                      label: Text('黑白线稿'),
                     ),
+                  ],
+                  selected: {_sourceFrameMode},
+                  onSelectionChanged: (selection) =>
+                      setState(() => _sourceFrameMode = selection.single),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _sourceFrameMode == ReplicateSourceFrameMode.lineArt
+                      ? '线稿只约束构图、机位、姿态和空间关系；颜色由资产本色与下方全片预设决定。'
+                      : '彩色原帧继续提供场景外观、材质与光色参考，不额外启用线稿调色预设。',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
+                ),
+                const Divider(height: 30),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('replicate-inherit-source-aspect-ratio'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('跟随原帧画幅'),
+                  subtitle: const Text('每个镜头自动选择最接近原图的模型支持比例'),
+                  value: _inheritSourceAspectRatio,
+                  onChanged: (value) =>
+                      setState(() => _inheritSourceAspectRatio = value),
+                ),
+                const SizedBox(height: 8),
+                Builder(
+                  builder: (context) {
+                    final fields = [
+                      DropdownButtonFormField<String>(
+                        key: const ValueKey(
+                          'replicate-generation-aspect-ratio',
+                        ),
+                        initialValue: _aspectRatioOptions.contains(_aspectRatio)
+                            ? _aspectRatio
+                            : null,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '比例',
+                          prefixIcon: Icon(Icons.aspect_ratio_rounded),
+                        ),
+                        items: [
+                          for (final ratio in _aspectRatioOptions)
+                            DropdownMenuItem(
+                              value: ratio,
+                              child: Text(
+                                ratio,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: _inheritSourceAspectRatio
+                            ? null
+                            : (ratio) {
+                                if (ratio == null) return;
+                                setState(() {
+                                  _aspectRatio = ratio;
+                                  _imageSize = _normalizedOption(
+                                    '',
+                                    _imageSizeOptions,
+                                  );
+                                });
+                              },
+                      ),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(
+                          'replicate-generation-image-size-$_aspectRatio',
+                        ),
+                        initialValue: _imageSizeOptions.contains(_imageSize)
+                            ? _imageSize
+                            : null,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '分辨率',
+                          prefixIcon: Icon(
+                            Icons.photo_size_select_large_rounded,
+                          ),
+                        ),
+                        items: [
+                          for (final size in _imageSizeOptions)
+                            DropdownMenuItem(
+                              value: size,
+                              child: Text(
+                                _imageSizeLabels?[size] ?? size,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: (size) {
+                          if (size != null) setState(() => _imageSize = size);
+                        },
+                      ),
+                      DropdownButtonFormField<String>(
+                        key: const ValueKey('replicate-generation-quality'),
+                        initialValue: _qualityOptions.contains(_quality)
+                            ? _quality
+                            : null,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '质量',
+                          prefixIcon: Icon(Icons.high_quality_rounded),
+                        ),
+                        items: [
+                          for (final quality in _qualityOptions)
+                            DropdownMenuItem(
+                              value: quality,
+                              child: Text(
+                                GptImageGenerationPreset
+                                        .qualityLabels[quality] ??
+                                    quality,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: !supportsQuality
+                            ? null
+                            : (quality) {
+                                if (quality != null) {
+                                  setState(() => _quality = quality);
+                                }
+                              },
+                      ),
+                    ];
+                    if (stackGenerationFields) {
+                      return Column(
+                        children: [
+                          for (
+                            var index = 0;
+                            index < fields.length;
+                            index++
+                          ) ...[
+                            fields[index],
+                            if (index < fields.length - 1)
+                              const SizedBox(height: 12),
+                          ],
+                        ],
+                      );
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (var index = 0; index < fields.length; index++) ...[
+                          Expanded(child: fields[index]),
+                          if (index < fields.length - 1)
+                            const SizedBox(width: 12),
+                        ],
+                      ],
+                    );
+                  },
+                ),
+                if (_sourceFrameMode == ReplicateSourceFrameMode.lineArt) ...[
+                  const Divider(height: 32),
+                  LineArtColorStylePicker(
+                    presets: widget.controller.value.colorStylePresets,
+                    selectedId: _colorStylePresetId,
+                    projectRoot: widget.projectRoot,
+                    availableWidth: contentWidth,
+                    onSelected: (id) =>
+                        setState(() => _colorStylePresetId = id),
+                    onCreate: _createPreset,
+                    onAction: _handlePresetAction,
+                  ),
+                  if (widget.controller.isSelectedColorStyleChanged) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '当前任务冻结的预设与最新版本不同；保存后将使用当前卡片重新冻结。',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.tertiary,
+                      ),
+                    ),
+                  ],
+                ],
               ],
-              onChanged: !supportsQuality
-                  ? null
-                  : (quality) {
-                      if (quality != null) setState(() => _quality = quality);
-                    },
             ),
-          ],
+          ),
         ),
       ),
       actions: [
@@ -5853,6 +6038,11 @@ class _ReplicateGenerationParametersDialogState
               multiViewEnhancementEnabled: false,
               imageSize: _imageSize,
               quality: _quality,
+              sourceFrameMode: _sourceFrameMode,
+              colorStylePresetId:
+                  _sourceFrameMode == ReplicateSourceFrameMode.lineArt
+                  ? _colorStylePresetId
+                  : null,
             );
             Navigator.of(context).pop();
           },
@@ -5865,6 +6055,93 @@ class _ReplicateGenerationParametersDialogState
   static String _normalizedOption(String value, List<String> options) {
     if (options.isEmpty) return '';
     return options.contains(value) ? value : options.first;
+  }
+
+  Future<void> _createPreset() async {
+    final draft = await showLineArtColorStylePresetEditor(context);
+    if (draft == null || !mounted) return;
+    final id = widget.controller.saveCustomColorStylePreset(
+      name: draft.name,
+      description: draft.description,
+      prompt: draft.prompt,
+      swatches: draft.swatches,
+      useCase: draft.useCase,
+    );
+    if (mounted) setState(() => _colorStylePresetId = id);
+  }
+
+  Future<void> _handlePresetAction(
+    LineArtColorStylePreset preset,
+    LineArtColorStyleCardAction action,
+  ) async {
+    try {
+      switch (action) {
+        case LineArtColorStyleCardAction.viewSource:
+          await showLineArtColorStyleSourceDialog(context, preset);
+        case LineArtColorStyleCardAction.importThumbnail:
+          final file = await widget.onPickThumbnail();
+          if (file != null) {
+            await widget.controller.importColorStyleThumbnail(
+              presetId: preset.id,
+              source: file,
+            );
+          }
+        case LineArtColorStyleCardAction.removeThumbnail:
+          await widget.controller.removeColorStyleThumbnail(preset.id);
+        case LineArtColorStyleCardAction.edit:
+          final draft = await showLineArtColorStylePresetEditor(
+            context,
+            initialPreset: preset,
+          );
+          if (draft != null) {
+            widget.controller.saveCustomColorStylePreset(
+              id: preset.id,
+              name: draft.name,
+              description: draft.description,
+              prompt: draft.prompt,
+              swatches: draft.swatches,
+              useCase: draft.useCase,
+            );
+          }
+        case LineArtColorStyleCardAction.duplicate:
+          final id = widget.controller.duplicateColorStylePreset(preset.id);
+          if (mounted) setState(() => _colorStylePresetId = id);
+        case LineArtColorStyleCardAction.delete:
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('删除自定义色彩预设'),
+              content: Text(
+                widget.run.colorStylePresetId == preset.id
+                    ? '“${preset.name}”正在被当前任务使用。删除后仍会保留已经冻结的任务快照，是否继续？'
+                    : '确定删除“${preset.name}”吗？',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('删除'),
+                ),
+              ],
+            ),
+          );
+          if (confirmed == true) {
+            await widget.controller.deleteCustomColorStylePreset(
+              preset.id,
+              force: true,
+            );
+          }
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('色彩预设操作失败：$error')));
+      }
+    }
   }
 }
 

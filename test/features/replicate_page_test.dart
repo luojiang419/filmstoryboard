@@ -664,6 +664,18 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('1:1').last);
     await tester.pumpAndSettle();
+    await tester.tap(find.text('黑白线稿'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('line-art-color-style-card-natural_cinema')),
+      findsOneWidget,
+    );
+    final prestigeCard = find.byKey(
+      const ValueKey('line-art-color-style-card-desaturated_prestige'),
+    );
+    await tester.ensureVisible(prestigeCard);
+    await tester.tap(prestigeCard);
+    await tester.pump();
     await tester.tap(
       find.byKey(const ValueKey('save-replicate-generation-parameters')),
     );
@@ -671,6 +683,18 @@ void main() {
     expect(replicateController.value.run?.generationAspectRatio, '1:1');
     expect(replicateController.value.run?.inheritSourceAspectRatio, isFalse);
     expect(replicateController.value.run?.multiViewEnhancementEnabled, isFalse);
+    expect(
+      replicateController.value.run?.sourceFrameMode,
+      ReplicateSourceFrameMode.lineArt,
+    );
+    expect(
+      replicateController.value.run?.colorStylePresetId,
+      'desaturated_prestige',
+    );
+    expect(
+      replicateController.value.run?.colorStyleSnapshot?.hasValidFingerprint,
+      isTrue,
+    );
     expect(
       replicateRepository
           .getRun(replicateController.value.run!.id)

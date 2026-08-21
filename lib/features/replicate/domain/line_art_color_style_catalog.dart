@@ -253,4 +253,11 @@ class LineArtColorStyleCatalog {
     (preset) => preset.id == id,
     orElse: () => builtInPresets.first,
   );
+
+  static LineArtColorStylePreset? findById(String id) {
+    for (final preset in builtInPresets) {
+      if (preset.id == id) return preset;
+    }
+    return null;
+  }
 }

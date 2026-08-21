@@ -575,6 +575,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         : _resolvedGenerationModel(run);
   }
 
+  Directory get workspaceRoot => _directories.workspaceRoot;
+
   String get composePromptModelLabel => _composePromptModelRule.label;
 
   QuickReplicationInputCapacity quickReplicationCapacityForShot(String shotId) {
