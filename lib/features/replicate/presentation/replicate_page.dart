@@ -757,6 +757,9 @@ class _ReplicateEmbeddedStepRightPanelState
         selector: (state) => state,
         shouldRebuild: _rightPanelStateChanged,
         builder: (context, state, _) {
+          PerformanceProbe.shared.countBuild(
+            'shooting_script.step_right_panel.content',
+          );
           final run = state.run;
           if (state.scripts.isEmpty || run == null) {
             return const SizedBox.shrink();
@@ -1254,6 +1257,7 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.confirm_shots');
     final analysis = widget.analysisController.value;
     final freeCreationEnabled = widget.state.run?.freeCreationEnabled ?? false;
     final builtShots = ScriptShotGroup.group(widget.state.shots);
@@ -4207,6 +4211,7 @@ class _NewShotTableState extends ConsumerState<_NewShotTable> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.shot_list');
     final promptByShotId = <String, ShotPrompt>{
       for (final prompt in widget.state.prompts)
         if (prompt.scriptShotId != null) prompt.scriptShotId!: prompt,
