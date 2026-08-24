@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -582,6 +583,8 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
 
   var _leftWidth = 230.0;
   var _rightWidth = 310.0;
+  var _leftExpanded = true;
+  var _rightExpanded = true;
 
   @override
   Widget build(BuildContext context) {
@@ -623,15 +626,24 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
         final boundedLeftWidth = leftWidth
             .clamp(_minimumLeftWidth, math.max(_minimumLeftWidth, maxSideWidth))
             .toDouble();
+        final effectiveLeftWidth = _leftExpanded ? boundedLeftWidth : 44.0;
+        final effectiveRightWidth = _rightExpanded ? boundedRightWidth : 44.0;
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SizedBox(
-              width: boundedLeftWidth,
-              child: _VideoSidebar(
-                controller: widget.controller,
-                state: widget.state,
-              ),
+              width: effectiveLeftWidth,
+              child: _leftExpanded
+                  ? _VideoSidebar(
+                      controller: widget.controller,
+                      state: widget.state,
+                      onCollapse: () => setState(() => _leftExpanded = false),
+                    )
+                  : _CollapsedVideoPanelRail(
+                      title: '参考视频',
+                      icon: Icons.video_library_rounded,
+                      onExpand: () => setState(() => _leftExpanded = true),
+                    ),
             ),
             _PanelResizeHandle(
               key: const ValueKey('video-analysis-left-resize-handle'),
@@ -644,7 +656,7 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
                           _minimumLeftWidth,
                           availablePanels -
                               _minimumCenterWidth -
-                              boundedRightWidth,
+                              effectiveRightWidth,
                         ),
                       )
                       .toDouble();
@@ -678,11 +690,18 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
               },
             ),
             SizedBox(
-              width: boundedRightWidth,
-              child: _AnalysisInspector(
-                controller: widget.controller,
-                state: widget.state,
-              ),
+              width: effectiveRightWidth,
+              child: _rightExpanded
+                  ? _AnalysisInspector(
+                      controller: widget.controller,
+                      state: widget.state,
+                      onCollapse: () => setState(() => _rightExpanded = false),
+                    )
+                  : _CollapsedVideoPanelRail(
+                      title: '解析检查器',
+                      icon: Icons.analytics_outlined,
+                      onExpand: () => setState(() => _rightExpanded = true),
+                    ),
             ),
           ],
         );
@@ -751,11 +770,13 @@ class _VideoSidebar extends StatelessWidget {
     required this.controller,
     required this.state,
     this.horizontal = false,
+    this.onCollapse,
   });
 
   final VideoAnalysisController controller;
   final VideoAnalysisState state;
   final bool horizontal;
+  final VoidCallback? onCollapse;
 
   @override
   Widget build(BuildContext context) {
@@ -834,7 +855,12 @@ class _VideoSidebar extends StatelessWidget {
         );
       },
     );
-    return _Panel(title: '参考视频', child: list);
+    return _Panel(
+      title: '参考视频',
+      onCollapse: onCollapse,
+      collapseTooltip: '收起参考视频',
+      child: list,
+    );
   }
 
   Future<void> _showVideoContextMenu(
@@ -988,22 +1014,11 @@ class _FrameWorkspace extends StatelessWidget {
           Expanded(
             child: frames.isEmpty
                 ? const Center(child: Text('当前筛选条件下没有视频帧'))
-                : GridView.builder(
-                    key: const ValueKey('video-frame-grid'),
-                    gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 230,
-                      childAspectRatio: videoFrameCardAspectRatio(
-                        mediaAspectRatio,
-                      ),
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                    ),
-                    itemCount: frames.length,
-                    itemBuilder: (context, index) => _FrameCard(
-                      controller: controller,
-                      frame: frames[index],
-                      selected: frames[index].id == state.selectedFrameId,
-                    ),
+                : _ZoomableFrameGrid(
+                    frames: frames,
+                    mediaAspectRatio: mediaAspectRatio,
+                    selectedFrameId: state.selectedFrameId,
+                    controller: controller,
                   ),
           ),
           if (state.shots.isNotEmpty) ...[
@@ -1040,6 +1055,137 @@ class _FrameWorkspace extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _ZoomableFrameGrid extends StatefulWidget {
+  const _ZoomableFrameGrid({
+    required this.frames,
+    required this.mediaAspectRatio,
+    required this.selectedFrameId,
+    required this.controller,
+  });
+
+  final List<VideoFrame> frames;
+  final double mediaAspectRatio;
+  final String? selectedFrameId;
+  final VideoAnalysisController controller;
+
+  @override
+  State<_ZoomableFrameGrid> createState() => _ZoomableFrameGridState();
+}
+
+class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
+  late final TransformationController _transformationController;
+
+  @override
+  void initState() {
+    super.initState();
+    _transformationController = TransformationController();
+  }
+
+  @override
+  void dispose() {
+    _transformationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final grid = SizedBox(
+          width: constraints.maxWidth,
+          child: GridView.builder(
+            key: const ValueKey('video-frame-grid'),
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 230,
+              childAspectRatio: videoFrameCardAspectRatio(
+                widget.mediaAspectRatio,
+              ),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+            ),
+            itemCount: widget.frames.length,
+            itemBuilder: (context, index) => _FrameCard(
+              controller: widget.controller,
+              frame: widget.frames[index],
+              selected: widget.frames[index].id == widget.selectedFrameId,
+            ),
+          ),
+        );
+        return Listener(
+          key: const ValueKey('video-analysis-frame-zoom-viewport'),
+          behavior: HitTestBehavior.opaque,
+          onPointerSignal: (event) {
+            if (event is! PointerScrollEvent) return;
+            GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+              final factor = math.pow(1.0015, -event.scrollDelta.dy).toDouble();
+              final current = _transformationController.value
+                  .getMaxScaleOnAxis();
+              final next = (current * factor).clamp(0.5, 4.0).toDouble();
+              final scaleFactor = current <= 0 ? 1.0 : next / current;
+              _transformationController.value =
+                  _transformationController.value.clone()
+                    ..scaleByDouble(scaleFactor, scaleFactor, scaleFactor, 1);
+            });
+          },
+          child: Stack(
+            children: [
+              ClipRect(
+                child: InteractiveViewer(
+                  transformationController: _transformationController,
+                  constrained: false,
+                  minScale: 0.5,
+                  maxScale: 4,
+                  boundaryMargin: const EdgeInsets.all(180),
+                  child: grid,
+                ),
+              ),
+              Positioned(
+                right: 10,
+                bottom: 10,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.64),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: '重置帧缩放',
+                        onPressed: () => _transformationController.value =
+                            Matrix4.identity(),
+                        icon: const Icon(
+                          Icons.fit_screen_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      ValueListenableBuilder<Matrix4>(
+                        valueListenable: _transformationController,
+                        builder: (context, matrix, _) => Padding(
+                          padding: const EdgeInsets.only(right: 10),
+                          child: Text(
+                            '${(matrix.getMaxScaleOnAxis() * 100).round()}%',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -1150,10 +1296,15 @@ double videoFrameCardAspectRatio(double mediaAspectRatio) {
 }
 
 class _AnalysisInspector extends StatelessWidget {
-  const _AnalysisInspector({required this.controller, required this.state});
+  const _AnalysisInspector({
+    required this.controller,
+    required this.state,
+    this.onCollapse,
+  });
 
   final VideoAnalysisController controller;
   final VideoAnalysisState state;
+  final VoidCallback? onCollapse;
 
   @override
   Widget build(BuildContext context) {
@@ -1162,6 +1313,8 @@ class _AnalysisInspector extends StatelessWidget {
     final analysis = state.selectedFrameAnalysis;
     return _Panel(
       title: '解析检查器',
+      onCollapse: onCollapse,
+      collapseTooltip: '收起解析检查器',
       child: video == null
           ? const Center(child: Text('选择一条视频查看详情'))
           : ListView(
@@ -1562,11 +1715,73 @@ class _FullscreenVideoDialogState extends State<_FullscreenVideoDialog> {
   }
 }
 
+class _CollapsedVideoPanelRail extends StatelessWidget {
+  const _CollapsedVideoPanelRail({
+    required this.title,
+    required this.icon,
+    required this.onExpand,
+  });
+
+  final String title;
+  final IconData icon;
+  final VoidCallback onExpand;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: '展开$title',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onExpand,
+        child: Container(
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow.withValues(alpha: 0.86),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: scheme.primary),
+              const SizedBox(height: 10),
+              RotatedBox(
+                quarterTurns: 3,
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Icon(
+                Icons.keyboard_double_arrow_right_rounded,
+                color: scheme.onSurfaceVariant,
+                size: 18,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Panel extends StatelessWidget {
-  const _Panel({required this.title, required this.child});
+  const _Panel({
+    required this.title,
+    required this.child,
+    this.onCollapse,
+    this.collapseTooltip,
+  });
 
   final String title;
   final Widget child;
+  final VoidCallback? onCollapse;
+  final String? collapseTooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -1582,11 +1797,25 @@ class _Panel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: Theme.of(
-                context,
-              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                if (onCollapse != null)
+                  IconButton(
+                    key: ValueKey('collapse-video-panel-$title'),
+                    tooltip: collapseTooltip ?? '收起面板',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onCollapse,
+                    icon: const Icon(Icons.keyboard_double_arrow_left_rounded),
+                  ),
+              ],
             ),
             const SizedBox(height: 10),
             Expanded(child: child),

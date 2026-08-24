@@ -54,7 +54,7 @@ enum _StoryboardInspectorSection {
 
 enum _ResourceContextAction { toggleUse, createGroup }
 
-enum _FolderContextAction { openDirectory }
+enum _FolderContextAction { openDirectory, deleteFolder }
 
 enum _ResourceGroupContextAction { rename }
 
@@ -62,6 +62,10 @@ const _replacementImageTypeGroup = XTypeGroup(
   label: '图片',
   extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
 );
+
+final _storyboardTilePointerDowns =
+    <int, ({String assetId, Offset position})>{};
+final _storyboardTileTapStamps = <String, ({DateTime time, Offset position})>{};
 
 bool _isReplacementImagePath(String path) => const {
   '.png',
@@ -266,6 +270,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   double _assetSidebarWidth = 260;
   bool _assetSidebarExpanded = true;
   bool _inspectorExpanded = false;
+  bool _showOriginalStoryboard = false;
   final _assetSidebarKey = GlobalKey<_AssetSidebarState>();
   final _folderDropCoordinator = _StoryboardFolderDropCoordinator();
   final _expandedInspectorSections = <_StoryboardInspectorSection>{};
@@ -274,12 +279,17 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   @override
   void initState() {
     super.initState();
+    // 双击检测状态只属于当前故事板页面，避免测试/页面重建后复用旧点击记录。
+    _storyboardTilePointerDowns.clear();
+    _storyboardTileTapStamps.clear();
     _restoreUiState();
     unawaited(_startBridgeLoopbackReceiver());
   }
 
   @override
   void dispose() {
+    _storyboardTilePointerDowns.clear();
+    _storyboardTileTapStamps.clear();
     _folderDropCoordinator.dispose();
     unawaited(_bridgeLoopbackReceiver?.stop());
     super.dispose();
@@ -382,6 +392,11 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                                     controller.deleteFolderAsset,
                                 onOpenFolderDirectory:
                                     _openAssetFolderDirectory,
+                                onDeleteFolder: (folder) =>
+                                    _confirmDeleteAssetFolder(
+                                      controller,
+                                      folder,
+                                    ),
                                 onCreateFolder: controller.createFolder,
                                 onCopyAssetToFolder: (asset, folderId) =>
                                     controller.copyAssetToFolder(
@@ -475,6 +490,11 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                                   ),
                               onCaptionChanged: controller.updateCaption,
                               onRowCaptionChanged: controller.updateRowCaption,
+                              showOriginalStoryboard: _showOriginalStoryboard,
+                              originalPathForItem:
+                                  controller.originalImagePathForItem,
+                              onCompareImage: (item) =>
+                                  _showImageComparisonDialog(controller, item),
                             ),
                           ),
                     ),
@@ -496,15 +516,35 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                               valueListenable: controller,
                               selector: _storyboardState,
                               equals: _sameStoryboardInspectorState,
-                              builder: (context, _, _) => _StoryboardInspector(
-                                controller: controller,
-                                expandedSections: _expandedInspectorSections,
-                                onToggleSection: _toggleInspectorSection,
-                                onExportBoardImages: _exportBoardImages,
-                                onExportShiyinBridge: _exportShiyinBridge,
-                                onImportShiyinBridge: _importShiyinBridge,
-                                onCollapse: () => _setInspectorExpanded(false),
-                              ),
+                              builder: (context, state, _) =>
+                                  _StoryboardInspector(
+                                    controller: controller,
+                                    expandedSections:
+                                        _expandedInspectorSections,
+                                    onToggleSection: _toggleInspectorSection,
+                                    onExportBoardImages: _exportBoardImages,
+                                    onExportShiyinBridge: _exportShiyinBridge,
+                                    onImportShiyinBridge: _importShiyinBridge,
+                                    showOriginalStoryboard:
+                                        _showOriginalStoryboard,
+                                    canShowOriginalStoryboard:
+                                        state.selectedBoard?.items.any(
+                                          (item) =>
+                                              controller
+                                                  .originalImagePathForItem(
+                                                    item,
+                                                  )
+                                                  ?.isNotEmpty ==
+                                              true,
+                                        ) ??
+                                        false,
+                                    onToggleOriginalStoryboard: (value) =>
+                                        setState(
+                                          () => _showOriginalStoryboard = value,
+                                        ),
+                                    onCollapse: () =>
+                                        _setInspectorExpanded(false),
+                                  ),
                             )
                           : _CollapsedInspectorRail(
                               onExpand: () => _setInspectorExpanded(true),
@@ -689,8 +729,10 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       final extension = p.extension(file.path).toLowerCase().isEmpty
           ? '.png'
           : p.extension(file.path).toLowerCase();
-      final uploadName = 'frame_${item.slotIndex.toString().padLeft(4, '0')}$extension';
-      final relativePath = 'images/original/${item.slotIndex.toString().padLeft(4, '0')}$extension';
+      final uploadName =
+          'frame_${item.slotIndex.toString().padLeft(4, '0')}$extension';
+      final relativePath =
+          'images/original/${item.slotIndex.toString().padLeft(4, '0')}$extension';
       final stableId = BridgeManifest.stableFrameId(
         board.id,
         item.slotIndex,
@@ -711,9 +753,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         'variant': BridgeVariant.original.wireName,
         'caption': item.caption,
         'sha256': checksum,
-        'metadata': {
-          'source_storyboard_asset_id': item.asset.id,
-        },
+        'metadata': {'source_storyboard_asset_id': item.asset.id},
       });
       checksums[relativePath] = checksum;
       uploads.add(BridgeDirectUpload(file: file, uploadName: uploadName));
@@ -770,9 +810,9 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('发送到 SHIYIN-AI 画布失败：$error')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('发送到 SHIYIN-AI 画布失败：$error')));
       }
     } finally {
       loopback.close();
@@ -1024,6 +1064,315 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     });
     _saveUiState();
   }
+
+  Future<void> _confirmDeleteAssetFolder(
+    StoryboardController controller,
+    StoryboardFolder folder,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除资源文件夹'),
+        content: Text(
+          '确定删除“${folder.name}”及其中的 ${folder.assets.length} 张图片吗？此操作不可恢复。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_forever_outlined),
+            label: const Text('删除文件夹'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await controller.deleteFolder(folder);
+    }
+  }
+
+  Future<void> _showImageComparisonDialog(
+    StoryboardController controller,
+    StoryboardItem item,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => _StoryboardImageComparisonDialog(
+        controller: controller,
+        boardId: controller.value.selectedBoardId,
+        item: item,
+      ),
+    );
+  }
+}
+
+class _StoryboardImageComparisonDialog extends StatefulWidget {
+  const _StoryboardImageComparisonDialog({
+    required this.controller,
+    required this.boardId,
+    required this.item,
+  });
+
+  final StoryboardController controller;
+  final String? boardId;
+  final StoryboardItem item;
+
+  @override
+  State<_StoryboardImageComparisonDialog> createState() =>
+      _StoryboardImageComparisonDialogState();
+}
+
+class _StoryboardImageComparisonDialogState
+    extends State<_StoryboardImageComparisonDialog> {
+  double _split = 0.5;
+  String _status = '';
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        final board = widget.controller.value.boards
+            .cast<StoryboardBoard?>()
+            .firstWhere(
+              (candidate) => candidate?.id == widget.boardId,
+              orElse: () => widget.controller.value.selectedBoard,
+            );
+        final currentItem =
+            board?.itemAtSlot(widget.item.slotIndex) ?? widget.item;
+        final originalPath =
+            widget.controller.originalImagePathForItem(currentItem) ??
+            currentItem.asset.path;
+        final currentPath = currentItem.asset.path;
+        final generating =
+            board != null &&
+            widget.controller.value.isGeneratingImageFor(board.id);
+        return Dialog(
+          key: const ValueKey('storyboard-image-comparison-dialog'),
+          insetPadding: const EdgeInsets.all(28),
+          child: SizedBox(
+            width: 980,
+            height: 720,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.compare_rounded),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '分镜对比 · 第 ${currentItem.slotIndex + 1} 格',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '关闭',
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: _WipeImageComparison(
+                      originalPath: originalPath,
+                      currentPath: currentPath,
+                      split: _split,
+                      onSplitChanged: (value) => setState(() => _split = value),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const Icon(Icons.swipe_rounded, size: 18),
+                      const SizedBox(width: 6),
+                      const Expanded(child: Text('拖动中间分割线核对原视频帧与当前分镜')),
+                      if (_status.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: Text(
+                            _status,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      FilledButton.icon(
+                        key: const ValueKey('regenerate-single-line-art'),
+                        onPressed: generating || board == null
+                            ? null
+                            : () {
+                                final submitted = widget.controller
+                                    .enqueueLineArtStoryboardForItem(
+                                      item: currentItem,
+                                    );
+                                if (submitted) {
+                                  setState(() => _status = '已提交单图线稿任务');
+                                }
+                              },
+                        icon: generating
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.refresh_rounded),
+                        label: Text(generating ? '生成中...' : '重新生成该图线稿'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _WipeImageComparison extends StatelessWidget {
+  const _WipeImageComparison({
+    required this.originalPath,
+    required this.currentPath,
+    required this.split,
+    required this.onSplitChanged,
+  });
+
+  final String originalPath;
+  final String currentPath;
+  final double split;
+  final ValueChanged<double> onSplitChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final dividerX = constraints.maxWidth * split.clamp(0.05, 0.95);
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: ColoredBox(
+            color: Colors.black,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.file(File(currentPath), fit: BoxFit.contain),
+                ClipRect(
+                  clipper: _LeftWipeClipper(dividerX),
+                  child: Image.file(File(originalPath), fit: BoxFit.contain),
+                ),
+                Positioned(
+                  left: dividerX - 1,
+                  top: 0,
+                  bottom: 0,
+                  child: Container(width: 2, color: scheme.primary),
+                ),
+                Positioned(
+                  left: dividerX - 22,
+                  top: 0,
+                  bottom: 0,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragUpdate: (details) {
+                      onSplitChanged(
+                        ((dividerX + details.delta.dx) /
+                                math.max(1, constraints.maxWidth))
+                            .clamp(0.05, 0.95),
+                      );
+                    },
+                    child: SizedBox(
+                      width: 44,
+                      child: Center(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: scheme.primary,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 12,
+                            ),
+                            child: Icon(
+                              Icons.drag_indicator_rounded,
+                              color: Colors.white,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 12,
+                  top: 12,
+                  child: _ComparisonLabel(label: '原故事板', color: scheme.primary),
+                ),
+                Positioned(
+                  right: 12,
+                  top: 12,
+                  child: _ComparisonLabel(
+                    label: '当前分镜',
+                    color: scheme.tertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LeftWipeClipper extends CustomClipper<Rect> {
+  const _LeftWipeClipper(this.right);
+
+  final double right;
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTRB(0, 0, right, size.height);
+
+  @override
+  bool shouldReclip(covariant _LeftWipeClipper oldClipper) =>
+      oldClipper.right != right;
+}
+
+class _ComparisonLabel extends StatelessWidget {
+  const _ComparisonLabel({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.7)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        child: Text(
+          label,
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
 }
 
 class _SidebarResizeHandle extends StatelessWidget {
@@ -1179,6 +1528,7 @@ class _AssetSidebar extends ConsumerStatefulWidget {
     required this.onDeleteGroup,
     required this.onDeleteFolderAsset,
     required this.onOpenFolderDirectory,
+    required this.onDeleteFolder,
     required this.onCreateFolder,
     required this.onCopyAssetToFolder,
     required this.onCopyPathsToFolder,
@@ -1198,6 +1548,7 @@ class _AssetSidebar extends ConsumerStatefulWidget {
   final ValueChanged<String> onDeleteGroup;
   final Future<void> Function(StoryboardCutAsset asset) onDeleteFolderAsset;
   final ValueChanged<StoryboardFolder> onOpenFolderDirectory;
+  final ValueChanged<StoryboardFolder> onDeleteFolder;
   final Future<void> Function(String name) onCreateFolder;
   final Future<void> Function(StoryboardCutAsset asset, String folderId)
   onCopyAssetToFolder;
@@ -2201,6 +2552,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
               onDeleteAsset: (asset) =>
                   unawaited(widget.onDeleteFolderAsset(asset)),
               onOpenDirectory: () => widget.onOpenFolderDirectory(folder),
+              onDeleteFolder: () => widget.onDeleteFolder(folder),
               onRangeHover: _updateRangeTarget,
               onCreateAssetResourceGroup: (_) =>
                   unawaited(_createCheckedResourceGroup()),
@@ -3528,6 +3880,7 @@ class _AssetFolderGroup extends StatefulWidget {
     required this.onRemoveAsset,
     required this.onDeleteAsset,
     required this.onOpenDirectory,
+    required this.onDeleteFolder,
     required this.onRangeHover,
     required this.onCreateAssetResourceGroup,
     required this.onDropAsset,
@@ -3553,6 +3906,7 @@ class _AssetFolderGroup extends StatefulWidget {
   final ValueChanged<StoryboardCutAsset> onRemoveAsset;
   final ValueChanged<StoryboardCutAsset> onDeleteAsset;
   final VoidCallback onOpenDirectory;
+  final VoidCallback onDeleteFolder;
   final ValueChanged<StoryboardCutAsset> onRangeHover;
   final ValueChanged<StoryboardCutAsset> onCreateAssetResourceGroup;
   final ValueChanged<StoryboardCutAsset> onDropAsset;
@@ -3673,6 +4027,7 @@ class _AssetFolderGroupState extends State<_AssetFolderGroup> {
                         onTap: widget.onToggleExpanded,
                         onTogglePinned: widget.onTogglePinned,
                         onOpenDirectory: widget.onOpenDirectory,
+                        onDeleteFolder: widget.onDeleteFolder,
                       ),
                     ),
                   ),
@@ -3737,6 +4092,7 @@ class _FolderHeader extends StatelessWidget {
     required this.onTap,
     required this.onTogglePinned,
     required this.onOpenDirectory,
+    required this.onDeleteFolder,
   });
 
   final StoryboardFolder folder;
@@ -3748,6 +4104,7 @@ class _FolderHeader extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onTogglePinned;
   final VoidCallback onOpenDirectory;
+  final VoidCallback onDeleteFolder;
 
   @override
   Widget build(BuildContext context) {
@@ -3793,73 +4150,91 @@ class _FolderHeader extends StatelessWidget {
                   ]
                 : const [],
           ),
-          child: Row(
-            children: [
-              _ResourceSequenceBadge(sequence: sequence),
-              const SizedBox(width: 7),
-              if (groupModeEnabled) ...[
-                Checkbox(
-                  key: ValueKey('resource-group-folder-checkbox-${folder.id}'),
-                  value: groupChecked,
-                  onChanged: (value) => groupSelection?.onFolderCheckedChanged(
-                    folder.id,
-                    value ?? false,
+          child: LayoutBuilder(
+            builder: (context, constraints) => Row(
+              children: [
+                _ResourceSequenceBadge(sequence: sequence),
+                const SizedBox(width: 7),
+                if (groupModeEnabled) ...[
+                  Checkbox(
+                    key: ValueKey(
+                      'resource-group-folder-checkbox-${folder.id}',
+                    ),
+                    value: groupChecked,
+                    onChanged: (value) => groupSelection
+                        ?.onFolderCheckedChanged(folder.id, value ?? false),
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    checkColor: scheme.onPrimary,
+                    fillColor: WidgetStateProperty.resolveWith((states) {
+                      return states.contains(WidgetState.selected)
+                          ? scheme.primary
+                          : scheme.surfaceContainerHighest;
+                    }),
+                    side: BorderSide(color: scheme.onSurface, width: 2),
                   ),
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  checkColor: scheme.onPrimary,
-                  fillColor: WidgetStateProperty.resolveWith((states) {
-                    return states.contains(WidgetState.selected)
-                        ? scheme.primary
-                        : scheme.surfaceContainerHighest;
-                  }),
-                  side: BorderSide(color: scheme.onSurface, width: 2),
-                ),
-                const SizedBox(width: 4),
-              ],
-              if (!groupModeEnabled) ...[
-                _FolderPreview(folder: folder),
-                const SizedBox(width: 8),
-              ],
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      folder.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      usedCount == 0
-                          ? '${folder.assets.length} 张图片'
-                          : '${folder.assets.length} 张图片 · 已用 $usedCount',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                  const SizedBox(width: 4),
+                ],
+                if (!groupModeEnabled) ...[
+                  _FolderPreview(folder: folder),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        folder.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
+                      const SizedBox(height: 3),
+                      Text(
+                        usedCount == 0
+                            ? '${folder.assets.length} 张图片'
+                            : '${folder.assets.length} 张图片 · 已用 $usedCount',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _ResourcePinButton(
+                  nodeKey: StoryboardResourceNodeRef.folder(folder.id).key,
+                  pinned: pinned,
+                  onPressed: onTogglePinned,
+                ),
+                if (constraints.maxWidth >= 230)
+                  IconButton(
+                    key: ValueKey('delete-storyboard-folder-${folder.id}'),
+                    tooltip: '删除文件夹',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 20,
+                      height: 24,
                     ),
-                  ],
+                    onPressed: onDeleteFolder,
+                    icon: Icon(
+                      Icons.delete_outline_rounded,
+                      size: 15,
+                      color: scheme.error,
+                    ),
+                  ),
+                AnimatedRotation(
+                  turns: expanded ? 0.5 : 0,
+                  duration: const Duration(milliseconds: 180),
+                  child: Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-              _ResourcePinButton(
-                nodeKey: StoryboardResourceNodeRef.folder(folder.id).key,
-                pinned: pinned,
-                onPressed: onTogglePinned,
-              ),
-              const SizedBox(width: 2),
-              AnimatedRotation(
-                turns: expanded ? 0.5 : 0,
-                duration: const Duration(milliseconds: 180),
-                child: Icon(
-                  Icons.keyboard_arrow_down_rounded,
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -3889,6 +4264,16 @@ class _FolderHeader extends StatelessWidget {
             ],
           ),
         ),
+        PopupMenuItem<_FolderContextAction>(
+          value: _FolderContextAction.deleteFolder,
+          child: Row(
+            children: [
+              Icon(Icons.delete_outline_rounded, size: 18),
+              SizedBox(width: 10),
+              Text('删除文件夹'),
+            ],
+          ),
+        ),
       ],
     );
     if (!context.mounted || action == null) {
@@ -3897,6 +4282,8 @@ class _FolderHeader extends StatelessWidget {
     switch (action) {
       case _FolderContextAction.openDirectory:
         onOpenDirectory();
+      case _FolderContextAction.deleteFolder:
+        onDeleteFolder();
     }
   }
 }
@@ -4535,6 +4922,9 @@ class _StoryboardCanvas extends StatelessWidget {
     required this.onDropReplacementImages,
     required this.onCaptionChanged,
     required this.onRowCaptionChanged,
+    required this.showOriginalStoryboard,
+    required this.originalPathForItem,
+    required this.onCompareImage,
   });
 
   final StoryboardState state;
@@ -4558,6 +4948,9 @@ class _StoryboardCanvas extends StatelessWidget {
   onDropReplacementImages;
   final void Function(int index, String caption) onCaptionChanged;
   final void Function(int rowIndex, String caption) onRowCaptionChanged;
+  final bool showOriginalStoryboard;
+  final String? Function(StoryboardItem item) originalPathForItem;
+  final ValueChanged<StoryboardItem> onCompareImage;
 
   @override
   Widget build(BuildContext context) {
@@ -4698,6 +5091,9 @@ class _StoryboardCanvas extends StatelessWidget {
                     onDropReplacementImages: onDropReplacementImages,
                     onCaptionChanged: onCaptionChanged,
                     onRowCaptionChanged: onRowCaptionChanged,
+                    showOriginalStoryboard: showOriginalStoryboard,
+                    originalPathForItem: originalPathForItem,
+                    onCompareImage: onCompareImage,
                   ),
                 ),
               ],
@@ -4808,6 +5204,9 @@ class _StoryboardCanvasViewport extends StatefulWidget {
     required this.onDropReplacementImages,
     required this.onCaptionChanged,
     required this.onRowCaptionChanged,
+    required this.showOriginalStoryboard,
+    required this.originalPathForItem,
+    required this.onCompareImage,
   });
 
   final StoryboardBoard board;
@@ -4825,6 +5224,9 @@ class _StoryboardCanvasViewport extends StatefulWidget {
   onDropReplacementImages;
   final void Function(int index, String caption) onCaptionChanged;
   final void Function(int rowIndex, String caption) onRowCaptionChanged;
+  final bool showOriginalStoryboard;
+  final String? Function(StoryboardItem item) originalPathForItem;
+  final ValueChanged<StoryboardItem> onCompareImage;
 
   @override
   State<_StoryboardCanvasViewport> createState() =>
@@ -5015,6 +5417,9 @@ class _StoryboardCanvasViewportState extends State<_StoryboardCanvasViewport> {
               onDropReplacementImages: widget.onDropReplacementImages,
               onCaptionChanged: widget.onCaptionChanged,
               onRowCaptionChanged: widget.onRowCaptionChanged,
+              showOriginalStoryboard: widget.showOriginalStoryboard,
+              originalPathForItem: widget.originalPathForItem,
+              onCompareImage: widget.onCompareImage,
             ),
           ),
         ],
@@ -5586,6 +5991,9 @@ class _CanvasGrid extends ConsumerStatefulWidget {
     required this.onDropReplacementImages,
     required this.onCaptionChanged,
     required this.onRowCaptionChanged,
+    required this.showOriginalStoryboard,
+    required this.originalPathForItem,
+    required this.onCompareImage,
   });
 
   final StoryboardBoard board;
@@ -5605,6 +6013,9 @@ class _CanvasGrid extends ConsumerStatefulWidget {
   onDropReplacementImages;
   final void Function(int index, String caption) onCaptionChanged;
   final void Function(int rowIndex, String caption) onRowCaptionChanged;
+  final bool showOriginalStoryboard;
+  final String? Function(StoryboardItem item) originalPathForItem;
+  final ValueChanged<StoryboardItem> onCompareImage;
 
   @override
   ConsumerState<_CanvasGrid> createState() => _CanvasGridState();
@@ -6099,6 +6510,9 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       selected: _selectedAssetIds.contains(item.asset.id),
       showImageQuickActions:
           !item.resourceRemoved && _quickActionAssetId == item.asset.id,
+      showOriginalStoryboard: widget.showOriginalStoryboard,
+      originalPath: widget.originalPathForItem(item),
+      onCompareImage: () => widget.onCompareImage(item),
       onSelect: () => _selectItem(item.asset.id),
       onRemove: widget.board.locked
           ? null
@@ -8045,6 +8459,9 @@ class _StoryboardTile extends StatelessWidget {
     required this.captionFontSize,
     required this.selected,
     required this.showImageQuickActions,
+    required this.showOriginalStoryboard,
+    required this.originalPath,
+    required this.onCompareImage,
     required this.onSelect,
     required this.onRemove,
     required this.captionEnabled,
@@ -8062,6 +8479,9 @@ class _StoryboardTile extends StatelessWidget {
   final double captionFontSize;
   final bool selected;
   final bool showImageQuickActions;
+  final bool showOriginalStoryboard;
+  final String? originalPath;
+  final VoidCallback onCompareImage;
   final VoidCallback onSelect;
   final VoidCallback? onRemove;
   final bool captionEnabled;
@@ -8082,75 +8502,106 @@ class _StoryboardTile extends StatelessWidget {
             index: index,
             previewLogicalWidth: previewLogicalWidth,
             showDragHandle: imageBuilder != null && showImageQuickActions,
+            showOriginalStoryboard: showOriginalStoryboard,
+            originalPath: originalPath,
           );
-    return GestureDetector(
-      onTap: onSelect,
-      onSecondaryTap: onRemove,
-      child: AnimatedContainer(
-        key: ValueKey('storyboard-tile-content-${item.asset.id}'),
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(
-          color: canvasColors.tileBackground,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: borderColor, width: emphasized ? 2 : 1),
-          boxShadow: emphasized
-              ? [
-                  BoxShadow(
-                    color: canvasColors.accent.withValues(alpha: 0.18),
-                    blurRadius: 16,
+    return Listener(
+      onPointerDown: (event) => _storyboardTilePointerDowns[event.pointer] = (
+        assetId: item.asset.id,
+        position: event.position,
+      ),
+      onPointerMove: (event) {
+        final down = _storyboardTilePointerDowns[event.pointer];
+        if (down != null && (event.position - down.position).distance > 5) {
+          _storyboardTilePointerDowns.remove(event.pointer);
+        }
+      },
+      onPointerUp: (event) {
+        final down = _storyboardTilePointerDowns.remove(event.pointer);
+        if (down == null) return;
+        final now = DateTime.now();
+        final previous = _storyboardTileTapStamps[down.assetId];
+        if (previous != null &&
+            now.difference(previous.time).inMilliseconds < 360 &&
+            (down.position - previous.position).distance < 24) {
+          onCompareImage();
+        }
+        _storyboardTileTapStamps[down.assetId] = (
+          time: now,
+          position: down.position,
+        );
+      },
+      onPointerCancel: (event) =>
+          _storyboardTilePointerDowns.remove(event.pointer),
+      child: GestureDetector(
+        onTap: onSelect,
+        onSecondaryTap: onRemove,
+        child: AnimatedContainer(
+          key: ValueKey('storyboard-tile-content-${item.asset.id}'),
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: canvasColors.tileBackground,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: borderColor, width: emphasized ? 2 : 1),
+            boxShadow: emphasized
+                ? [
+                    BoxShadow(
+                      color: canvasColors.accent.withValues(alpha: 0.18),
+                      blurRadius: 16,
+                    ),
+                  ]
+                : null,
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final tileImage = imageBuilder == null
+                  ? image
+                  : imageBuilder!(context, image);
+              final maxImageHeight = showCaption
+                  ? math.max(0.0, constraints.maxHeight - captionHeight)
+                  : constraints.maxHeight;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: maxImageHeight),
+                    child: tileImage,
                   ),
-                ]
-              : null,
-        ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final tileImage = imageBuilder == null
-                ? image
-                : imageBuilder!(context, image);
-            final maxImageHeight = showCaption
-                ? math.max(0.0, constraints.maxHeight - captionHeight)
-                : constraints.maxHeight;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                ConstrainedBox(
-                  constraints: BoxConstraints(maxHeight: maxImageHeight),
-                  child: tileImage,
-                ),
-                if (showCaption)
-                  Expanded(
-                    child: Center(
-                      child: SizedBox(
-                        key: ValueKey('storyboard-caption-$index'),
-                        height: captionHeight,
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _CaptionSequencePrefix(
-                              number: index + 1,
-                              fontSize: captionFontSize,
-                            ),
-                            Expanded(
-                              child: _CaptionTextField(
-                                value: item.caption,
-                                hintText: '描述文本',
-                                minLines: 1,
-                                maxLines: null,
-                                fontFamily: captionFontFamily,
+                  if (showCaption)
+                    Expanded(
+                      child: Center(
+                        child: SizedBox(
+                          key: ValueKey('storyboard-caption-$index'),
+                          height: captionHeight,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _CaptionSequencePrefix(
+                                number: index + 1,
                                 fontSize: captionFontSize,
-                                enabled: captionEnabled,
-                                onChanged: onCaptionChanged,
                               ),
-                            ),
-                          ],
+                              Expanded(
+                                child: _CaptionTextField(
+                                  value: item.caption,
+                                  hintText: '描述文本',
+                                  minLines: 1,
+                                  maxLines: null,
+                                  fontFamily: captionFontFamily,
+                                  fontSize: captionFontSize,
+                                  enabled: captionEnabled,
+                                  onChanged: onCaptionChanged,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-              ],
-            );
-          },
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -8268,12 +8719,16 @@ class _StoryboardTileImage extends ConsumerWidget {
     required this.index,
     required this.previewLogicalWidth,
     required this.showDragHandle,
+    required this.showOriginalStoryboard,
+    required this.originalPath,
   });
 
   final StoryboardItem item;
   final int index;
   final double previewLogicalWidth;
   final bool showDragHandle;
+  final bool showOriginalStoryboard;
+  final String? originalPath;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -8319,14 +8774,18 @@ class _StoryboardTileImage extends ConsumerWidget {
   }) {
     final canvasColors = StoryboardCanvasStyle.of(context);
     final imageProvider = previewFileImageProvider(
-      path: item.asset.path,
+      path: showOriginalStoryboard && originalPath?.isNotEmpty == true
+          ? originalPath!
+          : item.asset.path,
       logicalWidth: previewLogicalWidth,
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       maxCacheWidth: 1536,
     );
     return _StoryboardAspectRatioImage(
       imageProvider: imageProvider,
-      imageKey: ValueKey('storyboard-image-${item.asset.id}'),
+      imageKey: showOriginalStoryboard
+          ? ValueKey('storyboard-image-${item.asset.id}-original')
+          : ValueKey('storyboard-image-${item.asset.id}'),
       frameKey: ValueKey('storyboard-image-frame-${item.asset.id}'),
       builder: (image) => RepaintBoundary(
         child: ClipRRect(
@@ -8595,6 +9054,9 @@ class _StoryboardInspector extends StatefulWidget {
     required this.onExportBoardImages,
     required this.onExportShiyinBridge,
     required this.onImportShiyinBridge,
+    required this.showOriginalStoryboard,
+    required this.canShowOriginalStoryboard,
+    required this.onToggleOriginalStoryboard,
     required this.onCollapse,
   });
 
@@ -8604,6 +9066,9 @@ class _StoryboardInspector extends StatefulWidget {
   final Future<void> Function(StoryboardBoard board) onExportBoardImages;
   final Future<void> Function(StoryboardBoard board) onExportShiyinBridge;
   final Future<void> Function(StoryboardBoard board) onImportShiyinBridge;
+  final bool showOriginalStoryboard;
+  final bool canShowOriginalStoryboard;
+  final ValueChanged<bool> onToggleOriginalStoryboard;
   final VoidCallback onCollapse;
 
   @override
@@ -9016,6 +9481,22 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                   value: '移除非叙事干扰',
                 ),
                 const SizedBox(height: 10),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('storyboard-original-frame-switch'),
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  value: widget.showOriginalStoryboard,
+                  title: const Text('查看原故事板'),
+                  subtitle: Text(
+                    widget.canShowOriginalStoryboard
+                        ? '显示生成前保留的视频帧'
+                        : '当前画板暂无可恢复的原视频帧',
+                  ),
+                  onChanged: widget.canShowOriginalStoryboard
+                      ? widget.onToggleOriginalStoryboard
+                      : null,
+                ),
+                const SizedBox(height: 4),
                 FilledButton.icon(
                   key: const ValueKey('storyboard-line-art-button'),
                   onPressed:

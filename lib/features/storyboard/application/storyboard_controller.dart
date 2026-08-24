@@ -1783,6 +1783,14 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
   StoryboardBoard? duplicateSelectedBoard() {
     final board = value.selectedBoard;
+    return board == null ? null : duplicateBoard(board.id);
+  }
+
+  StoryboardBoard? duplicateBoard(String boardId) {
+    final board = value.boards.cast<StoryboardBoard?>().firstWhere(
+      (candidate) => candidate?.id == boardId,
+      orElse: () => null,
+    );
     if (board == null) {
       return null;
     }
@@ -3118,6 +3126,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     required String imageSize,
     required String quality,
     required List<String> extraReferenceImagePaths,
+    String? referenceImagePath,
     String? successMessage,
     String? changedMessage,
   }) {
@@ -3144,7 +3153,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       value = value.copyWith(message: '当前图片已变化，请重新选择后再修改');
       return null;
     }
-    final source = File(currentItem.asset.path);
+    final effectiveReferencePath = referenceImagePath?.trim().isNotEmpty == true
+        ? referenceImagePath!.trim()
+        : currentItem.asset.path;
+    final source = File(effectiveReferencePath);
     if (!source.existsSync()) {
       value = value.copyWith(message: '当前图片文件不存在，无法作为参考图');
       return null;
@@ -3168,7 +3180,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       boardId: board.id,
       slotIndex: currentItem.slotIndex,
       sourceAssetId: currentItem.asset.id,
-      sourcePath: _toStoredPath(currentItem.asset.path),
+      sourcePath: _toStoredPath(effectiveReferencePath),
       model: model,
       prompt: prompt,
       aspectRatio: effectiveAspectRatio,
@@ -3250,7 +3262,138 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
             imageSize: size,
             style: style,
           ),
+      referencePathForItem: originalImagePathForItem,
     );
+  }
+
+  void deleteBoards(Iterable<String> boardIds) {
+    for (final boardId in boardIds.toSet().toList()) {
+      deleteBoard(boardId);
+    }
+  }
+
+  Future<void> deleteFolder(StoryboardFolder folder) async {
+    final root = _directories?.storyboardFolders;
+    if (root == null) {
+      value = value.copyWith(message: '数据目录尚未初始化，无法删除文件夹');
+      return;
+    }
+    final target = Directory(folder.path);
+    if (!target.existsSync()) {
+      await _reloadAssets(message: '文件夹不存在，已刷新资源状态', ensureLatest: true);
+      return;
+    }
+    final rootPath = _normalizedFilePath(root.path);
+    final targetPath = _normalizedFilePath(target.path);
+    final parentPath = _normalizedFilePath(target.parent.path);
+    if (targetPath == rootPath || parentPath != rootPath) {
+      value = value.copyWith(message: '只能删除手动创建的一级资源文件夹');
+      return;
+    }
+    try {
+      await target.delete(recursive: true);
+    } on FileSystemException {
+      value = value.copyWith(message: '删除文件夹失败，请确认文件未被占用');
+      return;
+    }
+    await _reloadAssets(
+      message: '已删除文件夹 ${folder.name}',
+      evictImageCache: true,
+      ensureLatest: true,
+    );
+  }
+
+  /// 只为当前画板中的一个格位重新生成线稿，不会触发其他格位任务。
+  bool enqueueLineArtStoryboardForItem({
+    required StoryboardItem item,
+    String aspectRatio = defaultFrameTransformationAspectRatio,
+    String imageSize = defaultFrameTransformationImageSize,
+    StoryboardLineArtStyle style = StoryboardLineArtStyle.pencil,
+  }) {
+    final board = value.selectedBoard;
+    if (board == null) {
+      value = value.copyWith(message: '请先创建故事板');
+      return false;
+    }
+    if (_guardLockedBoard(board, '重新生成线稿')) {
+      return false;
+    }
+    final currentItem = board.itemAtSlot(item.slotIndex);
+    if (currentItem == null || currentItem.asset.id != item.asset.id) {
+      value = value.copyWith(message: '当前图片已变化，请重新打开对比窗口');
+      return false;
+    }
+    final ratio = aspectRatio.trim();
+    final size = imageSize.trim().toUpperCase();
+    final descriptor = ImageGenerationModelCatalog.descriptorFor(
+      frameTransformationModel,
+    );
+    if (!frameTransformationAspectRatios.contains(ratio) ||
+        !frameTransformationImageSizes.contains(size) ||
+        descriptor == null ||
+        !descriptor.aspectRatios.contains(ratio) ||
+        !descriptor.resolutions.contains(size)) {
+      value = value.copyWith(message: '重新生成线稿的比例或分辨率无效');
+      return false;
+    }
+    final referencePath =
+        originalImagePathForItem(currentItem) ?? currentItem.asset.path;
+    final task = _prepareImageReplacementTask(
+      item: currentItem,
+      prompt: _lineArtStoryboardPrompt(
+        board: board,
+        item: currentItem,
+        sequenceNo: currentItem.slotIndex + 1,
+        aspectRatio: ratio,
+        imageSize: size,
+        style: style,
+      ),
+      model: frameTransformationModel,
+      aspectRatio: ratio,
+      imageSize: size,
+      quality: 'auto',
+      extraReferenceImagePaths: const [],
+      referenceImagePath: referencePath,
+      successMessage: '单图线稿生成完成，已替换当前格',
+      changedMessage: '单图线稿已生成，但当前格内容已变化，未自动替换',
+    );
+    if (task == null) {
+      return false;
+    }
+    unawaited(_runImageReplacementTask(task));
+    return true;
+  }
+
+  /// 返回某个画板格位的原始视频帧路径。没有生成历史或文件已丢失时返回 null。
+  String? originalImagePathForItem(StoryboardItem item) {
+    final currentPath = _normalizedFilePath(item.asset.path);
+    final records = <String, ImageGenerationRecord>{};
+    for (final record in _database.listImageGenerationRecords().reversed) {
+      if (record.status == 'succeeded' &&
+          record.resultAssetId.trim().isNotEmpty) {
+        records.putIfAbsent(record.resultAssetId, () => record);
+      }
+    }
+    var assetId = item.asset.id;
+    final visited = <String>{};
+    String? originalPath;
+    while (visited.add(assetId)) {
+      final record = records[assetId];
+      if (record == null) {
+        break;
+      }
+      final candidatePath = _toRuntimePath(record.sourcePath);
+      if (File(candidatePath).existsSync() &&
+          _normalizedFilePath(candidatePath) != currentPath) {
+        originalPath = candidatePath;
+      }
+      final sourceAssetId = record.sourceAssetId.trim();
+      if (sourceAssetId.isEmpty || sourceAssetId == assetId) {
+        break;
+      }
+      assetId = sourceAssetId;
+    }
+    return originalPath;
   }
 
   bool _enqueueFrameTransformationForSelectedBoard({
@@ -3269,6 +3412,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       String imageSize,
     )
     buildPrompt,
+    String? Function(StoryboardItem item)? referencePathForItem,
   }) {
     final board = value.selectedBoard;
     if (board == null) {
@@ -3334,6 +3478,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         imageSize: normalizedImageSize,
         quality: 'auto',
         extraReferenceImagePaths: const [],
+        referenceImagePath: referencePathForItem?.call(item),
         successMessage: successMessage,
         changedMessage: changedMessage,
       );

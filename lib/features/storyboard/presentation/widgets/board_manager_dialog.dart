@@ -360,12 +360,23 @@ class _BoardManagerDialogState extends State<_BoardManagerDialog> {
             icon: const Icon(Icons.tab_unselected_rounded),
             label: const Text('关闭'),
           ),
+          const SizedBox(width: 8),
+          FilledButton.tonalIcon(
+            key: const ValueKey('batch-delete-boards'),
+            onPressed: () => _confirmDeleteSelected(context),
+            icon: const Icon(Icons.delete_sweep_outlined),
+            label: const Text('删除'),
+          ),
           PopupMenuButton<String>(
             tooltip: '移动到编组',
-            onSelected: (groupId) => widget.controller.assignBoardsToGroup(
-              _selectedIds,
-              groupId == _removeFromGroup ? null : groupId,
-            ),
+            onSelected: (groupId) {
+              final selected = _selectedIds.toList(growable: false);
+              widget.controller.assignBoardsToGroup(
+                selected,
+                groupId == _removeFromGroup ? null : groupId,
+              );
+              if (mounted) setState(_selectedIds.clear);
+            },
             itemBuilder: (context) => [
               const PopupMenuItem<String>(
                 value: _removeFromGroup,
@@ -438,6 +449,7 @@ class _BoardManagerDialogState extends State<_BoardManagerDialog> {
             Navigator.of(context).pop();
           },
           onDelete: () => _confirmDeleteBoard(context, board),
+          onCopy: () => widget.controller.duplicateBoard(board.id),
         );
       },
     );
@@ -603,6 +615,39 @@ class _BoardManagerDialogState extends State<_BoardManagerDialog> {
     );
     if (confirmed == true) widget.controller.deleteBoard(board.id);
   }
+
+  Future<void> _confirmDeleteSelected(BuildContext context) async {
+    final selected = _selectedIds.toList(growable: false);
+    if (selected.isEmpty) return;
+    final lockedCount = widget.controller.value.boards
+        .where((board) => selected.contains(board.id) && board.locked)
+        .length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('批量删除画板'),
+        content: Text(
+          '确定永久删除已选择的 ${selected.length} 个画板吗？排版和描述将无法恢复。'
+          '${lockedCount > 0 ? '\n$lockedCount 个锁定画板会被跳过。' : ''}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_forever_outlined),
+            label: const Text('永久删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      widget.controller.deleteBoards(selected);
+      if (mounted) setState(_selectedIds.clear);
+    }
+  }
 }
 
 class _BoardManagerCard extends StatelessWidget {
@@ -615,6 +660,7 @@ class _BoardManagerCard extends StatelessWidget {
     required this.onTap,
     required this.onDoubleTap,
     required this.onDelete,
+    required this.onCopy,
   });
 
   final StoryboardBoard board;
@@ -624,6 +670,7 @@ class _BoardManagerCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
   final VoidCallback onDelete;
+  final VoidCallback onCopy;
 
   @override
   Widget build(BuildContext context) {
@@ -643,6 +690,8 @@ class _BoardManagerCard extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         onDoubleTap: onDoubleTap,
+        onSecondaryTapDown: (details) =>
+            _showContextMenu(context, details.globalPosition),
         child: Padding(
           padding: const EdgeInsets.all(10),
           child: Column(
@@ -662,9 +711,20 @@ class _BoardManagerCard extends StatelessWidget {
                   PopupMenuButton<String>(
                     tooltip: '画板操作',
                     onSelected: (value) {
+                      if (value == 'copy') onCopy();
                       if (value == 'delete') onDelete();
                     },
                     itemBuilder: (context) => const [
+                      PopupMenuItem(
+                        value: 'copy',
+                        child: Row(
+                          children: [
+                            Icon(Icons.copy_rounded),
+                            SizedBox(width: 8),
+                            Text('复制画板'),
+                          ],
+                        ),
+                      ),
                       PopupMenuItem(
                         value: 'delete',
                         child: Row(
@@ -714,6 +774,41 @@ class _BoardManagerCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _showContextMenu(BuildContext context, Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) return;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'copy',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.copy_rounded),
+            title: Text('复制画板'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.delete_forever_outlined),
+            title: Text('删除画板'),
+          ),
+        ),
+      ],
+    );
+    if (!context.mounted) return;
+    if (action == 'copy') onCopy();
+    if (action == 'delete') onDelete();
   }
 }
 
