@@ -31,4 +31,23 @@ void main() {
     expect(provider, isA<ResizeImage>());
     expect((provider as ResizeImage).width, 1536);
   });
+
+  testWidgets('预览组件按视口宽度创建缩放图片提供器', (tester) async {
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: SizedBox(
+          width: 180,
+          child: PreviewFileImage(
+            path: 'missing-preview.png',
+            maxCacheWidth: 512,
+          ),
+        ),
+      ),
+    );
+
+    final image = tester.widget<Image>(find.byType(Image));
+    expect(image.image, isA<ResizeImage>());
+    expect((image.image as ResizeImage).width, 512);
+  });
 }

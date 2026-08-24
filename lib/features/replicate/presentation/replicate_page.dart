@@ -14,6 +14,7 @@ import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
+import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../settings/domain/app_settings.dart';
@@ -2275,7 +2276,7 @@ class _BuiltFrameThumbnail extends StatelessWidget {
           ColoredBox(
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
             child: exists
-                ? Image.file(File(path), fit: BoxFit.contain)
+                ? PreviewFileImage(path: path, fit: BoxFit.contain)
                 : Icon(
                     Icons.image_not_supported_outlined,
                     size: 18,
@@ -5193,8 +5194,8 @@ class _ShotFrameThumbnail extends StatelessWidget {
                 ColoredBox(
                   color: scheme.surfaceContainerHighest,
                   child: exists
-                      ? Image.file(
-                          File(path),
+                      ? PreviewFileImage(
+                          path: path,
                           fit: BoxFit.contain,
                           errorBuilder: (_, _, _) => Icon(emptyIcon, size: 20),
                         )

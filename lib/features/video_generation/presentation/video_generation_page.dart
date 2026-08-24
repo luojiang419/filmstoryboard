@@ -15,6 +15,7 @@ import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
+import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
@@ -2377,8 +2378,8 @@ class _VideoGroupFrameThumbnail extends StatelessWidget {
             ColoredBox(
               color: scheme.surfaceContainerHighest,
               child: hasFile
-                  ? Image.file(
-                      file!,
+                  ? PreviewFileImage(
+                      path: file!.path,
                       fit: BoxFit.contain,
                       errorBuilder: (_, _, _) =>
                           Center(child: Text('$emptyLabel加载失败')),
