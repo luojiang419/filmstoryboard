@@ -251,6 +251,8 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   final AnalysisReportExportService _reportExportService;
   final Uuid _uuid;
   final _analysisSessionsByVideoId = <String, _VideoAnalysisSession>{};
+  final _analysisProgressTimersByVideoId = <String, Timer>{};
+  final _selectedVideoRefreshTimersByVideoId = <String, Timer>{};
   final _removedFrameUndoHistory = <String, List<_RemovedVideoFrame>>{};
   final _removedFrameRedoHistory = <String, List<_RemovedVideoFrame>>{};
   Future<void> _storyboardSynchronizationTail = Future<void>.value();
@@ -263,6 +265,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       _analysisSessionsByVideoId[videoId]?.isAnalyzing ?? false;
 
   void _publishAnalysisSession(_VideoAnalysisSession session) {
+    _analysisProgressTimersByVideoId.remove(session.videoId)?.cancel();
     if (value.selectedVideoId != session.videoId) return;
     value = value.copyWith(
       isAnalyzing: session.isAnalyzing,
@@ -272,6 +275,46 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       message: session.message,
       errorMessage: session.errorMessage,
     );
+  }
+
+  /// Coalesces per-frame progress callbacks into at most one UI notification
+  /// per interval. The analysis service and database writes remain unchanged.
+  void _scheduleAnalysisSessionPublish(_VideoAnalysisSession session) {
+    if (_isDisposed || value.selectedVideoId != session.videoId) return;
+    if (_analysisProgressTimersByVideoId.containsKey(session.videoId)) return;
+    _analysisProgressTimersByVideoId[session.videoId] = Timer(
+      const Duration(milliseconds: 80),
+      () {
+        _analysisProgressTimersByVideoId.remove(session.videoId);
+        if (!_isDisposed && value.selectedVideoId == session.videoId) {
+          _publishAnalysisSession(session);
+        }
+      },
+    );
+  }
+
+  /// Coalesces the expensive selected-video reload triggered by frame
+  /// completion. A final flush is performed when the session ends, so no
+  /// completed result is hidden from the user.
+  void _scheduleSelectedVideoRefresh(String videoId) {
+    if (_isDisposed || value.selectedVideoId != videoId) return;
+    if (_selectedVideoRefreshTimersByVideoId.containsKey(videoId)) return;
+    _selectedVideoRefreshTimersByVideoId[videoId] = Timer(
+      const Duration(milliseconds: 120),
+      () {
+        _selectedVideoRefreshTimersByVideoId.remove(videoId);
+        if (!_isDisposed && value.selectedVideoId == videoId) {
+          _loadSelectedVideo(notifyMessage: false);
+        }
+      },
+    );
+  }
+
+  void _flushSelectedVideoRefresh(String videoId) {
+    _selectedVideoRefreshTimersByVideoId.remove(videoId)?.cancel();
+    if (!_isDisposed && value.selectedVideoId == videoId) {
+      _loadSelectedVideo(notifyMessage: false);
+    }
   }
 
   bool get canUndoFrameRemoval {
@@ -807,12 +850,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
             ..message = completed == total
                 ? '候选帧解析完成，正在汇总 ${target.video.fileName}…'
                 : session.message;
-          _publishAnalysisSession(session);
+          _scheduleAnalysisSessionPublish(session);
         },
         onFrameCompleted: (_) {
-          if (value.selectedVideoId == target.video.id) {
-            _loadSelectedVideo(notifyMessage: false);
-          }
+          _scheduleSelectedVideoRefresh(target.video.id);
         },
       );
       if (!result.interrupted &&
@@ -836,12 +877,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
               onProgress: (completed, total) {
                 session.message =
                     '正在自动重试 ${target.video.fileName} 的失败帧 $completed/$total…';
-                _publishAnalysisSession(session);
+                _scheduleAnalysisSessionPublish(session);
               },
               onFrameCompleted: (_) {
-                if (value.selectedVideoId == target.video.id) {
-                  _loadSelectedVideo(notifyMessage: false);
-                }
+                _scheduleSelectedVideoRefresh(target.video.id);
               },
             );
           }
@@ -899,9 +938,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     } finally {
       session.isAnalyzing = false;
       _publishAnalysisSession(session);
-      if (value.selectedVideoId == target.video.id) {
-        _loadSelectedVideo(notifyMessage: false);
-      }
+      _flushSelectedVideoRefresh(target.video.id);
     }
   }
 
@@ -1360,6 +1397,14 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   @override
   void dispose() {
     _isDisposed = true;
+    for (final timer in _analysisProgressTimersByVideoId.values) {
+      timer.cancel();
+    }
+    for (final timer in _selectedVideoRefreshTimersByVideoId.values) {
+      timer.cancel();
+    }
+    _analysisProgressTimersByVideoId.clear();
+    _selectedVideoRefreshTimersByVideoId.clear();
     for (final session in _analysisSessionsByVideoId.values) {
       session.shouldContinue = false;
     }
