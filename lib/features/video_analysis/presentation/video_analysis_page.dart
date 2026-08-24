@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
@@ -50,6 +51,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('video_analysis.page');
     final controller = ref.watch(videoAnalysisControllerProvider);
     final storyboardController = ref.watch(storyboardControllerProvider);
     final projectAspectController = ref.watch(projectAspectControllerProvider);

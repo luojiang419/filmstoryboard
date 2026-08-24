@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
@@ -88,6 +89,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.page');
     final controller = ref.watch(shootingScriptControllerProvider);
     final replicateController = ref.watch(replicateControllerProvider);
     final assetLibraryController = ref.watch(

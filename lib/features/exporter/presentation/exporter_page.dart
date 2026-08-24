@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/database/app_database.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/services/workspace_directories.dart';
@@ -67,6 +68,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('exporter.page');
     final storyboardController = ref.watch(storyboardControllerProvider);
     final shootingScriptController = ref.watch(
       shootingScriptControllerProvider,

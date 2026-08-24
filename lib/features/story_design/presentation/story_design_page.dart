@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/image_file_context_menu.dart';
@@ -96,6 +97,7 @@ class _StoryDesignPageState extends ConsumerState<StoryDesignPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('story_design.page');
     final controller = ref.watch(storyDesignControllerProvider);
     return Padding(
       padding: const EdgeInsets.all(16),

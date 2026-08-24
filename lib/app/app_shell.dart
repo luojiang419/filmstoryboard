@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/database/app_database.dart';
+import '../core/performance/performance_probe.dart';
 import '../core/providers/app_providers.dart';
 import '../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../core/widgets/desktop_drop_target_scope.dart';
@@ -192,6 +193,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('app_shell');
     final scheme = Theme.of(context).colorScheme;
     final content = Scaffold(
       body: DecoratedBox(

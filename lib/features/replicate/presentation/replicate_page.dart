@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
@@ -121,6 +122,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('replicate.page');
     final controller = ref.watch(replicateControllerProvider);
     final analysisController = ref.watch(scriptAnalysisControllerProvider);
     final assetBindingController = ref.watch(

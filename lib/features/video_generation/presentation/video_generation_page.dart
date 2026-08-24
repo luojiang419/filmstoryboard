@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
@@ -97,6 +98,7 @@ class _VideoGenerationWorkspaceState
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('video_generation.workspace');
     final controller = ref.watch(videoGenerationControllerProvider);
     _syncRequestedScript(controller);
     return FileAvailabilityScope(

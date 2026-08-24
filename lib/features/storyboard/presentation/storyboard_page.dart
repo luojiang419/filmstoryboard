@@ -15,6 +15,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
@@ -321,6 +322,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('storyboard.page');
     final controller = ref.watch(storyboardControllerProvider);
     void createBoardWithShootingScript() {
       final board = controller.addBoard();
