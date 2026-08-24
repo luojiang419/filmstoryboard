@@ -14,6 +14,7 @@ import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../story_design/application/story_design_controller.dart';
 import '../../storyboard/data/image_generation_service.dart';
@@ -689,6 +690,7 @@ class _ReplicateEmbeddedStepRightPanelState
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.step_right_panel');
     final controller = ref.watch(replicateControllerProvider);
     final assetBindingController = ref.watch(
       scriptAssetBindingControllerProvider,
@@ -698,47 +700,56 @@ class _ReplicateEmbeddedStepRightPanelState
     );
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<ReplicateState>(
+      child: ValueListenableSelector<ReplicateState, ReplicateState>(
         valueListenable: controller,
-        builder: (context, state, _) => AnimatedBuilder(
-          animation: Listenable.merge([
-            assetBindingController,
-            assetLibraryController,
-          ]),
-          builder: (context, _) {
-            final run = state.run;
-            if (state.scripts.isEmpty || run == null) {
-              return const SizedBox.shrink();
-            }
-            if (widget.collapsed) {
-              return _EmbeddedStepPanelFrame(
-                child: _CollapsedStepRightPanel(
-                  label: _externalPanelLabel(run.currentStep),
-                  expandButtonKey: _externalPanelExpandKey(run.currentStep),
-                  onExpand: widget.onToggleCollapsed,
-                ),
-              );
-            }
-            final panel = switch (run.currentStep) {
-              ReplicateStep.confirmShots =>
-                run.freeCreationEnabled
-                    ? _FreeCreationStoryPanel(
-                        controller: controller,
-                        onToggleCollapsed: widget.onToggleCollapsed,
-                      )
-                    : _StoryboardStoryPanel(
-                        groups: ScriptShotGroup.group(state.shots),
-                        onToggleCollapsed: widget.onToggleCollapsed,
-                        onSelectGroup: (group) => widget
-                            .shotNavigationController
-                            .navigateTo(group.shots.first.id),
-                      ),
-              ReplicateStep.prepareAssets => _PrepareAssetLibrarySidePanel(
-                assetLibraryState: assetLibraryController.value,
-                onManageAssets: widget.onManageAssets,
-                onToggleCollapsed: widget.onToggleCollapsed,
+        selector: (state) => state,
+        shouldRebuild: _rightPanelStateChanged,
+        builder: (context, state, _) {
+          final run = state.run;
+          if (state.scripts.isEmpty || run == null) {
+            return const SizedBox.shrink();
+          }
+          if (widget.collapsed) {
+            return _EmbeddedStepPanelFrame(
+              child: _CollapsedStepRightPanel(
+                label: _externalPanelLabel(run.currentStep),
+                expandButtonKey: _externalPanelExpandKey(run.currentStep),
+                onExpand: widget.onToggleCollapsed,
               ),
-              ReplicateStep.composePrompts => _ComposePromptStatusPanel(
+            );
+          }
+          final panel = switch (run.currentStep) {
+            ReplicateStep.confirmShots =>
+              run.freeCreationEnabled
+                  ? _FreeCreationStoryPanel(
+                      controller: controller,
+                      onToggleCollapsed: widget.onToggleCollapsed,
+                    )
+                  : _StoryboardStoryPanel(
+                      groups: ScriptShotGroup.group(state.shots),
+                      onToggleCollapsed: widget.onToggleCollapsed,
+                      onSelectGroup: (group) => widget.shotNavigationController
+                          .navigateTo(group.shots.first.id),
+                    ),
+            ReplicateStep.prepareAssets =>
+              ValueListenableSelector<
+                ShootingAssetLibraryState,
+                ShootingAssetLibraryState
+              >(
+                valueListenable: assetLibraryController,
+                selector: (state) => state,
+                shouldRebuild: (previous, next) =>
+                    !identical(previous.items, next.items),
+                builder: (context, libraryState, _) =>
+                    _PrepareAssetLibrarySidePanel(
+                      assetLibraryState: libraryState,
+                      onManageAssets: widget.onManageAssets,
+                      onToggleCollapsed: widget.onToggleCollapsed,
+                    ),
+              ),
+            ReplicateStep.composePrompts => AnimatedBuilder(
+              animation: assetBindingController,
+              builder: (context, _) => _ComposePromptStatusPanel(
                 state: state,
                 controller: controller,
                 completedReplicaCount: state.replicatedImages
@@ -750,17 +761,29 @@ class _ReplicateEmbeddedStepRightPanelState
                     .length,
                 onToggleCollapsed: widget.onToggleCollapsed,
               ),
-              ReplicateStep.generateVideos => VideoGenerationExternalWorkPanel(
-                scriptId: run.scriptId,
-                collapsed: false,
-                onToggleCollapsed: widget.onToggleCollapsed,
-              ),
-            };
-            return _EmbeddedStepPanelFrame(child: panel);
-          },
-        ),
+            ),
+            ReplicateStep.generateVideos => VideoGenerationExternalWorkPanel(
+              scriptId: run.scriptId,
+              collapsed: false,
+              onToggleCollapsed: widget.onToggleCollapsed,
+            ),
+          };
+          return _EmbeddedStepPanelFrame(child: panel);
+        },
       ),
     );
+  }
+
+  static bool _rightPanelStateChanged(
+    ReplicateState previous,
+    ReplicateState next,
+  ) {
+    return !identical(previous.scripts, next.scripts) ||
+        !identical(previous.shots, next.shots) ||
+        !identical(previous.run, next.run) ||
+        !identical(previous.prompts, next.prompts) ||
+        !identical(previous.replicatedImages, next.replicatedImages) ||
+        previous.selectedScriptId != next.selectedScriptId;
   }
 }
 
