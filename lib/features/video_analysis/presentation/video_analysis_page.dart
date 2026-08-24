@@ -16,6 +16,7 @@ import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/preview_file_image.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
 import '../../projects/application/project_aspect_controller.dart';
 import '../../projects/domain/project_aspect_ratio.dart';
 import '../../storyboard/application/storyboard_controller.dart';
@@ -81,7 +82,8 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
           ),
           child: ValueListenableBuilder<VideoAnalysisState>(
             valueListenable: controller,
-            builder: (context, state, _) =>
+            child: _VideoAnalysisWorkspace(controller: controller),
+            builder: (context, state, workspace) =>
                 ValueListenableBuilder<StoryboardState>(
                   valueListenable: storyboardController,
                   builder: (context, storyboardState, _) => ColoredBox(
@@ -162,20 +164,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
                                         onImport: () =>
                                             _pickVideo(context, controller),
                                       )
-                                    : LayoutBuilder(
-                                        builder: (context, constraints) {
-                                          if (constraints.maxWidth < 900) {
-                                            return _CompactWorkspace(
-                                              controller: controller,
-                                              state: state,
-                                            );
-                                          }
-                                          return _WideWorkspace(
-                                            controller: controller,
-                                            state: state,
-                                          );
-                                        },
-                                      ),
+                                    : workspace!,
                               ),
                             ],
                           ),
@@ -379,6 +368,52 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
     if (generated) {
       widget.onOpenStoryboard?.call();
     }
+  }
+}
+
+class _VideoAnalysisWorkspace extends StatelessWidget {
+  const _VideoAnalysisWorkspace({required this.controller});
+
+  final VideoAnalysisController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('video_analysis.workspace');
+    return ValueListenableSelector<VideoAnalysisState, VideoAnalysisState>(
+      valueListenable: controller,
+      selector: (state) => state,
+      shouldRebuild: _workspaceStateChanged,
+      builder: (context, state, _) => LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 900) {
+            return _CompactWorkspace(controller: controller, state: state);
+          }
+          return _WideWorkspace(controller: controller, state: state);
+        },
+      ),
+    );
+  }
+
+  static bool _workspaceStateChanged(
+    VideoAnalysisState previous,
+    VideoAnalysisState next,
+  ) {
+    return !identical(previous.videos, next.videos) ||
+        !identical(previous.frames, next.frames) ||
+        !identical(previous.shots, next.shots) ||
+        !identical(previous.frameAnalyses, next.frameAnalyses) ||
+        !identical(previous.marketingAnalyses, next.marketingAnalyses) ||
+        !identical(previous.summary, next.summary) ||
+        previous.selectedVideoId != next.selectedVideoId ||
+        previous.selectedFrameId != next.selectedFrameId ||
+        previous.sceneFilter != next.sceneFilter ||
+        previous.shotFilterId != next.shotFilterId ||
+        previous.filter != next.filter ||
+        previous.isImporting != next.isImporting ||
+        previous.isAnalyzing != next.isAnalyzing ||
+        previous.isPaused != next.isPaused ||
+        previous.isExporting != next.isExporting ||
+        previous.isGeneratingStoryboard != next.isGeneratingStoryboard;
   }
 }
 
