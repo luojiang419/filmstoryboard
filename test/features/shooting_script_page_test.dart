@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:filmstoryboard/app/app_theme.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/performance/performance_probe.dart';
 import 'package:filmstoryboard/core/providers/app_providers.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
@@ -145,6 +146,13 @@ void main() {
     });
 
     replicateController.moveToStep(ReplicateStep.confirmShots);
+    final previousProbeEnabled = PerformanceProbe.shared.enabled;
+    PerformanceProbe.shared.enabled = true;
+    PerformanceProbe.shared.clear();
+    addTearDown(() {
+      PerformanceProbe.shared.enabled = previousProbeEnabled;
+      PerformanceProbe.shared.clear();
+    });
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -173,6 +181,20 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final shotListBuildsBeforeNotice =
+        PerformanceProbe.shared.counters['build:shooting_script.shot_list'];
+    shootingController.value = shootingController.value.copyWith(
+      message: '仅更新通知，不应重建镜头列表',
+      errorMessage: '',
+    );
+    await tester.pump();
+    expect(find.text('仅更新通知，不应重建镜头列表'), findsOneWidget);
+    expect(
+      PerformanceProbe.shared.counters['build:shooting_script.shot_list'],
+      shotListBuildsBeforeNotice,
+      reason: '只更新通知时镜头列表不应重新构建',
+    );
 
     expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);
     expect(find.byKey(const ValueKey('confirm-story-panel')), findsOneWidget);

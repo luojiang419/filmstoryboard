@@ -132,6 +132,9 @@ class ShootingScriptAnalysisController
   final Uuid _uuid;
   bool _disposed = false;
   bool _cancelRequested = false;
+  List<ShootingScript>? _observedScripts;
+  List<ScriptShot>? _observedShots;
+  String _observedSelectedScriptId = '';
 
   @override
   void dispose() {
@@ -144,7 +147,11 @@ class ShootingScriptAnalysisController
   }
 
   void refresh({bool preserveBusy = false}) {
-    final script = _shootingScriptController.value.selectedScript;
+    final shootingState = _shootingScriptController.value;
+    _observedScripts = shootingState.scripts;
+    _observedShots = shootingState.shots;
+    _observedSelectedScriptId = shootingState.selectedScriptId;
+    final script = shootingState.selectedScript;
     if (script == null) {
       value = const ScriptAnalysisState();
       return;
@@ -870,7 +877,14 @@ class ShootingScriptAnalysisController
   }
 
   void _handleScriptChanged() {
-    if (!_disposed) refresh(preserveBusy: true);
+    if (_disposed) return;
+    final shootingState = _shootingScriptController.value;
+    if (identical(_observedScripts, shootingState.scripts) &&
+        identical(_observedShots, shootingState.shots) &&
+        _observedSelectedScriptId == shootingState.selectedScriptId) {
+      return;
+    }
+    refresh(preserveBusy: true);
   }
 
   static const _analysisFields = [

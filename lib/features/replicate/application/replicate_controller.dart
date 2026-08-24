@@ -4459,6 +4459,12 @@ $playbackSpeedBoundary
     if (_disposed) {
       return;
     }
+    final shooting = _shootingScriptController.value;
+    if (identical(value.scripts, shooting.scripts) &&
+        identical(value.shots, shooting.shots) &&
+        value.selectedScriptId == shooting.selectedScriptId) {
+      return;
+    }
     _restoreFromShootingScript();
   }
 
