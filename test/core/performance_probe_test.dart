@@ -30,6 +30,44 @@ void main() {
     expect(names, ['first', 'second', 'third']);
   });
 
+  test('report freezes events and exports reviewable statistics', () {
+    final probe = PerformanceProbe(enabled: true);
+    final capturedAt = DateTime.utc(2026, 8, 24, 5, 30);
+    for (final milliseconds in <int>[1, 2, 3, 4, 100]) {
+      probe.record(
+        'database.listShots',
+        Duration(milliseconds: milliseconds),
+        metadata: {'rows': 10, 'opaque': capturedAt},
+      );
+    }
+    probe.increment('build:shooting_script.page', 3);
+
+    final report = probe.createReport(capturedAt: capturedAt);
+    final summary = report.operations['database.listShots']!;
+
+    expect(summary.count, 5);
+    expect(summary.totalMicroseconds, 110000);
+    expect(summary.meanMicroseconds, 22000);
+    expect(summary.p50Microseconds, 3000);
+    expect(summary.p95Microseconds, 100000);
+    expect(summary.p99Microseconds, 100000);
+    expect(summary.maxMicroseconds, 100000);
+    expect(report.toJson()['schemaVersion'], 1);
+    expect(report.toJson()['eventCount'], 5);
+    expect(
+      report.toMarkdown(),
+      allOf(
+        contains('database.listShots'),
+        contains('22.000'),
+        contains('build:shooting_script.page'),
+      ),
+    );
+
+    probe.clear();
+    expect(report.events, hasLength(5));
+    expect(report.counters['build:shooting_script.page'], 3);
+  });
+
   testWidgets('RebuildCounter preserves child behavior and counts builds', (
     tester,
   ) async {

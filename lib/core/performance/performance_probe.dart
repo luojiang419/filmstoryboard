@@ -3,6 +3,7 @@ import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
 
 import 'performance_event.dart';
+import 'performance_report.dart';
 
 typedef PerformanceEventListener = void Function(PerformanceEvent event);
 
@@ -30,6 +31,14 @@ class PerformanceProbe {
 
   PerformanceCounterSnapshot get counters =>
       PerformanceCounterSnapshot(Map.unmodifiable(_counters));
+
+  /// Freezes the current event buffer and counters into a reviewable report.
+  /// Later probe writes cannot mutate the returned snapshot.
+  PerformanceReport createReport({DateTime? capturedAt}) => PerformanceReport(
+    capturedAt: capturedAt ?? DateTime.now(),
+    events: List<PerformanceEvent>.of(_events),
+    counters: Map<String, int>.of(_counters),
+  );
 
   set enabled(bool value) {
     if (_enabled == value) {
