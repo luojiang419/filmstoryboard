@@ -182,6 +182,8 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    final replicatePageBuildsBeforeNotice =
+        PerformanceProbe.shared.counters['build:replicate.page'];
     final shotListBuildsBeforeNotice =
         PerformanceProbe.shared.counters['build:shooting_script.shot_list'];
     shootingController.value = shootingController.value.copyWith(
@@ -194,6 +196,16 @@ void main() {
       PerformanceProbe.shared.counters['build:shooting_script.shot_list'],
       shotListBuildsBeforeNotice,
       reason: '只更新通知时镜头列表不应重新构建',
+    );
+    replicateController.value = replicateController.value.copyWith(
+      message: '复刻页仅更新通知，不应重建工作流',
+      errorMessage: '',
+    );
+    await tester.pump();
+    expect(
+      PerformanceProbe.shared.counters['build:replicate.page'],
+      replicatePageBuildsBeforeNotice,
+      reason: '复刻页只更新通知时根部不应重新构建',
     );
 
     expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);

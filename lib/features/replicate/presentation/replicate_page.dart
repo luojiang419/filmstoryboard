@@ -51,6 +51,20 @@ void _replaceControllerText(TextEditingController controller, String text) {
   );
 }
 
+bool _replicatePageStateChanged(ReplicateState previous, ReplicateState next) {
+  return !identical(previous.scripts, next.scripts) ||
+      !identical(previous.shots, next.shots) ||
+      previous.selectedScriptId != next.selectedScriptId ||
+      !identical(previous.run, next.run) ||
+      !identical(previous.assets, next.assets) ||
+      !identical(previous.replicatedImages, next.replicatedImages) ||
+      !identical(previous.prompts, next.prompts) ||
+      !identical(previous.shotGuides, next.shotGuides) ||
+      !identical(previous.colorStylePresets, next.colorStylePresets) ||
+      previous.isBusy != next.isBusy ||
+      previous.isAnalyzingFrames != next.isAnalyzingFrames;
+}
+
 class ReplicatePage extends ConsumerStatefulWidget {
   const ReplicatePage({
     super.key,
@@ -137,8 +151,10 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
     final settingsController = ref.watch(settingsControllerProvider);
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<ReplicateState>(
+      child: ValueListenableSelector<ReplicateState, ReplicateState>(
         valueListenable: controller,
+        selector: (state) => state,
+        shouldRebuild: _replicatePageStateChanged,
         builder: (context, state, _) {
           if (state.scripts.isEmpty) {
             return _NoScriptState(
