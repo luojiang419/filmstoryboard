@@ -52,6 +52,52 @@ final videoAnalysisControllerProvider = Provider<VideoAnalysisController>(
 
 enum VideoFrameFilter { all, focus, pending, failed }
 
+final Expando<_VideoAnalysisDerivedState> _videoAnalysisDerivedCache =
+    Expando<_VideoAnalysisDerivedState>();
+
+class _VideoAnalysisDerivedState {
+  _VideoAnalysisDerivedState(VideoAnalysisState state)
+    : scenes = _buildScenes(state),
+      visibleFrames = _buildVisibleFrames(state);
+
+  final List<String> scenes;
+  final List<VideoFrame> visibleFrames;
+
+  static List<String> _buildScenes(VideoAnalysisState state) =>
+      state.frameAnalyses
+          .map((analysis) => analysis.dimensions['scene']?.trim() ?? '')
+          .where((scene) => scene.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
+
+  static List<VideoFrame> _buildVisibleFrames(VideoAnalysisState state) {
+    final analysisByFrame = {
+      for (final analysis in state.frameAnalyses) analysis.frameId: analysis,
+    };
+    final shotFrameIds = state.shotFilterId.isEmpty
+        ? null
+        : state.shots
+              .where((shot) => shot.id == state.shotFilterId)
+              .expand((shot) => shot.frameIds)
+              .toSet();
+    return state.frames.where((frame) {
+      final matchesStatus = switch (state.filter) {
+        VideoFrameFilter.all => true,
+        VideoFrameFilter.focus => frame.isFocus,
+        VideoFrameFilter.pending => frame.status == ProcessingStatus.pending,
+        VideoFrameFilter.failed => frame.status == ProcessingStatus.failed,
+      };
+      final matchesScene =
+          state.sceneFilter.isEmpty ||
+          analysisByFrame[frame.id]?.dimensions['scene'] == state.sceneFilter;
+      final matchesShot =
+          shotFrameIds == null || shotFrameIds.contains(frame.id);
+      return matchesStatus && matchesScene && matchesShot;
+    }).toList();
+  }
+}
+
 class VideoAnalysisState {
   const VideoAnalysisState({
     this.videos = const [],
@@ -124,39 +170,12 @@ class VideoAnalysisState {
     return null;
   }
 
-  List<String> get scenes =>
-      frameAnalyses
-          .map((analysis) => analysis.dimensions['scene']?.trim() ?? '')
-          .where((scene) => scene.isNotEmpty)
-          .toSet()
-          .toList()
-        ..sort();
+  _VideoAnalysisDerivedState get _derived =>
+      _videoAnalysisDerivedCache[this] ??= _VideoAnalysisDerivedState(this);
 
-  List<VideoFrame> get visibleFrames {
-    final analysisByFrame = {
-      for (final analysis in frameAnalyses) analysis.frameId: analysis,
-    };
-    final shotFrameIds = shotFilterId.isEmpty
-        ? null
-        : shots
-              .where((shot) => shot.id == shotFilterId)
-              .expand((shot) => shot.frameIds)
-              .toSet();
-    return frames.where((frame) {
-      final matchesStatus = switch (filter) {
-        VideoFrameFilter.all => true,
-        VideoFrameFilter.focus => frame.isFocus,
-        VideoFrameFilter.pending => frame.status == ProcessingStatus.pending,
-        VideoFrameFilter.failed => frame.status == ProcessingStatus.failed,
-      };
-      final matchesScene =
-          sceneFilter.isEmpty ||
-          analysisByFrame[frame.id]?.dimensions['scene'] == sceneFilter;
-      final matchesShot =
-          shotFrameIds == null || shotFrameIds.contains(frame.id);
-      return matchesStatus && matchesScene && matchesShot;
-    }).toList();
-  }
+  List<String> get scenes => _derived.scenes;
+
+  List<VideoFrame> get visibleFrames => _derived.visibleFrames;
 
   bool get isBusy =>
       isImporting || isAnalyzing || isExporting || isGeneratingStoryboard;

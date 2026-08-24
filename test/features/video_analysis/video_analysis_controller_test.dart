@@ -20,6 +20,53 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  test('视频分析状态在同一快照内缓存场景和可见帧派生列表', () {
+    final now = DateTime.utc(2026, 8, 24);
+    final frames = [
+      VideoFrame(
+        id: 'frame-1',
+        videoId: 'video-1',
+        index: 0,
+        timestampMs: 0,
+        path: 'frame-1.png',
+        width: 1920,
+        height: 1080,
+        sharpness: 1,
+        brightness: 1,
+        motionScore: 1,
+        perceptualHash: 'hash-1',
+        isFocus: true,
+        isSelected: false,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: now,
+      ),
+    ];
+    final state = VideoAnalysisState(
+      frames: frames,
+      frameAnalyses: [
+        VideoFrameAnalysis(
+          id: 'analysis-1',
+          videoId: 'video-1',
+          frameId: 'frame-1',
+          sequenceNo: 0,
+          dimensions: const {'scene': '室内'},
+          rawResponse: '{}',
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      ],
+    );
+
+    expect(identical(state.visibleFrames, state.visibleFrames), isTrue);
+    expect(identical(state.scenes, state.scenes), isTrue);
+    expect(state.visibleFrames, hasLength(1));
+    expect(identical(state.visibleFrames.single, frames.single), isTrue);
+    expect(state.scenes, ['室内']);
+  });
+
   test('旧工程会一次性回填视频旋转元数据', () async {
     final root = await Directory.systemTemp.createTemp(
       'video_orientation_repair_',

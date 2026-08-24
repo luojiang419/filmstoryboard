@@ -235,6 +235,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="采集运行中 Flutter Profile 应用的 UI/Raster VM Timeline 事件")
     parser.add_argument("--vm-service-uri", required=True, help="flutter run --profile 输出的 VM Service HTTP/WS 地址")
     parser.add_argument("--output-dir", required=True, type=Path, help="采集结果输出目录")
+    parser.add_argument("--scenario", default="manual", help="固定交互场景名称，写入采集摘要")
     parser.add_argument("--duration-seconds", type=float, default=20.0, help="保留给人工滚动/编辑的采集窗口，默认 20 秒")
     parser.add_argument("--streams", nargs="+", default=list(DEFAULT_STREAMS), help="recordedStreams，默认包含 Flutter/Embedder")
     return parser.parse_args()
@@ -245,6 +246,7 @@ async def main() -> int:
     started_at = time.time()
     config = {
         "vm_service_uri": args.vm_service_uri,
+        "scenario": args.scenario,
         "duration_seconds": args.duration_seconds,
         "streams": args.streams,
         "started_at_unix": started_at,
