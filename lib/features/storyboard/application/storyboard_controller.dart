@@ -3405,6 +3405,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       StoryboardLineArtPromptRules.identityBoundary,
       StoryboardLineArtPromptRules.lineTreatment,
       StoryboardLineArtPromptRules.backgroundSimplification,
+      StoryboardLineArtPromptRules.textAndLogoSuppression,
       '移除所有不帮助讲述故事和判断镜头的干扰：原始颜色、复杂光影、照片纹理、皮肤细节、品牌标识、水印、字幕、装饰性文字、背景杂物、噪点、压缩伪影和无关小物件。',
       '场景只保留理解空间、动作与遮挡关系所必需的建筑轮廓、地面线、门窗、主要家具和关键道具；用简洁线条和少量排线建立前中后景，主体轮廓清楚，画面留白充足。',
       '禁止添加分镜编号、镜头参数、对白框、箭头、边框、表格或任何文字。最终只输出单张纯黑白分镜画面，不要输出原图对比、彩色元素、灰色照片底、水印或说明。',

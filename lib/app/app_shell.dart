@@ -95,7 +95,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     _ShellTab('设计分镜图', Icons.draw_rounded),
     _ShellTab('视频解析', Icons.video_file_rounded),
     _ShellTab('故事板', Icons.dashboard_customize_rounded),
-    _ShellTab('拍摄脚本', Icons.table_chart_rounded),
+    _ShellTab('影视制作', Icons.table_chart_rounded),
     _ShellTab('视频生成', Icons.movie_creation_outlined),
     _ShellTab('导出', Icons.ios_share_rounded),
     _ShellTab('设置', Icons.tune_rounded),

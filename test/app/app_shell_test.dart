@@ -100,7 +100,7 @@ void main() {
     expect(database.getSetting('appShellSelectedTabIndexVersion'), '5');
     expect(find.byKey(const ValueKey('app-shell-tab-一键复刻')), findsNothing);
     final shootingTab = tester.getCenter(
-      find.byKey(const ValueKey('app-shell-tab-拍摄脚本')),
+      find.byKey(const ValueKey('app-shell-tab-影视制作')),
     );
     final videoGenerationTab = tester.getCenter(
       find.byKey(const ValueKey('app-shell-tab-视频生成')),
@@ -111,7 +111,7 @@ void main() {
     expect(shootingTab.dx, lessThan(videoGenerationTab.dx));
     expect(videoGenerationTab.dx, lessThan(exportTab.dx));
 
-    await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));
+    await tester.tap(find.byKey(const ValueKey('app-shell-tab-影视制作')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);
@@ -236,7 +236,7 @@ void main() {
     );
     expect(database.getSetting('appShellSelectedTabIndex'), '6');
 
-    await tester.tap(find.byKey(const ValueKey('app-shell-tab-拍摄脚本')));
+    await tester.tap(find.byKey(const ValueKey('app-shell-tab-影视制作')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('expand-script-sidebar')), findsOneWidget);
     expect(

@@ -2423,6 +2423,8 @@ void main() {
     expect(prompt, contains('背景采用简洁的电影分镜线稿处理'));
     expect(prompt, contains('跳过细碎纹理、重复支架结构、线缆缠绕'));
     expect(prompt, contains('避免杂乱线条抢夺人物与动作的视觉焦点'));
+    expect(prompt, contains('任何文字、字幕、标题、角标、界面信息'));
+    expect(prompt, contains('片头、画面中心、背景屏幕、道具包装或任意视频帧内'));
     expect(prompt, isNot(contains('服装只保留区分角色和动作所需的轮廓')));
     expect(prompt, isNot(contains('发型轮廓或服装外形区分')));
     expect(prompt, contains('移除所有不帮助讲述故事'));
