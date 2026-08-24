@@ -16,6 +16,7 @@ import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/value_listenable_selector.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../settings/domain/app_settings.dart';
 import '../../story_design/application/story_design_controller.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
@@ -148,27 +149,19 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
           if (run == null) {
             return const Center(child: CircularProgressIndicator());
           }
-          final workflow = AnimatedBuilder(
-            animation: Listenable.merge([
-              analysisController,
-              assetBindingController,
-              assetLibraryController,
-              settingsController,
-            ]),
-            builder: (context, _) => _buildWorkflow(
-              context,
-              state: state,
-              controller: controller,
-              analysisController: analysisController,
-              assetBindingController: assetBindingController,
-              assetLibraryState: assetLibraryController.value,
-              run: run,
-              settingsController: settingsController,
-              externalizeStepRightPanel: widget.externalizeStepRightPanel,
-              shotNavigationController:
-                  widget.shotNavigationController ??
-                  _localShotNavigationController,
-            ),
+          final workflow = _buildWorkflow(
+            context,
+            state: state,
+            controller: controller,
+            analysisController: analysisController,
+            assetBindingController: assetBindingController,
+            assetLibraryController: assetLibraryController,
+            run: run,
+            settingsController: settingsController,
+            externalizeStepRightPanel: widget.externalizeStepRightPanel,
+            shotNavigationController:
+                widget.shotNavigationController ??
+                _localShotNavigationController,
           );
           if (widget.embedded) {
             return workflow;
@@ -208,12 +201,23 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
     required ReplicateController controller,
     required ShootingScriptAnalysisController analysisController,
     required ShootingScriptAssetBindingController assetBindingController,
-    required ShootingAssetLibraryState assetLibraryState,
+    required ShootingAssetLibraryController assetLibraryController,
     required ReplicateRun run,
     required SettingsController settingsController,
     required bool externalizeStepRightPanel,
     required ReplicateShotNavigationController shotNavigationController,
   }) {
+    final stepContent = _buildStepContent(
+      state: state,
+      controller: controller,
+      analysisController: analysisController,
+      assetBindingController: assetBindingController,
+      assetLibraryController: assetLibraryController,
+      run: run,
+      settingsController: settingsController,
+      externalizeStepRightPanel: externalizeStepRightPanel,
+      shotNavigationController: shotNavigationController,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -224,82 +228,129 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
         Expanded(
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
-            child: _useBuiltInTemplate
-                ? switch (run.currentStep) {
-                    ReplicateStep.confirmShots => _ConfirmShotsStep(
-                      key: const ValueKey('replicate-confirm-shots-step'),
-                      state: state,
-                      controller: controller,
-                      settingsController: settingsController,
-                    ),
-                    ReplicateStep.prepareAssets => _PrepareAssetsStep(
-                      key: const ValueKey('replicate-prepare-assets-step'),
-                      state: state,
-                      controller: controller,
-                      onImport: _importAssets,
-                      onGenerate: _generateAsset,
-                      onEdit: _editAsset,
-                      onReplace: _replaceAsset,
-                      onDelete: _deleteAsset,
-                    ),
-                    ReplicateStep.composePrompts => _ComposePromptsStep(
-                      key: const ValueKey('replicate-compose-prompts-step'),
-                      state: state,
-                      controller: controller,
-                      onCopyAll: _copyAllPrompts,
-                    ),
-                    ReplicateStep.generateVideos => VideoGenerationWorkspace(
-                      key: ValueKey('replicate-generate-videos-step'),
-                      scriptId: run.scriptId,
-                      uiStateKey: widget.embedded
-                          ? 'shootingScriptVideoGenerationPageUiState'
-                          : 'replicateVideoGenerationPageUiState',
-                    ),
-                  }
-                : switch (run.currentStep) {
-                    ReplicateStep.confirmShots => _NewConfirmShotsStep(
-                      key: const ValueKey('replicate-new-confirm-shots-step'),
-                      state: state,
-                      controller: controller,
-                      analysisController: analysisController,
-                      settingsController: settingsController,
-                      onOpenPrompt: _showPromptPreview,
-                      externalizeRightPanel: externalizeStepRightPanel,
-                      shotNavigationController: shotNavigationController,
-                    ),
-                    ReplicateStep.prepareAssets => _NewPrepareAssetsStep(
-                      key: const ValueKey('replicate-new-prepare-assets-step'),
-                      state: state,
-                      controller: controller,
-                      analysisState: analysisController.value,
-                      assetBindingController: assetBindingController,
-                      assetLibraryState: assetLibraryState,
-                      onImportLocalAsset: _importSingleAsset,
-                      projectRoot: controller.workspaceRoot,
-                      onPickColorStyleThumbnail: _pickColorStyleThumbnail,
-                      onManageAssets: widget.onManageAssets,
-                      externalizeRightPanel: externalizeStepRightPanel,
-                    ),
-                    ReplicateStep.composePrompts => _NewComposePromptsStep(
-                      key: const ValueKey('replicate-new-compose-prompts-step'),
-                      state: state,
-                      controller: controller,
-                      onCopyAll: _copyAllPrompts,
-                      externalizeRightPanel: externalizeStepRightPanel,
-                    ),
-                    ReplicateStep.generateVideos => VideoGenerationWorkspace(
-                      key: ValueKey('replicate-new-generate-videos-step'),
-                      scriptId: run.scriptId,
-                      externalizeWorkPanel: externalizeStepRightPanel,
-                      uiStateKey: widget.embedded
-                          ? 'shootingScriptVideoGenerationPageUiState'
-                          : 'replicateVideoGenerationPageUiState',
-                    ),
-                  },
+            child: stepContent,
           ),
         ),
       ],
     );
+  }
+
+  Widget _buildStepContent({
+    required ReplicateState state,
+    required ReplicateController controller,
+    required ShootingScriptAnalysisController analysisController,
+    required ShootingScriptAssetBindingController assetBindingController,
+    required ShootingAssetLibraryController assetLibraryController,
+    required ReplicateRun run,
+    required SettingsController settingsController,
+    required bool externalizeStepRightPanel,
+    required ReplicateShotNavigationController shotNavigationController,
+  }) {
+    if (_useBuiltInTemplate) {
+      return switch (run.currentStep) {
+        ReplicateStep.confirmShots => ValueListenableBuilder<AppSettings>(
+          valueListenable: settingsController,
+          builder: (context, _, _) => _ConfirmShotsStep(
+            key: const ValueKey('replicate-confirm-shots-step'),
+            state: state,
+            controller: controller,
+            settingsController: settingsController,
+          ),
+        ),
+        ReplicateStep.prepareAssets => _PrepareAssetsStep(
+          key: const ValueKey('replicate-prepare-assets-step'),
+          state: state,
+          controller: controller,
+          onImport: _importAssets,
+          onGenerate: _generateAsset,
+          onEdit: _editAsset,
+          onReplace: _replaceAsset,
+          onDelete: _deleteAsset,
+        ),
+        ReplicateStep.composePrompts => _ComposePromptsStep(
+          key: const ValueKey('replicate-compose-prompts-step'),
+          state: state,
+          controller: controller,
+          onCopyAll: _copyAllPrompts,
+        ),
+        ReplicateStep.generateVideos => VideoGenerationWorkspace(
+          key: const ValueKey('replicate-generate-videos-step'),
+          scriptId: run.scriptId,
+          uiStateKey: widget.embedded
+              ? 'shootingScriptVideoGenerationPageUiState'
+              : 'replicateVideoGenerationPageUiState',
+        ),
+      };
+    }
+    return switch (run.currentStep) {
+      ReplicateStep.confirmShots =>
+        ValueListenableSelector<ScriptAnalysisState, ScriptAnalysisState>(
+          valueListenable: analysisController,
+          selector: (value) => value,
+          builder: (context, _, _) => _NewConfirmShotsStep(
+            key: const ValueKey('replicate-new-confirm-shots-step'),
+            state: state,
+            controller: controller,
+            analysisController: analysisController,
+            settingsController: settingsController,
+            onOpenPrompt: _showPromptPreview,
+            externalizeRightPanel: externalizeStepRightPanel,
+            shotNavigationController: shotNavigationController,
+          ),
+        ),
+      ReplicateStep.prepareAssets =>
+        ValueListenableSelector<ScriptAnalysisState, ScriptAnalysisState>(
+          valueListenable: analysisController,
+          selector: (value) => value,
+          builder: (context, analysisState, _) =>
+              ValueListenableSelector<
+                ScriptAssetBindingState,
+                ScriptAssetBindingState
+              >(
+                valueListenable: assetBindingController,
+                selector: (value) => value,
+                builder: (context, _, _) =>
+                    ValueListenableSelector<
+                      ShootingAssetLibraryState,
+                      ShootingAssetLibraryState
+                    >(
+                      valueListenable: assetLibraryController,
+                      selector: (value) => value,
+                      builder: (context, libraryState, _) =>
+                          _NewPrepareAssetsStep(
+                            key: const ValueKey(
+                              'replicate-new-prepare-assets-step',
+                            ),
+                            state: state,
+                            controller: controller,
+                            analysisState: analysisState,
+                            assetBindingController: assetBindingController,
+                            assetLibraryState: libraryState,
+                            onImportLocalAsset: _importSingleAsset,
+                            projectRoot: controller.workspaceRoot,
+                            onPickColorStyleThumbnail: _pickColorStyleThumbnail,
+                            onManageAssets: widget.onManageAssets,
+                            externalizeRightPanel: externalizeStepRightPanel,
+                          ),
+                    ),
+              ),
+        ),
+      ReplicateStep.composePrompts => _NewComposePromptsStep(
+        key: const ValueKey('replicate-new-compose-prompts-step'),
+        state: state,
+        controller: controller,
+        onCopyAll: _copyAllPrompts,
+        externalizeRightPanel: externalizeStepRightPanel,
+      ),
+      ReplicateStep.generateVideos => VideoGenerationWorkspace(
+        key: const ValueKey('replicate-new-generate-videos-step'),
+        scriptId: run.scriptId,
+        externalizeWorkPanel: externalizeStepRightPanel,
+        uiStateKey: widget.embedded
+            ? 'shootingScriptVideoGenerationPageUiState'
+            : 'replicateVideoGenerationPageUiState',
+      ),
+    };
   }
 
   Future<void> _importAssets(ReplicateAssetType type) async {
