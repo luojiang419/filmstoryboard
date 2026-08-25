@@ -6,10 +6,10 @@ void main() {
   test('LibTV 预设提供浏览器授权、动态模型与 schema 参数控件', () {
     final generationSource = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
     final settingsSource = File(
       'lib/features/settings/presentation/settings_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(generationSource, contains("'confirm-libtv-login'"));
     expect(generationSource, contains("'confirm-libtv-batch'"));
@@ -30,7 +30,7 @@ void main() {
     expect(generationSource, contains('通过 winget 安装 Node.js LTS'));
     final controllerSource = File(
       'lib/features/video_generation/application/video_generation_controller.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
     expect(controllerSource, contains('_normalizedLibTvDuration(seconds)'));
     expect(generationSource, contains("'libtv-model-"));
     expect(generationSource, contains("'libtv-mode-"));
@@ -55,7 +55,7 @@ void main() {
   test('完成视频恢复格子内直接点击播放，生成中格子不使用持续动画', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(source, contains('class _InlineGeneratedVideoPlayer'));
     expect(
@@ -221,11 +221,11 @@ void main() {
   test('IO 点预览与生成视频播放器提供空格播放暂停快捷键', () {
     final generationSource = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
     final trimEditorSource = File(
       'lib/features/video_generation/presentation/widgets/'
       'generated_video_trim_editor.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(
       generationSource,
@@ -248,7 +248,7 @@ void main() {
   test('视频生成页 XML 导出复用设置页默认时间线目录', () {
     final source = File(
       'lib/features/video_generation/application/video_generation_controller.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(source, contains('DefaultExportDirectories('));
     expect(source, contains('settings.exportDirectory'));
@@ -259,7 +259,7 @@ void main() {
   test('生成视频右侧作品管理面板按脚本镜头折叠归纳版本', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(
       source,
@@ -352,7 +352,7 @@ void main() {
   test('合成提示词页按镜头组显示多帧画面', () {
     final source = File(
       'lib/features/replicate/presentation/replicate_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(source, contains('final groups = ScriptShotGroup.group(shots)'));
     expect(source, contains("_ComposeTableHeaderCell('原视频帧')"));
@@ -372,7 +372,7 @@ void main() {
   test('视频提示词输入框保持控制器，连续键入不会因草稿更新时间重建', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     final promptCellStart = source.indexOf('class _PromptCell extends');
     final cellEnd = source.indexOf('class _Cell extends', promptCellStart);
@@ -392,7 +392,7 @@ void main() {
   test('批量生成中只锁定正在运行的镜头', () {
     final source = File(
       'lib/features/video_generation/presentation/video_generation_page.dart',
-    ).readAsStringSync();
+    ).readAsStringSync().replaceAll('\r\n', '\n');
 
     expect(
       source,
