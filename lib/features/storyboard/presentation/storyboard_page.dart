@@ -1202,7 +1202,7 @@ class _StoryboardImageComparisonDialogState
                     children: [
                       const Icon(Icons.swipe_rounded, size: 18),
                       const SizedBox(width: 6),
-                      const Expanded(child: Text('拖动中间分割线核对原视频帧与当前分镜')),
+                      const Expanded(child: Text('按住中间手柄拖动，核对原视频帧与当前分镜')),
                       if (_status.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(right: 12),
@@ -1249,7 +1249,7 @@ class _StoryboardImageComparisonDialogState
   }
 }
 
-class _WipeImageComparison extends StatelessWidget {
+class _WipeImageComparison extends StatefulWidget {
   const _WipeImageComparison({
     required this.originalPath,
     required this.currentPath,
@@ -1263,85 +1263,156 @@ class _WipeImageComparison extends StatelessWidget {
   final ValueChanged<double> onSplitChanged;
 
   @override
+  State<_WipeImageComparison> createState() => _WipeImageComparisonState();
+}
+
+class _WipeImageComparisonState extends State<_WipeImageComparison> {
+  static const _handleHitSlop = 28.0;
+
+  int? _dragPointer;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final dividerX = constraints.maxWidth * split.clamp(0.05, 0.95);
+        final dividerX = constraints.maxWidth * widget.split.clamp(0.05, 0.95);
         return ClipRRect(
           borderRadius: BorderRadius.circular(10),
           child: ColoredBox(
             color: Colors.black,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Image.file(File(currentPath), fit: BoxFit.contain),
-                ClipRect(
-                  clipper: _LeftWipeClipper(dividerX),
-                  child: Image.file(File(originalPath), fit: BoxFit.contain),
-                ),
-                Positioned(
-                  left: dividerX - 1,
-                  top: 0,
-                  bottom: 0,
-                  child: Container(width: 2, color: scheme.primary),
-                ),
-                Positioned(
-                  left: dividerX - 22,
-                  top: 0,
-                  bottom: 0,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onHorizontalDragUpdate: (details) {
-                      onSplitChanged(
-                        ((dividerX + details.delta.dx) /
-                                math.max(1, constraints.maxWidth))
-                            .clamp(0.05, 0.95),
-                      );
-                    },
-                    child: SizedBox(
-                      width: 44,
-                      child: Center(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: scheme.primary,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: const Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: 7,
-                              vertical: 12,
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: (event) => _handlePointerDown(
+                event,
+                dividerX: dividerX,
+                viewportWidth: constraints.maxWidth,
+              ),
+              onPointerMove: (event) => _handlePointerMove(
+                event,
+                viewportWidth: constraints.maxWidth,
+              ),
+              onPointerUp: _handlePointerUp,
+              onPointerCancel: _handlePointerCancel,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.file(File(widget.currentPath), fit: BoxFit.contain),
+                  ClipRect(
+                    clipper: _LeftWipeClipper(dividerX),
+                    child: Image.file(
+                      File(widget.originalPath),
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  Positioned(
+                    left: dividerX - 1,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(width: 2, color: scheme.primary),
+                  ),
+                  Positioned(
+                    left: dividerX - 22,
+                    top: 0,
+                    bottom: 0,
+                    child: MouseRegion(
+                      key: const ValueKey(
+                        'storyboard-image-comparison-wipe-handle',
+                      ),
+                      cursor: _dragPointer == null
+                          ? SystemMouseCursors.resizeColumn
+                          : SystemMouseCursors.grabbing,
+                      child: SizedBox(
+                        width: 44,
+                        child: Center(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: scheme.primary,
+                              borderRadius: BorderRadius.circular(999),
                             ),
-                            child: Icon(
-                              Icons.drag_indicator_rounded,
-                              color: Colors.white,
-                              size: 18,
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 12,
+                              ),
+                              child: Icon(
+                                Icons.drag_indicator_rounded,
+                                color: Colors.white,
+                                size: 18,
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                Positioned(
-                  left: 12,
-                  top: 12,
-                  child: _ComparisonLabel(label: '原故事板', color: scheme.primary),
-                ),
-                Positioned(
-                  right: 12,
-                  top: 12,
-                  child: _ComparisonLabel(
-                    label: '当前分镜',
-                    color: scheme.tertiary,
+                  Positioned(
+                    left: 12,
+                    top: 12,
+                    child: _ComparisonLabel(
+                      label: '原故事板',
+                      color: scheme.primary,
+                    ),
                   ),
-                ),
-              ],
+                  Positioned(
+                    right: 12,
+                    top: 12,
+                    child: _ComparisonLabel(
+                      label: '当前分镜',
+                      color: scheme.tertiary,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         );
       },
     );
+  }
+
+  void _handlePointerDown(
+    PointerDownEvent event, {
+    required double dividerX,
+    required double viewportWidth,
+  }) {
+    if (event.kind != PointerDeviceKind.mouse ||
+        (event.buttons & kPrimaryMouseButton) == 0 ||
+        !_isOnHandle(event.localPosition.dx, dividerX)) {
+      return;
+    }
+    _dragPointer = event.pointer;
+    _updateSplit(event.localPosition.dx, viewportWidth);
+    setState(() {});
+  }
+
+  void _handlePointerMove(
+    PointerMoveEvent event, {
+    required double viewportWidth,
+  }) {
+    if (event.pointer != _dragPointer) return;
+    _updateSplit(event.localPosition.dx, viewportWidth);
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    _stopDragging(event.pointer);
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    _stopDragging(event.pointer);
+  }
+
+  bool _isOnHandle(double x, double dividerX) {
+    return (x - dividerX).abs() <= _handleHitSlop;
+  }
+
+  void _updateSplit(double x, double viewportWidth) {
+    widget.onSplitChanged((x / math.max(1, viewportWidth)).clamp(0.05, 0.95));
+  }
+
+  void _stopDragging(int pointer) {
+    if (pointer != _dragPointer) return;
+    setState(() => _dragPointer = null);
   }
 }
 
