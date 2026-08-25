@@ -2450,6 +2450,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
     required String? parentGroupId,
     required Set<String> usedIds,
     required Set<String> previewIds,
+    Set<String> ancestorGroupIds = const <String>{},
   }) {
     final widgets = <Widget>[];
     for (var index = 0; index < nodeKeys.length; index++) {
@@ -2471,6 +2472,10 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
           if (group == null) {
             continue;
           }
+          if (ancestorGroupIds.contains(group.id)) {
+            continue;
+          }
+          final nextAncestorGroupIds = <String>{...ancestorGroupIds, group.id};
           final childKeys = _childResourceNodeKeys(group);
           final directAssets = _directAssetsForResourceGroup(group);
           widgets.add(
@@ -2497,6 +2502,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
                 parentGroupId: group.id,
                 usedIds: usedIds,
                 previewIds: previewIds,
+                ancestorGroupIds: nextAncestorGroupIds,
               ),
               usedIds: usedIds,
               previewIds: previewIds,
@@ -2850,7 +2856,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
       }
     }
 
-    void visitNodes(List<String> nodeKeys) {
+    void visitNodes(List<String> nodeKeys, Set<String> ancestorGroupIds) {
       for (final key in nodeKeys) {
         final node = StoryboardResourceNodeRef.tryParse(key);
         if (node == null) {
@@ -2859,9 +2865,14 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
         switch (node.kind) {
           case StoryboardResourceNodeKind.group:
             final group = groupsById[node.id];
-            if (group != null && group.expanded) {
+            if (group != null &&
+                group.expanded &&
+                !ancestorGroupIds.contains(group.id)) {
               addAssets(_directAssetsForResourceGroup(group));
-              visitNodes(_childResourceNodeKeys(group));
+              visitNodes(_childResourceNodeKeys(group), {
+                ...ancestorGroupIds,
+                group.id,
+              });
             }
             break;
           case StoryboardResourceNodeKind.folder:
@@ -2892,6 +2903,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
         ungroupedFolders: folders,
         ungroupedSourceIds: groups.keys,
       ),
+      const <String>{},
     );
     return result;
   }
@@ -6511,7 +6523,9 @@ class _CanvasGridState extends ConsumerState<_CanvasGrid> {
       showImageQuickActions:
           !item.resourceRemoved && _quickActionAssetId == item.asset.id,
       showOriginalStoryboard: widget.showOriginalStoryboard,
-      originalPath: widget.originalPathForItem(item),
+      originalPath: widget.showOriginalStoryboard
+          ? widget.originalPathForItem(item)
+          : null,
       onCompareImage: () => widget.onCompareImage(item),
       onSelect: () => _selectItem(item.asset.id),
       onRemove: widget.board.locked

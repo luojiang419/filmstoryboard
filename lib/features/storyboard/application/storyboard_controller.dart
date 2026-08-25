@@ -166,6 +166,8 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   final _undoHistoryByBoardId = <String, List<StoryboardBoard>>{};
   final _redoHistoryByBoardId = <String, List<StoryboardBoard>>{};
   final _activeImageGenerationCountByBoardId = <String, int>{};
+  Map<String, ImageGenerationRecord>? _imageGenerationRecordsByResultAssetId;
+  final _originalImagePathByAssetId = <String, String?>{};
   Future<void> _imageResultCommitTail = Future<void>.value();
 
   @override
@@ -1026,6 +1028,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     required String? message,
     required bool evictImageCache,
   }) async {
+    _invalidateOriginalImagePathCache();
     final records = _database.listCutResults();
     final normalization = _detectLegacyAssetNormalization(records);
     final scanRequest = _AssetScanRequest(
@@ -3191,6 +3194,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       ]),
       status: 'running',
     );
+    _invalidateOriginalImagePathCache();
     final activeCount =
         (_activeImageGenerationCountByBoardId[board.id] ?? 0) + 1;
     _activeImageGenerationCountByBoardId[board.id] = activeCount;
@@ -3366,14 +3370,17 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
 
   /// 返回某个画板格位的原始视频帧路径。没有生成历史或文件已丢失时返回 null。
   String? originalImagePathForItem(StoryboardItem item) {
-    final currentPath = _normalizedFilePath(item.asset.path);
-    final records = <String, ImageGenerationRecord>{};
-    for (final record in _database.listImageGenerationRecords().reversed) {
-      if (record.status == 'succeeded' &&
-          record.resultAssetId.trim().isNotEmpty) {
-        records.putIfAbsent(record.resultAssetId, () => record);
+    if (_originalImagePathByAssetId.containsKey(item.asset.id)) {
+      final cachedPath = _originalImagePathByAssetId[item.asset.id];
+      if (cachedPath == null ||
+          _normalizedFilePath(cachedPath) ==
+              _normalizedFilePath(item.asset.path)) {
+        return null;
       }
+      return cachedPath;
     }
+
+    final records = _imageGenerationRecordsByResultAssetIdCache();
     var assetId = item.asset.id;
     final visited = <String>{};
     String? originalPath;
@@ -3383,8 +3390,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         break;
       }
       final candidatePath = _toRuntimePath(record.sourcePath);
-      if (File(candidatePath).existsSync() &&
-          _normalizedFilePath(candidatePath) != currentPath) {
+      if (candidatePath.trim().isNotEmpty && File(candidatePath).existsSync()) {
         originalPath = candidatePath;
       }
       final sourceAssetId = record.sourceAssetId.trim();
@@ -3393,7 +3399,35 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       }
       assetId = sourceAssetId;
     }
+    _originalImagePathByAssetId[item.asset.id] = originalPath;
+    if (originalPath == null ||
+        _normalizedFilePath(originalPath) ==
+            _normalizedFilePath(item.asset.path)) {
+      return null;
+    }
     return originalPath;
+  }
+
+  Map<String, ImageGenerationRecord>
+  _imageGenerationRecordsByResultAssetIdCache() {
+    final cached = _imageGenerationRecordsByResultAssetId;
+    if (cached != null) {
+      return cached;
+    }
+    final records = <String, ImageGenerationRecord>{};
+    for (final record in _database.listImageGenerationRecords().reversed) {
+      if (record.status == 'succeeded' &&
+          record.resultAssetId.trim().isNotEmpty) {
+        records.putIfAbsent(record.resultAssetId, () => record);
+      }
+    }
+    _imageGenerationRecordsByResultAssetId = records;
+    return records;
+  }
+
+  void _invalidateOriginalImagePathCache() {
+    _imageGenerationRecordsByResultAssetId = null;
+    _originalImagePathByAssetId.clear();
   }
 
   bool _enqueueFrameTransformationForSelectedBoard({
@@ -3728,6 +3762,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           resultPath: _toStoredPath(replacement.path),
           rawResponse: result.rawResponse,
         );
+        _invalidateOriginalImagePathCache();
         return applied;
       });
     } catch (error) {
@@ -3736,6 +3771,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         status: 'failed',
         errorMessage: error.toString(),
       );
+      _invalidateOriginalImagePathCache();
       if (!_disposed) {
         _setBoardTaskMessage(task.boardId, '图片修改失败：$error');
       }
@@ -6345,6 +6381,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         return null;
       }
       final boardGroups = _boardGroupsFromJson(decoded['boardGroups']);
+      final resourceGroups = _sanitizeRestoredResourceGroups(
+        _resourceGroupsFromJson(decoded['resourceGroups']),
+      );
       final validGroupIds = boardGroups.map((group) => group.id).toSet();
       final normalizedBoards = [
         for (final board in boards)
@@ -6380,7 +6419,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return StoryboardState(
         assets: value.assets,
         folders: value.folders,
-        resourceGroups: _resourceGroupsFromJson(decoded['resourceGroups']),
+        resourceGroups: resourceGroups,
         resourceRootOrder: _jsonStringList(decoded['resourceRootOrder']),
         boards: normalizedBoards.map(_boardWithAdaptiveHeight).toList(),
         boardGroups: boardGroups,
@@ -6616,6 +6655,61 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       groups.add(group);
     }
     return groups;
+  }
+
+  List<StoryboardResourceGroup> _sanitizeRestoredResourceGroups(
+    List<StoryboardResourceGroup> groups,
+  ) {
+    final unique = <StoryboardResourceGroup>[];
+    final ids = <String>{};
+    for (final group in groups) {
+      if (ids.add(group.id)) {
+        unique.add(group);
+      }
+    }
+    if (unique.isEmpty) {
+      return const [];
+    }
+
+    final validIds = unique.map((group) => group.id).toSet();
+    var sanitized = [
+      for (final group in unique)
+        group.copyWith(
+          parentGroupId:
+              group.parentGroupId != null &&
+                  group.parentGroupId != group.id &&
+                  validIds.contains(group.parentGroupId)
+              ? group.parentGroupId
+              : null,
+        ),
+    ];
+    final byId = {for (final group in sanitized) group.id: group};
+
+    for (final group in [...sanitized]) {
+      final visited = <String>{group.id};
+      var parentId = byId[group.id]?.parentGroupId;
+      var cyclic = false;
+      while (parentId != null) {
+        if (!visited.add(parentId)) {
+          cyclic = true;
+          break;
+        }
+        parentId = byId[parentId]?.parentGroupId;
+      }
+      if (!cyclic) {
+        continue;
+      }
+      sanitized = [
+        for (final candidate in sanitized)
+          candidate.id == group.id
+              ? candidate.copyWith(parentGroupId: null)
+              : candidate,
+      ];
+      byId[group.id] = sanitized.firstWhere(
+        (candidate) => candidate.id == group.id,
+      );
+    }
+    return sanitized;
   }
 
   List<StoryboardBoardGroup> _boardGroupsFromJson(Object? value) {
