@@ -186,6 +186,14 @@ void main() {
         PerformanceProbe.shared.counters['build:replicate.page'];
     final shotListBuildsBeforeNotice =
         PerformanceProbe.shared.counters['build:shooting_script.shot_list'];
+    final confirmStepBuildsBeforeAnalysis =
+        PerformanceProbe.shared.counters['build:shooting_script.confirm_shots'];
+    final confirmToolbarBuildsBeforeAnalysis = PerformanceProbe
+        .shared
+        .counters['build:shooting_script.confirm_shots.toolbar'];
+    final rightPanelBuildsBeforeAnalysis = PerformanceProbe
+        .shared
+        .counters['build:shooting_script.step_right_panel.content'];
     shootingController.value = shootingController.value.copyWith(
       message: '仅更新通知，不应重建镜头列表',
       errorMessage: '',
@@ -206,6 +214,60 @@ void main() {
       PerformanceProbe.shared.counters['build:replicate.page'],
       replicatePageBuildsBeforeNotice,
       reason: '复刻页只更新通知时根部不应重新构建',
+    );
+
+    scriptAnalysisController.value = scriptAnalysisController.value.copyWith(
+      message: '仅更新分析通知，不应重建镜头区域',
+      errorMessage: '',
+    );
+    await tester.pump();
+    expect(
+      PerformanceProbe.shared.counters['build:shooting_script.confirm_shots'],
+      confirmStepBuildsBeforeAnalysis,
+      reason: '分析通知文案变化不应重建确认镜头整步',
+    );
+    expect(
+      PerformanceProbe.shared.counters['build:shooting_script.shot_list'],
+      shotListBuildsBeforeNotice,
+      reason: '分析通知文案变化不应重建镜头列表',
+    );
+    expect(
+      PerformanceProbe
+          .shared
+          .counters['build:shooting_script.confirm_shots.toolbar'],
+      confirmToolbarBuildsBeforeAnalysis,
+      reason: '工具栏未使用分析通知文案，不应因此重建',
+    );
+
+    scriptAnalysisController.value = scriptAnalysisController.value.copyWith(
+      completedCount: 1,
+      totalCount: 8,
+    );
+    await tester.pump();
+    expect(find.textContaining('构建进度 1/8'), findsOneWidget);
+    expect(
+      PerformanceProbe.shared.counters['build:shooting_script.confirm_shots'],
+      confirmStepBuildsBeforeAnalysis,
+      reason: '分析进度变化只应局部更新工具栏',
+    );
+    expect(
+      PerformanceProbe.shared.counters['build:shooting_script.shot_list'],
+      shotListBuildsBeforeNotice,
+      reason: '分析进度变化不应重建镜头列表',
+    );
+    expect(
+      PerformanceProbe
+          .shared
+          .counters['build:shooting_script.confirm_shots.toolbar'],
+      confirmToolbarBuildsBeforeAnalysis + 1,
+      reason: '分析进度变化应精确重建工具栏',
+    );
+    expect(
+      PerformanceProbe
+          .shared
+          .counters['build:shooting_script.step_right_panel.content'],
+      rightPanelBuildsBeforeAnalysis,
+      reason: '分析进度变化不应重建外置右侧详情面板',
     );
 
     expect(find.byKey(const ValueKey('shooting-script-page')), findsOneWidget);

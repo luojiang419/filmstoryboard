@@ -300,21 +300,16 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
       };
     }
     return switch (run.currentStep) {
-      ReplicateStep.confirmShots =>
-        ValueListenableSelector<ScriptAnalysisState, ScriptAnalysisState>(
-          valueListenable: analysisController,
-          selector: (value) => value,
-          builder: (context, _, _) => _NewConfirmShotsStep(
-            key: const ValueKey('replicate-new-confirm-shots-step'),
-            state: state,
-            controller: controller,
-            analysisController: analysisController,
-            settingsController: settingsController,
-            onOpenPrompt: _showPromptPreview,
-            externalizeRightPanel: externalizeStepRightPanel,
-            shotNavigationController: shotNavigationController,
-          ),
-        ),
+      ReplicateStep.confirmShots => _NewConfirmShotsStep(
+        key: const ValueKey('replicate-new-confirm-shots-step'),
+        state: state,
+        controller: controller,
+        analysisController: analysisController,
+        settingsController: settingsController,
+        onOpenPrompt: _showPromptPreview,
+        externalizeRightPanel: externalizeStepRightPanel,
+        shotNavigationController: shotNavigationController,
+      ),
       ReplicateStep.prepareAssets =>
         ValueListenableSelector<ScriptAnalysisState, ScriptAnalysisState>(
           valueListenable: analysisController,
@@ -1274,7 +1269,6 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
   @override
   Widget build(BuildContext context) {
     PerformanceProbe.shared.countBuild('shooting_script.confirm_shots');
-    final analysis = widget.analysisController.value;
     final freeCreationEnabled = widget.state.run?.freeCreationEnabled ?? false;
     final builtShots = ScriptShotGroup.group(widget.state.shots);
     final feedbackShotIds = {
@@ -1354,116 +1348,133 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
     return _WorkspacePanel(
       child: Column(
         children: [
-          _StepToolbar(
-            title: '步骤 2 · 确认镜头',
-            subtitle: freeCreationEnabled
-                ? _showBuiltScript && widget.state.prompts.isNotEmpty
-                      ? '自由创作已按${widget.controller.composePromptModelLabel}独立规则生成 ${builtShots.length} 个提示词，可直接编辑保存。'
-                      : '设置镜头范围后可按需填写剧情描述；留空时将自动分析参考图并生成最合适的提示词。'
-                : _showBuiltScript
-                ? !widget.controller.showsH3SkillRoutingPreference
-                      ? '已按${widget.controller.composePromptModelLabel}独立规则构建 ${builtShots.length} 个镜头组；可前往步骤 3 生成视频。'
-                      : widget.controller.selectedH3PromptStyle.isGeneral
-                      ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
-                      : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
-                : '先手动设置每个镜头的首帧和结束帧范围；范围内全部图片按顺序合并为一次多图视觉请求，未设置范围的帧各自独立。构建进度 ${analysis.completedCount}/${analysis.totalCount}。',
-            actions: [
-              if (widget.controller.showsH3SkillRoutingPreference)
-                _BuildCameraStyleSelector(
-                  selectedStyle: widget.controller.selectedH3PromptStyle,
-                  enabled: !analysis.isBusy && !widget.state.isBusy,
-                  onChanged: (styleId) async {
-                    await widget.controller.selectH3PromptStyle(styleId);
-                    if (mounted) setState(() => _showBuiltScript = false);
-                  },
-                ),
-              FilledButton.icon(
-                key: const ValueKey('script-build-continuous-shots'),
-                onPressed:
-                    widget.state.shots.isEmpty ||
-                        analysis.isBusy ||
-                        widget.state.isBusy
-                    ? null
-                    : () async {
-                        if (freeCreationEnabled) {
-                          setState(() => _showBuiltScript = false);
-                          widget.controller.clearPromptsBeforeBuild();
-                          await widget.controller.composeAllPrompts(
-                            navigateToComposeStep: false,
-                          );
-                          if (mounted) {
-                            setState(() => _showBuiltScript = true);
-                          }
-                          return;
-                        }
-                        final feedbackRebuild =
-                            _showBuiltScript && feedbackShotIds.isNotEmpty;
-                        if (_showBuiltScript && !feedbackRebuild) {
-                          setState(() => _showBuiltScript = false);
-                          return;
-                        }
-                        setState(() => _showBuiltScript = false);
-                        widget.controller.clearPromptsBeforeBuild();
-                        final analysisController = widget.analysisController;
-                        final replicateController = widget.controller;
-                        final buildCompleted = await analysisController
-                            .buildScript(
-                              imagePathOverrides: completedReplicaPathByShotId,
-                              onlyFeedbackGroups: feedbackRebuild,
-                            );
-                        if (buildCompleted) {
-                          if (feedbackRebuild) {
-                            await replicateController.composePromptsForShotIds(
-                              feedbackShotIds,
-                            );
-                          } else {
-                            await replicateController.composeAllPrompts(
-                              navigateToComposeStep: false,
-                            );
-                          }
-                        }
-                        if (mounted) {
-                          setState(() => _showBuiltScript = true);
-                        }
+          ValueListenableSelector<
+            ScriptAnalysisState,
+            ({bool isBusy, int completedCount, int totalCount})
+          >(
+            valueListenable: widget.analysisController,
+            selector: (state) => (
+              isBusy: state.isBusy,
+              completedCount: state.completedCount,
+              totalCount: state.totalCount,
+            ),
+            builder: (context, analysis, _) {
+              PerformanceProbe.shared.countBuild(
+                'shooting_script.confirm_shots.toolbar',
+              );
+              return _StepToolbar(
+                title: '步骤 2 · 确认镜头',
+                subtitle: freeCreationEnabled
+                    ? _showBuiltScript && widget.state.prompts.isNotEmpty
+                          ? '自由创作已按${widget.controller.composePromptModelLabel}独立规则生成 ${builtShots.length} 个提示词，可直接编辑保存。'
+                          : '设置镜头范围后可按需填写剧情描述；留空时将自动分析参考图并生成最合适的提示词。'
+                    : _showBuiltScript
+                    ? !widget.controller.showsH3SkillRoutingPreference
+                          ? '已按${widget.controller.composePromptModelLabel}独立规则构建 ${builtShots.length} 个镜头组；可前往步骤 3 生成视频。'
+                          : widget.controller.selectedH3PromptStyle.isGeneral
+                          ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
+                          : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
+                    : '先手动设置每个镜头的首帧和结束帧范围；范围内全部图片按顺序合并为一次多图视觉请求，未设置范围的帧各自独立。构建进度 ${analysis.completedCount}/${analysis.totalCount}。',
+                actions: [
+                  if (widget.controller.showsH3SkillRoutingPreference)
+                    _BuildCameraStyleSelector(
+                      selectedStyle: widget.controller.selectedH3PromptStyle,
+                      enabled: !analysis.isBusy && !widget.state.isBusy,
+                      onChanged: (styleId) async {
+                        await widget.controller.selectH3PromptStyle(styleId);
+                        if (mounted) setState(() => _showBuiltScript = false);
                       },
-                icon: Icon(
-                  _showBuiltScript
-                      ? feedbackShotIds.isNotEmpty
-                            ? Icons.replay_rounded
-                            : Icons.edit_note_rounded
-                      : Icons.account_tree_rounded,
-                ),
-                label: Text(
-                  analysis.isBusy
-                      ? '构建中…'
-                      : widget.state.isBusy
-                      ? '拼接提示词中…'
-                      : freeCreationEnabled && _showBuiltScript
-                      ? '重新构建'
-                      : _showBuiltScript
-                      ? feedbackShotIds.isNotEmpty
-                            ? '根据反馈重构'
-                            : '返回编辑'
-                      : '构建脚本',
-                ),
-              ),
-              if (analysis.isBusy)
-                OutlinedButton.icon(
-                  onPressed: widget.analysisController.cancel,
-                  icon: const Icon(Icons.stop_circle_outlined),
-                  label: const Text('取消构建'),
-                ),
-              FilledButton.icon(
-                key: const ValueKey('replicate-new-next-videos'),
-                onPressed: widget.state.shots.isEmpty
-                    ? null
-                    : () => widget.controller.moveToStep(
-                        ReplicateStep.generateVideos,
-                      ),
-                icon: const Icon(Icons.arrow_forward_rounded),
-                label: const Text('下一步'),
-              ),
-            ],
+                    ),
+                  FilledButton.icon(
+                    key: const ValueKey('script-build-continuous-shots'),
+                    onPressed:
+                        widget.state.shots.isEmpty ||
+                            analysis.isBusy ||
+                            widget.state.isBusy
+                        ? null
+                        : () async {
+                            if (freeCreationEnabled) {
+                              setState(() => _showBuiltScript = false);
+                              widget.controller.clearPromptsBeforeBuild();
+                              await widget.controller.composeAllPrompts(
+                                navigateToComposeStep: false,
+                              );
+                              if (mounted) {
+                                setState(() => _showBuiltScript = true);
+                              }
+                              return;
+                            }
+                            final feedbackRebuild =
+                                _showBuiltScript && feedbackShotIds.isNotEmpty;
+                            if (_showBuiltScript && !feedbackRebuild) {
+                              setState(() => _showBuiltScript = false);
+                              return;
+                            }
+                            setState(() => _showBuiltScript = false);
+                            widget.controller.clearPromptsBeforeBuild();
+                            final analysisController =
+                                widget.analysisController;
+                            final replicateController = widget.controller;
+                            final buildCompleted = await analysisController
+                                .buildScript(
+                                  imagePathOverrides:
+                                      completedReplicaPathByShotId,
+                                  onlyFeedbackGroups: feedbackRebuild,
+                                );
+                            if (buildCompleted) {
+                              if (feedbackRebuild) {
+                                await replicateController
+                                    .composePromptsForShotIds(feedbackShotIds);
+                              } else {
+                                await replicateController.composeAllPrompts(
+                                  navigateToComposeStep: false,
+                                );
+                              }
+                            }
+                            if (mounted) {
+                              setState(() => _showBuiltScript = true);
+                            }
+                          },
+                    icon: Icon(
+                      _showBuiltScript
+                          ? feedbackShotIds.isNotEmpty
+                                ? Icons.replay_rounded
+                                : Icons.edit_note_rounded
+                          : Icons.account_tree_rounded,
+                    ),
+                    label: Text(
+                      analysis.isBusy
+                          ? '构建中…'
+                          : widget.state.isBusy
+                          ? '拼接提示词中…'
+                          : freeCreationEnabled && _showBuiltScript
+                          ? '重新构建'
+                          : _showBuiltScript
+                          ? feedbackShotIds.isNotEmpty
+                                ? '根据反馈重构'
+                                : '返回编辑'
+                          : '构建脚本',
+                    ),
+                  ),
+                  if (analysis.isBusy)
+                    OutlinedButton.icon(
+                      onPressed: widget.analysisController.cancel,
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const Text('取消构建'),
+                    ),
+                  FilledButton.icon(
+                    key: const ValueKey('replicate-new-next-videos'),
+                    onPressed: widget.state.shots.isEmpty
+                        ? null
+                        : () => widget.controller.moveToStep(
+                            ReplicateStep.generateVideos,
+                          ),
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                    label: const Text('下一步'),
+                  ),
+                ],
+              );
+            },
           ),
           const Divider(height: 1),
           Expanded(
