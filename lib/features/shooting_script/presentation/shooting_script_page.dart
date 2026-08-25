@@ -9,10 +9,12 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/preview_file_image.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
 import '../../replicate/application/replicate_controller.dart';
 import '../../replicate/data/seedance_prompt_generation_service.dart';
 import '../../replicate/domain/replicate_models.dart';
@@ -88,6 +90,7 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.page');
     final controller = ref.watch(shootingScriptControllerProvider);
     final replicateController = ref.watch(replicateControllerProvider);
     final assetLibraryController = ref.watch(
@@ -97,311 +100,243 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     final storyboardController = ref.watch(storyboardControllerProvider);
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<ShootingScriptState>(
-        valueListenable: controller,
-        builder: (context, state, _) => ValueListenableBuilder<ReplicateState>(
-          valueListenable: replicateController,
-          builder: (context, replicateState, _) =>
-              ValueListenableBuilder<ShootingAssetLibraryState>(
-                valueListenable: assetLibraryController,
-                builder: (context, libraryState, _) => ColoredBox(
-                  key: const ValueKey('shooting-script-page'),
-                  color: Colors.transparent,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        _PageHeader(
-                          state: state,
-                          controller: controller,
-                          onExportStoryboardImages: () =>
-                              _exportStoryboardImages(
-                                context,
-                                controller,
-                                replicateController,
-                              ),
-                          onRename: () =>
-                              _renameScript(context, controller, state),
-                          onDelete: () =>
-                              _deleteScript(context, controller, state),
-                          onManageAssets: () => _openAssetManager(
-                            context,
-                            assetLibraryController,
-                            replicateController,
-                          ),
+      child: ColoredBox(
+        key: const ValueKey('shooting-script-page'),
+        color: Colors.transparent,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              ValueListenableSelector<ShootingScriptState, ShootingScriptState>(
+                valueListenable: controller,
+                selector: (state) => state,
+                shouldRebuild: _shootingScriptHeaderChanged,
+                builder: (context, state, _) {
+                  PerformanceProbe.shared.countBuild('shooting_script.header');
+                  return _PageHeader(
+                    state: state,
+                    controller: controller,
+                    onExportStoryboardImages: () => _exportStoryboardImages(
+                      context,
+                      controller,
+                      replicateController,
+                    ),
+                    onRename: () => _renameScript(context, controller, state),
+                    onDelete: () => _deleteScript(context, controller, state),
+                    onManageAssets: () => _openAssetManager(
+                      context,
+                      assetLibraryController,
+                      replicateController,
+                    ),
+                  );
+                },
+              ),
+              _ShootingScriptNotice(
+                scriptController: controller,
+                replicateController: replicateController,
+                assetLibraryController: assetLibraryController,
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final sidebar = CollapsiblePanelRegistration(
+                      expanded: !_scriptPanelCollapsed,
+                      onExpandedChanged: _setScriptPanelExpanded,
+                      child: _ScriptSidebarSection(
+                        controller: controller,
+                        collapsed: _scriptPanelCollapsed,
+                        onCreate: () => _createScript(context, controller),
+                        onDeleteScript: (state, script) =>
+                            _deleteScript(context, controller, state, script),
+                        onToggleCollapsed: _toggleScriptPanel,
+                        onCreateFromVideo: () => controller.createFromVideo(
+                          video: videoController.value.selectedVideo!,
+                          frames: videoController.value.frames,
+                          videoShots: videoController.value.shots,
+                          analyses: videoController.value.frameAnalyses,
                         ),
-                        if (state.message.isNotEmpty ||
-                            state.errorMessage.isNotEmpty ||
-                            replicateState.message.isNotEmpty ||
-                            replicateState.errorMessage.isNotEmpty ||
-                            libraryState.message.isNotEmpty ||
-                            libraryState.errorMessage.isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              _noticeText(state, replicateState, libraryState),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color:
-                                    state.errorMessage.isNotEmpty ||
-                                        replicateState
-                                            .errorMessage
-                                            .isNotEmpty ||
-                                        libraryState.errorMessage.isNotEmpty
-                                    ? Theme.of(context).colorScheme.error
-                                    : Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
-                              ),
+                        canCreateFromVideo:
+                            videoController.value.selectedVideo != null,
+                        onCreateFromStoryboard: () =>
+                            controller.createFromStoryboard(
+                              storyboardController.value.selectedBoard,
                             ),
+                        canCreateFromStoryboard:
+                            storyboardController.value.selectedBoard != null,
+                      ),
+                    );
+                    if (constraints.maxWidth < 900) {
+                      final workspace = ReplicatePage(
+                        key: const ValueKey('shooting-script-workflow'),
+                        embedded: true,
+                        onManageAssets: () => _openAssetManager(
+                          context,
+                          assetLibraryController,
+                          replicateController,
+                        ),
+                        shotNavigationController: _shotNavigationController,
+                        onOpenShootingScript: () {},
+                      );
+                      return Column(
+                        children: [
+                          SizedBox(
+                            height: _scriptPanelCollapsed ? 64 : 250,
+                            child: sidebar,
                           ),
+                          const SizedBox(height: 12),
+                          Expanded(child: workspace),
                         ],
-                        const SizedBox(height: 12),
-                        Expanded(
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final sidebar = CollapsiblePanelRegistration(
-                                expanded: !_scriptPanelCollapsed,
-                                onExpandedChanged: _setScriptPanelExpanded,
-                                child: _ScriptSidebar(
-                                  state: state,
-                                  controller: controller,
-                                  collapsed: _scriptPanelCollapsed,
-                                  onCreate: () =>
-                                      _createScript(context, controller),
-                                  onDeleteScript: (script) => _deleteScript(
-                                    context,
-                                    controller,
-                                    state,
-                                    script,
-                                  ),
-                                  onToggleCollapsed: _toggleScriptPanel,
-                                  onCreateFromVideo: () =>
-                                      controller.createFromVideo(
-                                        video: videoController
-                                            .value
-                                            .selectedVideo!,
-                                        frames: videoController.value.frames,
-                                        videoShots: videoController.value.shots,
-                                        analyses:
-                                            videoController.value.frameAnalyses,
-                                      ),
-                                  canCreateFromVideo:
-                                      videoController.value.selectedVideo !=
-                                      null,
-                                  onCreateFromStoryboard: () =>
-                                      controller.createFromStoryboard(
-                                        storyboardController
-                                            .value
-                                            .selectedBoard,
-                                      ),
-                                  canCreateFromStoryboard:
-                                      storyboardController
-                                          .value
-                                          .selectedBoard !=
-                                      null,
-                                ),
-                              );
-                              if (constraints.maxWidth < 900) {
-                                final workspace = ReplicatePage(
-                                  key: const ValueKey(
-                                    'shooting-script-workflow',
-                                  ),
-                                  embedded: true,
-                                  onManageAssets: () => _openAssetManager(
-                                    context,
-                                    assetLibraryController,
-                                    replicateController,
-                                  ),
-                                  shotNavigationController:
-                                      _shotNavigationController,
-                                  onOpenShootingScript: () {},
-                                );
-                                return Column(
-                                  children: [
-                                    SizedBox(
-                                      height: _scriptPanelCollapsed ? 64 : 250,
-                                      child: sidebar,
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Expanded(child: workspace),
-                                  ],
-                                );
-                              }
-                              final useOuterStepPanel =
-                                  constraints.maxWidth >= 1100;
-                              if (useOuterStepPanel) {
-                                _restoreSharedStepPanelState();
-                              }
-                              final workspace = ReplicatePage(
-                                key: const ValueKey('shooting-script-workflow'),
-                                embedded: true,
-                                externalizeStepRightPanel: useOuterStepPanel,
-                                onManageAssets: () => _openAssetManager(
-                                  context,
-                                  assetLibraryController,
-                                  replicateController,
-                                ),
-                                shotNavigationController:
-                                    _shotNavigationController,
-                                onOpenShootingScript: () {},
-                              );
-                              if (!useOuterStepPanel) {
-                                final availableWidth =
-                                    constraints.maxWidth -
-                                    _panelGap -
-                                    _resizeHandleWidth;
-                                final maximumScriptWidth = math.max(
+                      );
+                    }
+                    final useOuterStepPanel = constraints.maxWidth >= 1100;
+                    if (useOuterStepPanel) {
+                      _restoreSharedStepPanelState();
+                    }
+                    final workspace = ReplicatePage(
+                      key: const ValueKey('shooting-script-workflow'),
+                      embedded: true,
+                      externalizeStepRightPanel: useOuterStepPanel,
+                      onManageAssets: () => _openAssetManager(
+                        context,
+                        assetLibraryController,
+                        replicateController,
+                      ),
+                      shotNavigationController: _shotNavigationController,
+                      onOpenShootingScript: () {},
+                    );
+                    if (!useOuterStepPanel) {
+                      final availableWidth =
+                          constraints.maxWidth - _panelGap - _resizeHandleWidth;
+                      final maximumScriptWidth = math.max(
+                        _minimumScriptPanelWidth,
+                        availableWidth - _minimumWorkspaceWidth,
+                      );
+                      final scriptWidth = _scriptPanelCollapsed
+                          ? _collapsedPanelWidth
+                          : _scriptPanelWidth
+                                .clamp(
                                   _minimumScriptPanelWidth,
-                                  availableWidth - _minimumWorkspaceWidth,
-                                );
-                                final scriptWidth = _scriptPanelCollapsed
-                                    ? _collapsedPanelWidth
-                                    : _scriptPanelWidth
-                                          .clamp(
-                                            _minimumScriptPanelWidth,
-                                            maximumScriptWidth,
-                                          )
-                                          .toDouble();
-                                return Row(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    SizedBox(
-                                      width: scriptWidth,
-                                      child: sidebar,
-                                    ),
-                                    _PanelResizeHandle(
-                                      key: const ValueKey(
-                                        'shooting-script-left-resize-handle',
-                                      ),
-                                      onDragEnd: _saveUiState,
-                                      onDrag: _scriptPanelCollapsed
-                                          ? null
-                                          : (delta) => setState(() {
-                                              _scriptPanelWidth =
-                                                  (scriptWidth + delta)
-                                                      .clamp(
-                                                        _minimumScriptPanelWidth,
-                                                        maximumScriptWidth,
-                                                      )
-                                                      .toDouble();
-                                            }),
-                                    ),
-                                    const SizedBox(width: _panelGap),
-                                    Expanded(child: workspace),
-                                  ],
-                                );
-                              }
-                              final availablePanels =
-                                  constraints.maxWidth -
-                                  _panelGap * 2 -
-                                  _resizeHandleWidth * 2;
-                              final minimumLeft = _scriptPanelCollapsed
-                                  ? _collapsedPanelWidth
-                                  : _minimumScriptPanelWidth;
-                              final minimumRight = _stepPanelCollapsed
-                                  ? _collapsedPanelWidth
-                                  : _minimumStepPanelWidth;
-                              final maximumRight = math.max(
-                                minimumRight,
-                                availablePanels -
-                                    _minimumWorkspaceWidth -
-                                    minimumLeft,
-                              );
-                              final stepPanelWidth = _stepPanelCollapsed
-                                  ? _collapsedPanelWidth
-                                  : _stepPanelWidth
-                                        .clamp(
-                                          _minimumStepPanelWidth,
-                                          maximumRight,
-                                        )
-                                        .toDouble();
-                              final maximumLeft = math.max(
-                                minimumLeft,
-                                availablePanels -
-                                    _minimumWorkspaceWidth -
-                                    stepPanelWidth,
-                              );
-                              final scriptWidth = _scriptPanelCollapsed
-                                  ? _collapsedPanelWidth
-                                  : _scriptPanelWidth
+                                  maximumScriptWidth,
+                                )
+                                .toDouble();
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SizedBox(width: scriptWidth, child: sidebar),
+                          _PanelResizeHandle(
+                            key: const ValueKey(
+                              'shooting-script-left-resize-handle',
+                            ),
+                            onDragEnd: _saveUiState,
+                            onDrag: _scriptPanelCollapsed
+                                ? null
+                                : (delta) => setState(() {
+                                    _scriptPanelWidth = (scriptWidth + delta)
                                         .clamp(
                                           _minimumScriptPanelWidth,
-                                          maximumLeft,
+                                          maximumScriptWidth,
                                         )
                                         .toDouble();
-                              return Row(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  SizedBox(width: scriptWidth, child: sidebar),
-                                  _PanelResizeHandle(
-                                    key: const ValueKey(
-                                      'shooting-script-left-resize-handle',
-                                    ),
-                                    onDragEnd: _saveUiState,
-                                    onDrag: _scriptPanelCollapsed
-                                        ? null
-                                        : (delta) => setState(() {
-                                            _scriptPanelWidth =
-                                                (scriptWidth + delta)
-                                                    .clamp(
-                                                      _minimumScriptPanelWidth,
-                                                      maximumLeft,
-                                                    )
-                                                    .toDouble();
-                                          }),
-                                  ),
-                                  const SizedBox(width: _panelGap),
-                                  Expanded(child: workspace),
-                                  const SizedBox(width: _panelGap),
-                                  _PanelResizeHandle(
-                                    key: const ValueKey(
-                                      'shooting-script-step-right-resize-handle',
-                                    ),
-                                    onDragEnd: _saveUiState,
-                                    onDrag: _stepPanelCollapsed
-                                        ? null
-                                        : (delta) => setState(() {
-                                            _stepPanelWidth =
-                                                (stepPanelWidth - delta)
-                                                    .clamp(
-                                                      _minimumStepPanelWidth,
-                                                      maximumRight,
-                                                    )
-                                                    .toDouble();
-                                          }),
-                                  ),
-                                  CollapsiblePanelRegistration(
-                                    expanded: !_stepPanelCollapsed,
-                                    onExpandedChanged: _setStepPanelExpanded,
-                                    child: SizedBox(
-                                      width: stepPanelWidth,
-                                      child: ReplicateEmbeddedStepRightPanel(
-                                        collapsed: _stepPanelCollapsed,
-                                        shotNavigationController:
-                                            _shotNavigationController,
-                                        onManageAssets: () => _openAssetManager(
-                                          context,
-                                          assetLibraryController,
-                                          replicateController,
-                                        ),
-                                        onToggleCollapsed: _toggleStepPanel,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              );
-                            },
+                                  }),
+                          ),
+                          const SizedBox(width: _panelGap),
+                          Expanded(child: workspace),
+                        ],
+                      );
+                    }
+                    final availablePanels =
+                        constraints.maxWidth -
+                        _panelGap * 2 -
+                        _resizeHandleWidth * 2;
+                    final minimumLeft = _scriptPanelCollapsed
+                        ? _collapsedPanelWidth
+                        : _minimumScriptPanelWidth;
+                    final minimumRight = _stepPanelCollapsed
+                        ? _collapsedPanelWidth
+                        : _minimumStepPanelWidth;
+                    final maximumRight = math.max(
+                      minimumRight,
+                      availablePanels - _minimumWorkspaceWidth - minimumLeft,
+                    );
+                    final stepPanelWidth = _stepPanelCollapsed
+                        ? _collapsedPanelWidth
+                        : _stepPanelWidth
+                              .clamp(_minimumStepPanelWidth, maximumRight)
+                              .toDouble();
+                    final maximumLeft = math.max(
+                      minimumLeft,
+                      availablePanels - _minimumWorkspaceWidth - stepPanelWidth,
+                    );
+                    final scriptWidth = _scriptPanelCollapsed
+                        ? _collapsedPanelWidth
+                        : _scriptPanelWidth
+                              .clamp(_minimumScriptPanelWidth, maximumLeft)
+                              .toDouble();
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(width: scriptWidth, child: sidebar),
+                        _PanelResizeHandle(
+                          key: const ValueKey(
+                            'shooting-script-left-resize-handle',
+                          ),
+                          onDragEnd: _saveUiState,
+                          onDrag: _scriptPanelCollapsed
+                              ? null
+                              : (delta) => setState(() {
+                                  _scriptPanelWidth = (scriptWidth + delta)
+                                      .clamp(
+                                        _minimumScriptPanelWidth,
+                                        maximumLeft,
+                                      )
+                                      .toDouble();
+                                }),
+                        ),
+                        const SizedBox(width: _panelGap),
+                        Expanded(child: workspace),
+                        const SizedBox(width: _panelGap),
+                        _PanelResizeHandle(
+                          key: const ValueKey(
+                            'shooting-script-step-right-resize-handle',
+                          ),
+                          onDragEnd: _saveUiState,
+                          onDrag: _stepPanelCollapsed
+                              ? null
+                              : (delta) => setState(() {
+                                  _stepPanelWidth = (stepPanelWidth - delta)
+                                      .clamp(
+                                        _minimumStepPanelWidth,
+                                        maximumRight,
+                                      )
+                                      .toDouble();
+                                }),
+                        ),
+                        CollapsiblePanelRegistration(
+                          expanded: !_stepPanelCollapsed,
+                          onExpandedChanged: _setStepPanelExpanded,
+                          child: SizedBox(
+                            width: stepPanelWidth,
+                            child: ReplicateEmbeddedStepRightPanel(
+                              collapsed: _stepPanelCollapsed,
+                              shotNavigationController:
+                                  _shotNavigationController,
+                              onManageAssets: () => _openAssetManager(
+                                context,
+                                assetLibraryController,
+                                replicateController,
+                              ),
+                              onToggleCollapsed: _toggleStepPanel,
+                            ),
                           ),
                         ),
                       ],
-                    ),
-                  ),
+                    );
+                  },
                 ),
               ),
+            ],
+          ),
         ),
       ),
     );
@@ -499,26 +434,6 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
 
   bool _jsonBool(Object? value, bool fallback) {
     return value is bool ? value : fallback;
-  }
-
-  static String _noticeText(
-    ShootingScriptState state,
-    ReplicateState replicateState,
-    ShootingAssetLibraryState libraryState,
-  ) {
-    for (final text in [
-      state.errorMessage,
-      replicateState.errorMessage,
-      libraryState.errorMessage,
-      state.message,
-      replicateState.message,
-      libraryState.message,
-    ]) {
-      if (text.isNotEmpty) {
-        return text;
-      }
-    }
-    return '';
   }
 
   Future<void> _openAssetManager(
@@ -903,6 +818,152 @@ class _ShootingScriptPageState extends ConsumerState<ShootingScriptPage> {
     );
     return result?.trim().isEmpty == true ? null : result?.trim();
   }
+}
+
+class _ShootingScriptNotice extends StatelessWidget {
+  const _ShootingScriptNotice({
+    required this.scriptController,
+    required this.replicateController,
+    required this.assetLibraryController,
+  });
+
+  final ShootingScriptController scriptController;
+  final ReplicateController replicateController;
+  final ShootingAssetLibraryController assetLibraryController;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableSelector<
+      ShootingScriptState,
+      ({String message, String errorMessage})
+    >(
+      valueListenable: scriptController,
+      selector: (state) =>
+          (message: state.message, errorMessage: state.errorMessage),
+      builder: (context, scriptNotice, _) =>
+          ValueListenableSelector<
+            ReplicateState,
+            ({String message, String errorMessage})
+          >(
+            valueListenable: replicateController,
+            selector: (state) =>
+                (message: state.message, errorMessage: state.errorMessage),
+            builder: (context, replicateNotice, _) =>
+                ValueListenableSelector<
+                  ShootingAssetLibraryState,
+                  ({String message, String errorMessage})
+                >(
+                  valueListenable: assetLibraryController,
+                  selector: (state) => (
+                    message: state.message,
+                    errorMessage: state.errorMessage,
+                  ),
+                  builder: (context, libraryNotice, _) {
+                    PerformanceProbe.shared.countBuild(
+                      'shooting_script.notice',
+                    );
+                    final hasNotice =
+                        scriptNotice.message.isNotEmpty ||
+                        scriptNotice.errorMessage.isNotEmpty ||
+                        replicateNotice.message.isNotEmpty ||
+                        replicateNotice.errorMessage.isNotEmpty ||
+                        libraryNotice.message.isNotEmpty ||
+                        libraryNotice.errorMessage.isNotEmpty;
+                    if (!hasNotice) {
+                      return const SizedBox.shrink();
+                    }
+                    final message = [
+                      scriptNotice.errorMessage,
+                      replicateNotice.errorMessage,
+                      libraryNotice.errorMessage,
+                      scriptNotice.message,
+                      replicateNotice.message,
+                      libraryNotice.message,
+                    ].firstWhere((value) => value.isNotEmpty, orElse: () => '');
+                    final hasError =
+                        scriptNotice.errorMessage.isNotEmpty ||
+                        replicateNotice.errorMessage.isNotEmpty ||
+                        libraryNotice.errorMessage.isNotEmpty;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          message,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: hasError
+                                ? Theme.of(context).colorScheme.error
+                                : Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+          ),
+    );
+  }
+}
+
+bool _shootingScriptHeaderChanged(
+  ShootingScriptState previous,
+  ShootingScriptState next,
+) =>
+    previous.selectedScriptId != next.selectedScriptId ||
+    !identical(previous.selectedScript, next.selectedScript);
+
+class _ScriptSidebarSection extends StatelessWidget {
+  const _ScriptSidebarSection({
+    required this.controller,
+    required this.collapsed,
+    required this.onCreate,
+    required this.onDeleteScript,
+    required this.onToggleCollapsed,
+    required this.onCreateFromVideo,
+    required this.canCreateFromVideo,
+    required this.onCreateFromStoryboard,
+    required this.canCreateFromStoryboard,
+  });
+
+  final ShootingScriptController controller;
+  final bool collapsed;
+  final VoidCallback onCreate;
+  final void Function(ShootingScriptState state, ShootingScript script)
+  onDeleteScript;
+  final VoidCallback onToggleCollapsed;
+  final VoidCallback onCreateFromVideo;
+  final bool canCreateFromVideo;
+  final VoidCallback onCreateFromStoryboard;
+  final bool canCreateFromStoryboard;
+
+  @override
+  Widget build(BuildContext context) =>
+      ValueListenableSelector<ShootingScriptState, ShootingScriptState>(
+        valueListenable: controller,
+        selector: (state) => state,
+        shouldRebuild: (previous, next) =>
+            !identical(previous.scripts, next.scripts) ||
+            previous.selectedScriptId != next.selectedScriptId,
+        builder: (context, state, _) {
+          PerformanceProbe.shared.countBuild('shooting_script.sidebar');
+          return _ScriptSidebar(
+            state: state,
+            controller: controller,
+            collapsed: collapsed,
+            onCreate: onCreate,
+            onDeleteScript: (script) => onDeleteScript(state, script),
+            onToggleCollapsed: onToggleCollapsed,
+            onCreateFromVideo: onCreateFromVideo,
+            canCreateFromVideo: canCreateFromVideo,
+            onCreateFromStoryboard: onCreateFromStoryboard,
+            canCreateFromStoryboard: canCreateFromStoryboard,
+          );
+        },
+      );
 }
 
 enum _StoryboardImageExportChoice { original, replicated }

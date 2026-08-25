@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pasteboard/pasteboard.dart';
 
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
@@ -118,6 +119,7 @@ class _GridCutPageState extends ConsumerState<GridCutPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('grid_cut.page');
     final controller = ref.watch(gridCutControllerProvider);
     final content = Focus(
       autofocus: true,

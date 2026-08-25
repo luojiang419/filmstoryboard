@@ -1017,8 +1017,18 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         );
       }
       completer.complete();
-    } catch (error, stackTrace) {
-      completer.completeError(error, stackTrace);
+    } catch (error, _) {
+      // 资源目录属于用户可变的外部状态（可能被移动、删除或暂时锁定）。
+      // 刷新失败不能把 unawaited(provider 初始化) 变成未处理异常，进而让
+      // 切入故事板时直接退出进程；保留当前可用资源并把错误转为页面提示。
+      if (!_disposed) {
+        _setState(
+          value.copyWith(message: '资源刷新失败：${error.toString().trim()}'),
+          saveWorkspace: false,
+          saveSelection: false,
+        );
+      }
+      completer.complete();
     } finally {
       _assetRefreshFuture = null;
     }
@@ -6381,6 +6391,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
         return null;
       }
       final boardGroups = _boardGroupsFromJson(decoded['boardGroups']);
+      // 旧版本曾允许把资源编组快照写成环。资源刷新是异步的，而故事板
+      // 页面会先渲染恢复的快照；因此必须在首帧前先切断层级环，不能等待
+      // _performAssetRefresh() 用完整资源集合再次归一化。
       final resourceGroups = _sanitizeRestoredResourceGroups(
         _resourceGroupsFromJson(decoded['resourceGroups']),
       );
@@ -6620,6 +6633,11 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     }
     final items = <StoryboardItem>[];
     for (final itemValue in value) {
+      // 快照是外部可变数据；损坏或旧版本异常写入的超大 items 数组不应
+      // 在切入故事板时一次性解析并占满内存。画板容量本身最多为 12×12。
+      if (items.length >= _maxSlotCount) {
+        break;
+      }
       final item = _itemFromJson(itemValue);
       if (item != null) {
         items.add(item);
@@ -6685,6 +6703,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     ];
     final byId = {for (final group in sanitized) group.id: group};
 
+    // Break one edge per cycle. Repeating from the beginning is unnecessary:
+    // once an edge is cleared, every cycle containing that edge is resolved,
+    // and the loop below handles any disjoint cycle deterministically.
     for (final group in [...sanitized]) {
       final visited = <String>{group.id};
       var parentId = byId[group.id]?.parentGroupId;

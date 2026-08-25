@@ -10,10 +10,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
+import '../../../core/widgets/preview_file_image.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../settings/domain/app_settings.dart';
 import '../../story_design/application/story_design_controller.dart';
 import '../../storyboard/data/image_generation_service.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
@@ -45,6 +49,20 @@ void _replaceControllerText(TextEditingController controller, String text) {
     text: text,
     selection: TextSelection.collapsed(offset: text.length),
   );
+}
+
+bool _replicatePageStateChanged(ReplicateState previous, ReplicateState next) {
+  return !identical(previous.scripts, next.scripts) ||
+      !identical(previous.shots, next.shots) ||
+      previous.selectedScriptId != next.selectedScriptId ||
+      !identical(previous.run, next.run) ||
+      !identical(previous.assets, next.assets) ||
+      !identical(previous.replicatedImages, next.replicatedImages) ||
+      !identical(previous.prompts, next.prompts) ||
+      !identical(previous.shotGuides, next.shotGuides) ||
+      !identical(previous.colorStylePresets, next.colorStylePresets) ||
+      previous.isBusy != next.isBusy ||
+      previous.isAnalyzingFrames != next.isAnalyzingFrames;
 }
 
 class ReplicatePage extends ConsumerStatefulWidget {
@@ -121,6 +139,7 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('replicate.page');
     final controller = ref.watch(replicateControllerProvider);
     final analysisController = ref.watch(scriptAnalysisControllerProvider);
     final assetBindingController = ref.watch(
@@ -132,8 +151,10 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
     final settingsController = ref.watch(settingsControllerProvider);
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<ReplicateState>(
+      child: ValueListenableSelector<ReplicateState, ReplicateState>(
         valueListenable: controller,
+        selector: (state) => state,
+        shouldRebuild: _replicatePageStateChanged,
         builder: (context, state, _) {
           if (state.scripts.isEmpty) {
             return _NoScriptState(
@@ -145,27 +166,19 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
           if (run == null) {
             return const Center(child: CircularProgressIndicator());
           }
-          final workflow = AnimatedBuilder(
-            animation: Listenable.merge([
-              analysisController,
-              assetBindingController,
-              assetLibraryController,
-              settingsController,
-            ]),
-            builder: (context, _) => _buildWorkflow(
-              context,
-              state: state,
-              controller: controller,
-              analysisController: analysisController,
-              assetBindingController: assetBindingController,
-              assetLibraryState: assetLibraryController.value,
-              run: run,
-              settingsController: settingsController,
-              externalizeStepRightPanel: widget.externalizeStepRightPanel,
-              shotNavigationController:
-                  widget.shotNavigationController ??
-                  _localShotNavigationController,
-            ),
+          final workflow = _buildWorkflow(
+            context,
+            state: state,
+            controller: controller,
+            analysisController: analysisController,
+            assetBindingController: assetBindingController,
+            assetLibraryController: assetLibraryController,
+            run: run,
+            settingsController: settingsController,
+            externalizeStepRightPanel: widget.externalizeStepRightPanel,
+            shotNavigationController:
+                widget.shotNavigationController ??
+                _localShotNavigationController,
           );
           if (widget.embedded) {
             return workflow;
@@ -205,12 +218,23 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
     required ReplicateController controller,
     required ShootingScriptAnalysisController analysisController,
     required ShootingScriptAssetBindingController assetBindingController,
-    required ShootingAssetLibraryState assetLibraryState,
+    required ShootingAssetLibraryController assetLibraryController,
     required ReplicateRun run,
     required SettingsController settingsController,
     required bool externalizeStepRightPanel,
     required ReplicateShotNavigationController shotNavigationController,
   }) {
+    final stepContent = _buildStepContent(
+      state: state,
+      controller: controller,
+      analysisController: analysisController,
+      assetBindingController: assetBindingController,
+      assetLibraryController: assetLibraryController,
+      run: run,
+      settingsController: settingsController,
+      externalizeStepRightPanel: externalizeStepRightPanel,
+      shotNavigationController: shotNavigationController,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -221,82 +245,124 @@ class _ReplicatePageState extends ConsumerState<ReplicatePage> {
         Expanded(
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
-            child: _useBuiltInTemplate
-                ? switch (run.currentStep) {
-                    ReplicateStep.confirmShots => _ConfirmShotsStep(
-                      key: const ValueKey('replicate-confirm-shots-step'),
-                      state: state,
-                      controller: controller,
-                      settingsController: settingsController,
-                    ),
-                    ReplicateStep.prepareAssets => _PrepareAssetsStep(
-                      key: const ValueKey('replicate-prepare-assets-step'),
-                      state: state,
-                      controller: controller,
-                      onImport: _importAssets,
-                      onGenerate: _generateAsset,
-                      onEdit: _editAsset,
-                      onReplace: _replaceAsset,
-                      onDelete: _deleteAsset,
-                    ),
-                    ReplicateStep.composePrompts => _ComposePromptsStep(
-                      key: const ValueKey('replicate-compose-prompts-step'),
-                      state: state,
-                      controller: controller,
-                      onCopyAll: _copyAllPrompts,
-                    ),
-                    ReplicateStep.generateVideos => VideoGenerationWorkspace(
-                      key: ValueKey('replicate-generate-videos-step'),
-                      scriptId: run.scriptId,
-                      uiStateKey: widget.embedded
-                          ? 'shootingScriptVideoGenerationPageUiState'
-                          : 'replicateVideoGenerationPageUiState',
-                    ),
-                  }
-                : switch (run.currentStep) {
-                    ReplicateStep.confirmShots => _NewConfirmShotsStep(
-                      key: const ValueKey('replicate-new-confirm-shots-step'),
-                      state: state,
-                      controller: controller,
-                      analysisController: analysisController,
-                      settingsController: settingsController,
-                      onOpenPrompt: _showPromptPreview,
-                      externalizeRightPanel: externalizeStepRightPanel,
-                      shotNavigationController: shotNavigationController,
-                    ),
-                    ReplicateStep.prepareAssets => _NewPrepareAssetsStep(
-                      key: const ValueKey('replicate-new-prepare-assets-step'),
-                      state: state,
-                      controller: controller,
-                      analysisState: analysisController.value,
-                      assetBindingController: assetBindingController,
-                      assetLibraryState: assetLibraryState,
-                      onImportLocalAsset: _importSingleAsset,
-                      projectRoot: controller.workspaceRoot,
-                      onPickColorStyleThumbnail: _pickColorStyleThumbnail,
-                      onManageAssets: widget.onManageAssets,
-                      externalizeRightPanel: externalizeStepRightPanel,
-                    ),
-                    ReplicateStep.composePrompts => _NewComposePromptsStep(
-                      key: const ValueKey('replicate-new-compose-prompts-step'),
-                      state: state,
-                      controller: controller,
-                      onCopyAll: _copyAllPrompts,
-                      externalizeRightPanel: externalizeStepRightPanel,
-                    ),
-                    ReplicateStep.generateVideos => VideoGenerationWorkspace(
-                      key: ValueKey('replicate-new-generate-videos-step'),
-                      scriptId: run.scriptId,
-                      externalizeWorkPanel: externalizeStepRightPanel,
-                      uiStateKey: widget.embedded
-                          ? 'shootingScriptVideoGenerationPageUiState'
-                          : 'replicateVideoGenerationPageUiState',
-                    ),
-                  },
+            child: stepContent,
           ),
         ),
       ],
     );
+  }
+
+  Widget _buildStepContent({
+    required ReplicateState state,
+    required ReplicateController controller,
+    required ShootingScriptAnalysisController analysisController,
+    required ShootingScriptAssetBindingController assetBindingController,
+    required ShootingAssetLibraryController assetLibraryController,
+    required ReplicateRun run,
+    required SettingsController settingsController,
+    required bool externalizeStepRightPanel,
+    required ReplicateShotNavigationController shotNavigationController,
+  }) {
+    if (_useBuiltInTemplate) {
+      return switch (run.currentStep) {
+        ReplicateStep.confirmShots => ValueListenableBuilder<AppSettings>(
+          valueListenable: settingsController,
+          builder: (context, _, _) => _ConfirmShotsStep(
+            key: const ValueKey('replicate-confirm-shots-step'),
+            state: state,
+            controller: controller,
+            settingsController: settingsController,
+          ),
+        ),
+        ReplicateStep.prepareAssets => _PrepareAssetsStep(
+          key: const ValueKey('replicate-prepare-assets-step'),
+          state: state,
+          controller: controller,
+          onImport: _importAssets,
+          onGenerate: _generateAsset,
+          onEdit: _editAsset,
+          onReplace: _replaceAsset,
+          onDelete: _deleteAsset,
+        ),
+        ReplicateStep.composePrompts => _ComposePromptsStep(
+          key: const ValueKey('replicate-compose-prompts-step'),
+          state: state,
+          controller: controller,
+          onCopyAll: _copyAllPrompts,
+        ),
+        ReplicateStep.generateVideos => VideoGenerationWorkspace(
+          key: const ValueKey('replicate-generate-videos-step'),
+          scriptId: run.scriptId,
+          uiStateKey: widget.embedded
+              ? 'shootingScriptVideoGenerationPageUiState'
+              : 'replicateVideoGenerationPageUiState',
+        ),
+      };
+    }
+    return switch (run.currentStep) {
+      ReplicateStep.confirmShots => _NewConfirmShotsStep(
+        key: const ValueKey('replicate-new-confirm-shots-step'),
+        state: state,
+        controller: controller,
+        analysisController: analysisController,
+        settingsController: settingsController,
+        onOpenPrompt: _showPromptPreview,
+        externalizeRightPanel: externalizeStepRightPanel,
+        shotNavigationController: shotNavigationController,
+      ),
+      ReplicateStep.prepareAssets =>
+        ValueListenableSelector<ScriptAnalysisState, ScriptAnalysisState>(
+          valueListenable: analysisController,
+          selector: (value) => value,
+          builder: (context, analysisState, _) =>
+              ValueListenableSelector<
+                ScriptAssetBindingState,
+                ScriptAssetBindingState
+              >(
+                valueListenable: assetBindingController,
+                selector: (value) => value,
+                builder: (context, _, _) =>
+                    ValueListenableSelector<
+                      ShootingAssetLibraryState,
+                      ShootingAssetLibraryState
+                    >(
+                      valueListenable: assetLibraryController,
+                      selector: (value) => value,
+                      builder: (context, libraryState, _) =>
+                          _NewPrepareAssetsStep(
+                            key: const ValueKey(
+                              'replicate-new-prepare-assets-step',
+                            ),
+                            state: state,
+                            controller: controller,
+                            analysisState: analysisState,
+                            assetBindingController: assetBindingController,
+                            assetLibraryState: libraryState,
+                            onImportLocalAsset: _importSingleAsset,
+                            projectRoot: controller.workspaceRoot,
+                            onPickColorStyleThumbnail: _pickColorStyleThumbnail,
+                            onManageAssets: widget.onManageAssets,
+                            externalizeRightPanel: externalizeStepRightPanel,
+                          ),
+                    ),
+              ),
+        ),
+      ReplicateStep.composePrompts => _NewComposePromptsStep(
+        key: const ValueKey('replicate-new-compose-prompts-step'),
+        state: state,
+        controller: controller,
+        onCopyAll: _copyAllPrompts,
+        externalizeRightPanel: externalizeStepRightPanel,
+      ),
+      ReplicateStep.generateVideos => VideoGenerationWorkspace(
+        key: const ValueKey('replicate-new-generate-videos-step'),
+        scriptId: run.scriptId,
+        externalizeWorkPanel: externalizeStepRightPanel,
+        uiStateKey: widget.embedded
+            ? 'shootingScriptVideoGenerationPageUiState'
+            : 'replicateVideoGenerationPageUiState',
+      ),
+    };
   }
 
   Future<void> _importAssets(ReplicateAssetType type) async {
@@ -687,6 +753,7 @@ class _ReplicateEmbeddedStepRightPanelState
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.step_right_panel');
     final controller = ref.watch(replicateControllerProvider);
     final assetBindingController = ref.watch(
       scriptAssetBindingControllerProvider,
@@ -696,47 +763,59 @@ class _ReplicateEmbeddedStepRightPanelState
     );
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<ReplicateState>(
+      child: ValueListenableSelector<ReplicateState, ReplicateState>(
         valueListenable: controller,
-        builder: (context, state, _) => AnimatedBuilder(
-          animation: Listenable.merge([
-            assetBindingController,
-            assetLibraryController,
-          ]),
-          builder: (context, _) {
-            final run = state.run;
-            if (state.scripts.isEmpty || run == null) {
-              return const SizedBox.shrink();
-            }
-            if (widget.collapsed) {
-              return _EmbeddedStepPanelFrame(
-                child: _CollapsedStepRightPanel(
-                  label: _externalPanelLabel(run.currentStep),
-                  expandButtonKey: _externalPanelExpandKey(run.currentStep),
-                  onExpand: widget.onToggleCollapsed,
-                ),
-              );
-            }
-            final panel = switch (run.currentStep) {
-              ReplicateStep.confirmShots =>
-                run.freeCreationEnabled
-                    ? _FreeCreationStoryPanel(
-                        controller: controller,
-                        onToggleCollapsed: widget.onToggleCollapsed,
-                      )
-                    : _StoryboardStoryPanel(
-                        groups: ScriptShotGroup.group(state.shots),
-                        onToggleCollapsed: widget.onToggleCollapsed,
-                        onSelectGroup: (group) => widget
-                            .shotNavigationController
-                            .navigateTo(group.shots.first.id),
-                      ),
-              ReplicateStep.prepareAssets => _PrepareAssetLibrarySidePanel(
-                assetLibraryState: assetLibraryController.value,
-                onManageAssets: widget.onManageAssets,
-                onToggleCollapsed: widget.onToggleCollapsed,
+        selector: (state) => state,
+        shouldRebuild: _rightPanelStateChanged,
+        builder: (context, state, _) {
+          PerformanceProbe.shared.countBuild(
+            'shooting_script.step_right_panel.content',
+          );
+          final run = state.run;
+          if (state.scripts.isEmpty || run == null) {
+            return const SizedBox.shrink();
+          }
+          if (widget.collapsed) {
+            return _EmbeddedStepPanelFrame(
+              child: _CollapsedStepRightPanel(
+                label: _externalPanelLabel(run.currentStep),
+                expandButtonKey: _externalPanelExpandKey(run.currentStep),
+                onExpand: widget.onToggleCollapsed,
               ),
-              ReplicateStep.composePrompts => _ComposePromptStatusPanel(
+            );
+          }
+          final panel = switch (run.currentStep) {
+            ReplicateStep.confirmShots =>
+              run.freeCreationEnabled
+                  ? _FreeCreationStoryPanel(
+                      controller: controller,
+                      onToggleCollapsed: widget.onToggleCollapsed,
+                    )
+                  : _StoryboardStoryPanel(
+                      groups: ScriptShotGroup.group(state.shots),
+                      onToggleCollapsed: widget.onToggleCollapsed,
+                      onSelectGroup: (group) => widget.shotNavigationController
+                          .navigateTo(group.shots.first.id),
+                    ),
+            ReplicateStep.prepareAssets =>
+              ValueListenableSelector<
+                ShootingAssetLibraryState,
+                ShootingAssetLibraryState
+              >(
+                valueListenable: assetLibraryController,
+                selector: (state) => state,
+                shouldRebuild: (previous, next) =>
+                    !identical(previous.items, next.items),
+                builder: (context, libraryState, _) =>
+                    _PrepareAssetLibrarySidePanel(
+                      assetLibraryState: libraryState,
+                      onManageAssets: widget.onManageAssets,
+                      onToggleCollapsed: widget.onToggleCollapsed,
+                    ),
+              ),
+            ReplicateStep.composePrompts => AnimatedBuilder(
+              animation: assetBindingController,
+              builder: (context, _) => _ComposePromptStatusPanel(
                 state: state,
                 controller: controller,
                 completedReplicaCount: state.replicatedImages
@@ -748,17 +827,29 @@ class _ReplicateEmbeddedStepRightPanelState
                     .length,
                 onToggleCollapsed: widget.onToggleCollapsed,
               ),
-              ReplicateStep.generateVideos => VideoGenerationExternalWorkPanel(
-                scriptId: run.scriptId,
-                collapsed: false,
-                onToggleCollapsed: widget.onToggleCollapsed,
-              ),
-            };
-            return _EmbeddedStepPanelFrame(child: panel);
-          },
-        ),
+            ),
+            ReplicateStep.generateVideos => VideoGenerationExternalWorkPanel(
+              scriptId: run.scriptId,
+              collapsed: false,
+              onToggleCollapsed: widget.onToggleCollapsed,
+            ),
+          };
+          return _EmbeddedStepPanelFrame(child: panel);
+        },
       ),
     );
+  }
+
+  static bool _rightPanelStateChanged(
+    ReplicateState previous,
+    ReplicateState next,
+  ) {
+    return !identical(previous.scripts, next.scripts) ||
+        !identical(previous.shots, next.shots) ||
+        !identical(previous.run, next.run) ||
+        !identical(previous.prompts, next.prompts) ||
+        !identical(previous.replicatedImages, next.replicatedImages) ||
+        previous.selectedScriptId != next.selectedScriptId;
   }
 }
 
@@ -1177,7 +1268,7 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
 
   @override
   Widget build(BuildContext context) {
-    final analysis = widget.analysisController.value;
+    PerformanceProbe.shared.countBuild('shooting_script.confirm_shots');
     final freeCreationEnabled = widget.state.run?.freeCreationEnabled ?? false;
     final builtShots = ScriptShotGroup.group(widget.state.shots);
     final feedbackShotIds = {
@@ -1257,116 +1348,133 @@ class _NewConfirmShotsStepState extends State<_NewConfirmShotsStep> {
     return _WorkspacePanel(
       child: Column(
         children: [
-          _StepToolbar(
-            title: '步骤 2 · 确认镜头',
-            subtitle: freeCreationEnabled
-                ? _showBuiltScript && widget.state.prompts.isNotEmpty
-                      ? '自由创作已按${widget.controller.composePromptModelLabel}独立规则生成 ${builtShots.length} 个提示词，可直接编辑保存。'
-                      : '设置镜头范围后可按需填写剧情描述；留空时将自动分析参考图并生成最合适的提示词。'
-                : _showBuiltScript
-                ? !widget.controller.showsH3SkillRoutingPreference
-                      ? '已按${widget.controller.composePromptModelLabel}独立规则构建 ${builtShots.length} 个镜头组；可前往步骤 3 生成视频。'
-                      : widget.controller.selectedH3PromptStyle.isGeneral
-                      ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
-                      : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
-                : '先手动设置每个镜头的首帧和结束帧范围；范围内全部图片按顺序合并为一次多图视觉请求，未设置范围的帧各自独立。构建进度 ${analysis.completedCount}/${analysis.totalCount}。',
-            actions: [
-              if (widget.controller.showsH3SkillRoutingPreference)
-                _BuildCameraStyleSelector(
-                  selectedStyle: widget.controller.selectedH3PromptStyle,
-                  enabled: !analysis.isBusy && !widget.state.isBusy,
-                  onChanged: (styleId) async {
-                    await widget.controller.selectH3PromptStyle(styleId);
-                    if (mounted) setState(() => _showBuiltScript = false);
-                  },
-                ),
-              FilledButton.icon(
-                key: const ValueKey('script-build-continuous-shots'),
-                onPressed:
-                    widget.state.shots.isEmpty ||
-                        analysis.isBusy ||
-                        widget.state.isBusy
-                    ? null
-                    : () async {
-                        if (freeCreationEnabled) {
-                          setState(() => _showBuiltScript = false);
-                          widget.controller.clearPromptsBeforeBuild();
-                          await widget.controller.composeAllPrompts(
-                            navigateToComposeStep: false,
-                          );
-                          if (mounted) {
-                            setState(() => _showBuiltScript = true);
-                          }
-                          return;
-                        }
-                        final feedbackRebuild =
-                            _showBuiltScript && feedbackShotIds.isNotEmpty;
-                        if (_showBuiltScript && !feedbackRebuild) {
-                          setState(() => _showBuiltScript = false);
-                          return;
-                        }
-                        setState(() => _showBuiltScript = false);
-                        widget.controller.clearPromptsBeforeBuild();
-                        final analysisController = widget.analysisController;
-                        final replicateController = widget.controller;
-                        final buildCompleted = await analysisController
-                            .buildScript(
-                              imagePathOverrides: completedReplicaPathByShotId,
-                              onlyFeedbackGroups: feedbackRebuild,
-                            );
-                        if (buildCompleted) {
-                          if (feedbackRebuild) {
-                            await replicateController.composePromptsForShotIds(
-                              feedbackShotIds,
-                            );
-                          } else {
-                            await replicateController.composeAllPrompts(
-                              navigateToComposeStep: false,
-                            );
-                          }
-                        }
-                        if (mounted) {
-                          setState(() => _showBuiltScript = true);
-                        }
+          ValueListenableSelector<
+            ScriptAnalysisState,
+            ({bool isBusy, int completedCount, int totalCount})
+          >(
+            valueListenable: widget.analysisController,
+            selector: (state) => (
+              isBusy: state.isBusy,
+              completedCount: state.completedCount,
+              totalCount: state.totalCount,
+            ),
+            builder: (context, analysis, _) {
+              PerformanceProbe.shared.countBuild(
+                'shooting_script.confirm_shots.toolbar',
+              );
+              return _StepToolbar(
+                title: '步骤 2 · 确认镜头',
+                subtitle: freeCreationEnabled
+                    ? _showBuiltScript && widget.state.prompts.isNotEmpty
+                          ? '自由创作已按${widget.controller.composePromptModelLabel}独立规则生成 ${builtShots.length} 个提示词，可直接编辑保存。'
+                          : '设置镜头范围后可按需填写剧情描述；留空时将自动分析参考图并生成最合适的提示词。'
+                    : _showBuiltScript
+                    ? !widget.controller.showsH3SkillRoutingPreference
+                          ? '已按${widget.controller.composePromptModelLabel}独立规则构建 ${builtShots.length} 个镜头组；可前往步骤 3 生成视频。'
+                          : widget.controller.selectedH3PromptStyle.isGeneral
+                          ? '已按各镜头剧情自动匹配 Skill 并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
+                          : '已按“${widget.controller.selectedH3PromptStyle.label}”覆盖自动匹配并构建 ${builtShots.length} 个镜头组；提示词已自动拼接，可前往步骤 3 生成视频。'
+                    : '先手动设置每个镜头的首帧和结束帧范围；范围内全部图片按顺序合并为一次多图视觉请求，未设置范围的帧各自独立。构建进度 ${analysis.completedCount}/${analysis.totalCount}。',
+                actions: [
+                  if (widget.controller.showsH3SkillRoutingPreference)
+                    _BuildCameraStyleSelector(
+                      selectedStyle: widget.controller.selectedH3PromptStyle,
+                      enabled: !analysis.isBusy && !widget.state.isBusy,
+                      onChanged: (styleId) async {
+                        await widget.controller.selectH3PromptStyle(styleId);
+                        if (mounted) setState(() => _showBuiltScript = false);
                       },
-                icon: Icon(
-                  _showBuiltScript
-                      ? feedbackShotIds.isNotEmpty
-                            ? Icons.replay_rounded
-                            : Icons.edit_note_rounded
-                      : Icons.account_tree_rounded,
-                ),
-                label: Text(
-                  analysis.isBusy
-                      ? '构建中…'
-                      : widget.state.isBusy
-                      ? '拼接提示词中…'
-                      : freeCreationEnabled && _showBuiltScript
-                      ? '重新构建'
-                      : _showBuiltScript
-                      ? feedbackShotIds.isNotEmpty
-                            ? '根据反馈重构'
-                            : '返回编辑'
-                      : '构建脚本',
-                ),
-              ),
-              if (analysis.isBusy)
-                OutlinedButton.icon(
-                  onPressed: widget.analysisController.cancel,
-                  icon: const Icon(Icons.stop_circle_outlined),
-                  label: const Text('取消构建'),
-                ),
-              FilledButton.icon(
-                key: const ValueKey('replicate-new-next-videos'),
-                onPressed: widget.state.shots.isEmpty
-                    ? null
-                    : () => widget.controller.moveToStep(
-                        ReplicateStep.generateVideos,
-                      ),
-                icon: const Icon(Icons.arrow_forward_rounded),
-                label: const Text('下一步'),
-              ),
-            ],
+                    ),
+                  FilledButton.icon(
+                    key: const ValueKey('script-build-continuous-shots'),
+                    onPressed:
+                        widget.state.shots.isEmpty ||
+                            analysis.isBusy ||
+                            widget.state.isBusy
+                        ? null
+                        : () async {
+                            if (freeCreationEnabled) {
+                              setState(() => _showBuiltScript = false);
+                              widget.controller.clearPromptsBeforeBuild();
+                              await widget.controller.composeAllPrompts(
+                                navigateToComposeStep: false,
+                              );
+                              if (mounted) {
+                                setState(() => _showBuiltScript = true);
+                              }
+                              return;
+                            }
+                            final feedbackRebuild =
+                                _showBuiltScript && feedbackShotIds.isNotEmpty;
+                            if (_showBuiltScript && !feedbackRebuild) {
+                              setState(() => _showBuiltScript = false);
+                              return;
+                            }
+                            setState(() => _showBuiltScript = false);
+                            widget.controller.clearPromptsBeforeBuild();
+                            final analysisController =
+                                widget.analysisController;
+                            final replicateController = widget.controller;
+                            final buildCompleted = await analysisController
+                                .buildScript(
+                                  imagePathOverrides:
+                                      completedReplicaPathByShotId,
+                                  onlyFeedbackGroups: feedbackRebuild,
+                                );
+                            if (buildCompleted) {
+                              if (feedbackRebuild) {
+                                await replicateController
+                                    .composePromptsForShotIds(feedbackShotIds);
+                              } else {
+                                await replicateController.composeAllPrompts(
+                                  navigateToComposeStep: false,
+                                );
+                              }
+                            }
+                            if (mounted) {
+                              setState(() => _showBuiltScript = true);
+                            }
+                          },
+                    icon: Icon(
+                      _showBuiltScript
+                          ? feedbackShotIds.isNotEmpty
+                                ? Icons.replay_rounded
+                                : Icons.edit_note_rounded
+                          : Icons.account_tree_rounded,
+                    ),
+                    label: Text(
+                      analysis.isBusy
+                          ? '构建中…'
+                          : widget.state.isBusy
+                          ? '拼接提示词中…'
+                          : freeCreationEnabled && _showBuiltScript
+                          ? '重新构建'
+                          : _showBuiltScript
+                          ? feedbackShotIds.isNotEmpty
+                                ? '根据反馈重构'
+                                : '返回编辑'
+                          : '构建脚本',
+                    ),
+                  ),
+                  if (analysis.isBusy)
+                    OutlinedButton.icon(
+                      onPressed: widget.analysisController.cancel,
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const Text('取消构建'),
+                    ),
+                  FilledButton.icon(
+                    key: const ValueKey('replicate-new-next-videos'),
+                    onPressed: widget.state.shots.isEmpty
+                        ? null
+                        : () => widget.controller.moveToStep(
+                            ReplicateStep.generateVideos,
+                          ),
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                    label: const Text('下一步'),
+                  ),
+                ],
+              );
+            },
           ),
           const Divider(height: 1),
           Expanded(
@@ -2199,7 +2307,7 @@ class _BuiltFrameThumbnail extends StatelessWidget {
           ColoredBox(
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
             child: exists
-                ? Image.file(File(path), fit: BoxFit.contain)
+                ? PreviewFileImage(path: path, fit: BoxFit.contain)
                 : Icon(
                     Icons.image_not_supported_outlined,
                     size: 18,
@@ -4130,6 +4238,7 @@ class _NewShotTableState extends ConsumerState<_NewShotTable> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('shooting_script.shot_list');
     final promptByShotId = <String, ShotPrompt>{
       for (final prompt in widget.state.prompts)
         if (prompt.scriptShotId != null) prompt.scriptShotId!: prompt,
@@ -5117,8 +5226,8 @@ class _ShotFrameThumbnail extends StatelessWidget {
                 ColoredBox(
                   color: scheme.surfaceContainerHighest,
                   child: exists
-                      ? Image.file(
-                          File(path),
+                      ? PreviewFileImage(
+                          path: path,
                           fit: BoxFit.contain,
                           errorBuilder: (_, _, _) => Icon(emptyIcon, size: 20),
                         )

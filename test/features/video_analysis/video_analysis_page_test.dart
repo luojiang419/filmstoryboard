@@ -25,6 +25,30 @@ void main() {
     expect(portrait, closeTo(230 / (230 / (4 / 5) + 42), 0.001));
   });
 
+  test('视频帧网格只计算视口与预加载行的索引范围', () {
+    final range = videoFrameGridVisibleRange(
+      itemCount: 100,
+      crossAxisCount: 4,
+      rowHeight: 100,
+      viewportTop: 250,
+      viewportBottom: 550,
+      overscanRows: 1,
+    );
+
+    expect(range.firstIndex, 4);
+    expect(range.lastIndex, 31);
+    expect(range.isEmpty, isFalse);
+
+    final empty = videoFrameGridVisibleRange(
+      itemCount: 0,
+      crossAxisCount: 4,
+      rowHeight: 100,
+      viewportTop: 0,
+      viewportBottom: 400,
+    );
+    expect(empty.isEmpty, isTrue);
+  });
+
   testWidgets('视频解析页拖入视频文件会复用导入链路并过滤非视频', (tester) async {
     late final Directory root;
     late final AppDirectories directories;

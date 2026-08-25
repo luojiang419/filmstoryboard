@@ -23,3 +23,39 @@ ImageProvider<Object> previewFileImageProvider({
       .toInt();
   return ResizeImage.resizeIfNeeded(cacheWidth, null, provider);
 }
+
+/// Displays a local preview using a decode size derived from its viewport.
+///
+/// This keeps thumbnail grids from decoding an original multi-megapixel file
+/// when only a small card is visible, while preserving the same image
+/// provider semantics and error handling as [Image.file].
+class PreviewFileImage extends StatelessWidget {
+  const PreviewFileImage({
+    super.key,
+    required this.path,
+    this.fit = BoxFit.contain,
+    this.errorBuilder,
+    this.maxCacheWidth = defaultPreviewImageMaxCacheWidth,
+  });
+
+  final String path;
+  final BoxFit fit;
+  final ImageErrorWidgetBuilder? errorBuilder;
+  final int maxCacheWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) => Image(
+        image: previewFileImageProvider(
+          path: path,
+          logicalWidth: constraints.maxWidth,
+          devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+          maxCacheWidth: maxCacheWidth,
+        ),
+        fit: fit,
+        errorBuilder: errorBuilder,
+      ),
+    );
+  }
+}

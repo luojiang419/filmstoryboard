@@ -52,6 +52,52 @@ final videoAnalysisControllerProvider = Provider<VideoAnalysisController>(
 
 enum VideoFrameFilter { all, focus, pending, failed }
 
+final Expando<_VideoAnalysisDerivedState> _videoAnalysisDerivedCache =
+    Expando<_VideoAnalysisDerivedState>();
+
+class _VideoAnalysisDerivedState {
+  _VideoAnalysisDerivedState(VideoAnalysisState state)
+    : scenes = _buildScenes(state),
+      visibleFrames = _buildVisibleFrames(state);
+
+  final List<String> scenes;
+  final List<VideoFrame> visibleFrames;
+
+  static List<String> _buildScenes(VideoAnalysisState state) =>
+      state.frameAnalyses
+          .map((analysis) => analysis.dimensions['scene']?.trim() ?? '')
+          .where((scene) => scene.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
+
+  static List<VideoFrame> _buildVisibleFrames(VideoAnalysisState state) {
+    final analysisByFrame = {
+      for (final analysis in state.frameAnalyses) analysis.frameId: analysis,
+    };
+    final shotFrameIds = state.shotFilterId.isEmpty
+        ? null
+        : state.shots
+              .where((shot) => shot.id == state.shotFilterId)
+              .expand((shot) => shot.frameIds)
+              .toSet();
+    return state.frames.where((frame) {
+      final matchesStatus = switch (state.filter) {
+        VideoFrameFilter.all => true,
+        VideoFrameFilter.focus => frame.isFocus,
+        VideoFrameFilter.pending => frame.status == ProcessingStatus.pending,
+        VideoFrameFilter.failed => frame.status == ProcessingStatus.failed,
+      };
+      final matchesScene =
+          state.sceneFilter.isEmpty ||
+          analysisByFrame[frame.id]?.dimensions['scene'] == state.sceneFilter;
+      final matchesShot =
+          shotFrameIds == null || shotFrameIds.contains(frame.id);
+      return matchesStatus && matchesScene && matchesShot;
+    }).toList();
+  }
+}
+
 class VideoAnalysisState {
   const VideoAnalysisState({
     this.videos = const [],
@@ -124,39 +170,12 @@ class VideoAnalysisState {
     return null;
   }
 
-  List<String> get scenes =>
-      frameAnalyses
-          .map((analysis) => analysis.dimensions['scene']?.trim() ?? '')
-          .where((scene) => scene.isNotEmpty)
-          .toSet()
-          .toList()
-        ..sort();
+  _VideoAnalysisDerivedState get _derived =>
+      _videoAnalysisDerivedCache[this] ??= _VideoAnalysisDerivedState(this);
 
-  List<VideoFrame> get visibleFrames {
-    final analysisByFrame = {
-      for (final analysis in frameAnalyses) analysis.frameId: analysis,
-    };
-    final shotFrameIds = shotFilterId.isEmpty
-        ? null
-        : shots
-              .where((shot) => shot.id == shotFilterId)
-              .expand((shot) => shot.frameIds)
-              .toSet();
-    return frames.where((frame) {
-      final matchesStatus = switch (filter) {
-        VideoFrameFilter.all => true,
-        VideoFrameFilter.focus => frame.isFocus,
-        VideoFrameFilter.pending => frame.status == ProcessingStatus.pending,
-        VideoFrameFilter.failed => frame.status == ProcessingStatus.failed,
-      };
-      final matchesScene =
-          sceneFilter.isEmpty ||
-          analysisByFrame[frame.id]?.dimensions['scene'] == sceneFilter;
-      final matchesShot =
-          shotFrameIds == null || shotFrameIds.contains(frame.id);
-      return matchesStatus && matchesScene && matchesShot;
-    }).toList();
-  }
+  List<String> get scenes => _derived.scenes;
+
+  List<VideoFrame> get visibleFrames => _derived.visibleFrames;
 
   bool get isBusy =>
       isImporting || isAnalyzing || isExporting || isGeneratingStoryboard;
@@ -251,18 +270,27 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   final AnalysisReportExportService _reportExportService;
   final Uuid _uuid;
   final _analysisSessionsByVideoId = <String, _VideoAnalysisSession>{};
+  final _analysisProgressTimersByVideoId = <String, Timer>{};
+  final _pendingFrameAnalysisPatchesByVideoId =
+      <String, Map<String, VideoFrameAnalysis>>{};
+  final _frameAnalysisPatchTimersByVideoId = <String, Timer>{};
   final _removedFrameUndoHistory = <String, List<_RemovedVideoFrame>>{};
   final _removedFrameRedoHistory = <String, List<_RemovedVideoFrame>>{};
   Future<void> _storyboardSynchronizationTail = Future<void>.value();
   late final Future<int> _legacyMetadataRepair;
   bool _isDisposed = false;
+  int _selectedVideoLoadCount = 0;
 
   Future<int> get legacyMetadataRepair => _legacyMetadataRepair;
+
+  @visibleForTesting
+  int get selectedVideoLoadCount => _selectedVideoLoadCount;
 
   bool isAnalysisActiveFor(String videoId) =>
       _analysisSessionsByVideoId[videoId]?.isAnalyzing ?? false;
 
   void _publishAnalysisSession(_VideoAnalysisSession session) {
+    _analysisProgressTimersByVideoId.remove(session.videoId)?.cancel();
     if (value.selectedVideoId != session.videoId) return;
     value = value.copyWith(
       isAnalyzing: session.isAnalyzing,
@@ -272,6 +300,68 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
       message: session.message,
       errorMessage: session.errorMessage,
     );
+  }
+
+  /// Coalesces per-frame progress callbacks into at most one UI notification
+  /// per interval. The analysis service and database writes remain unchanged.
+  void _scheduleAnalysisSessionPublish(_VideoAnalysisSession session) {
+    if (_isDisposed || value.selectedVideoId != session.videoId) return;
+    if (_analysisProgressTimersByVideoId.containsKey(session.videoId)) return;
+    _analysisProgressTimersByVideoId[session.videoId] = Timer(
+      const Duration(milliseconds: 80),
+      () {
+        _analysisProgressTimersByVideoId.remove(session.videoId);
+        if (!_isDisposed && value.selectedVideoId == session.videoId) {
+          _publishAnalysisSession(session);
+        }
+      },
+    );
+  }
+
+  /// Coalesces frame-completion callbacks into one small in-memory patch.
+  /// Database writes remain owned by [VideoAnalysisService]; this only keeps
+  /// the selected video's visible frame state responsive between full loads.
+  void _scheduleFrameAnalysisPatch(VideoFrameAnalysis analysis) {
+    if (_isDisposed || value.selectedVideoId != analysis.videoId) return;
+    final pending = _pendingFrameAnalysisPatchesByVideoId.putIfAbsent(
+      analysis.videoId,
+      () => <String, VideoFrameAnalysis>{},
+    );
+    pending[analysis.frameId] = analysis;
+    if (_frameAnalysisPatchTimersByVideoId.containsKey(analysis.videoId)) {
+      return;
+    }
+    _frameAnalysisPatchTimersByVideoId[analysis.videoId] = Timer(
+      const Duration(milliseconds: 80),
+      () => _flushFrameAnalysisPatches(analysis.videoId),
+    );
+  }
+
+  void _flushFrameAnalysisPatches(String videoId) {
+    _frameAnalysisPatchTimersByVideoId.remove(videoId)?.cancel();
+    final pending = _pendingFrameAnalysisPatchesByVideoId.remove(videoId);
+    if (_isDisposed || value.selectedVideoId != videoId || pending == null) {
+      return;
+    }
+
+    final frames = value.frames
+        .map((frame) {
+          final analysis = pending[frame.id];
+          return analysis == null
+              ? frame
+              : frame.copyWith(
+                  status: analysis.status,
+                  errorMessage: analysis.errorMessage,
+                );
+        })
+        .toList(growable: false);
+    final analysesByFrameId = <String, VideoFrameAnalysis>{
+      for (final analysis in value.frameAnalyses) analysis.frameId: analysis,
+    };
+    analysesByFrameId.addAll(pending);
+    final frameAnalyses = analysesByFrameId.values.toList()
+      ..sort((left, right) => left.sequenceNo.compareTo(right.sequenceNo));
+    value = value.copyWith(frames: frames, frameAnalyses: frameAnalyses);
   }
 
   bool get canUndoFrameRemoval {
@@ -422,6 +512,11 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   void selectVideo(String videoId) {
     if (value.selectedVideoId == videoId) {
       return;
+    }
+    final previousVideoId = value.selectedVideoId;
+    if (previousVideoId.isNotEmpty) {
+      _frameAnalysisPatchTimersByVideoId.remove(previousVideoId)?.cancel();
+      _pendingFrameAnalysisPatchesByVideoId.remove(previousVideoId);
     }
     value = value.copyWith(
       selectedVideoId: videoId,
@@ -807,12 +902,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
             ..message = completed == total
                 ? '候选帧解析完成，正在汇总 ${target.video.fileName}…'
                 : session.message;
-          _publishAnalysisSession(session);
+          _scheduleAnalysisSessionPublish(session);
         },
-        onFrameCompleted: (_) {
-          if (value.selectedVideoId == target.video.id) {
-            _loadSelectedVideo(notifyMessage: false);
-          }
+        onFrameCompleted: (analysis) {
+          _scheduleFrameAnalysisPatch(analysis);
         },
       );
       if (!result.interrupted &&
@@ -836,12 +929,10 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
               onProgress: (completed, total) {
                 session.message =
                     '正在自动重试 ${target.video.fileName} 的失败帧 $completed/$total…';
-                _publishAnalysisSession(session);
+                _scheduleAnalysisSessionPublish(session);
               },
-              onFrameCompleted: (_) {
-                if (value.selectedVideoId == target.video.id) {
-                  _loadSelectedVideo(notifyMessage: false);
-                }
+              onFrameCompleted: (analysis) {
+                _scheduleFrameAnalysisPatch(analysis);
               },
             );
           }
@@ -899,7 +990,8 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     } finally {
       session.isAnalyzing = false;
       _publishAnalysisSession(session);
-      if (value.selectedVideoId == target.video.id) {
+      _flushFrameAnalysisPatches(target.video.id);
+      if (!_isDisposed && value.selectedVideoId == target.video.id) {
         _loadSelectedVideo(notifyMessage: false);
       }
     }
@@ -1302,6 +1394,7 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
     String? message,
     bool notifyMessage = true,
   }) {
+    _selectedVideoLoadCount++;
     final videoId = value.selectedVideoId;
     if (videoId.isEmpty) {
       value = value.copyWith(
@@ -1323,14 +1416,15 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
         (frames.any((frame) => frame.id == value.selectedFrameId)
             ? value.selectedFrameId
             : (frames.isEmpty ? '' : frames.first.id));
+    final summary = _repository.getVideoSummary(videoId);
     value = value.copyWith(
       videos: _repository.listSourceVideos(),
       frames: frames,
       shots: _repository.listVideoShots(videoId),
       frameAnalyses: _repository.listVideoFrameAnalyses(videoId),
       marketingAnalyses: _repository.listMarketingAnalyses(videoId),
-      summary: _repository.getVideoSummary(videoId),
-      clearSummary: _repository.getVideoSummary(videoId) == null,
+      summary: summary,
+      clearSummary: summary == null,
       selectedFrameId: selectedId,
       isAnalyzing: session?.isAnalyzing ?? false,
       isPaused: session?.isPaused ?? false,
@@ -1360,6 +1454,15 @@ class VideoAnalysisController extends ValueNotifier<VideoAnalysisState> {
   @override
   void dispose() {
     _isDisposed = true;
+    for (final timer in _analysisProgressTimersByVideoId.values) {
+      timer.cancel();
+    }
+    for (final timer in _frameAnalysisPatchTimersByVideoId.values) {
+      timer.cancel();
+    }
+    _analysisProgressTimersByVideoId.clear();
+    _frameAnalysisPatchTimersByVideoId.clear();
+    _pendingFrameAnalysisPatchesByVideoId.clear();
     for (final session in _analysisSessionsByVideoId.values) {
       session.shouldContinue = false;
     }

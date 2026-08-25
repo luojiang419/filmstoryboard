@@ -20,6 +20,53 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  test('视频分析状态在同一快照内缓存场景和可见帧派生列表', () {
+    final now = DateTime.utc(2026, 8, 24);
+    final frames = [
+      VideoFrame(
+        id: 'frame-1',
+        videoId: 'video-1',
+        index: 0,
+        timestampMs: 0,
+        path: 'frame-1.png',
+        width: 1920,
+        height: 1080,
+        sharpness: 1,
+        brightness: 1,
+        motionScore: 1,
+        perceptualHash: 'hash-1',
+        isFocus: true,
+        isSelected: false,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        createdAt: now,
+      ),
+    ];
+    final state = VideoAnalysisState(
+      frames: frames,
+      frameAnalyses: [
+        VideoFrameAnalysis(
+          id: 'analysis-1',
+          videoId: 'video-1',
+          frameId: 'frame-1',
+          sequenceNo: 0,
+          dimensions: const {'scene': '室内'},
+          rawResponse: '{}',
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          createdAt: now,
+          updatedAt: now,
+        ),
+      ],
+    );
+
+    expect(identical(state.visibleFrames, state.visibleFrames), isTrue);
+    expect(identical(state.scenes, state.scenes), isTrue);
+    expect(state.visibleFrames, hasLength(1));
+    expect(identical(state.visibleFrames.single, frames.single), isTrue);
+    expect(state.scenes, ['室内']);
+  });
+
   test('旧工程会一次性回填视频旋转元数据', () async {
     final root = await Directory.systemTemp.createTemp(
       'video_orientation_repair_',
@@ -540,6 +587,148 @@ void main() {
     );
   });
 
+  test('逐帧完成会先增量更新内存并按帧替换精修分析，批次结束只全量校正一次', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'video_incremental_patch_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final repository = VideoAnalysisRepository(database);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final now = DateTime.utc(2026, 8, 12);
+    final video = _video('incremental-video', 'incremental.mp4', now);
+    final firstFrame = _frame(
+      video.id,
+      'incremental-frame-1',
+      0,
+      now,
+    ).copyWith(status: ProcessingStatus.pending);
+    final secondFrame = _frame(
+      video.id,
+      'incremental-frame-2',
+      1,
+      now,
+    ).copyWith(status: ProcessingStatus.pending);
+    repository
+      ..upsertSourceVideo(video)
+      ..upsertVideoFrame(firstFrame)
+      ..upsertVideoFrame(secondFrame);
+    final analysisService = _IncrementalVideoAnalysisService(
+      repository: repository,
+    );
+    final controller = VideoAnalysisController(
+      directories: directories,
+      settingsController: settingsController,
+      repository: repository,
+      analysisService: analysisService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    final initialLoadCount = controller.selectedVideoLoadCount;
+    final analysisFuture = controller.startAnalysis(forceAll: true);
+    await analysisService.firstFrameCompleted.future;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(controller.value.frames.first.status, ProcessingStatus.completed);
+    expect(controller.value.frameAnalyses, hasLength(1));
+    expect(
+      controller.value.frameAnalyses.single.rawResponse,
+      '{"phase":"initial"}',
+    );
+    expect(controller.selectedVideoLoadCount, initialLoadCount);
+
+    await analysisService.refinedFrameCompleted.future;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(controller.value.frameAnalyses, hasLength(1));
+    expect(
+      controller.value.frameAnalyses.single.rawResponse,
+      '{"phase":"refined"}',
+    );
+    expect(controller.selectedVideoLoadCount, initialLoadCount);
+
+    analysisService.releaseSecondFrame();
+    await analysisFuture;
+    expect(controller.selectedVideoLoadCount, initialLoadCount + 1);
+    expect(controller.value.frameAnalyses, hasLength(2));
+  });
+
+  test('切换视频后，旧视频已排队的延迟帧 patch 不会污染当前视频', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'video_incremental_switch_',
+    );
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    final repository = VideoAnalysisRepository(database);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final now = DateTime.utc(2026, 8, 13);
+    final videoA = _video('incremental-switch-a', 'a.mp4', now);
+    final videoB = _video(
+      'incremental-switch-b',
+      'b.mp4',
+      now.add(const Duration(seconds: 1)),
+    );
+    repository
+      ..upsertSourceVideo(videoA)
+      ..upsertSourceVideo(videoB)
+      ..upsertVideoFrame(
+        _frame(
+          videoA.id,
+          'incremental-switch-frame-a',
+          0,
+          now,
+        ).copyWith(status: ProcessingStatus.pending),
+      )
+      ..upsertVideoFrame(
+        _frame(
+          videoB.id,
+          'incremental-switch-frame-b',
+          0,
+          now,
+        ).copyWith(status: ProcessingStatus.pending),
+      );
+    final analysisService = _DelayedFrameCallbackVideoAnalysisService(
+      repository: repository,
+    );
+    final controller = VideoAnalysisController(
+      directories: directories,
+      settingsController: settingsController,
+      repository: repository,
+      analysisService: analysisService,
+    );
+    addTearDown(() async {
+      controller.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    controller.selectVideo(videoA.id);
+    final analysisFuture = controller.startAnalysis();
+    await analysisService.frameCallbackCompleted.future;
+    controller.selectVideo(videoB.id);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(controller.value.selectedVideoId, videoB.id);
+    expect(controller.value.frames.single.id, 'incremental-switch-frame-b');
+    expect(controller.value.frameAnalyses, isEmpty);
+
+    analysisService.release();
+    await analysisFuture;
+  });
+
   test('不同视频可并行解析并在切换后恢复各自进度', () async {
     final root = await Directory.systemTemp.createTemp(
       'parallel-video-analysis-',
@@ -630,6 +819,146 @@ void main() {
     expect(repository.listVideoFrameAnalyses(videoA.id), isEmpty);
     expect(repository.listVideoFrameAnalyses(videoB.id), hasLength(1));
   });
+}
+
+class _IncrementalVideoAnalysisService extends VideoAnalysisService {
+  _IncrementalVideoAnalysisService({required super.repository});
+
+  final firstFrameCompleted = Completer<void>();
+  final refinedFrameCompleted = Completer<void>();
+  final _allowSecondFrame = Completer<void>();
+
+  void releaseSecondFrame() {
+    if (!_allowSecondFrame.isCompleted) {
+      _allowSecondFrame.complete();
+    }
+  }
+
+  @override
+  Future<VideoAnalysisRunResult> analyzeFrames({
+    required settings,
+    required SourceVideo video,
+    required List<VideoFrame> frames,
+    File Function(VideoFrame frame)? resolveFrame,
+    void Function(int completed, int total)? onProgress,
+    void Function(VideoFrameAnalysis analysis)? onFrameCompleted,
+    bool Function()? shouldContinue,
+  }) async {
+    for (var index = 0; index < frames.length; index++) {
+      final frame = frames[index];
+      final initial = _record(
+        video: video,
+        frame: frame,
+        sequenceNo: index + 1,
+        idSuffix: 'initial',
+        rawResponse: '{"phase":"initial"}',
+      );
+      repository
+        ..upsertVideoFrameAnalysis(initial)
+        ..upsertVideoFrame(frame.copyWith(status: ProcessingStatus.completed));
+      onFrameCompleted?.call(initial);
+      onProgress?.call(index + 1, frames.length);
+      if (index == 0) {
+        if (!firstFrameCompleted.isCompleted) {
+          firstFrameCompleted.complete();
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 110));
+        final refined = _record(
+          video: video,
+          frame: frame,
+          sequenceNo: index + 1,
+          idSuffix: 'refined',
+          rawResponse: '{"phase":"refined"}',
+        );
+        repository.upsertVideoFrameAnalysis(refined);
+        onFrameCompleted?.call(refined);
+        if (!refinedFrameCompleted.isCompleted) {
+          refinedFrameCompleted.complete();
+        }
+        await _allowSecondFrame.future;
+      }
+    }
+    return VideoAnalysisRunResult(
+      completedCount: frames.length,
+      failedCount: 0,
+      summary: null,
+    );
+  }
+
+  VideoFrameAnalysis _record({
+    required SourceVideo video,
+    required VideoFrame frame,
+    required int sequenceNo,
+    required String idSuffix,
+    required String rawResponse,
+  }) {
+    final now = DateTime.now().toUtc();
+    return VideoFrameAnalysis(
+      id: '${video.id}-${frame.id}-$idSuffix',
+      videoId: video.id,
+      frameId: frame.id,
+      sequenceNo: sequenceNo,
+      dimensions: const {'caption': '增量测试分析'},
+      rawResponse: rawResponse,
+      status: ProcessingStatus.completed,
+      errorMessage: '',
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+}
+
+class _DelayedFrameCallbackVideoAnalysisService extends VideoAnalysisService {
+  _DelayedFrameCallbackVideoAnalysisService({required super.repository});
+
+  final frameCallbackCompleted = Completer<void>();
+  final _releaseCallback = Completer<void>();
+
+  void release() {
+    if (!_releaseCallback.isCompleted) {
+      _releaseCallback.complete();
+    }
+  }
+
+  @override
+  Future<VideoAnalysisRunResult> analyzeFrames({
+    required settings,
+    required SourceVideo video,
+    required List<VideoFrame> frames,
+    File Function(VideoFrame frame)? resolveFrame,
+    void Function(int completed, int total)? onProgress,
+    void Function(VideoFrameAnalysis analysis)? onFrameCompleted,
+    bool Function()? shouldContinue,
+  }) async {
+    final frame = frames.single;
+    final now = DateTime.now().toUtc();
+    final analysis = VideoFrameAnalysis(
+      id: '${video.id}-${frame.id}',
+      videoId: video.id,
+      frameId: frame.id,
+      sequenceNo: 1,
+      dimensions: const {'caption': '延迟测试分析'},
+      rawResponse: '{}',
+      status: ProcessingStatus.completed,
+      errorMessage: '',
+      createdAt: now,
+      updatedAt: now,
+    );
+    repository
+      ..upsertVideoFrameAnalysis(analysis)
+      ..upsertVideoFrame(frame.copyWith(status: ProcessingStatus.completed));
+    onFrameCompleted?.call(analysis);
+    onProgress?.call(1, 1);
+    if (!frameCallbackCompleted.isCompleted) {
+      frameCallbackCompleted.complete();
+    }
+    await _releaseCallback.future;
+    return const VideoAnalysisRunResult(
+      completedCount: 1,
+      failedCount: 0,
+      summary: null,
+    );
+  }
 }
 
 class _CompletedVideoAnalysisService extends VideoAnalysisService {

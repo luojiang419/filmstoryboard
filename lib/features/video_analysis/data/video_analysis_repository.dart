@@ -208,23 +208,34 @@ class VideoAnalysisRepository {
   }
 
   List<VideoShot> listVideoShots(String videoId) {
-    final shots = _database.selectRows(
-      'SELECT * FROM video_shots WHERE video_id = ? ORDER BY shot_number;',
+    final rows = _database.selectRows(
+      '''
+      SELECT vs.*, vsf.frame_id AS frame_id
+      FROM video_shots vs
+      LEFT JOIN video_shot_frames vsf ON vsf.shot_id = vs.id
+      WHERE vs.video_id = ?
+      ORDER BY vs.shot_number, vsf.position;
+      ''',
       [videoId],
     );
-    return shots.map((row) {
-      final frameRows = _database.selectRows(
-        '''
-        SELECT frame_id FROM video_shot_frames
-        WHERE shot_id = ? ORDER BY position;
-      ''',
-        [row['id']],
-      );
-      return _videoShot(
-        row,
-        frameRows.map((item) => item['frame_id'] as String),
-      );
-    }).toList();
+    final firstRows = <String, Map<String, Object?>>{};
+    final frameIdsByShot = <String, List<String>>{};
+    for (final row in rows) {
+      final shotId = row['id'] as String;
+      firstRows.putIfAbsent(shotId, () => row);
+      final frameId = row['frame_id'] as String?;
+      if (frameId != null) {
+        frameIdsByShot.putIfAbsent(shotId, () => <String>[]).add(frameId);
+      }
+    }
+    return firstRows.entries
+        .map(
+          (entry) => _videoShot(
+            entry.value,
+            frameIdsByShot[entry.key] ?? const <String>[],
+          ),
+        )
+        .toList();
   }
 
   void upsertMarketingAnalysis(MarketingAnalysis analysis) {

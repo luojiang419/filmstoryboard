@@ -15,6 +15,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
@@ -321,6 +322,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('storyboard.page');
     final controller = ref.watch(storyboardControllerProvider);
     void createBoardWithShootingScript() {
       final board = controller.addBoard();
@@ -852,11 +854,17 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     File packageFile, {
     StoryboardBoard? fallbackBoard,
   }) async {
+    if (!mounted) {
+      throw StateError('故事板页面已关闭，取消接收回传');
+    }
     final directories = ref.read(projectDirectoriesProvider);
     final result = await const BridgePackageService().importShiyinToFilm(
       packageFile: packageFile,
       destinationRoot: directories.imports,
     );
+    if (!mounted) {
+      throw StateError('故事板页面已关闭，取消写入回传结果');
+    }
     final variantLabel = switch (result.manifest.selectedVariant) {
       BridgeVariant.original => '原始帧',
       BridgeVariant.expanded16x9 => '16:9 扩展',
@@ -2472,6 +2480,8 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
           if (group == null) {
             continue;
           }
+          // 旧快照/外部同步数据可能带有编组环；在异步资源刷新完成前，
+          // 也必须保证首帧递归有界，避免切入故事板时栈溢出。
           if (ancestorGroupIds.contains(group.id)) {
             continue;
           }

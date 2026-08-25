@@ -11,10 +11,12 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/desktop_drop_target_scope.dart';
 import '../../../core/widgets/preview_file_image.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
 import '../../projects/application/project_aspect_controller.dart';
 import '../../projects/domain/project_aspect_ratio.dart';
 import '../../storyboard/application/storyboard_controller.dart';
@@ -50,6 +52,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
 
   @override
   Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('video_analysis.page');
     final controller = ref.watch(videoAnalysisControllerProvider);
     final storyboardController = ref.watch(storyboardControllerProvider);
     final projectAspectController = ref.watch(projectAspectControllerProvider);
@@ -79,7 +82,8 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
           ),
           child: ValueListenableBuilder<VideoAnalysisState>(
             valueListenable: controller,
-            builder: (context, state, _) =>
+            child: _VideoAnalysisWorkspace(controller: controller),
+            builder: (context, state, workspace) =>
                 ValueListenableBuilder<StoryboardState>(
                   valueListenable: storyboardController,
                   builder: (context, storyboardState, _) => ColoredBox(
@@ -160,20 +164,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
                                         onImport: () =>
                                             _pickVideo(context, controller),
                                       )
-                                    : LayoutBuilder(
-                                        builder: (context, constraints) {
-                                          if (constraints.maxWidth < 900) {
-                                            return _CompactWorkspace(
-                                              controller: controller,
-                                              state: state,
-                                            );
-                                          }
-                                          return _WideWorkspace(
-                                            controller: controller,
-                                            state: state,
-                                          );
-                                        },
-                                      ),
+                                    : workspace!,
                               ),
                             ],
                           ),
@@ -377,6 +368,52 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
     if (generated) {
       widget.onOpenStoryboard?.call();
     }
+  }
+}
+
+class _VideoAnalysisWorkspace extends StatelessWidget {
+  const _VideoAnalysisWorkspace({required this.controller});
+
+  final VideoAnalysisController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    PerformanceProbe.shared.countBuild('video_analysis.workspace');
+    return ValueListenableSelector<VideoAnalysisState, VideoAnalysisState>(
+      valueListenable: controller,
+      selector: (state) => state,
+      shouldRebuild: _workspaceStateChanged,
+      builder: (context, state, _) => LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 900) {
+            return _CompactWorkspace(controller: controller, state: state);
+          }
+          return _WideWorkspace(controller: controller, state: state);
+        },
+      ),
+    );
+  }
+
+  static bool _workspaceStateChanged(
+    VideoAnalysisState previous,
+    VideoAnalysisState next,
+  ) {
+    return !identical(previous.videos, next.videos) ||
+        !identical(previous.frames, next.frames) ||
+        !identical(previous.shots, next.shots) ||
+        !identical(previous.frameAnalyses, next.frameAnalyses) ||
+        !identical(previous.marketingAnalyses, next.marketingAnalyses) ||
+        !identical(previous.summary, next.summary) ||
+        previous.selectedVideoId != next.selectedVideoId ||
+        previous.selectedFrameId != next.selectedFrameId ||
+        previous.sceneFilter != next.sceneFilter ||
+        previous.shotFilterId != next.shotFilterId ||
+        previous.filter != next.filter ||
+        previous.isImporting != next.isImporting ||
+        previous.isAnalyzing != next.isAnalyzing ||
+        previous.isPaused != next.isPaused ||
+        previous.isExporting != next.isExporting ||
+        previous.isGeneratingStoryboard != next.isGeneratingStoryboard;
   }
 }
 
@@ -1077,6 +1114,11 @@ class _ZoomableFrameGrid extends StatefulWidget {
 }
 
 class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
+  static const _maxCrossAxisExtent = 230.0;
+  static const _crossAxisSpacing = 10.0;
+  static const _mainAxisSpacing = 10.0;
+  static const _overscanRows = 2;
+
   late final TransformationController _transformationController;
 
   @override
@@ -1095,27 +1137,24 @@ class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final grid = SizedBox(
-          width: constraints.maxWidth,
-          child: GridView.builder(
-            key: const ValueKey('video-frame-grid'),
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 230,
-              childAspectRatio: videoFrameCardAspectRatio(
-                widget.mediaAspectRatio,
-              ),
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-            ),
-            itemCount: widget.frames.length,
-            itemBuilder: (context, index) => _FrameCard(
-              controller: widget.controller,
-              frame: widget.frames[index],
-              selected: widget.frames[index].id == widget.selectedFrameId,
-            ),
-          ),
+        final crossAxisCount = math.max(
+          1,
+          (constraints.maxWidth / (_maxCrossAxisExtent + _crossAxisSpacing))
+              .ceil(),
+        );
+        final usableWidth = math.max(
+          0.0,
+          constraints.maxWidth - _crossAxisSpacing * (crossAxisCount - 1),
+        );
+        final tileWidth = usableWidth / crossAxisCount;
+        final tileHeight =
+            tileWidth / videoFrameCardAspectRatio(widget.mediaAspectRatio);
+        final rowHeight = tileHeight + _mainAxisSpacing;
+        final rowCount =
+            (widget.frames.length + crossAxisCount - 1) ~/ crossAxisCount;
+        final contentHeight = math.max(
+          tileHeight,
+          rowCount * rowHeight - _mainAxisSpacing,
         );
         return Listener(
           key: const ValueKey('video-analysis-frame-zoom-viewport'),
@@ -1136,13 +1175,75 @@ class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
           child: Stack(
             children: [
               ClipRect(
-                child: InteractiveViewer(
+                child: InteractiveViewer.builder(
                   transformationController: _transformationController,
-                  constrained: false,
                   minScale: 0.5,
                   maxScale: 4,
                   boundaryMargin: const EdgeInsets.all(180),
-                  child: grid,
+                  builder: (context, viewport) {
+                    PerformanceProbe.shared.countBuild(
+                      'video_analysis.frame_grid.scene',
+                    );
+                    final viewportXs = [
+                      viewport.point0.x,
+                      viewport.point1.x,
+                      viewport.point2.x,
+                      viewport.point3.x,
+                    ];
+                    final viewportYs = [
+                      viewport.point0.y,
+                      viewport.point1.y,
+                      viewport.point2.y,
+                      viewport.point3.y,
+                    ];
+                    final bounds = Rect.fromLTRB(
+                      viewportXs.reduce(math.min),
+                      viewportYs.reduce(math.min),
+                      viewportXs.reduce(math.max),
+                      viewportYs.reduce(math.max),
+                    );
+                    final visibleRange = videoFrameGridVisibleRange(
+                      itemCount: widget.frames.length,
+                      crossAxisCount: crossAxisCount,
+                      rowHeight: rowHeight,
+                      viewportTop: bounds.top,
+                      viewportBottom: bounds.bottom,
+                      overscanRows: _overscanRows,
+                    );
+                    return SizedBox(
+                      key: const ValueKey('video-frame-grid'),
+                      width: constraints.maxWidth,
+                      height: contentHeight,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          for (
+                            var index = visibleRange.firstIndex;
+                            index <= visibleRange.lastIndex;
+                            index++
+                          )
+                            Positioned(
+                              key: ValueKey('video-frame-grid-slot-$index'),
+                              left:
+                                  (index % crossAxisCount) *
+                                  (tileWidth + _crossAxisSpacing),
+                              top:
+                                  (index ~/ crossAxisCount) *
+                                  (tileHeight + _mainAxisSpacing),
+                              width: tileWidth,
+                              height: tileHeight,
+                              child: _FrameCard(
+                                controller: widget.controller,
+                                frame: widget.frames[index],
+                                selected:
+                                    widget.frames[index].id ==
+                                    widget.selectedFrameId,
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
               Positioned(
@@ -1188,6 +1289,43 @@ class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
       },
     );
   }
+}
+
+class VideoFrameGridVisibleRange {
+  const VideoFrameGridVisibleRange(this.firstIndex, this.lastIndex);
+
+  final int firstIndex;
+  final int lastIndex;
+
+  bool get isEmpty => lastIndex < firstIndex;
+}
+
+VideoFrameGridVisibleRange videoFrameGridVisibleRange({
+  required int itemCount,
+  required int crossAxisCount,
+  required double rowHeight,
+  required double viewportTop,
+  required double viewportBottom,
+  int overscanRows = 2,
+}) {
+  assert(crossAxisCount > 0);
+  assert(rowHeight > 0);
+  assert(overscanRows >= 0);
+  if (itemCount <= 0) {
+    return const VideoFrameGridVisibleRange(0, -1);
+  }
+  final rowCount = (itemCount + crossAxisCount - 1) ~/ crossAxisCount;
+  final top = math.min(viewportTop, viewportBottom);
+  final bottom = math.max(viewportTop, viewportBottom);
+  final firstRow = math.max(0, (top / rowHeight).floor() - overscanRows);
+  final lastRow = math.min(
+    rowCount - 1,
+    (bottom / rowHeight).ceil() + overscanRows,
+  );
+  return VideoFrameGridVisibleRange(
+    firstRow * crossAxisCount,
+    math.min(itemCount - 1, (lastRow + 1) * crossAxisCount - 1),
+  );
 }
 
 class _FrameCard extends StatelessWidget {

@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/database/app_database.dart';
+import '../core/performance/performance_probe.dart';
 import '../core/providers/app_providers.dart';
 import '../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../core/widgets/desktop_drop_target_scope.dart';
+import '../core/widgets/value_listenable_selector.dart';
 import '../features/exporter/presentation/exporter_page.dart';
 import '../features/exporter/application/export_remote_source.dart';
 import '../features/grid_cut/presentation/grid_cut_page.dart';
@@ -111,8 +113,7 @@ class _AppShellState extends ConsumerState<AppShell> {
     )..addListener(_handleOnboardingChanged);
     _storyboardController = ref.read(storyboardControllerProvider)
       ..addListener(_handleAssetNormalizationStateChanged);
-    _settingsController = ref.read(settingsControllerProvider)
-      ..addListener(_handleSettingsChanged);
+    _settingsController = ref.read(settingsControllerProvider);
     _storyboardRemoteSource = StoryboardRemoteSource(_storyboardController);
     _remoteStoryboardRegistry = ref.read(remoteStoryboardRegistryProvider)
       ..attach(_storyboardRemoteSource);
@@ -185,76 +186,81 @@ class _AppShellState extends ConsumerState<AppShell> {
     _remoteExportRegistry.detach(source: _exportRemoteSource);
     _exportRemoteSource.dispose();
     _storyboardScriptSyncController.dispose();
-    _settingsController.removeListener(_handleSettingsChanged);
     _updaterController.removeListener(_handleUpdaterStateChanged);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final content = Scaffold(
-      body: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              scheme.surface,
-              scheme.surfaceContainerHighest.withValues(alpha: 0.72),
-              scheme.surface,
-            ],
-          ),
-        ),
-        child: Column(
-          children: [
-            WindowTitleBar(
-              enableWindowControls: widget.enableWindowControls,
-              title: widget.projectName == null
-                  ? null
-                  : '${AppUpdateConfig.windowTitle} — ${widget.projectName}',
-              actions: [_OnboardingHelpAction(onPressed: _showOnboarding)],
-            ),
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _settingsController.value.navigationPosition ==
-                          AppNavigationPosition.left
-                      ? Row(
-                          children: [
-                            _SideTabs(
-                              tabs: _tabs,
-                              selectedIndex: _tabIndex,
-                              onSelected: _selectTab,
-                              projectName: widget.projectName,
-                              onCloseProject: widget.onCloseProject,
-                            ),
-                            Expanded(child: _buildPageSwitcher()),
-                          ],
-                        )
-                      : Column(
-                          children: [
-                            Expanded(child: _buildPageSwitcher()),
-                            _BottomTabs(
-                              tabs: _tabs,
-                              selectedIndex: _tabIndex,
-                              onSelected: _selectTab,
-                              projectName: widget.projectName,
-                              onCloseProject: widget.onCloseProject,
-                            ),
-                          ],
-                        ),
-                  if (_onboardingController.visible)
-                    OnboardingOverlay(controller: _onboardingController),
+    PerformanceProbe.shared.countBuild('app_shell');
+    return ValueListenableSelector<AppSettings, AppNavigationPosition>(
+      valueListenable: _settingsController,
+      selector: (settings) => settings.navigationPosition,
+      builder: (context, navigationPosition, _) {
+        final scheme = Theme.of(context).colorScheme;
+        final content = Scaffold(
+          body: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  scheme.surface,
+                  scheme.surfaceContainerHighest.withValues(alpha: 0.72),
+                  scheme.surface,
                 ],
               ),
             ),
-          ],
-        ),
-      ),
+            child: Column(
+              children: [
+                WindowTitleBar(
+                  enableWindowControls: widget.enableWindowControls,
+                  title: widget.projectName == null
+                      ? null
+                      : '${AppUpdateConfig.windowTitle} — ${widget.projectName}',
+                  actions: [_OnboardingHelpAction(onPressed: _showOnboarding)],
+                ),
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      navigationPosition == AppNavigationPosition.left
+                          ? Row(
+                              children: [
+                                _SideTabs(
+                                  tabs: _tabs,
+                                  selectedIndex: _tabIndex,
+                                  onSelected: _selectTab,
+                                  projectName: widget.projectName,
+                                  onCloseProject: widget.onCloseProject,
+                                ),
+                                Expanded(child: _buildPageSwitcher()),
+                              ],
+                            )
+                          : Column(
+                              children: [
+                                Expanded(child: _buildPageSwitcher()),
+                                _BottomTabs(
+                                  tabs: _tabs,
+                                  selectedIndex: _tabIndex,
+                                  onSelected: _selectTab,
+                                  projectName: widget.projectName,
+                                  onCloseProject: widget.onCloseProject,
+                                ),
+                              ],
+                            ),
+                      if (_onboardingController.visible)
+                        OnboardingOverlay(controller: _onboardingController),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+        return CollapsiblePanelShortcutScope(child: content);
+      },
     );
-    return CollapsiblePanelShortcutScope(child: content);
   }
 
   Widget _buildPageSwitcher() {
@@ -393,12 +399,6 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   void _showOnboarding() {
     _onboardingController.start(originTabIndex: _tabIndex);
-  }
-
-  void _handleSettingsChanged() {
-    if (mounted) {
-      setState(() {});
-    }
   }
 
   Future<void> _showLegacyGridCutPage() async {
