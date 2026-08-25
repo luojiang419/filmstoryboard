@@ -1118,25 +1118,25 @@ class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
   static const _crossAxisSpacing = 10.0;
   static const _mainAxisSpacing = 10.0;
   static const _overscanRows = 2;
+  static const _minZoom = 0.1;
+  static const _maxZoom = 8.0;
+  static const _panStartSlop = 3.0;
 
-  late final TransformationController _transformationController;
-
-  @override
-  void initState() {
-    super.initState();
-    _transformationController = TransformationController();
-  }
-
-  @override
-  void dispose() {
-    _transformationController.dispose();
-    super.dispose();
-  }
+  double _zoom = 1;
+  Offset _panOffset = Offset.zero;
+  int? _panPointer;
+  Offset? _panStartPosition;
+  Offset? _lastPanPosition;
+  bool _isPanning = false;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final viewportSize = Size(
+          math.max(1.0, constraints.maxWidth),
+          math.max(1.0, constraints.maxHeight),
+        );
         final crossAxisCount = math.max(
           1,
           (constraints.maxWidth / (_maxCrossAxisExtent + _crossAxisSpacing))
@@ -1156,138 +1156,275 @@ class _ZoomableFrameGridState extends State<_ZoomableFrameGrid> {
           tileHeight,
           rowCount * rowHeight - _mainAxisSpacing,
         );
+        final contentSize = Size(constraints.maxWidth, contentHeight);
+        final canvasSize = Size(
+          contentSize.width * _zoom,
+          contentSize.height * _zoom,
+        );
+        final canvasTopLeft = _canvasTopLeft(viewportSize, canvasSize);
+        final visibleBounds = _visibleBounds(
+          viewportSize: viewportSize,
+          canvasTopLeft: canvasTopLeft,
+          zoom: _zoom,
+        );
+        final visibleRange = videoFrameGridVisibleRange(
+          itemCount: widget.frames.length,
+          crossAxisCount: crossAxisCount,
+          rowHeight: rowHeight,
+          viewportTop: visibleBounds.top,
+          viewportBottom: visibleBounds.bottom,
+          overscanRows: _overscanRows,
+        );
         return Listener(
           key: const ValueKey('video-analysis-frame-zoom-viewport'),
           behavior: HitTestBehavior.opaque,
-          onPointerSignal: (event) {
-            if (event is! PointerScrollEvent) return;
-            GestureBinding.instance.pointerSignalResolver.register(event, (_) {
-              final factor = math.pow(1.0015, -event.scrollDelta.dy).toDouble();
-              final current = _transformationController.value
-                  .getMaxScaleOnAxis();
-              final next = (current * factor).clamp(0.5, 4.0).toDouble();
-              final scaleFactor = current <= 0 ? 1.0 : next / current;
-              _transformationController.value =
-                  _transformationController.value.clone()
-                    ..scaleByDouble(scaleFactor, scaleFactor, scaleFactor, 1);
-            });
-          },
-          child: Stack(
-            children: [
-              ClipRect(
-                child: InteractiveViewer.builder(
-                  transformationController: _transformationController,
-                  minScale: 0.5,
-                  maxScale: 4,
-                  boundaryMargin: const EdgeInsets.all(180),
-                  builder: (context, viewport) {
-                    PerformanceProbe.shared.countBuild(
-                      'video_analysis.frame_grid.scene',
-                    );
-                    final viewportXs = [
-                      viewport.point0.x,
-                      viewport.point1.x,
-                      viewport.point2.x,
-                      viewport.point3.x,
-                    ];
-                    final viewportYs = [
-                      viewport.point0.y,
-                      viewport.point1.y,
-                      viewport.point2.y,
-                      viewport.point3.y,
-                    ];
-                    final bounds = Rect.fromLTRB(
-                      viewportXs.reduce(math.min),
-                      viewportYs.reduce(math.min),
-                      viewportXs.reduce(math.max),
-                      viewportYs.reduce(math.max),
-                    );
-                    final visibleRange = videoFrameGridVisibleRange(
-                      itemCount: widget.frames.length,
-                      crossAxisCount: crossAxisCount,
-                      rowHeight: rowHeight,
-                      viewportTop: bounds.top,
-                      viewportBottom: bounds.bottom,
-                      overscanRows: _overscanRows,
-                    );
-                    return SizedBox(
-                      key: const ValueKey('video-frame-grid'),
-                      width: constraints.maxWidth,
-                      height: contentHeight,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          for (
-                            var index = visibleRange.firstIndex;
-                            index <= visibleRange.lastIndex;
-                            index++
-                          )
-                            Positioned(
-                              key: ValueKey('video-frame-grid-slot-$index'),
-                              left:
-                                  (index % crossAxisCount) *
-                                  (tileWidth + _crossAxisSpacing),
-                              top:
-                                  (index ~/ crossAxisCount) *
-                                  (tileHeight + _mainAxisSpacing),
-                              width: tileWidth,
-                              height: tileHeight,
-                              child: _FrameCard(
-                                controller: widget.controller,
-                                frame: widget.frames[index],
-                                selected:
-                                    widget.frames[index].id ==
-                                    widget.selectedFrameId,
-                              ),
-                            ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-              Positioned(
-                right: 10,
-                bottom: 10,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.64),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        tooltip: '重置帧缩放',
-                        onPressed: () => _transformationController.value =
-                            Matrix4.identity(),
-                        icon: const Icon(
-                          Icons.fit_screen_rounded,
-                          color: Colors.white,
-                        ),
-                      ),
-                      ValueListenableBuilder<Matrix4>(
-                        valueListenable: _transformationController,
-                        builder: (context, matrix, _) => Padding(
-                          padding: const EdgeInsets.only(right: 10),
-                          child: Text(
-                            '${(matrix.getMaxScaleOnAxis() * 100).round()}%',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
+          onPointerSignal: (event) => _handlePointerSignal(event, viewportSize),
+          onPointerDown: (event) => _handlePointerDown(event),
+          onPointerMove: _handlePointerMove,
+          onPointerUp: _handlePointerUp,
+          onPointerCancel: _handlePointerCancel,
+          child: MouseRegion(
+            cursor: _isPanning
+                ? SystemMouseCursors.grabbing
+                : SystemMouseCursors.grab,
+            child: SizedBox.expand(
+              child: ClipRect(
+                child: Stack(
+                  clipBehavior: Clip.hardEdge,
+                  children: [
+                    Positioned(
+                      left: canvasTopLeft.dx,
+                      top: canvasTopLeft.dy,
+                      width: canvasSize.width,
+                      height: canvasSize.height,
+                      child: ClipRect(
+                        child: OverflowBox(
+                          alignment: Alignment.topLeft,
+                          minWidth: contentSize.width,
+                          maxWidth: contentSize.width,
+                          minHeight: contentSize.height,
+                          maxHeight: contentSize.height,
+                          child: Transform.scale(
+                            alignment: Alignment.topLeft,
+                            scale: _zoom,
+                            child: _buildFrameGrid(
+                              crossAxisCount: crossAxisCount,
+                              contentWidth: contentSize.width,
+                              tileWidth: tileWidth,
+                              tileHeight: tileHeight,
+                              contentHeight: contentHeight,
+                              visibleRange: visibleRange,
                             ),
                           ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                    Positioned(
+                      right: 10,
+                      bottom: 10,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.64),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: '重置帧缩放',
+                              onPressed: _resetView,
+                              icon: const Icon(
+                                Icons.fit_screen_rounded,
+                                color: Colors.white,
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(right: 10),
+                              child: Text(
+                                '${(_zoom * 100).round()}%',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
         );
       },
     );
+  }
+
+  Widget _buildFrameGrid({
+    required int crossAxisCount,
+    required double contentWidth,
+    required double tileWidth,
+    required double tileHeight,
+    required double contentHeight,
+    required VideoFrameGridVisibleRange visibleRange,
+  }) {
+    PerformanceProbe.shared.countBuild('video_analysis.frame_grid.scene');
+    return SizedBox(
+      key: const ValueKey('video-frame-grid'),
+      width: contentWidth,
+      height: contentHeight,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          for (
+            var index = visibleRange.firstIndex;
+            index <= visibleRange.lastIndex;
+            index++
+          )
+            Positioned(
+              key: ValueKey('video-frame-grid-slot-$index'),
+              left: (index % crossAxisCount) * (tileWidth + _crossAxisSpacing),
+              top: (index ~/ crossAxisCount) * (tileHeight + _mainAxisSpacing),
+              width: tileWidth,
+              height: tileHeight,
+              child: _FrameCard(
+                controller: widget.controller,
+                frame: widget.frames[index],
+                selected: widget.frames[index].id == widget.selectedFrameId,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Rect _visibleBounds({
+    required Size viewportSize,
+    required Offset canvasTopLeft,
+    required double zoom,
+  }) {
+    final safeZoom = zoom <= 0 ? 1.0 : zoom;
+    final topLeft = (Offset.zero - canvasTopLeft) / safeZoom;
+    final bottomRight =
+        (Offset(viewportSize.width, viewportSize.height) - canvasTopLeft) /
+        safeZoom;
+    return Rect.fromLTRB(
+      math.min(topLeft.dx, bottomRight.dx),
+      math.min(topLeft.dy, bottomRight.dy),
+      math.max(topLeft.dx, bottomRight.dx),
+      math.max(topLeft.dy, bottomRight.dy),
+    );
+  }
+
+  Offset _canvasTopLeft(Size viewportSize, Size canvasSize) {
+    return Offset(
+          canvasSize.width < viewportSize.width
+              ? (viewportSize.width - canvasSize.width) / 2
+              : 0,
+          canvasSize.height < viewportSize.height
+              ? (viewportSize.height - canvasSize.height) / 2
+              : 0,
+        ) +
+        _panOffset;
+  }
+
+  void _handlePointerSignal(PointerSignalEvent event, Size viewportSize) {
+    if (event is! PointerScrollEvent) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      final factor = math.pow(1.0015, -event.scrollDelta.dy).toDouble();
+      _zoomBy(
+        factor,
+        focalPoint: event.localPosition,
+        viewportSize: viewportSize,
+      );
+    });
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (event.kind != PointerDeviceKind.mouse) return;
+    final isMiddleButton = (event.buttons & kMiddleMouseButton) != 0;
+    final isPrimaryButton = (event.buttons & kPrimaryMouseButton) != 0;
+    if (!isMiddleButton && !isPrimaryButton) return;
+    _panPointer = event.pointer;
+    _panStartPosition = event.localPosition;
+    _lastPanPosition = event.localPosition;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (event.pointer != _panPointer || _lastPanPosition == null) return;
+    final startPosition = _panStartPosition ?? _lastPanPosition!;
+    if (!_isPanning &&
+        (event.localPosition - startPosition).distance < _panStartSlop) {
+      return;
+    }
+    final delta = event.localPosition - _lastPanPosition!;
+    if (delta == Offset.zero) return;
+    setState(() {
+      _lastPanPosition = event.localPosition;
+      _panOffset += delta;
+      _isPanning = true;
+    });
+  }
+
+  void _handlePointerUp(PointerUpEvent event) => _stopPanning(event.pointer);
+
+  void _handlePointerCancel(PointerCancelEvent event) =>
+      _stopPanning(event.pointer);
+
+  void _stopPanning(int pointer) {
+    if (pointer != _panPointer) return;
+    _panPointer = null;
+    _panStartPosition = null;
+    _lastPanPosition = null;
+    if (!_isPanning) return;
+    setState(() => _isPanning = false);
+  }
+
+  void _zoomBy(
+    double factor, {
+    required Offset focalPoint,
+    required Size viewportSize,
+  }) {
+    final requestedZoom = _zoom * factor;
+    if (!requestedZoom.isFinite || requestedZoom <= 0) return;
+    final nextZoom = requestedZoom.clamp(_minZoom, _maxZoom).toDouble();
+    if ((nextZoom - _zoom).abs() < 0.001) return;
+
+    final viewportCenter = Offset(
+      viewportSize.width / 2,
+      viewportSize.height / 2,
+    );
+    final focalFromCenter = focalPoint - viewportCenter;
+    final oldVector = focalFromCenter - _panOffset;
+    final scaleRatio = nextZoom / _zoom;
+    setState(() {
+      _zoom = nextZoom;
+      if (nextZoom <= _minZoom + 0.001) {
+        _panOffset = Offset.zero;
+        _panPointer = null;
+        _panStartPosition = null;
+        _lastPanPosition = null;
+        _isPanning = false;
+      } else {
+        _panOffset = Offset(
+          focalFromCenter.dx - oldVector.dx * scaleRatio,
+          focalFromCenter.dy - oldVector.dy * scaleRatio,
+        );
+      }
+    });
+  }
+
+  void _resetView() {
+    setState(() {
+      _zoom = 1;
+      _panOffset = Offset.zero;
+      _panPointer = null;
+      _panStartPosition = null;
+      _lastPanPosition = null;
+      _isPanning = false;
+    });
   }
 }
 
