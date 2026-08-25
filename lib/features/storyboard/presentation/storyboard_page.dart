@@ -854,11 +854,17 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     File packageFile, {
     StoryboardBoard? fallbackBoard,
   }) async {
+    if (!mounted) {
+      throw StateError('故事板页面已关闭，取消接收回传');
+    }
     final directories = ref.read(projectDirectoriesProvider);
     final result = await const BridgePackageService().importShiyinToFilm(
       packageFile: packageFile,
       destinationRoot: directories.imports,
     );
+    if (!mounted) {
+      throw StateError('故事板页面已关闭，取消写入回传结果');
+    }
     final variantLabel = switch (result.manifest.selectedVariant) {
       BridgeVariant.original => '原始帧',
       BridgeVariant.expanded16x9 => '16:9 扩展',
@@ -2452,6 +2458,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
     required String? parentGroupId,
     required Set<String> usedIds,
     required Set<String> previewIds,
+    Set<String> ancestorGroupIds = const <String>{},
   }) {
     final widgets = <Widget>[];
     for (var index = 0; index < nodeKeys.length; index++) {
@@ -2473,6 +2480,12 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
           if (group == null) {
             continue;
           }
+          // 旧快照/外部同步数据可能带有编组环；在异步资源刷新完成前，
+          // 也必须保证首帧递归有界，避免切入故事板时栈溢出。
+          if (ancestorGroupIds.contains(group.id)) {
+            continue;
+          }
+          final nextAncestorGroupIds = <String>{...ancestorGroupIds, group.id};
           final childKeys = _childResourceNodeKeys(group);
           final directAssets = _directAssetsForResourceGroup(group);
           widgets.add(
@@ -2499,6 +2512,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
                 parentGroupId: group.id,
                 usedIds: usedIds,
                 previewIds: previewIds,
+                ancestorGroupIds: nextAncestorGroupIds,
               ),
               usedIds: usedIds,
               previewIds: previewIds,
@@ -2852,7 +2866,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
       }
     }
 
-    void visitNodes(List<String> nodeKeys) {
+    void visitNodes(List<String> nodeKeys, Set<String> ancestorGroupIds) {
       for (final key in nodeKeys) {
         final node = StoryboardResourceNodeRef.tryParse(key);
         if (node == null) {
@@ -2861,9 +2875,14 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
         switch (node.kind) {
           case StoryboardResourceNodeKind.group:
             final group = groupsById[node.id];
-            if (group != null && group.expanded) {
+            if (group != null &&
+                group.expanded &&
+                !ancestorGroupIds.contains(group.id)) {
               addAssets(_directAssetsForResourceGroup(group));
-              visitNodes(_childResourceNodeKeys(group));
+              visitNodes(_childResourceNodeKeys(group), {
+                ...ancestorGroupIds,
+                group.id,
+              });
             }
             break;
           case StoryboardResourceNodeKind.folder:
@@ -2894,6 +2913,7 @@ class _AssetSidebarState extends ConsumerState<_AssetSidebar> {
         ungroupedFolders: folders,
         ungroupedSourceIds: groups.keys,
       ),
+      const <String>{},
     );
     return result;
   }
