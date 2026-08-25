@@ -56,6 +56,8 @@ void main() {
       baseUrl: 'https://api.minimaxi.com',
       apiKey: 'test-key',
       model: 'MiniMax-M3',
+      requestProtocol: VisionApiRequestProtocol.responses,
+      responsesEndpoint: '/v1/responses',
     );
     await controller.saveVisionApiConfig(miniMax);
     await controller.setActiveVisionApiConfig(miniMax.id);
@@ -65,6 +67,11 @@ void main() {
     expect(restored.visionApiBaseUrl, miniMax.baseUrl);
     expect(restored.visionApiKey, miniMax.apiKey);
     expect(restored.visionModel, miniMax.model);
+    expect(
+      restored.activeVisionApiConfig?.requestProtocol,
+      VisionApiRequestProtocol.responses,
+    );
+    expect(restored.activeVisionApiConfig?.responsesEndpoint, '/v1/responses');
     expect(restored.visionMaxRequestsPerMinute, 200);
     expect(restored.visionApiConfigs, contains(isA<VisionApiConfig>()));
 

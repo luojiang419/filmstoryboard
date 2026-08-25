@@ -1129,7 +1129,15 @@ class _VisionApiConfigSection extends StatelessWidget {
       builder: (_) => _VisionApiConfigDialog(config: current),
     );
     if (config != null) {
-      await onSave(config);
+      try {
+        await onSave(config);
+      } on FormatException catch (error) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error.message)));
+        }
+      }
     }
   }
 }
@@ -1213,6 +1221,13 @@ class _VisionApiConfigCard extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  config.requestProtocol.label,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -1303,6 +1318,8 @@ class _VisionApiConfigDialogState extends State<_VisionApiConfigDialog> {
   late final TextEditingController _baseUrlController;
   late final TextEditingController _apiKeyController;
   late final TextEditingController _modelController;
+  late final TextEditingController _responsesEndpointController;
+  late VisionApiRequestProtocol _requestProtocol;
   var _apiKeyObscured = true;
 
   @override
@@ -1313,6 +1330,11 @@ class _VisionApiConfigDialogState extends State<_VisionApiConfigDialog> {
     _baseUrlController = TextEditingController(text: config?.baseUrl ?? '');
     _apiKeyController = TextEditingController(text: config?.apiKey ?? '');
     _modelController = TextEditingController(text: config?.model ?? '');
+    _responsesEndpointController = TextEditingController(
+      text: config?.responsesEndpoint ?? '/v1/responses',
+    );
+    _requestProtocol =
+        config?.requestProtocol ?? VisionApiRequestProtocol.chatCompletions;
   }
 
   @override
@@ -1321,6 +1343,7 @@ class _VisionApiConfigDialogState extends State<_VisionApiConfigDialog> {
     _baseUrlController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
+    _responsesEndpointController.dispose();
     super.dispose();
   }
 
@@ -1347,6 +1370,32 @@ class _VisionApiConfigDialogState extends State<_VisionApiConfigDialog> {
                 hintText: 'https://api.example.com',
               ),
             ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<VisionApiRequestProtocol>(
+              initialValue: _requestProtocol,
+              decoration: const InputDecoration(labelText: '请求协议'),
+              items: [
+                for (final protocol in VisionApiRequestProtocol.values)
+                  DropdownMenuItem(
+                    value: protocol,
+                    child: Text(protocol.label),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _requestProtocol = value);
+              },
+            ),
+            if (_requestProtocol == VisionApiRequestProtocol.responses) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _responsesEndpointController,
+                decoration: const InputDecoration(
+                  labelText: 'Responses 端点',
+                  hintText: '/v1/responses',
+                  helperText: '可填写相对路径或完整 http(s) 地址',
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             TextField(
               controller: _apiKeyController,
@@ -1393,6 +1442,8 @@ class _VisionApiConfigDialogState extends State<_VisionApiConfigDialog> {
                 model: _modelController.text.trim(),
                 maxRequestsPerMinute:
                     widget.config?.maxRequestsPerMinute ?? 200,
+                requestProtocol: _requestProtocol,
+                responsesEndpoint: _responsesEndpointController.text.trim(),
               ),
             );
           },

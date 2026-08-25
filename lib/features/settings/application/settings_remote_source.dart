@@ -33,7 +33,10 @@ class SettingsRemoteSource implements RemoteSettingsSource {
           RemoteSettingsOption(
             id: config.id,
             name: config.name,
-            detail: config.model,
+            detail: [
+              config.requestProtocol.label,
+              config.model,
+            ].where((value) => value.trim().isNotEmpty).join(' · '),
           ),
       ],
       selectedVisionModelId: settings.activeVisionApiConfig?.id ?? '',

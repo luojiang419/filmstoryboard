@@ -217,25 +217,51 @@ class SettingsController extends ValueNotifier<AppSettings> {
   }
 
   Future<void> saveVisionApiConfig(VisionApiConfig config) async {
-    final existing = value.visionApiConfigs.any((item) => item.id == config.id);
+    final normalized = config.copyWith(
+      name: config.name.trim().isEmpty ? '未命名视觉模型' : config.name.trim(),
+      baseUrl: config.baseUrl.trim(),
+      apiKey: config.apiKey.trim(),
+      model: config.model.trim(),
+      responsesEndpoint: ApiEndpointNormalizer.normalizeEndpointOverride(
+        config.responsesEndpoint,
+        defaultPath: '/v1/responses',
+      ),
+    );
+    if (normalized.baseUrl.isEmpty) {
+      throw const FormatException('请填写视觉模型 API 地址');
+    }
+    if (normalized.model.isEmpty) {
+      throw const FormatException('请填写视觉模型名称');
+    }
+    if (normalized.requestProtocol == VisionApiRequestProtocol.responses) {
+      ApiEndpointNormalizer.normalizeResponsesEndpoint(
+        normalized.baseUrl,
+        endpoint: normalized.responsesEndpoint,
+      );
+    } else {
+      ApiEndpointNormalizer.normalizeChatCompletionsEndpoint(
+        normalized.baseUrl,
+      );
+    }
+    final existing = value.visionApiConfigs.any(
+      (item) => item.id == normalized.id,
+    );
     final configs = [
       for (final item in value.visionApiConfigs)
-        if (item.id == config.id) config else item,
-      if (!existing) config,
+        if (item.id == normalized.id) normalized else item,
+      if (!existing) normalized,
     ];
     final isActive =
         value.activeVisionApiConfigId.isEmpty ||
-        value.activeVisionApiConfigId == config.id;
+        value.activeVisionApiConfigId == normalized.id;
     final next = value.copyWith(
       visionApiConfigs: configs,
       activeVisionApiConfigId: isActive
-          ? config.id
+          ? normalized.id
           : value.activeVisionApiConfigId,
-      visionApiBaseUrl: isActive
-          ? config.baseUrl.trim()
-          : value.visionApiBaseUrl,
-      visionApiKey: isActive ? config.apiKey.trim() : value.visionApiKey,
-      visionModel: isActive ? config.model.trim() : value.visionModel,
+      visionApiBaseUrl: isActive ? normalized.baseUrl : value.visionApiBaseUrl,
+      visionApiKey: isActive ? normalized.apiKey : value.visionApiKey,
+      visionModel: isActive ? normalized.model : value.visionModel,
     );
     _repository.save(next);
     value = next;

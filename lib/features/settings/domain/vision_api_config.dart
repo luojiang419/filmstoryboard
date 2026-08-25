@@ -1,3 +1,19 @@
+enum VisionApiRequestProtocol {
+  chatCompletions('Chat Completions'),
+  responses('Responses（原生）');
+
+  const VisionApiRequestProtocol(this.label);
+
+  final String label;
+
+  static VisionApiRequestProtocol fromName(String? value) {
+    return VisionApiRequestProtocol.values.firstWhere(
+      (protocol) => protocol.name == value,
+      orElse: () => VisionApiRequestProtocol.chatCompletions,
+    );
+  }
+}
+
 class VisionApiConfig {
   const VisionApiConfig({
     required this.id,
@@ -6,6 +22,8 @@ class VisionApiConfig {
     required this.apiKey,
     required this.model,
     this.maxRequestsPerMinute = 200,
+    this.requestProtocol = VisionApiRequestProtocol.chatCompletions,
+    this.responsesEndpoint = '/v1/responses',
   });
 
   final String id;
@@ -17,6 +35,11 @@ class VisionApiConfig {
   /// MiniMax-M3 的视觉请求在 60 秒滑动窗口内允许发出的最大数量。
   /// 非 MiniMax 配置会忽略该值，保持既有串行策略。
   final int maxRequestsPerMinute;
+  final VisionApiRequestProtocol requestProtocol;
+  final String responsesEndpoint;
+
+  bool get usesResponses =>
+      requestProtocol == VisionApiRequestProtocol.responses;
 
   VisionApiConfig copyWith({
     String? name,
@@ -24,6 +47,8 @@ class VisionApiConfig {
     String? apiKey,
     String? model,
     int? maxRequestsPerMinute,
+    VisionApiRequestProtocol? requestProtocol,
+    String? responsesEndpoint,
   }) {
     return VisionApiConfig(
       id: id,
@@ -32,6 +57,8 @@ class VisionApiConfig {
       apiKey: apiKey ?? this.apiKey,
       model: model ?? this.model,
       maxRequestsPerMinute: maxRequestsPerMinute ?? this.maxRequestsPerMinute,
+      requestProtocol: requestProtocol ?? this.requestProtocol,
+      responsesEndpoint: responsesEndpoint ?? this.responsesEndpoint,
     );
   }
 
@@ -42,6 +69,8 @@ class VisionApiConfig {
     'apiKey': apiKey,
     'model': model,
     'maxRequestsPerMinute': maxRequestsPerMinute.toString(),
+    'requestProtocol': requestProtocol.name,
+    'responsesEndpoint': responsesEndpoint,
   };
 
   factory VisionApiConfig.fromJson(Map<String, dynamic> json) {
@@ -54,6 +83,13 @@ class VisionApiConfig {
       maxRequestsPerMinute: _readMaxRequestsPerMinute(
         json['maxRequestsPerMinute'],
       ),
+      requestProtocol: VisionApiRequestProtocol.fromName(
+        json['requestProtocol'] as String?,
+      ),
+      responsesEndpoint:
+          (json['responsesEndpoint'] as String?)?.trim().isNotEmpty == true
+          ? (json['responsesEndpoint'] as String).trim()
+          : '/v1/responses',
     );
   }
 

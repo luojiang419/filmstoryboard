@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:image/image.dart' as img;
 import 'package:filmstoryboard/features/settings/domain/app_settings.dart';
+import 'package:filmstoryboard/features/settings/domain/vision_api_config.dart';
 import 'package:filmstoryboard/features/storyboard/data/vision_storyboard_service.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_service.dart';
 import 'package:test/test.dart';
@@ -31,6 +32,75 @@ void main() {
         'https://api.example.com/v1/chat/completions',
       ).toString(),
       'https://api.example.com/v1/chat/completions',
+    );
+  });
+
+  test('Responses 端点支持本地地址、完整 URL 和 /v1 去重', () {
+    expect(
+      normalizeResponsesEndpoint('127.0.0.1:9000').toString(),
+      'http://127.0.0.1:9000/v1/responses',
+    );
+    expect(
+      normalizeResponsesEndpoint('http://localhost:9000/v1').toString(),
+      'http://localhost:9000/v1/responses',
+    );
+    expect(
+      normalizeResponsesEndpoint(
+        'https://api.example.com/v1',
+        '/v1/responses',
+      ).toString(),
+      'https://api.example.com/v1/responses',
+    );
+    expect(
+      normalizeResponsesEndpoint(
+        'https://api.example.com',
+        'https://gateway.example.com/responses',
+      ).toString(),
+      'https://gateway.example.com/responses',
+    );
+  });
+
+  test('Responses 视觉请求发送 input_image 并解析 output_text', () async {
+    Map<String, dynamic>? requestBody;
+    final service = VisionStoryboardService(
+      client: MockClient((request) async {
+        requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'id': 'resp_test',
+            'status': 'completed',
+            'output_text': '{"caption":"Responses 已识别"}',
+            'usage': {
+              'input_tokens': 12,
+              'output_tokens': 5,
+              'total_tokens': 17,
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    addTearDown(service.close);
+    final image = await _testImage('responses_vision_');
+
+    final result = await service.complete(
+      settings: _settings(protocol: VisionApiRequestProtocol.responses),
+      prompt: '分析图片',
+      imageFiles: [image],
+    );
+
+    expect(result, '{"caption":"Responses 已识别"}');
+    expect(requestBody!['model'], 'test-vlm');
+    expect(requestBody!['messages'], isNull);
+    final input = requestBody!['input'] as List<dynamic>;
+    final content =
+        (input.single as Map<String, dynamic>)['content'] as List<dynamic>;
+    expect((content.first as Map<String, dynamic>)['type'], 'input_text');
+    expect((content[1] as Map<String, dynamic>)['type'], 'input_image');
+    expect(
+      (content[1] as Map<String, dynamic>)['image_url'],
+      startsWith('data:image/'),
     );
   });
 
@@ -1449,7 +1519,18 @@ Future<File> _testImage(String prefix) async {
   return image;
 }
 
-AppSettings _settings({String visionModel = 'test-vlm'}) {
+AppSettings _settings({
+  String visionModel = 'test-vlm',
+  VisionApiRequestProtocol protocol = VisionApiRequestProtocol.chatCompletions,
+}) {
+  final visionConfig = VisionApiConfig(
+    id: 'test-vision',
+    name: '测试视觉模型',
+    baseUrl: '127.0.0.1:12345',
+    apiKey: 'test-key',
+    model: visionModel,
+    requestProtocol: protocol,
+  );
   return AppSettings(
     exportDirectory: 'exports',
     themePreference: AppThemePreference.system,
@@ -1462,6 +1543,8 @@ AppSettings _settings({String visionModel = 'test-vlm'}) {
     visionApiBaseUrl: '127.0.0.1:12345',
     visionApiKey: 'test-key',
     visionModel: visionModel,
+    visionApiConfigs: [visionConfig],
+    activeVisionApiConfigId: visionConfig.id,
     imageGenerationApiBaseUrl: 'https://grsai.dakka.com.cn',
     imageGenerationApiKey: 'test-image-key',
     imageGenerationGeminiApiKey: 'test-gemini-key',

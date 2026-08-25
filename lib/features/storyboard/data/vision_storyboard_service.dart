@@ -8,6 +8,8 @@ import 'package:image/image.dart' as img;
 
 import '../../../core/services/vision_request_rate_limiter.dart';
 import '../../settings/domain/app_settings.dart';
+import '../../settings/domain/api_endpoint_normalizer.dart';
+import '../../settings/domain/vision_api_config.dart';
 import '../../video_analysis/domain/video_analysis_models.dart';
 import 'vision_caption_coherence_service.dart';
 
@@ -1195,9 +1197,18 @@ class VisionStoryboardService {
     Duration responseTimeout = requestTimeout,
   }) async {
     await VisionRequestRateLimiter.waitForRequestSlot(settings);
-    final endpoint = normalizeChatCompletionsEndpoint(
-      settings.visionApiBaseUrl,
-    );
+    final config =
+        settings.activeVisionApiConfig ??
+        VisionApiConfig(
+          id: 'legacy-vision',
+          name: '当前视觉模型',
+          baseUrl: settings.visionApiBaseUrl,
+          apiKey: settings.visionApiKey,
+          model: settings.visionModel,
+        );
+    final endpoint = config.usesResponses
+        ? normalizeResponsesEndpoint(config.baseUrl, config.responsesEndpoint)
+        : normalizeChatCompletionsEndpoint(config.baseUrl);
     final disableThinking = _shouldDisableThinking(
       settings,
       allowThinking: allowThinking,
@@ -1221,16 +1232,27 @@ class VisionStoryboardService {
           'image_url': {'url': image},
         },
     ];
-    final response = await _client
-        .post(
-          endpoint,
-          headers: {
-            'Content-Type': 'application/json',
-            if (settings.visionApiKey.trim().isNotEmpty)
-              'Authorization': 'Bearer ${settings.visionApiKey.trim()}',
-          },
-          body: jsonEncode({
-            'model': settings.visionModel.trim(),
+    final requestContent = config.usesResponses
+        ? [
+            for (final item in content)
+              item['type'] == 'text'
+                  ? {'type': 'input_text', 'text': item['text']}
+                  : {
+                      'type': 'input_image',
+                      'image_url': (item['image_url'] as Map)['url'],
+                      'detail': 'auto',
+                    },
+          ]
+        : content;
+    final requestBody = config.usesResponses
+        ? {
+            'model': config.model.trim(),
+            'input': [
+              {'role': 'user', 'content': requestContent},
+            ],
+          }
+        : {
+            'model': config.model.trim(),
             'messages': [
               {'role': 'user', 'content': content},
             ],
@@ -1243,7 +1265,16 @@ class VisionStoryboardService {
               'chat_template_kwargs': {'enable_thinking': true},
               'enable_thinking': true,
             },
-          }),
+          };
+    final response = await _client
+        .post(
+          endpoint,
+          headers: {
+            'Content-Type': 'application/json',
+            if (config.apiKey.trim().isNotEmpty)
+              'Authorization': 'Bearer ${config.apiKey.trim()}',
+          },
+          body: jsonEncode(requestBody),
         )
         .timeout(
           responseTimeout,
@@ -1261,44 +1292,82 @@ class VisionStoryboardService {
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('视觉模型响应不是 JSON 对象');
     }
+    final text = config.usesResponses
+        ? _extractResponsesText(decoded)
+        : _extractChatCompletionText(decoded);
+    if (text.trim().isEmpty) {
+      throw FormatException(
+        config.usesResponses
+            ? '视觉模型 Responses 响应缺少 output_text'
+            : '视觉模型响应缺少文本内容',
+      );
+    }
     final choices = decoded['choices'];
-    if (choices is! List || choices.isEmpty) {
-      throw const FormatException('视觉模型响应缺少 choices');
-    }
-    final firstChoice = choices.first;
-    if (firstChoice is! Map<String, dynamic>) {
-      throw const FormatException('视觉模型 choices 格式异常');
-    }
-    final message = firstChoice['message'];
-    if (message is! Map<String, dynamic>) {
-      throw const FormatException('视觉模型响应缺少 message');
-    }
-    final messageContent = message['content'];
-    final String text;
-    if (messageContent is String) {
-      text = messageContent;
-    } else if (messageContent is List) {
-      text = messageContent
-          .map((item) {
-            if (item is Map && item['text'] != null) {
-              return item['text'].toString();
-            }
-            return item.toString();
-          })
-          .join('\n');
-    } else {
-      throw const FormatException('视觉模型响应缺少文本内容');
-    }
+    final firstChoice =
+        choices is List && choices.isNotEmpty && choices.first is Map
+        ? Map<String, dynamic>.from(choices.first as Map)
+        : const <String, dynamic>{};
     final usage = decoded['usage'];
     return VisionChatCompletion(
       content: text,
-      finishReason: firstChoice['finish_reason']?.toString() ?? '',
-      promptTokens: usage is Map ? _nullableInt(usage['prompt_tokens']) : null,
+      finishReason: config.usesResponses
+          ? decoded['status']?.toString() ?? ''
+          : firstChoice['finish_reason']?.toString() ?? '',
+      promptTokens: usage is Map
+          ? _nullableInt(usage['prompt_tokens'] ?? usage['input_tokens'])
+          : null,
       completionTokens: usage is Map
-          ? _nullableInt(usage['completion_tokens'])
+          ? _nullableInt(usage['completion_tokens'] ?? usage['output_tokens'])
           : null,
       totalTokens: usage is Map ? _nullableInt(usage['total_tokens']) : null,
     );
+  }
+
+  String _extractChatCompletionText(Map<String, dynamic> decoded) {
+    final choices = decoded['choices'];
+    if (choices is! List || choices.isEmpty || choices.first is! Map) {
+      throw const FormatException('视觉模型响应缺少 choices');
+    }
+    final message = (choices.first as Map)['message'];
+    if (message is! Map) {
+      throw const FormatException('视觉模型响应缺少 message');
+    }
+    return _textFromContent(message['content']);
+  }
+
+  String _extractResponsesText(Map<String, dynamic> decoded) {
+    final direct = decoded['output_text'];
+    if (direct is String && direct.trim().isNotEmpty) return direct;
+    final parts = <String>[];
+    final output = decoded['output'];
+    if (output is List) {
+      for (final item in output) {
+        if (item is! Map) continue;
+        parts.addAll(_textsFromContent(item['content']));
+      }
+    }
+    if (parts.isNotEmpty) return parts.join('\n');
+    final choices = decoded['choices'];
+    if (choices is List && choices.isNotEmpty && choices.first is Map) {
+      final message = (choices.first as Map)['message'];
+      if (message is Map) return _textFromContent(message['content']);
+    }
+    return '';
+  }
+
+  String _textFromContent(Object? content) {
+    if (content is String) return content;
+    return _textsFromContent(content).join('\n');
+  }
+
+  List<String> _textsFromContent(Object? content) {
+    if (content is String) return [content];
+    if (content is! List) return [];
+    return [
+      for (final item in content)
+        if (item is Map && (item['text'] ?? item['content']) != null)
+          (item['text'] ?? item['content']).toString(),
+    ];
   }
 
   int? _nullableInt(Object? value) {
@@ -2430,44 +2499,17 @@ String _joinNames(List<String> values) {
 }
 
 Uri normalizeChatCompletionsEndpoint(String input) {
-  final trimmed = input.trim();
-  if (trimmed.isEmpty) {
-    throw const FormatException('API 地址不能为空');
-  }
-  final withScheme = _hasScheme(trimmed)
-      ? trimmed
-      : '${_defaultSchemeFor(trimmed)}://$trimmed';
-  final uri = Uri.parse(withScheme);
-  final path = _normalizedChatPath(uri.path);
-  return uri.replace(path: path, query: null, fragment: null);
+  return ApiEndpointNormalizer.normalizeChatCompletionsEndpoint(input);
 }
 
-bool _hasScheme(String value) {
-  return RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://').hasMatch(value);
-}
-
-String _defaultSchemeFor(String value) {
-  final host = value.split('/').first.split(':').first.toLowerCase();
-  final isIpv4 = RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host);
-  if (host == 'localhost' || host == '127.0.0.1' || isIpv4) {
-    return 'http';
-  }
-  return 'https';
-}
-
-String _normalizedChatPath(String path) {
-  final normalized = path.isEmpty ? '/' : path.replaceAll(RegExp(r'/+$'), '');
-  if (normalized.endsWith('/v1/chat/completions') ||
-      normalized.endsWith('/chat/completions')) {
-    return normalized;
-  }
-  if (normalized == '/' || normalized.isEmpty) {
-    return '/v1/chat/completions';
-  }
-  if (normalized.endsWith('/v1')) {
-    return '$normalized/chat/completions';
-  }
-  return '$normalized/v1/chat/completions';
+Uri normalizeResponsesEndpoint(
+  String baseUrl, [
+  String endpoint = '/v1/responses',
+]) {
+  return ApiEndpointNormalizer.normalizeResponsesEndpoint(
+    baseUrl,
+    endpoint: endpoint,
+  );
 }
 
 String _compressVisionImageInWorker(
