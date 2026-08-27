@@ -161,6 +161,39 @@ class GridCutInspectorPanel extends StatefulWidget {
   State<GridCutInspectorPanel> createState() => _GridCutInspectorPanelState();
 }
 
+/// 可嵌入其它工作区的图片任务栏，复用原多宫格裁切页左侧任务列表。
+class GridCutImageSidebar extends StatelessWidget {
+  const GridCutImageSidebar({
+    super.key,
+    required this.controller,
+    this.onCollapse,
+  });
+
+  final GridCutController controller;
+  final VoidCallback? onCollapse;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableSelectorBuilder<GridCutState, GridCutState>(
+      valueListenable: controller,
+      selector: _gridCutState,
+      equals: _sameGridCutSidebarState,
+      builder: (context, state, _) => _ImageSidebar(
+        state: state,
+        onSelect: controller.selectImage,
+        onRemove: state.isBusy ? null : controller.removeImageTask,
+        onClear: state.isBusy || state.images.isEmpty
+            ? null
+            : controller.clearImageTasks,
+        onGroup: controller.groupImageTasks,
+        onToggleGroupExpanded: controller.toggleTaskGroupExpanded,
+        onMoveNode: controller.moveTaskNode,
+        onCollapse: onCollapse ?? () {},
+      ),
+    );
+  }
+}
+
 class _GridCutInspectorPanelState extends State<GridCutInspectorPanel> {
   final _expandedSections = <_GridCutInspectorSection>{
     _GridCutInspectorSection.metrics,

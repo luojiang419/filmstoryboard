@@ -104,7 +104,7 @@ void main() {
       DropEventDetails(localPosition: Offset.zero, globalPosition: Offset.zero),
     );
     await tester.pump();
-    expect(find.text('松开添加视频'), findsOneWidget);
+    expect(find.text('松开添加视频或图片'), findsOneWidget);
 
     final videoPath = p.join(root.path, 'reference.MP4');
     final notePath = p.join(root.path, 'note.txt');
@@ -121,7 +121,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(videoController.importedPaths, [p.normalize(videoPath)]);
-    expect(find.text('已添加 1 个视频，忽略 1 个非视频文件'), findsOneWidget);
+    expect(find.text('已添加 1 个视频和 0 张图片，忽略 1 个不支持文件'), findsOneWidget);
   });
 
   testWidgets('视频解析页拖入非视频文件会提示支持格式', (tester) async {
@@ -173,7 +173,7 @@ void main() {
     );
     dropTarget.onDragDone!(
       DropDoneDetails(
-        files: [DropItemFile(p.join(root.path, 'cover.png'))],
+        files: [DropItemFile(p.join(root.path, 'cover.zip'))],
         localPosition: Offset.zero,
         globalPosition: Offset.zero,
       ),
@@ -182,7 +182,9 @@ void main() {
 
     expect(videoController.importedPaths, isEmpty);
     expect(
-      find.text('未找到支持的视频文件，可拖入 mp4、mov、mkv、avi、webm 或 m4v'),
+      find.text(
+        '未找到支持的视频或图片文件，可拖入 mp4、mov、mkv、avi、webm、m4v、png、jpg、jpeg、webp 或 bmp',
+      ),
       findsOneWidget,
     );
   });
@@ -248,7 +250,6 @@ void main() {
       videoController: videoController,
       gridCutController: gridCutController,
     );
-
     expect(
       find.byKey(const ValueKey('grid-cut-inspector-panel')),
       findsOneWidget,

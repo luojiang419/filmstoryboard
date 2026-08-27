@@ -50,6 +50,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
     '.webm',
     '.m4v',
   };
+  static const _imageExtensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'};
 
   var _isDraggingOver = false;
 
@@ -79,9 +80,10 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
           key: const ValueKey('video-analysis-drop-target'),
           onDragEntered: (_) => setState(() => _isDraggingOver = true),
           onDragExited: (_) => setState(() => _isDraggingOver = false),
-          onDragDone: (details) => _handleDroppedVideos(
+          onDragDone: (details) => _handleDroppedFiles(
             context,
             controller,
+            gridCutController,
             details.files.map((file) => file.path).toList(),
           ),
           child: ValueListenableBuilder<VideoAnalysisState>(
@@ -229,35 +231,51 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
     );
   }
 
-  Future<void> _handleDroppedVideos(
+  Future<void> _handleDroppedFiles(
     BuildContext context,
     VideoAnalysisController controller,
+    GridCutController gridCutController,
     List<String> paths,
   ) async {
     if (mounted) {
       setState(() => _isDraggingOver = false);
     }
-    if (controller.value.isBusy) {
-      _showDropMessage(context, '当前正在处理视频，请完成后再拖入添加');
+    if (controller.value.isBusy || gridCutController.value.isBusy) {
+      _showDropMessage(context, '当前正在处理视频或图片，请完成后再拖入添加');
       return;
     }
-    final files = paths
+    final normalizedPaths = paths
         .map((path) => path.trim())
-        .where((path) => path.isNotEmpty && _isSupportedVideoPath(path))
+        .where((path) => path.isNotEmpty)
+        .toList(growable: false);
+    final videoFiles = normalizedPaths
+        .where(_isSupportedVideoPath)
         .map(File.new)
         .toList(growable: false);
-    if (files.isEmpty) {
-      _showDropMessage(context, '未找到支持的视频文件，可拖入 mp4、mov、mkv、avi、webm 或 m4v');
+    final imagePaths = normalizedPaths
+        .where(_isSupportedImagePath)
+        .toList(growable: false);
+    if (videoFiles.isEmpty && imagePaths.isEmpty) {
+      _showDropMessage(
+        context,
+        '未找到支持的视频或图片文件，可拖入 mp4、mov、mkv、avi、webm、m4v、png、jpg、jpeg、webp 或 bmp',
+      );
       return;
     }
-    final ignoredCount = paths.length - files.length;
+    final ignoredCount =
+        normalizedPaths.length - videoFiles.length - imagePaths.length;
     if (ignoredCount > 0) {
       _showDropMessage(
         context,
-        '已添加 ${files.length} 个视频，忽略 $ignoredCount 个非视频文件',
+        '已添加 ${videoFiles.length} 个视频和 ${imagePaths.length} 张图片，忽略 $ignoredCount 个不支持文件',
       );
     }
-    await controller.importVideos(files);
+    if (videoFiles.isNotEmpty) {
+      await controller.importVideos(videoFiles);
+    }
+    if (imagePaths.isNotEmpty) {
+      await gridCutController.importPaths(imagePaths);
+    }
   }
 
   void _showDropMessage(BuildContext context, String message) {
@@ -275,6 +293,12 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
       return false;
     }
     return _videoExtensions.contains(path.substring(dot).toLowerCase());
+  }
+
+  static bool _isSupportedImagePath(String path) {
+    final dot = path.lastIndexOf('.');
+    return dot >= 0 &&
+        _imageExtensions.contains(path.substring(dot).toLowerCase());
   }
 
   Future<void> _chooseAnalysisMode(
@@ -730,11 +754,21 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             SizedBox(
               width: effectiveLeftWidth,
               child: _leftExpanded
-                  ? _VideoSidebar(
-                      controller: widget.controller,
-                      state: widget.state,
-                      onCollapse: () => setState(() => _leftExpanded = false),
-                    )
+                  ? widget.gridCutState.images.isNotEmpty
+                        ? GridCutImageSidebar(
+                            key: const ValueKey(
+                              'video-analysis-grid-cut-image-sidebar',
+                            ),
+                            controller: widget.gridCutController,
+                            onCollapse: () =>
+                                setState(() => _leftExpanded = false),
+                          )
+                        : _VideoSidebar(
+                            controller: widget.controller,
+                            state: widget.state,
+                            onCollapse: () =>
+                                setState(() => _leftExpanded = false),
+                          )
                   : _CollapsedVideoPanelRail(
                       title: '参考视频',
                       icon: Icons.video_library_rounded,
@@ -866,11 +900,16 @@ class _CompactWorkspace extends StatelessWidget {
       children: [
         SizedBox(
           height: 150,
-          child: _VideoSidebar(
-            controller: controller,
-            state: state,
-            horizontal: true,
-          ),
+          child: gridCutState.images.isNotEmpty
+              ? GridCutImageSidebar(
+                  key: const ValueKey('video-analysis-grid-cut-image-sidebar'),
+                  controller: gridCutController,
+                )
+              : _VideoSidebar(
+                  controller: controller,
+                  state: state,
+                  horizontal: true,
+                ),
         ),
         const SizedBox(height: 10),
         Expanded(
@@ -2265,13 +2304,13 @@ class _VideoDropOverlay extends StatelessWidget {
                     Icon(
                       isBusy
                           ? Icons.hourglass_top_rounded
-                          : Icons.video_file_rounded,
+                          : Icons.file_upload_rounded,
                       color: isBusy ? scheme.tertiary : scheme.primary,
                       size: 42,
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      isBusy ? '当前正在处理视频' : '松开添加视频',
+                      isBusy ? '当前正在处理视频或图片' : '松开添加视频或图片',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w800,
                       ),
@@ -2279,8 +2318,8 @@ class _VideoDropOverlay extends StatelessWidget {
                     const SizedBox(height: 6),
                     Text(
                       isBusy
-                          ? '请等待导入或解析完成后再拖入新视频'
-                          : '支持 mp4、mov、mkv、avi、webm、m4v',
+                          ? '请等待导入或解析完成后再拖入新文件'
+                          : '支持视频和图片：mp4、mov、mkv、avi、webm、m4v、png、jpg、jpeg、webp、bmp',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
