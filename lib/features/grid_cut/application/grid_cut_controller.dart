@@ -34,7 +34,6 @@ final gridCutControllerProvider = Provider<GridCutController>(
       database: ref.watch(appDatabaseProvider),
       detectionService: const GridDetectionService(),
       cropService: const GridCropService(),
-      fileDialogService: ref.watch(desktopFileDialogServiceProvider),
       cutResultsChangeNotifier: ref.watch(cutResultsChangeNotifierProvider),
       projectName: ref.watch(currentProjectNameProvider),
     );
@@ -44,7 +43,6 @@ final gridCutControllerProvider = Provider<GridCutController>(
   dependencies: [
     projectDirectoriesProvider,
     appDatabaseProvider,
-    desktopFileDialogServiceProvider,
     cutResultsChangeNotifierProvider,
     currentProjectNameProvider,
   ],

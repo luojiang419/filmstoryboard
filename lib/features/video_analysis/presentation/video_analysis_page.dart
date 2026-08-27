@@ -19,6 +19,9 @@ import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector.dart';
 import '../../projects/application/project_aspect_controller.dart';
 import '../../projects/domain/project_aspect_ratio.dart';
+import '../../grid_cut/application/grid_cut_controller.dart';
+import '../../grid_cut/domain/grid_cut_models.dart';
+import '../../grid_cut/presentation/grid_cut_page.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_models.dart';
 import '../application/video_analysis_controller.dart';
@@ -54,6 +57,7 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
   Widget build(BuildContext context) {
     PerformanceProbe.shared.countBuild('video_analysis.page');
     final controller = ref.watch(videoAnalysisControllerProvider);
+    final gridCutController = ref.watch(gridCutControllerProvider);
     final storyboardController = ref.watch(storyboardControllerProvider);
     final projectAspectController = ref.watch(projectAspectControllerProvider);
     return CallbackShortcuts(
@@ -82,100 +86,123 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
           ),
           child: ValueListenableBuilder<VideoAnalysisState>(
             valueListenable: controller,
-            child: _VideoAnalysisWorkspace(controller: controller),
+            child: _VideoAnalysisWorkspace(
+              controller: controller,
+              gridCutController: gridCutController,
+            ),
             builder: (context, state, workspace) =>
-                ValueListenableBuilder<StoryboardState>(
-                  valueListenable: storyboardController,
-                  builder: (context, storyboardState, _) => ColoredBox(
-                    key: const ValueKey('video-analysis-page'),
-                    color: Colors.transparent,
-                    child: Stack(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
+                ValueListenableBuilder<GridCutState>(
+                  valueListenable: gridCutController,
+                  builder: (context, gridCutState, _) =>
+                      ValueListenableBuilder<StoryboardState>(
+                        valueListenable: storyboardController,
+                        builder: (context, storyboardState, _) => ColoredBox(
+                          key: const ValueKey('video-analysis-page'),
+                          color: Colors.transparent,
+                          child: Stack(
                             children: [
-                              _Toolbar(
-                                controller: controller,
-                                projectAspectController:
-                                    projectAspectController,
-                                state: state,
-                                storyboardBusy: storyboardState.isAnalyzing,
-                                onImport: () => _pickVideo(context, controller),
-                                onStartAnalysis: () =>
-                                    _chooseAnalysisMode(context, controller),
-                                onReanalyze: state.summary == null
-                                    ? null
-                                    : () => _confirmReanalyze(
-                                        context,
-                                        controller,
-                                      ),
-                                onExport: state.summary == null
-                                    ? null
-                                    : () => _chooseReportFormat(
-                                        context,
-                                        controller,
-                                      ),
-                                onGenerateStoryboard: state.frames.isNotEmpty
-                                    ? () => _generateStoryboard(context)
-                                    : null,
-                              ),
-                              if (state.isBusy ||
-                                  state.isPaused ||
-                                  storyboardState.isAnalyzing) ...[
-                                const SizedBox(height: 10),
-                                LinearProgressIndicator(
-                                  value:
-                                      storyboardState.isAnalyzing ||
-                                          state.totalProgress <= 0
-                                      ? null
-                                      : state.completedProgress /
-                                            state.totalProgress,
-                                ),
-                              ],
-                              if (state.message.isNotEmpty ||
-                                  state.errorMessage.isNotEmpty ||
-                                  storyboardState.isAnalyzing) ...[
-                                const SizedBox(height: 8),
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                    storyboardState.isAnalyzing
-                                        ? storyboardState.message
-                                        : state.errorMessage.isNotEmpty
-                                        ? state.errorMessage
-                                        : state.message,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: state.errorMessage.isNotEmpty
-                                          ? Theme.of(context).colorScheme.error
-                                          : Theme.of(
+                              Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Column(
+                                  children: [
+                                    _Toolbar(
+                                      controller: controller,
+                                      projectAspectController:
+                                          projectAspectController,
+                                      state: state,
+                                      storyboardBusy:
+                                          storyboardState.isAnalyzing,
+                                      onImport: () =>
+                                          _pickVideo(context, controller),
+                                      onImportImage:
+                                          gridCutController.pickImages,
+                                      onStartAnalysis: () =>
+                                          _chooseAnalysisMode(
+                                            context,
+                                            controller,
+                                          ),
+                                      onReanalyze: state.summary == null
+                                          ? null
+                                          : () => _confirmReanalyze(
                                               context,
-                                            ).colorScheme.onSurfaceVariant,
+                                              controller,
+                                            ),
+                                      onExport: state.summary == null
+                                          ? null
+                                          : () => _chooseReportFormat(
+                                              context,
+                                              controller,
+                                            ),
+                                      onGenerateStoryboard:
+                                          state.frames.isNotEmpty
+                                          ? () => _generateStoryboard(context)
+                                          : null,
                                     ),
+                                    if (state.isBusy ||
+                                        state.isPaused ||
+                                        storyboardState.isAnalyzing) ...[
+                                      const SizedBox(height: 10),
+                                      LinearProgressIndicator(
+                                        value:
+                                            storyboardState.isAnalyzing ||
+                                                state.totalProgress <= 0
+                                            ? null
+                                            : state.completedProgress /
+                                                  state.totalProgress,
+                                      ),
+                                    ],
+                                    if (state.message.isNotEmpty ||
+                                        state.errorMessage.isNotEmpty ||
+                                        storyboardState.isAnalyzing) ...[
+                                      const SizedBox(height: 8),
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text(
+                                          storyboardState.isAnalyzing
+                                              ? storyboardState.message
+                                              : state.errorMessage.isNotEmpty
+                                              ? state.errorMessage
+                                              : state.message,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: state.errorMessage.isNotEmpty
+                                                ? Theme.of(
+                                                    context,
+                                                  ).colorScheme.error
+                                                : Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                    const SizedBox(height: 12),
+                                    Expanded(
+                                      child:
+                                          state.videos.isEmpty &&
+                                              gridCutState.images.isEmpty
+                                          ? _EmptyState(
+                                              onImport: () => _pickVideo(
+                                                context,
+                                                controller,
+                                              ),
+                                            )
+                                          : workspace!,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (_isDraggingOver)
+                                Positioned.fill(
+                                  child: _VideoDropOverlay(
+                                    isBusy: state.isBusy,
                                   ),
                                 ),
-                              ],
-                              const SizedBox(height: 12),
-                              Expanded(
-                                child: state.videos.isEmpty
-                                    ? _EmptyState(
-                                        onImport: () =>
-                                            _pickVideo(context, controller),
-                                      )
-                                    : workspace!,
-                              ),
                             ],
                           ),
                         ),
-                        if (_isDraggingOver)
-                          Positioned.fill(
-                            child: _VideoDropOverlay(isBusy: state.isBusy),
-                          ),
-                      ],
-                    ),
-                  ),
+                      ),
                 ),
           ),
         ),
@@ -372,9 +399,13 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
 }
 
 class _VideoAnalysisWorkspace extends StatelessWidget {
-  const _VideoAnalysisWorkspace({required this.controller});
+  const _VideoAnalysisWorkspace({
+    required this.controller,
+    required this.gridCutController,
+  });
 
   final VideoAnalysisController controller;
+  final GridCutController gridCutController;
 
   @override
   Widget build(BuildContext context) {
@@ -383,13 +414,26 @@ class _VideoAnalysisWorkspace extends StatelessWidget {
       valueListenable: controller,
       selector: (state) => state,
       shouldRebuild: _workspaceStateChanged,
-      builder: (context, state, _) => LayoutBuilder(
-        builder: (context, constraints) {
-          if (constraints.maxWidth < 900) {
-            return _CompactWorkspace(controller: controller, state: state);
-          }
-          return _WideWorkspace(controller: controller, state: state);
-        },
+      builder: (context, state, _) => ValueListenableBuilder<GridCutState>(
+        valueListenable: gridCutController,
+        builder: (context, gridCutState, _) => LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 900) {
+              return _CompactWorkspace(
+                controller: controller,
+                state: state,
+                gridCutController: gridCutController,
+                gridCutState: gridCutState,
+              );
+            }
+            return _WideWorkspace(
+              controller: controller,
+              state: state,
+              gridCutController: gridCutController,
+              gridCutState: gridCutState,
+            );
+          },
+        ),
       ),
     );
   }
@@ -426,6 +470,7 @@ class _Toolbar extends StatelessWidget {
     required this.state,
     required this.storyboardBusy,
     required this.onImport,
+    required this.onImportImage,
     required this.onStartAnalysis,
     required this.onReanalyze,
     required this.onExport,
@@ -437,6 +482,7 @@ class _Toolbar extends StatelessWidget {
   final VideoAnalysisState state;
   final bool storyboardBusy;
   final VoidCallback onImport;
+  final VoidCallback onImportImage;
   final VoidCallback onStartAnalysis;
   final VoidCallback? onReanalyze;
   final VoidCallback? onExport;
@@ -533,6 +579,12 @@ class _Toolbar extends StatelessWidget {
                 icon: const Icon(Icons.video_file_rounded),
                 label: const Text('添加视频'),
               ),
+              OutlinedButton.icon(
+                key: const ValueKey('import-grid-cut-image'),
+                onPressed: state.isBusy ? null : onImportImage,
+                icon: const Icon(Icons.grid_view_rounded),
+                label: const Text('导入图片裁切'),
+              ),
               FilledButton.icon(
                 key: const ValueKey('start-video-analysis'),
                 onPressed: video == null || state.isBusy
@@ -602,10 +654,17 @@ class _Toolbar extends StatelessWidget {
 }
 
 class _WideWorkspace extends StatefulWidget {
-  const _WideWorkspace({required this.controller, required this.state});
+  const _WideWorkspace({
+    required this.controller,
+    required this.state,
+    required this.gridCutController,
+    required this.gridCutState,
+  });
 
   final VideoAnalysisController controller;
   final VideoAnalysisState state;
+  final GridCutController gridCutController;
+  final GridCutState gridCutState;
 
   @override
   State<_WideWorkspace> createState() => _WideWorkspaceState();
@@ -702,10 +761,12 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             ),
             const SizedBox(width: _panelGap),
             Expanded(
-              child: _FrameWorkspace(
-                controller: widget.controller,
-                state: widget.state,
-              ),
+              child: widget.gridCutState.images.isNotEmpty
+                  ? GridCutCanvasPanel(controller: widget.gridCutController)
+                  : _FrameWorkspace(
+                      controller: widget.controller,
+                      state: widget.state,
+                    ),
             ),
             const SizedBox(width: _panelGap),
             _PanelResizeHandle(
@@ -729,14 +790,25 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             SizedBox(
               width: effectiveRightWidth,
               child: _rightExpanded
-                  ? _AnalysisInspector(
-                      controller: widget.controller,
-                      state: widget.state,
-                      onCollapse: () => setState(() => _rightExpanded = false),
-                    )
+                  ? widget.gridCutState.images.isNotEmpty
+                        ? GridCutInspectorPanel(
+                            controller: widget.gridCutController,
+                            onCollapse: () =>
+                                setState(() => _rightExpanded = false),
+                          )
+                        : _AnalysisInspector(
+                            controller: widget.controller,
+                            state: widget.state,
+                            onCollapse: () =>
+                                setState(() => _rightExpanded = false),
+                          )
                   : _CollapsedVideoPanelRail(
-                      title: '解析检查器',
-                      icon: Icons.analytics_outlined,
+                      title: widget.gridCutState.images.isNotEmpty
+                          ? '裁切参数'
+                          : '解析检查器',
+                      icon: widget.gridCutState.images.isNotEmpty
+                          ? Icons.tune_rounded
+                          : Icons.analytics_outlined,
                       onExpand: () => setState(() => _rightExpanded = true),
                     ),
             ),
@@ -776,10 +848,17 @@ class _PanelResizeHandle extends StatelessWidget {
 }
 
 class _CompactWorkspace extends StatelessWidget {
-  const _CompactWorkspace({required this.controller, required this.state});
+  const _CompactWorkspace({
+    required this.controller,
+    required this.state,
+    required this.gridCutController,
+    required this.gridCutState,
+  });
 
   final VideoAnalysisController controller;
   final VideoAnalysisState state;
+  final GridCutController gridCutController;
+  final GridCutState gridCutState;
 
   @override
   Widget build(BuildContext context) {
@@ -795,7 +874,9 @@ class _CompactWorkspace extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Expanded(
-          child: _FrameWorkspace(controller: controller, state: state),
+          child: gridCutState.images.isNotEmpty
+              ? GridCutCanvasPanel(controller: gridCutController)
+              : _FrameWorkspace(controller: controller, state: state),
         ),
       ],
     );

@@ -7,6 +7,9 @@ import 'package:filmstoryboard/core/providers/app_providers.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
+import 'package:filmstoryboard/features/grid_cut/application/grid_cut_controller.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_crop_service.dart';
+import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dart';
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
@@ -14,6 +17,7 @@ import 'package:filmstoryboard/features/video_analysis/presentation/video_analys
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 void main() {
@@ -182,6 +186,83 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('视频解析页导入图片后切换到多宫格裁切检查器', (tester) async {
+    late final Directory root;
+    late final AppDirectories directories;
+    late final AppDatabase database;
+    late final SettingsController settingsController;
+    late final StoryboardController storyboardController;
+    late final _RecordingVideoAnalysisController videoController;
+    late final GridCutController gridCutController;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('video_analysis_grid_cut_');
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+      final settingsRepository = SettingsRepository(database, directories);
+      settingsController = SettingsController(
+        repository: settingsRepository,
+        initialSettings: settingsRepository.load(),
+      );
+      storyboardController = StoryboardController(
+        database: database,
+        directories: directories,
+        settingsController: settingsController,
+      );
+      videoController = _RecordingVideoAnalysisController(
+        directories: directories,
+        settingsController: settingsController,
+        repository: VideoAnalysisRepository(database),
+      );
+      gridCutController = GridCutController(
+        directories: directories,
+        database: database,
+        detectionService: const GridDetectionService(),
+        cropService: const GridCropService(),
+      );
+      final imagePath = p.join(root.path, 'grid.png');
+      final image = img.Image(width: 100, height: 100);
+      img.fill(image, color: img.ColorRgb8(40, 80, 120));
+      await File(imagePath).writeAsBytes(img.encodePng(image));
+      await gridCutController.importPaths([imagePath]);
+    });
+    addTearDown(() async {
+      gridCutController.dispose();
+      videoController.dispose();
+      storyboardController.dispose();
+      settingsController.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+
+    expect(gridCutController.value.images, isNotEmpty);
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpPage(
+      tester,
+      database: database,
+      directories: directories,
+      settingsController: settingsController,
+      storyboardController: storyboardController,
+      videoController: videoController,
+      gridCutController: gridCutController,
+    );
+
+    expect(
+      find.byKey(const ValueKey('grid-cut-inspector-panel')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('grid-cut-canvas-viewport')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('grid-cut-action-export-selected')),
+      findsOneWidget,
+    );
+    expect(find.text('裁切参数'), findsOneWidget);
+  });
 }
 
 Future<void> _pumpPage(
@@ -191,6 +272,7 @@ Future<void> _pumpPage(
   required SettingsController settingsController,
   required StoryboardController storyboardController,
   required _RecordingVideoAnalysisController videoController,
+  GridCutController? gridCutController,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -201,6 +283,8 @@ Future<void> _pumpPage(
         settingsControllerProvider.overrideWithValue(settingsController),
         storyboardControllerProvider.overrideWithValue(storyboardController),
         videoAnalysisControllerProvider.overrideWithValue(videoController),
+        if (gridCutController != null)
+          gridCutControllerProvider.overrideWithValue(gridCutController),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

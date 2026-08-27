@@ -97,6 +97,110 @@ class GridCutPage extends ConsumerStatefulWidget {
   ConsumerState<GridCutPage> createState() => _GridCutPageState();
 }
 
+/// 可嵌入其它工作区的多宫格裁切画布。
+///
+/// 视频分析页使用它复用原裁切交互，不再打开独立的兼容工具窗口。
+class GridCutCanvasPanel extends StatefulWidget {
+  const GridCutCanvasPanel({super.key, required this.controller});
+
+  final GridCutController controller;
+
+  @override
+  State<GridCutCanvasPanel> createState() => _GridCutCanvasPanelState();
+}
+
+class _GridCutCanvasPanelState extends State<GridCutCanvasPanel> {
+  int? _anchorCellIndex;
+  final _activeLineAxes = <_CutLineAxis>{};
+  final _lineColor = const Color(0xFFFFD54F);
+  final _lineStrokeWidth = 2.2;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableSelectorBuilder<GridCutState, GridCutState>(
+      valueListenable: widget.controller,
+      selector: _gridCutState,
+      equals: _sameGridCutCanvasState,
+      builder: (context, state, _) => _CanvasPanel(
+        state: state,
+        anchorCellIndex: _anchorCellIndex,
+        activeLineAxes: _activeLineAxes,
+        lineColor: _lineColor,
+        lineStrokeWidth: _lineStrokeWidth,
+        onAnchorChanged: (index) => setState(() => _anchorCellIndex = index),
+        onSelectCell: widget.controller.toggleCell,
+        onLayoutCommit: widget.controller.commitLayout,
+        onToggleLineAxis: _toggleLineAxis,
+        onVerticalRulerTap: widget.controller.insertVerticalLine,
+        onHorizontalRulerTap: widget.controller.insertHorizontalLine,
+      ),
+    );
+  }
+
+  void _toggleLineAxis(_CutLineAxis axis) {
+    setState(() {
+      if (!_activeLineAxes.add(axis)) {
+        _activeLineAxes.remove(axis);
+      }
+    });
+  }
+}
+
+/// 可嵌入其它工作区的多宫格裁切参数检查器。
+class GridCutInspectorPanel extends StatefulWidget {
+  const GridCutInspectorPanel({
+    super.key,
+    required this.controller,
+    this.onCollapse,
+  });
+
+  final GridCutController controller;
+  final VoidCallback? onCollapse;
+
+  @override
+  State<GridCutInspectorPanel> createState() => _GridCutInspectorPanelState();
+}
+
+class _GridCutInspectorPanelState extends State<GridCutInspectorPanel> {
+  final _expandedSections = <_GridCutInspectorSection>{
+    _GridCutInspectorSection.metrics,
+    _GridCutInspectorSection.layout,
+    _GridCutInspectorSection.results,
+  };
+  Color _lineColor = const Color(0xFFFFD54F);
+  double _lineStrokeWidth = 2.2;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableSelectorBuilder<GridCutState, GridCutState>(
+      valueListenable: widget.controller,
+      selector: _gridCutState,
+      equals: _sameGridCutInspectorState,
+      builder: (context, state, _) => _InspectorPanel(
+        controller: widget.controller,
+        state: state,
+        expandedSections: _expandedSections,
+        onToggleSection: _toggleSection,
+        lineColor: _lineColor,
+        lineStrokeWidth: _lineStrokeWidth,
+        onLineColorChanged: (color) => setState(() => _lineColor = color),
+        onLineStrokeWidthChanged: (width) =>
+            setState(() => _lineStrokeWidth = width),
+        onImport: widget.controller.pickImages,
+        onCollapse: widget.onCollapse ?? () {},
+      ),
+    );
+  }
+
+  void _toggleSection(_GridCutInspectorSection section) {
+    setState(() {
+      if (!_expandedSections.add(section)) {
+        _expandedSections.remove(section);
+      }
+    });
+  }
+}
+
 class _GridCutPageState extends ConsumerState<GridCutPage> {
   static const _uiStateKey = 'gridCutPageUiState';
   static const _imageSidebarWidth = 240.0;
@@ -621,10 +725,15 @@ class _Toolbar extends StatelessWidget {
 }
 
 class _InspectorActionBar extends StatelessWidget {
-  const _InspectorActionBar({required this.controller, required this.state});
+  const _InspectorActionBar({
+    required this.controller,
+    required this.state,
+    this.onImport,
+  });
 
   final GridCutController controller;
   final GridCutState state;
+  final VoidCallback? onImport;
 
   @override
   Widget build(BuildContext context) {
@@ -642,6 +751,15 @@ class _InspectorActionBar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (onImport != null) ...[
+            OutlinedButton.icon(
+              key: const ValueKey('grid-cut-action-import'),
+              onPressed: state.isBusy ? null : onImport,
+              icon: const Icon(Icons.add_photo_alternate_rounded),
+              label: const Text('导入图片'),
+            ),
+            const SizedBox(height: 10),
+          ],
           OutlinedButton.icon(
             key: const ValueKey('grid-cut-action-export-all'),
             onPressed: state.isBusy || state.images.isEmpty
@@ -3103,6 +3221,7 @@ class _InspectorPanel extends StatelessWidget {
     required this.lineStrokeWidth,
     required this.onLineColorChanged,
     required this.onLineStrokeWidthChanged,
+    this.onImport,
     required this.onCollapse,
   });
 
@@ -3114,6 +3233,7 @@ class _InspectorPanel extends StatelessWidget {
   final double lineStrokeWidth;
   final ValueChanged<Color> onLineColorChanged;
   final ValueChanged<double> onLineStrokeWidthChanged;
+  final VoidCallback? onImport;
   final VoidCallback onCollapse;
 
   @override
@@ -3302,7 +3422,11 @@ class _InspectorPanel extends StatelessWidget {
                   ),
           ),
           const SizedBox(height: 12),
-          _InspectorActionBar(controller: controller, state: state),
+          _InspectorActionBar(
+            controller: controller,
+            state: state,
+            onImport: onImport,
+          ),
         ],
       ),
     );
