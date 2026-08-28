@@ -251,6 +251,23 @@ void main() {
       gridCutController: gridCutController,
     );
     expect(
+      find.byKey(const ValueKey('video-analysis-source-tabs')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('video-analysis-source-tab-images')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('video-analysis-source-tab-videos')),
+    );
+    await tester.pump();
+    expect(find.text('参考视频'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('video-analysis-source-tab-images')),
+    );
+    await tester.pump();
+    expect(
       find.byKey(const ValueKey('grid-cut-inspector-panel')),
       findsOneWidget,
     );

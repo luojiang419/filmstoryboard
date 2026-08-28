@@ -754,21 +754,13 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             SizedBox(
               width: effectiveLeftWidth,
               child: _leftExpanded
-                  ? widget.gridCutState.images.isNotEmpty
-                        ? GridCutImageSidebar(
-                            key: const ValueKey(
-                              'video-analysis-grid-cut-image-sidebar',
-                            ),
-                            controller: widget.gridCutController,
-                            onCollapse: () =>
-                                setState(() => _leftExpanded = false),
-                          )
-                        : _VideoSidebar(
-                            controller: widget.controller,
-                            state: widget.state,
-                            onCollapse: () =>
-                                setState(() => _leftExpanded = false),
-                          )
+                  ? _VideoAnalysisSourceTabs(
+                      controller: widget.controller,
+                      state: widget.state,
+                      gridCutController: widget.gridCutController,
+                      gridCutState: widget.gridCutState,
+                      onCollapse: () => setState(() => _leftExpanded = false),
+                    )
                   : _CollapsedVideoPanelRail(
                       title: '参考视频',
                       icon: Icons.video_library_rounded,
@@ -900,22 +892,126 @@ class _CompactWorkspace extends StatelessWidget {
       children: [
         SizedBox(
           height: 150,
-          child: gridCutState.images.isNotEmpty
-              ? GridCutImageSidebar(
-                  key: const ValueKey('video-analysis-grid-cut-image-sidebar'),
-                  controller: gridCutController,
-                )
-              : _VideoSidebar(
-                  controller: controller,
-                  state: state,
-                  horizontal: true,
-                ),
+          child: _VideoAnalysisSourceTabs(
+            controller: controller,
+            state: state,
+            gridCutController: gridCutController,
+            gridCutState: gridCutState,
+            horizontalVideos: true,
+          ),
         ),
         const SizedBox(height: 10),
         Expanded(
           child: gridCutState.images.isNotEmpty
               ? GridCutCanvasPanel(controller: gridCutController)
               : _FrameWorkspace(controller: controller, state: state),
+        ),
+      ],
+    );
+  }
+}
+
+enum _VideoAnalysisSidebarTab { videos, images }
+
+class _VideoAnalysisSourceTabs extends StatefulWidget {
+  const _VideoAnalysisSourceTabs({
+    required this.controller,
+    required this.state,
+    required this.gridCutController,
+    required this.gridCutState,
+    this.horizontalVideos = false,
+    this.onCollapse,
+  });
+
+  final VideoAnalysisController controller;
+  final VideoAnalysisState state;
+  final GridCutController gridCutController;
+  final GridCutState gridCutState;
+  final bool horizontalVideos;
+  final VoidCallback? onCollapse;
+
+  @override
+  State<_VideoAnalysisSourceTabs> createState() =>
+      _VideoAnalysisSourceTabsState();
+}
+
+class _VideoAnalysisSourceTabsState extends State<_VideoAnalysisSourceTabs> {
+  late var _activeTab = widget.gridCutState.images.isNotEmpty
+      ? _VideoAnalysisSidebarTab.images
+      : _VideoAnalysisSidebarTab.videos;
+  late var _previousImageCount = widget.gridCutState.images.length;
+
+  @override
+  void didUpdateWidget(covariant _VideoAnalysisSourceTabs oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final imageCount = widget.gridCutState.images.length;
+    final shouldShowImages =
+        _previousImageCount == 0 && imageCount > 0 ||
+        _activeTab == _VideoAnalysisSidebarTab.images && imageCount == 0;
+    if (shouldShowImages) {
+      final nextTab = imageCount > 0
+          ? _VideoAnalysisSidebarTab.images
+          : _VideoAnalysisSidebarTab.videos;
+      if (nextTab != _activeTab) {
+        setState(() => _activeTab = nextTab);
+      }
+    }
+    _previousImageCount = imageCount;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<_VideoAnalysisSidebarTab>(
+            key: const ValueKey('video-analysis-source-tabs'),
+            segments: [
+              ButtonSegment(
+                value: _VideoAnalysisSidebarTab.videos,
+                icon: const Icon(Icons.video_library_outlined, size: 17),
+                label: const Text(
+                  '视频',
+                  key: ValueKey('video-analysis-source-tab-videos'),
+                ),
+              ),
+              ButtonSegment(
+                value: _VideoAnalysisSidebarTab.images,
+                icon: const Icon(Icons.grid_view_rounded, size: 17),
+                label: const Text(
+                  '图片',
+                  key: ValueKey('video-analysis-source-tab-images'),
+                ),
+              ),
+            ],
+            selected: {_activeTab},
+            showSelectedIcon: false,
+            style: ButtonStyle(
+              visualDensity: VisualDensity.compact,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onSelectionChanged: (selection) {
+              if (selection.isNotEmpty && selection.first != _activeTab) {
+                setState(() => _activeTab = selection.first);
+              }
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: _activeTab == _VideoAnalysisSidebarTab.images
+              ? GridCutImageSidebar(
+                  key: const ValueKey('video-analysis-grid-cut-image-sidebar'),
+                  controller: widget.gridCutController,
+                  onCollapse: widget.onCollapse,
+                )
+              : _VideoSidebar(
+                  controller: widget.controller,
+                  state: widget.state,
+                  horizontal: widget.horizontalVideos,
+                  onCollapse: widget.onCollapse,
+                ),
         ),
       ],
     );
