@@ -263,6 +263,11 @@ void main() {
     );
     await tester.pump();
     expect(find.text('参考视频'), findsOneWidget);
+    expect(find.text('候选帧与镜头时间轴'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('grid-cut-canvas-viewport')),
+      findsNothing,
+    );
     await tester.tap(
       find.byKey(const ValueKey('video-analysis-source-tab-images')),
     );

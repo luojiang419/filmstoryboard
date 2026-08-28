@@ -705,6 +705,34 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
   var _rightWidth = 310.0;
   var _leftExpanded = true;
   var _rightExpanded = true;
+  var _activeSourceTab = _VideoAnalysisSidebarTab.videos;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeSourceTab = widget.gridCutState.images.isNotEmpty
+        ? _VideoAnalysisSidebarTab.images
+        : _VideoAnalysisSidebarTab.videos;
+  }
+
+  @override
+  void didUpdateWidget(covariant _WideWorkspace oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldImageCount = oldWidget.gridCutState.images.length;
+    final imageCount = widget.gridCutState.images.length;
+    if (oldImageCount == 0 && imageCount > 0) {
+      _setActiveSourceTab(_VideoAnalysisSidebarTab.images);
+    } else if (oldImageCount > 0 && imageCount == 0) {
+      _setActiveSourceTab(_VideoAnalysisSidebarTab.videos);
+    }
+  }
+
+  void _setActiveSourceTab(_VideoAnalysisSidebarTab tab) {
+    if (_activeSourceTab == tab || !mounted) {
+      return;
+    }
+    setState(() => _activeSourceTab = tab);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -748,6 +776,9 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             .toDouble();
         final effectiveLeftWidth = _leftExpanded ? boundedLeftWidth : 44.0;
         final effectiveRightWidth = _rightExpanded ? boundedRightWidth : 44.0;
+        final imageMode =
+            _activeSourceTab == _VideoAnalysisSidebarTab.images &&
+            widget.gridCutState.images.isNotEmpty;
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -759,6 +790,7 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
                       state: widget.state,
                       gridCutController: widget.gridCutController,
                       gridCutState: widget.gridCutState,
+                      onTabChanged: _setActiveSourceTab,
                       onCollapse: () => setState(() => _leftExpanded = false),
                     )
                   : _CollapsedVideoPanelRail(
@@ -787,7 +819,7 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             ),
             const SizedBox(width: _panelGap),
             Expanded(
-              child: widget.gridCutState.images.isNotEmpty
+              child: imageMode
                   ? GridCutCanvasPanel(controller: widget.gridCutController)
                   : _FrameWorkspace(
                       controller: widget.controller,
@@ -816,7 +848,7 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
             SizedBox(
               width: effectiveRightWidth,
               child: _rightExpanded
-                  ? widget.gridCutState.images.isNotEmpty
+                  ? imageMode
                         ? GridCutInspectorPanel(
                             controller: widget.gridCutController,
                             onCollapse: () =>
@@ -829,10 +861,8 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
                                 setState(() => _rightExpanded = false),
                           )
                   : _CollapsedVideoPanelRail(
-                      title: widget.gridCutState.images.isNotEmpty
-                          ? '裁切参数'
-                          : '解析检查器',
-                      icon: widget.gridCutState.images.isNotEmpty
+                      title: imageMode ? '裁切参数' : '解析检查器',
+                      icon: imageMode
                           ? Icons.tune_rounded
                           : Icons.analytics_outlined,
                       onExpand: () => setState(() => _rightExpanded = true),
@@ -873,7 +903,7 @@ class _PanelResizeHandle extends StatelessWidget {
   }
 }
 
-class _CompactWorkspace extends StatelessWidget {
+class _CompactWorkspace extends StatefulWidget {
   const _CompactWorkspace({
     required this.controller,
     required this.state,
@@ -887,24 +917,65 @@ class _CompactWorkspace extends StatelessWidget {
   final GridCutState gridCutState;
 
   @override
+  State<_CompactWorkspace> createState() => _CompactWorkspaceState();
+}
+
+class _CompactWorkspaceState extends State<_CompactWorkspace> {
+  var _activeSourceTab = _VideoAnalysisSidebarTab.videos;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeSourceTab = widget.gridCutState.images.isNotEmpty
+        ? _VideoAnalysisSidebarTab.images
+        : _VideoAnalysisSidebarTab.videos;
+  }
+
+  @override
+  void didUpdateWidget(covariant _CompactWorkspace oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldImageCount = oldWidget.gridCutState.images.length;
+    final imageCount = widget.gridCutState.images.length;
+    if (oldImageCount == 0 && imageCount > 0) {
+      _setActiveSourceTab(_VideoAnalysisSidebarTab.images);
+    } else if (oldImageCount > 0 && imageCount == 0) {
+      _setActiveSourceTab(_VideoAnalysisSidebarTab.videos);
+    }
+  }
+
+  void _setActiveSourceTab(_VideoAnalysisSidebarTab tab) {
+    if (_activeSourceTab == tab || !mounted) {
+      return;
+    }
+    setState(() => _activeSourceTab = tab);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final imageMode =
+        _activeSourceTab == _VideoAnalysisSidebarTab.images &&
+        widget.gridCutState.images.isNotEmpty;
     return Column(
       children: [
         SizedBox(
           height: 150,
           child: _VideoAnalysisSourceTabs(
-            controller: controller,
-            state: state,
-            gridCutController: gridCutController,
-            gridCutState: gridCutState,
+            controller: widget.controller,
+            state: widget.state,
+            gridCutController: widget.gridCutController,
+            gridCutState: widget.gridCutState,
             horizontalVideos: true,
+            onTabChanged: _setActiveSourceTab,
           ),
         ),
         const SizedBox(height: 10),
         Expanded(
-          child: gridCutState.images.isNotEmpty
-              ? GridCutCanvasPanel(controller: gridCutController)
-              : _FrameWorkspace(controller: controller, state: state),
+          child: imageMode
+              ? GridCutCanvasPanel(controller: widget.gridCutController)
+              : _FrameWorkspace(
+                  controller: widget.controller,
+                  state: widget.state,
+                ),
         ),
       ],
     );
@@ -920,6 +991,7 @@ class _VideoAnalysisSourceTabs extends StatefulWidget {
     required this.gridCutController,
     required this.gridCutState,
     this.horizontalVideos = false,
+    this.onTabChanged,
     this.onCollapse,
   });
 
@@ -928,6 +1000,7 @@ class _VideoAnalysisSourceTabs extends StatefulWidget {
   final GridCutController gridCutController;
   final GridCutState gridCutState;
   final bool horizontalVideos;
+  final ValueChanged<_VideoAnalysisSidebarTab>? onTabChanged;
   final VoidCallback? onCollapse;
 
   @override
@@ -954,6 +1027,7 @@ class _VideoAnalysisSourceTabsState extends State<_VideoAnalysisSourceTabs> {
           : _VideoAnalysisSidebarTab.videos;
       if (nextTab != _activeTab) {
         setState(() => _activeTab = nextTab);
+        widget.onTabChanged?.call(nextTab);
       }
     }
     _previousImageCount = imageCount;
@@ -994,6 +1068,7 @@ class _VideoAnalysisSourceTabsState extends State<_VideoAnalysisSourceTabs> {
             onSelectionChanged: (selection) {
               if (selection.isNotEmpty && selection.first != _activeTab) {
                 setState(() => _activeTab = selection.first);
+                widget.onTabChanged?.call(selection.first);
               }
             },
           ),
