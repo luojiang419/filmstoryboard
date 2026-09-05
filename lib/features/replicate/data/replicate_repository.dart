@@ -132,11 +132,11 @@ class ReplicateRepository {
       INSERT INTO replicate_shot_guides(
         shot_id, source_frame_fingerprint, elements_json, subjects_json,
         full_outfit_assets_json, wearable_product_links_json,
-        product_mark_authorizations_json, editable_pose_json,
-        action_description, pose_constraints, person_count, skeleton_path, analysis_model,
-        analysis_status, pose_status, raw_response, error_message,
+        product_mark_authorizations_json,
+        action_description, pose_constraints, person_count, depth_path, analysis_model,
+        analysis_status, depth_status, raw_response, error_message,
         created_at, updated_at
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(shot_id) DO UPDATE SET
         source_frame_fingerprint = excluded.source_frame_fingerprint,
         elements_json = excluded.elements_json,
@@ -144,14 +144,13 @@ class ReplicateRepository {
         full_outfit_assets_json = excluded.full_outfit_assets_json,
         wearable_product_links_json = excluded.wearable_product_links_json,
         product_mark_authorizations_json = excluded.product_mark_authorizations_json,
-        editable_pose_json = excluded.editable_pose_json,
         action_description = excluded.action_description,
         pose_constraints = excluded.pose_constraints,
         person_count = excluded.person_count,
-        skeleton_path = excluded.skeleton_path,
+        depth_path = excluded.depth_path,
         analysis_model = excluded.analysis_model,
         analysis_status = excluded.analysis_status,
-        pose_status = excluded.pose_status,
+        depth_status = excluded.depth_status,
         raw_response = excluded.raw_response,
         error_message = excluded.error_message,
         updated_at = excluded.updated_at;
@@ -171,14 +170,13 @@ class ReplicateRepository {
           for (final authorization in guide.productMarkAuthorizations)
             authorization.toJson(),
         ]),
-        jsonEncode(guide.editablePose.toJson()),
         guide.actionDescription,
         guide.poseConstraints,
         guide.personCount,
-        guide.skeletonPath,
+        guide.depthPath,
         guide.analysisModel,
         guide.analysisStatus.name,
-        guide.poseStatus.name,
+        guide.depthStatus.name,
         guide.rawResponse,
         guide.errorMessage,
         guide.createdAt.toUtc().toIso8601String(),
@@ -211,7 +209,6 @@ class ReplicateRepository {
 
     final decoded = decodeColumn('elements_json', '[]');
     final decodedSubjects = decodeColumn('subjects_json', '[]');
-    final decodedPose = decodeColumn('editable_pose_json', '{}');
     DateTime date(Object? value) =>
         DateTime.tryParse(value as String? ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
@@ -248,18 +245,13 @@ class ReplicateRepository {
         'product_mark_authorizations_json',
         ReplicateProductMarkAuthorization.fromJson,
       ),
-      editablePose: decodedPose is Map
-          ? ReplicateEditablePoseData.fromJson(
-              decodedPose.map((key, value) => MapEntry('$key', value)),
-            )
-          : ReplicateEditablePoseData.empty,
       actionDescription: row['action_description'] as String? ?? '',
       poseConstraints: row['pose_constraints'] as String? ?? '',
       personCount: row['person_count'] as int? ?? 0,
-      skeletonPath: row['skeleton_path'] as String? ?? '',
+      depthPath: row['depth_path'] as String? ?? '',
       analysisModel: row['analysis_model'] as String? ?? '',
       analysisStatus: ProcessingStatus.fromStorage(row['analysis_status']),
-      poseStatus: ProcessingStatus.fromStorage(row['pose_status']),
+      depthStatus: ProcessingStatus.fromStorage(row['depth_status']),
       rawResponse: row['raw_response'] as String? ?? '',
       errorMessage: row['error_message'] as String? ?? '',
       createdAt: date(row['created_at']),

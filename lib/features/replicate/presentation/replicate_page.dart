@@ -36,7 +36,6 @@ import '../domain/h3_prompt_style.dart';
 import '../domain/quick_replication_input_capacity.dart';
 import '../domain/replicate_models.dart';
 import 'line_art_color_style_picker.dart';
-import 'replicate_pose_editor_dialog.dart';
 import 'replicate_shot_navigation_controller.dart';
 
 bool _hasActiveComposing(TextEditingController controller) {
@@ -5588,8 +5587,8 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
     }
     final canGenerate =
         baseCanGenerate && (preciseMode || quickBatchLimitError.isEmpty);
-    final isExtractingDwPose = state.shotGuides.any(
-      (guide) => guide.poseStatus == ProcessingStatus.running,
+    final isExtractingDepth = state.shotGuides.any(
+      (guide) => guide.depthStatus == ProcessingStatus.running,
     );
     final content = Padding(
       key: const ValueKey('replicate-asset-library-scroll'),
@@ -5611,7 +5610,7 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
           _StepToolbar(
             title: preciseMode ? '步骤 1 · 精确匹配资产' : '步骤 1 · 快速多图复刻',
             subtitle: preciseMode
-                ? '适合严格产品替换：分析主体、锁定姿势并逐项控制保留、替换或移除。'
+                ? '以高精度人物深度图锁定动作、遮挡和表面起伏，再逐项控制主体保留、替换或移除。'
                 : '可一键解析原帧人数并生成模特、产品与可选场景槽；也可直接添加编号参考图。',
             actions: [
               SegmentedButton<ReplicationGenerationMode>(
@@ -5666,18 +5665,18 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
                 ),
               if (preciseMode)
                 OutlinedButton.icon(
-                  key: const ValueKey('extract-all-dwpose'),
-                  onPressed: state.shots.isEmpty || isExtractingDwPose
+                  key: const ValueKey('extract-all-depth'),
+                  onPressed: state.shots.isEmpty || isExtractingDepth
                       ? null
-                      : controller.extractDwPoseForAllShots,
-                  icon: isExtractingDwPose
+                      : controller.extractDepthForAllShots,
+                  icon: isExtractingDepth
                       ? const SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.accessibility_new_rounded),
-                  label: Text(isExtractingDwPose ? '提取骨架中…' : '提取全部骨架'),
+                      : const Icon(Icons.gradient_rounded),
+                  label: Text(isExtractingDepth ? '提取深度中…' : '提取全部深度图'),
                 ),
               if (preciseMode)
                 OutlinedButton.icon(
@@ -6519,9 +6518,8 @@ class _PrepareAssetsContent extends StatelessWidget {
       onAnalyzeFrame: mode == ReplicationGenerationMode.quick
           ? controller.analyzeQuickReplicationFrame
           : controller.analyzeReplicationFrame,
-      onExtractPose: controller.extractDwPoseForShot,
-      onRemovePose: controller.removeDwPoseForShot,
-      onSaveEditablePose: controller.saveEditablePoseForShot,
+      onExtractDepth: controller.extractDepthForShot,
+      onRemoveDepth: controller.removeDepthForShot,
       onTogglePreservedElement: controller.setPreservedElementSelected,
       onSetSubjectDecision: controller.setDetectedSubjectDecision,
       onSetProductMarkAuthorization: (shotId, authorization) =>
@@ -6585,9 +6583,8 @@ class _ShotAssetBindingBoard extends StatefulWidget {
     required this.guideForShot,
     required this.isGuideCurrent,
     required this.onAnalyzeFrame,
-    required this.onExtractPose,
-    required this.onRemovePose,
-    required this.onSaveEditablePose,
+    required this.onExtractDepth,
+    required this.onRemoveDepth,
     required this.onTogglePreservedElement,
     required this.onSetSubjectDecision,
     required this.onSetProductMarkAuthorization,
@@ -6647,13 +6644,8 @@ class _ShotAssetBindingBoard extends StatefulWidget {
   final ReplicateShotGuide? Function(String shotId) guideForShot;
   final bool Function(String shotId) isGuideCurrent;
   final Future<void> Function(String shotId) onAnalyzeFrame;
-  final Future<void> Function(String shotId) onExtractPose;
-  final Future<void> Function(String shotId) onRemovePose;
-  final Future<void> Function(
-    String shotId,
-    ReplicateEditablePoseData editablePose,
-  )
-  onSaveEditablePose;
+  final Future<void> Function(String shotId) onExtractDepth;
+  final Future<void> Function(String shotId) onRemoveDepth;
   final void Function(String shotId, String elementId, bool selected)
   onTogglePreservedElement;
   final void Function(
@@ -6915,10 +6907,8 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
                         guide: widget.guideForShot(shot.id),
                         guideIsCurrent: widget.isGuideCurrent(shot.id),
                         onAnalyzeFrame: () => widget.onAnalyzeFrame(shot.id),
-                        onExtractPose: () => widget.onExtractPose(shot.id),
-                        onRemovePose: () => widget.onRemovePose(shot.id),
-                        onSaveEditablePose: (editablePose) =>
-                            widget.onSaveEditablePose(shot.id, editablePose),
+                        onExtractDepth: () => widget.onExtractDepth(shot.id),
+                        onRemoveDepth: () => widget.onRemoveDepth(shot.id),
                         onTogglePreservedElement: (elementId, selected) =>
                             widget.onTogglePreservedElement(
                               shot.id,
@@ -6980,9 +6970,8 @@ class _ShotAssetDropRow extends StatelessWidget {
     required this.guide,
     required this.guideIsCurrent,
     required this.onAnalyzeFrame,
-    required this.onExtractPose,
-    required this.onRemovePose,
-    required this.onSaveEditablePose,
+    required this.onExtractDepth,
+    required this.onRemoveDepth,
     required this.onTogglePreservedElement,
     required this.onSetSubjectDecision,
     required this.onSetProductMarkAuthorization,
@@ -7042,10 +7031,8 @@ class _ShotAssetDropRow extends StatelessWidget {
   final ReplicateShotGuide? guide;
   final bool guideIsCurrent;
   final Future<void> Function() onAnalyzeFrame;
-  final Future<void> Function() onExtractPose;
-  final Future<void> Function() onRemovePose;
-  final Future<void> Function(ReplicateEditablePoseData editablePose)
-  onSaveEditablePose;
+  final Future<void> Function() onExtractDepth;
+  final Future<void> Function() onRemoveDepth;
   final void Function(String elementId, bool selected) onTogglePreservedElement;
   final void Function(String subjectId, ReplicateSubjectDecision decision)
   onSetSubjectDecision;
@@ -7068,10 +7055,10 @@ class _ShotAssetDropRow extends StatelessWidget {
     final hasAnalysisResult =
         guide?.analysisStatus == ProcessingStatus.completed;
     final analysisReady = hasAnalysisResult && guideIsCurrent;
-    final poseRunning = guide?.poseStatus == ProcessingStatus.running;
-    final poseReady =
-        guide?.poseStatus == ProcessingStatus.completed &&
-        (guide?.skeletonPath.trim().isNotEmpty ?? false);
+    final depthRunning = guide?.depthStatus == ProcessingStatus.running;
+    final depthReady =
+        guide?.depthStatus == ProcessingStatus.completed &&
+        (guide?.depthPath.trim().isNotEmpty ?? false);
     final assetSlots = preciseMode
         ? _buildAssetSlots(context)
         : _buildQuickAssetSlots(context);
@@ -7221,11 +7208,11 @@ class _ShotAssetDropRow extends StatelessWidget {
                     if (preciseMode) const SizedBox(width: 6),
                     if (preciseMode)
                       OutlinedButton.icon(
-                        key: ValueKey('extract-dwpose-${shot.id}'),
-                        onPressed: poseRunning || !guideIsCurrent
+                        key: ValueKey('extract-depth-${shot.id}'),
+                        onPressed: depthRunning || !guideIsCurrent
                             ? null
-                            : onExtractPose,
-                        icon: poseRunning
+                            : onExtractDepth,
+                        icon: depthRunning
                             ? const SizedBox(
                                 width: 14,
                                 height: 14,
@@ -7233,14 +7220,15 @@ class _ShotAssetDropRow extends StatelessWidget {
                                   strokeWidth: 2,
                                 ),
                               )
-                            : const Icon(Icons.device_hub_rounded, size: 16),
-                        label: Text(poseReady ? '重新提取骨架' : '提取骨架'),
+                            : const Icon(Icons.gradient_rounded, size: 16),
+                        label: Text(depthReady ? '重新提取深度图' : '提取深度图'),
                       ),
                     const SizedBox(width: 6),
                     OutlinedButton.icon(
                       key: ValueKey('replicate-shot-image-${shot.id}'),
                       onPressed:
                           (preciseMode || quickCapacity.isWithinLimits) &&
+                              (!preciseMode || depthReady) &&
                               (links.isNotEmpty ||
                                   (preciseMode &&
                                       guideIsCurrent &&
@@ -7654,11 +7642,11 @@ class _ShotAssetDropRow extends StatelessWidget {
     final productCount = subjects
         .where((subject) => subject.type == ReplicateSubjectType.product)
         .length;
-    final skeletonPath = guide?.skeletonPath.trim() ?? '';
-    final showSkeleton =
+    final depthPath = guide?.depthPath.trim() ?? '';
+    final showDepth =
         guideIsCurrent &&
-        guide?.poseStatus == ProcessingStatus.completed &&
-        skeletonPath.isNotEmpty;
+        guide?.depthStatus == ProcessingStatus.completed &&
+        depthPath.isNotEmpty;
     final assignments = <String, ScriptShotAssetLink>{};
     final assignedLinks = <ScriptShotAssetLink>{};
 
@@ -7822,27 +7810,18 @@ class _ShotAssetDropRow extends StatelessWidget {
             onDrop: (item) => onDrop(item, link.scriptAssetId, null, null),
             onRemove: () => onRemove(link.scriptAssetId),
           ),
-        if (showSkeleton)
-          _SkeletonAssetSlot(
-            key: ValueKey('shot-skeleton-asset-${shot.id}'),
-            path: skeletonPath,
+        if (showDepth)
+          _DepthAssetSlot(
+            key: ValueKey('shot-depth-asset-${shot.id}'),
+            path: depthPath,
             onTap: () => _showAssetImageGallery(
               context,
-              path: skeletonPath,
+              path: depthPath,
               label:
-                  '镜头 ${shot.shotNumber.toString().padLeft(2, '0')} · DWPose 骨架',
-              imageKey: ValueKey('dwpose-gallery-image-${shot.id}'),
+                  '镜头 ${shot.shotNumber.toString().padLeft(2, '0')} · 高精度深度图',
+              imageKey: ValueKey('depth-gallery-image-${shot.id}'),
             ),
-            onEdit:
-                guide!.editablePose.isEmpty ||
-                    guide!.editablePose.sourceWidth <= 0 ||
-                    guide!.editablePose.sourceHeight <= 0 ||
-                    guide!.editablePose.people.any(
-                      (person) => person.keypoints.length != 133,
-                    )
-                ? null
-                : () => _openPoseEditor(context),
-            onRemove: onRemovePose,
+            onRemove: onRemoveDepth,
           ),
         _EmptyAssetBindingSlot(
           key: ValueKey('add-supplemental-shot-asset-${shot.id}'),
@@ -7881,16 +7860,6 @@ class _ShotAssetDropRow extends StatelessWidget {
       return slotOrder != 0 ? slotOrder : left.label.compareTo(right.label);
     });
     return options;
-  }
-
-  Future<void> _openPoseEditor(BuildContext context) async {
-    final pose = guide?.editablePose ?? ReplicateEditablePoseData.empty;
-    if (pose.isEmpty) return;
-    final edited = await showReplicatePoseEditorDialog(
-      context: context,
-      initialPose: pose,
-    );
-    if (edited != null) await onSaveEditablePose(edited);
   }
 
   void _changeSubjectDecision(
@@ -9473,18 +9442,16 @@ class _AssetBindingSlot extends StatelessWidget {
   }
 }
 
-class _SkeletonAssetSlot extends StatelessWidget {
-  const _SkeletonAssetSlot({
+class _DepthAssetSlot extends StatelessWidget {
+  const _DepthAssetSlot({
     super.key,
     required this.path,
     required this.onTap,
-    this.onEdit,
     required this.onRemove,
   });
 
   final String path;
   final VoidCallback onTap;
-  final VoidCallback? onEdit;
   final VoidCallback onRemove;
 
   @override
@@ -9504,7 +9471,7 @@ class _SkeletonAssetSlot extends StatelessWidget {
               ),
               clipBehavior: Clip.antiAlias,
               child: Tooltip(
-                message: 'DWPose 骨架，点击全屏浏览',
+                message: '高精度人物深度图，点击全屏浏览',
                 child: InkWell(
                   onTap: onTap,
                   child: Padding(
@@ -9513,7 +9480,7 @@ class _SkeletonAssetSlot extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
-                          '动作骨架',
+                          '人物深度',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -9526,12 +9493,12 @@ class _SkeletonAssetSlot extends StatelessWidget {
                         Expanded(
                           child: _BindingAssetPreview(
                             path: path,
-                            label: 'DWPose 骨架',
+                            label: '高精度深度图',
                           ),
                         ),
                         const SizedBox(height: 3),
                         const Text(
-                          'DWPose 骨架',
+                          '高精度深度图',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -9540,7 +9507,7 @@ class _SkeletonAssetSlot extends StatelessWidget {
                           ),
                         ),
                         Text(
-                          '姿态参考 · 点击放大',
+                          '几何硬约束 · 点击放大',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.labelSmall,
@@ -9553,23 +9520,10 @@ class _SkeletonAssetSlot extends StatelessWidget {
             ),
           ),
           Positioned(
-            bottom: 0,
-            right: 0,
-            child: IconButton(
-              key: const ValueKey('edit-pose-joints'),
-              tooltip: onEdit == null ? '暂无可编辑关节数据' : '编辑动作关节',
-              onPressed: onEdit,
-              icon: const Icon(Icons.edit_location_alt_outlined, size: 16),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-          Positioned(
             top: 0,
             right: 0,
             child: IconButton(
-              tooltip: '移除动作骨架',
+              tooltip: '移除高精度深度图',
               onPressed: onRemove,
               icon: const Icon(Icons.close_rounded, size: 15),
               padding: EdgeInsets.zero,
@@ -9705,7 +9659,7 @@ Future<void> _confirmReplicateAll(
         mode == ReplicationGenerationMode.quick ? '确认快速复刻' : '确认精确复刻',
       ),
       content: Text(
-        '${mode == ReplicationGenerationMode.quick ? '每个镜头提交原帧、编号参考图和一句话说明；已完成的一键解析只用于生成快速资产槽位，不执行骨架与自动纠偏。\n\n' : ''}'
+        '${mode == ReplicationGenerationMode.quick ? '每个镜头提交原帧、编号参考图和一句话说明；已完成的一键解析只用于生成快速资产槽位，不执行深度提取与自动纠偏。\n\n' : ''}'
         '将按镜号顺序提交 $confirmed 个镜头，任务之间间隔约 '
         '${ReplicateController.defaultBatchReplicateStagger.inMilliseconds} 毫秒，'
         '最多同时处理 '

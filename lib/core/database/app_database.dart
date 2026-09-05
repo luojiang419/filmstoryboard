@@ -224,7 +224,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 30;
+  static const currentSchemaVersion = 31;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -1221,6 +1221,32 @@ class AppDatabase {
       }
       _database.execute('PRAGMA user_version = 30;');
     }
+    if (version < 31) {
+      if (_tableExists('replicate_shot_guides')) {
+        if (!_columnExists('replicate_shot_guides', 'depth_path')) {
+          _database.execute(
+            "ALTER TABLE replicate_shot_guides ADD COLUMN depth_path TEXT NOT NULL DEFAULT '';",
+          );
+        }
+        if (!_columnExists('replicate_shot_guides', 'depth_status')) {
+          _database.execute(
+            "ALTER TABLE replicate_shot_guides ADD COLUMN depth_status TEXT NOT NULL DEFAULT 'pending';",
+          );
+        }
+        for (final legacyColumn in [
+          'editable_pose_json',
+          'skeleton_path',
+          'pose_status',
+        ]) {
+          if (_columnExists('replicate_shot_guides', legacyColumn)) {
+            _database.execute(
+              'ALTER TABLE replicate_shot_guides DROP COLUMN $legacyColumn;',
+            );
+          }
+        }
+      }
+      _database.execute('PRAGMA user_version = 31;');
+    }
   }
 
   bool _tableExists(String tableName) => _database.select(
@@ -1603,7 +1629,7 @@ class AppDatabase {
       'generated_frame_path',
       transform,
     );
-    _rewriteTextColumn('replicate_shot_guides', 'skeleton_path', transform);
+    _rewriteTextColumn('replicate_shot_guides', 'depth_path', transform);
     _rewriteJsonColumn(
       'image_generation_records',
       'reference_paths_json',

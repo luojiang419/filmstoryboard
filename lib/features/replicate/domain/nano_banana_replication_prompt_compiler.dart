@@ -32,7 +32,7 @@ class NanoBananaReplicationPromptInput {
   final NanoBananaAssetManifest manifest;
   final String userInstructions;
 
-  /// Structural-only images inserted after image 1, for example a DWPose map.
+  /// Structural-only images inserted after image 1, such as a depth map.
   final List<String> structuralReferenceDescriptions;
   final bool productOverridesWardrobeAppearance;
   final NanoBananaFirstRoundProtocol? firstRoundProtocol;
@@ -142,8 +142,8 @@ class NanoBananaReplicationPromptCompiler {
             input.sourceFrameMode == ReplicateSourceFrameMode.lineArt,
       ),
       for (var index = 0; index < descriptions.length; index++)
-        '图片${index + 2}是结构辅助图：${descriptions[index].trim()}。'
-            '它只提供姿态或几何关系，不提供人物、产品、场景、材质、颜色或文字外观。',
+        '图片${index + 2}是结构控制图：${descriptions[index].trim()}。'
+            '它提供可辨认的空间与表面几何，不提供人物身份、产品设计、场景、材质、颜色或文字外观。',
       for (final entry in input.manifest.entries.skip(1))
         _authorityLine(
           entry,

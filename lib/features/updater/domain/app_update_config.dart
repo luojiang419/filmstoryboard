@@ -3,8 +3,8 @@ class AppUpdateConfig {
 
   static const appName = 'filmstoryboard';
   static const userAgent = 'filmstoryboard';
-  static const currentVersion = '1.0.0.366';
-  static const currentVersionTag = 'v1.0.0.366';
+  static const currentVersion = '1.1.0.367';
+  static const currentVersionTag = 'v1.1.0.367';
   static const windowTitle = '$appName $currentVersionTag';
   static const installerBaseName = 'filmstoryboard-Setup';
   static const defaultReleaseRepositoryUrl =

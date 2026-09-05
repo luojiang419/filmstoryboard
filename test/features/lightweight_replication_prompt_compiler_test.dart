@@ -40,7 +40,7 @@ void main() {
     expect(prompt, contains('环境光、色温和阴影以场景参考图为准'));
     expect(prompt.length, lessThan(620));
     expect(prompt, isNot(contains('确定性精准复刻协议')));
-    expect(prompt, isNot(contains('DWPose')));
+    expect(prompt, isNot(contains('高精度深度图')));
   });
 
   test('拒绝空说明和非图片参考', () {
@@ -140,7 +140,7 @@ void main() {
     expect(prompt, contains('图片5说明：产品A的腰头和口袋'));
     expect(prompt, contains('补充关系：图3模特穿产品A和产品B，佩戴图8配饰'));
     expect(prompt.indexOf('产品A以图片4'), lessThan(prompt.indexOf('图片8作为配饰')));
-    expect(prompt, isNot(contains('DWPose')));
+    expect(prompt, isNot(contains('高精度深度图')));
   });
 
   test('产品细节空描述时使用通用局部证据模板', () {

@@ -13,7 +13,7 @@ void main() {
         NanoBananaStructuralReference(
           id: 'pose',
           path: 'pose.png',
-          description: 'DWPose 结构化姿势骨架',
+          description: '高精度人物深度图',
         ),
       ],
     );
@@ -58,7 +58,7 @@ void main() {
         authorizedProductMarks: refill.authorizedMarks,
       ),
     );
-    expect(prompt, contains('图片2是结构辅助图：DWPose 结构化姿势骨架'));
+    expect(prompt, contains('图片2是结构控制图：高精度人物深度图'));
     expect(prompt, contains('图片3是完整穿搭资产，槽位A'));
     expect(prompt, contains('并与产品槽位A联动'));
     expect(prompt, contains('图片7是产品资产，槽位B'));

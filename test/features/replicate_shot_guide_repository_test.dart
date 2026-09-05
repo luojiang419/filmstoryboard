@@ -9,7 +9,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('逐镜复刻指导记录可持久化配饰选择、动作和骨架状态', () async {
+  test('逐镜复刻指导记录可持久化配饰选择、动作和深度状态', () async {
     final root = await Directory.systemTemp.createTemp('replicate_guide_');
     addTearDown(() => root.delete(recursive: true));
     final database = await AppDatabase.open(
@@ -118,41 +118,13 @@ void main() {
             location: '鞋舌正面',
           ),
         ],
-        editablePose: ReplicateEditablePoseData(
-          sourceWidth: 1920,
-          sourceHeight: 1080,
-          people: [
-            ReplicatePosePerson(
-              id: 'pose-person-a',
-              leftToRightOrder: 0,
-              modelSlotIndex: 0,
-              bounds: const ReplicatePoseBounds(
-                x: 120,
-                y: 80,
-                width: 520,
-                height: 920,
-              ),
-              keypoints: [
-                for (var index = 0; index < 133; index++)
-                  ReplicatePoseKeypoint(
-                    index: index,
-                    x: 150 + index.toDouble(),
-                    y: 100 + index.toDouble() / 2,
-                    confidence: 0.95,
-                    manuallyAdjusted: index == 10,
-                  ),
-              ],
-              confidence: 0.93,
-            ),
-          ],
-        ),
         actionDescription: '人物侧身面向画面右侧，右臂自然下垂。',
         poseConstraints: '保持头肩夹角、右肘弯曲角度和身体重心。',
         personCount: 2,
-        skeletonPath: p.join(root.path, 'pose', 'shot-1.png'),
+        depthPath: p.join(root.path, 'pose', 'shot-1.png'),
         analysisModel: 'test-vision-model',
         analysisStatus: ProcessingStatus.completed,
-        poseStatus: ProcessingStatus.completed,
+        depthStatus: ProcessingStatus.completed,
         rawResponse: '{"elements":[]}',
         errorMessage: '',
         createdAt: now,
@@ -188,15 +160,8 @@ void main() {
       restored?.productMarkAuthorizations.single.confirmedAt,
       authorizationTime,
     );
-    expect(restored?.editablePose.sourceWidth, 1920);
-    expect(restored?.editablePose.people.single.keypoints, hasLength(133));
-    expect(
-      restored?.editablePose.people.single.keypoints[10].manuallyAdjusted,
-      isTrue,
-    );
-    expect(restored?.editablePose.people.single.bounds.centerX, 380);
-    expect(restored?.poseStatus, ProcessingStatus.completed);
-    expect(restored?.skeletonPath, endsWith(p.join('pose', 'shot-1.png')));
+    expect(restored?.depthStatus, ProcessingStatus.completed);
+    expect(restored?.depthPath, endsWith(p.join('pose', 'shot-1.png')));
 
     database.executeStatement('DELETE FROM script_shots WHERE id = ?;', [
       'shot-1',
@@ -216,26 +181,18 @@ void main() {
     expect(restored.decision, ReplicateSubjectDecision.undecided);
   });
 
-  test('授权标识默认关闭且未知姿势版本安全回落为空数据', () {
+  test('授权标识默认关闭且未知标识类型被忽略', () {
     final authorization = ReplicateProductMarkAuthorization.fromJson(const {
       'productSlotIndex': 2,
       'exactText': 'MODEL-X',
       'allowedTypes': ['model', 'futureType'],
     });
-    final pose = ReplicateEditablePoseData.fromJson(const {
-      'schemaVersion': 99,
-      'people': [
-        {'id': 'future-person'},
-      ],
-    });
-
     expect(authorization.enabled, isFalse);
     expect(authorization.isAuthorized, isFalse);
     expect(authorization.allowedTypes, [ReplicateAuthorizedMarkType.model]);
-    expect(pose, same(ReplicateEditablePoseData.empty));
   });
 
-  test('版本26数据库无损补齐穿搭、授权和可编辑姿势字段', () async {
+  test('版本26数据库补齐深度字段并移除骨架结构', () async {
     final root = await Directory.systemTemp.createTemp('replicate_guide_v26_');
     addTearDown(() => root.delete(recursive: true));
     final file = File(p.join(root.path, 'legacy.sqlite'));
@@ -269,21 +226,27 @@ void main() {
       'SELECT * FROM replicate_shot_guides WHERE shot_id = ?;',
       ['shot-v26'],
     ).single;
+    final columns = database
+        .selectRows('PRAGMA table_info(replicate_shot_guides);')
+        .map((item) => item['name'])
+        .toSet();
 
     expect(row['subjects_json'], contains('person:0'));
-    expect(row['skeleton_path'], 'pose-v26.png');
-    expect(row['pose_status'], 'completed');
+    expect(row['depth_path'], '');
+    expect(row['depth_status'], 'pending');
     expect(row['full_outfit_assets_json'], '[]');
     expect(row['wearable_product_links_json'], '[]');
     expect(row['product_mark_authorizations_json'], '[]');
-    expect(row['editable_pose_json'], '{}');
+    expect(columns, isNot(contains('editable_pose_json')));
+    expect(columns, isNot(contains('skeleton_path')));
+    expect(columns, isNot(contains('pose_status')));
     expect(
       database.selectRows('PRAGMA user_version;').single['user_version'],
       AppDatabase.currentSchemaVersion,
     );
   });
 
-  test('版本22数据库自动迁移人物数量列并保留既有骨架记录', () async {
+  test('版本22数据库迁移人物数量并丢弃旧骨架记录', () async {
     final root = await Directory.systemTemp.createTemp('replicate_guide_v22_');
     addTearDown(() => root.delete(recursive: true));
     final file = File(p.join(root.path, 'legacy.sqlite'));
@@ -318,12 +281,13 @@ void main() {
     addTearDown(database.dispose);
     final row = database
         .selectRows(
-          'SELECT person_count, skeleton_path FROM replicate_shot_guides '
+          'SELECT person_count, depth_path, depth_status FROM replicate_shot_guides '
           "WHERE shot_id = 'shot-legacy';",
         )
         .single;
     expect(row['person_count'], 0);
-    expect(row['skeleton_path'], 'legacy-pose.png');
+    expect(row['depth_path'], '');
+    expect(row['depth_status'], 'pending');
     expect(
       database.selectRows('PRAGMA user_version;').single['user_version'],
       AppDatabase.currentSchemaVersion,

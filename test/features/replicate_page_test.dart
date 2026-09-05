@@ -137,12 +137,11 @@ void main() {
           ),
         ],
         personCount: 1,
-        editablePose: _editablePoseFixture(),
         actionDescription: '人物侧身并抬起右手拿产品',
         poseConstraints: '锁定头肩夹角、右肘与右腕位置',
-        skeletonPath: fixtureImage.absolute.path,
+        depthPath: fixtureImage.absolute.path,
         analysisStatus: ProcessingStatus.completed,
-        poseStatus: ProcessingStatus.completed,
+        depthStatus: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
       ),
@@ -248,14 +247,14 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
-    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsNothing);
-    expect(find.text('提取全部骨架'), findsNothing);
+    expect(find.byKey(const ValueKey('extract-all-depth')), findsNothing);
+    expect(find.text('提取全部深度图'), findsNothing);
     await tester.tap(find.text('精确'));
     await tester.pump();
     expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
-    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsOneWidget);
-    expect(find.text('提取全部骨架'), findsOneWidget);
-    expect(find.text('部署 DWPose'), findsNothing);
+    expect(find.byKey(const ValueKey('extract-all-depth')), findsOneWidget);
+    expect(find.text('提取全部深度图'), findsOneWidget);
+    expect(find.text('部署骨架模型'), findsNothing);
     expect(find.text('下载并部署'), findsNothing);
     expect(
       tester.getCenter(find.text('准备资产')).dx,
@@ -791,19 +790,19 @@ void main() {
     final analyzeFrameButton = find.byKey(
       ValueKey('analyze-replication-frame-${shot.id}'),
     );
-    final extractPoseButton = find.byKey(ValueKey('extract-dwpose-${shot.id}'));
+    final extractDepthButton = find.byKey(ValueKey('extract-depth-${shot.id}'));
     final replaceProductButton = find.byKey(
       ValueKey('replicate-shot-image-${shot.id}'),
     );
     expect(analyzeFrameButton, findsOneWidget);
-    expect(extractPoseButton, findsOneWidget);
+    expect(extractDepthButton, findsOneWidget);
     expect(replaceProductButton, findsOneWidget);
     expect(
       tester.getCenter(analyzeFrameButton).dx,
-      lessThan(tester.getCenter(extractPoseButton).dx),
+      lessThan(tester.getCenter(extractDepthButton).dx),
     );
     expect(
-      tester.getCenter(extractPoseButton).dx,
+      tester.getCenter(extractDepthButton).dx,
       lessThan(tester.getCenter(replaceProductButton).dx),
     );
     final frameGuidePanel = find.byKey(
@@ -814,47 +813,34 @@ void main() {
       findsNothing,
     );
     expect(
-      find.descendant(of: frameGuidePanel, matching: extractPoseButton),
+      find.descendant(of: frameGuidePanel, matching: extractDepthButton),
       findsNothing,
     );
-    expect(find.byKey(ValueKey('dwpose-preview-${shot.id}')), findsNothing);
-    expect(
-      find.byKey(ValueKey('shot-skeleton-asset-${shot.id}')),
-      findsOneWidget,
-    );
+    expect(find.byKey(ValueKey('depth-preview-${shot.id}')), findsNothing);
+    expect(find.byKey(ValueKey('shot-depth-asset-${shot.id}')), findsOneWidget);
     expect(tester.widget<FilterChip>(preservedElement).onSelected, isNotNull);
-    final skeletonAsset = find.byKey(
-      ValueKey('shot-skeleton-asset-${shot.id}'),
-    );
-    await tester.ensureVisible(skeletonAsset);
+    final depthAsset = find.byKey(ValueKey('shot-depth-asset-${shot.id}'));
+    await tester.ensureVisible(depthAsset);
     await tester.pump();
-    expect(find.byTooltip('编辑动作关节'), findsOneWidget);
-    await tester.tap(find.byTooltip('编辑动作关节'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('pose-editor-canvas')), findsOneWidget);
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-    await tester.tap(skeletonAsset);
+    expect(find.byTooltip('编辑动作关节'), findsNothing);
+    await tester.tap(depthAsset);
     await tester.pump(const Duration(milliseconds: 300));
     expect(
-      find.byKey(ValueKey('dwpose-gallery-image-${shot.id}')),
+      find.byKey(ValueKey('depth-gallery-image-${shot.id}')),
       findsOneWidget,
     );
     await tester.tap(find.byTooltip('关闭预览'));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.byTooltip('移除动作骨架'), findsOneWidget);
-    await tester.tap(find.byTooltip('移除动作骨架'));
+    expect(find.byTooltip('移除高精度深度图'), findsOneWidget);
+    await tester.tap(find.byTooltip('移除高精度深度图'));
     await tester.pump();
+    expect(find.byKey(ValueKey('shot-depth-asset-${shot.id}')), findsNothing);
+    expect(replicateController.shotGuideFor(shot.id)?.depthPath, isEmpty);
     expect(
-      find.byKey(ValueKey('shot-skeleton-asset-${shot.id}')),
-      findsNothing,
-    );
-    expect(replicateController.shotGuideFor(shot.id)?.skeletonPath, isEmpty);
-    expect(
-      replicateController.shotGuideFor(shot.id)?.poseStatus,
+      replicateController.shotGuideFor(shot.id)?.depthStatus,
       ProcessingStatus.pending,
     );
-    expect(fixtureImage.existsSync(), isTrue, reason: '外部参考文件不得被移除骨架功能删除');
+    expect(fixtureImage.existsSync(), isTrue, reason: '外部参考文件不得被移除深度功能删除');
     await tester.ensureVisible(preservedElement);
     await tester.pump();
     await tester.tap(preservedElement);
@@ -877,10 +863,7 @@ void main() {
       find.byKey(ValueKey('replicate-frame-guide-stale-${shot.id}')),
       findsOneWidget,
     );
-    expect(
-      find.byKey(ValueKey('shot-skeleton-asset-${shot.id}')),
-      findsNothing,
-    );
+    expect(find.byKey(ValueKey('shot-depth-asset-${shot.id}')), findsNothing);
     expect(tester.widget<FilterChip>(preservedElement).onSelected, isNull);
     final replicaFrame = find.byKey(
       ValueKey('prepare-asset-replica-frame-${shot.id}'),
@@ -1891,7 +1874,7 @@ void main() {
     expect(find.text('补充说明（可选）'), findsOneWidget);
     expect(find.textContaining('单镜头输入 1/'), findsOneWidget);
     expect(find.textContaining('输入图片 1/'), findsOneWidget);
-    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsNothing);
+    expect(find.byKey(const ValueKey('extract-all-depth')), findsNothing);
     expect(
       find.byKey(const ValueKey('quick-parse-all-replication-frames')),
       findsOneWidget,
@@ -2043,7 +2026,7 @@ void main() {
       find.descendant(of: prepareStep, matching: find.text('精确资产控制')),
       findsAtLeastNWidgets(1),
     );
-    expect(find.byKey(const ValueKey('extract-all-dwpose')), findsOneWidget);
+    expect(find.byKey(const ValueKey('extract-all-depth')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('asset-library-upload-reference')),
       findsNothing,
@@ -3053,28 +3036,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   });
 }
-
-ReplicateEditablePoseData _editablePoseFixture() => ReplicateEditablePoseData(
-  sourceWidth: 512,
-  sourceHeight: 512,
-  people: [
-    ReplicatePosePerson(
-      id: 'pose-person-0',
-      leftToRightOrder: 0,
-      modelSlotIndex: 0,
-      bounds: const ReplicatePoseBounds(x: 80, y: 30, width: 350, height: 450),
-      keypoints: [
-        for (var index = 0; index < 133; index++)
-          ReplicatePoseKeypoint(
-            index: index,
-            x: 120 + (index % 12) * 18,
-            y: 80 + (index ~/ 12) * 28,
-            confidence: 0.9,
-          ),
-      ],
-    ),
-  ],
-);
 
 class _SuccessfulBuildScriptAnalysisController
     extends ShootingScriptAnalysisController {

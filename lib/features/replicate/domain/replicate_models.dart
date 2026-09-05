@@ -697,14 +697,13 @@ class ReplicateShotGuide {
     this.fullOutfitAssets = const [],
     this.wearableProductLinks = const [],
     this.productMarkAuthorizations = const [],
-    this.editablePose = ReplicateEditablePoseData.empty,
     this.actionDescription = '',
     this.poseConstraints = '',
     this.personCount = 0,
-    this.skeletonPath = '',
+    this.depthPath = '',
     this.analysisModel = '',
     this.analysisStatus = ProcessingStatus.pending,
-    this.poseStatus = ProcessingStatus.pending,
+    this.depthStatus = ProcessingStatus.pending,
     this.rawResponse = '',
     this.errorMessage = '',
     required this.createdAt,
@@ -718,14 +717,13 @@ class ReplicateShotGuide {
   final List<ReplicateFullOutfitAsset> fullOutfitAssets;
   final List<ReplicateWearableProductLink> wearableProductLinks;
   final List<ReplicateProductMarkAuthorization> productMarkAuthorizations;
-  final ReplicateEditablePoseData editablePose;
   final String actionDescription;
   final String poseConstraints;
   final int personCount;
-  final String skeletonPath;
+  final String depthPath;
   final String analysisModel;
   final ProcessingStatus analysisStatus;
-  final ProcessingStatus poseStatus;
+  final ProcessingStatus depthStatus;
   final String rawResponse;
   final String errorMessage;
   final DateTime createdAt;
@@ -750,14 +748,13 @@ class ReplicateShotGuide {
     List<ReplicateFullOutfitAsset>? fullOutfitAssets,
     List<ReplicateWearableProductLink>? wearableProductLinks,
     List<ReplicateProductMarkAuthorization>? productMarkAuthorizations,
-    ReplicateEditablePoseData? editablePose,
     String? actionDescription,
     String? poseConstraints,
     int? personCount,
-    String? skeletonPath,
+    String? depthPath,
     String? analysisModel,
     ProcessingStatus? analysisStatus,
-    ProcessingStatus? poseStatus,
+    ProcessingStatus? depthStatus,
     String? rawResponse,
     String? errorMessage,
     DateTime? updatedAt,
@@ -771,14 +768,13 @@ class ReplicateShotGuide {
     wearableProductLinks: wearableProductLinks ?? this.wearableProductLinks,
     productMarkAuthorizations:
         productMarkAuthorizations ?? this.productMarkAuthorizations,
-    editablePose: editablePose ?? this.editablePose,
     actionDescription: actionDescription ?? this.actionDescription,
     poseConstraints: poseConstraints ?? this.poseConstraints,
     personCount: personCount ?? this.personCount,
-    skeletonPath: skeletonPath ?? this.skeletonPath,
+    depthPath: depthPath ?? this.depthPath,
     analysisModel: analysisModel ?? this.analysisModel,
     analysisStatus: analysisStatus ?? this.analysisStatus,
-    poseStatus: poseStatus ?? this.poseStatus,
+    depthStatus: depthStatus ?? this.depthStatus,
     rawResponse: rawResponse ?? this.rawResponse,
     errorMessage: errorMessage ?? this.errorMessage,
     createdAt: createdAt,

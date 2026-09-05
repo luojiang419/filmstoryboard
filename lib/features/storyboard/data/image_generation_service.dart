@@ -1678,7 +1678,12 @@ class ImageGenerationService {
       throw FileSystemException('参考图不存在', input);
     }
     final bytes = await file.readAsBytes();
-    if (originalByteLimit > 0 && bytes.length <= originalByteLimit) {
+    final isDepthControl = p
+        .basename(input)
+        .toLowerCase()
+        .endsWith('-depth.png');
+    if (isDepthControl ||
+        (originalByteLimit > 0 && bytes.length <= originalByteLimit)) {
       final mimeType = _mimeTypeForImagePath(input);
       return 'data:$mimeType;base64,${base64Encode(bytes)}';
     }

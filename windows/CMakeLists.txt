@@ -72,7 +72,7 @@ endif()
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 set(BUNDLED_FFMPEG_DIR "${CMAKE_BINARY_DIR}/bundled_ffmpeg")
-set(DWPOSE_MODEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../assets/dwpose/models")
+set(PERSON_DEPTH_COMPONENT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../local_components/person-depth")
 file(MAKE_DIRECTORY "${BUNDLED_FFMPEG_DIR}/bin")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
@@ -106,11 +106,13 @@ install(DIRECTORY "${BUNDLED_FFMPEG_DIR}/bin"
   DESTINATION "${CMAKE_INSTALL_PREFIX}/ffmpeg"
   COMPONENT Runtime)
 
-install(FILES
-  "${DWPOSE_MODEL_DIR}/yolox_l.onnx"
-  "${DWPOSE_MODEL_DIR}/dw-ll_ucoco_384.onnx"
-  DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/dwpose/models"
-  COMPONENT Runtime)
+if(EXISTS "${PERSON_DEPTH_COMPONENT_DIR}/runtime/person-depth-worker.exe")
+  install(DIRECTORY "${PERSON_DEPTH_COMPONENT_DIR}/"
+    DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/person-depth"
+    COMPONENT Runtime)
+else()
+  message(WARNING "High precision person-depth component is not copied; run scripts/copy_person_depth_component.ps1 before release build.")
+endif()
 
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")

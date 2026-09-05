@@ -200,7 +200,7 @@ void main() {
     );
   });
 
-  test('第一轮协议冻结骨架插入位置并在提交错序时阻断', () {
+  test('第一轮协议冻结深度图插入位置并在提交错序时阻断', () {
     final manifest = NanoBananaAssetManifest.build(
       sourceFrameId: 'frame',
       sourceFramePath: 'frame.png',
@@ -218,7 +218,7 @@ void main() {
         NanoBananaStructuralReference(
           id: 'pose',
           path: 'pose.png',
-          description: 'DWPose 骨架',
+          description: '高精度人物深度图',
         ),
       ],
     );

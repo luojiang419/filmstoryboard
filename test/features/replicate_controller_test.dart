@@ -7,8 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
-import 'package:filmstoryboard/features/replicate/data/dwpose_model_manager.dart';
-import 'package:filmstoryboard/features/replicate/data/dwpose_service.dart';
+import 'package:filmstoryboard/features/replicate/data/person_depth_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
 import 'package:filmstoryboard/features/replicate/data/quick_replication_person_count_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replication_frame_analysis_service.dart';
@@ -39,9 +38,9 @@ import 'package:path/path.dart' as p;
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('人工关节调整持久化并重绘项目内骨架文件', () async {
+  test('精确模式提取深度图并持久化原尺寸输出', () async {
     final root = await Directory.systemTemp.createTemp(
-      'replicate_pose_edit_save_',
+      'replicate_depth_extract_',
     );
     final directories = await AppDirectories.create(executableDirectory: root);
     final database = await AppDatabase.open(directories.databaseFile);
@@ -53,111 +52,7 @@ void main() {
     final shootingController = ShootingScriptController(
       repository: ShootingScriptRepository(database),
       directories: directories,
-    )..createEmpty(name: '关节编辑保存测试');
-    final frame = File(p.join(root.path, 'frame.jpg'))
-      ..writeAsBytesSync([1, 2, 3, 4]);
-    final shot = shootingController.addShot()!;
-    shootingController.updateShot(shot.copyWith(framePath: frame.path));
-    final repository = ReplicateRepository(database);
-    final now = DateTime.now().toUtc();
-    final originalPose = ReplicateEditablePoseData(
-      sourceWidth: 100,
-      sourceHeight: 80,
-      people: [
-        ReplicatePosePerson(
-          id: 'pose-person-0',
-          leftToRightOrder: 0,
-          modelSlotIndex: 0,
-          bounds: const ReplicatePoseBounds(x: 10, y: 5, width: 70, height: 70),
-          keypoints: [
-            for (var index = 0; index < 133; index++)
-              ReplicatePoseKeypoint(
-                index: index,
-                x: 20 + (index % 8).toDouble(),
-                y: 20 + (index ~/ 8).toDouble(),
-                confidence: 0.9,
-              ),
-          ],
-        ),
-      ],
-    );
-    repository.upsertShotGuide(
-      ReplicateShotGuide(
-        shotId: shot.id,
-        sourceFrameFingerprint: sha256
-            .convert(frame.readAsBytesSync())
-            .toString(),
-        editablePose: originalPose,
-        personCount: 1,
-        skeletonPath: p.join(root.path, 'external-skeleton.png'),
-        poseStatus: ProcessingStatus.completed,
-        createdAt: now,
-        updatedAt: now,
-      ),
-    );
-    final controller = ReplicateController(
-      repository: repository,
-      shootingScriptController: shootingController,
-      directories: directories,
-      settingsController: settingsController,
-    );
-    addTearDown(() async {
-      controller.dispose();
-      shootingController.dispose();
-      settingsController.dispose();
-      database.dispose();
-      await root.delete(recursive: true);
-    });
-    controller.refresh();
-    final adjustedPose = ReplicateEditablePoseData(
-      sourceWidth: originalPose.sourceWidth,
-      sourceHeight: originalPose.sourceHeight,
-      people: [
-        originalPose.people.single.copyWith(
-          keypoints: [
-            for (final point in originalPose.people.single.keypoints)
-              point.index == 10
-                  ? point.copyWith(x: 999, y: -20, manuallyAdjusted: true)
-                  : point,
-          ],
-        ),
-      ],
-    );
-
-    await controller.saveEditablePoseForShot(shot.id, adjustedPose);
-
-    final restored = repository.getShotGuide(shot.id)!;
-    final changed = restored.editablePose.people.single.keypoints[10];
-    expect(changed.x, 99);
-    expect(changed.y, 0);
-    expect(changed.confidence, 1);
-    expect(changed.manuallyAdjusted, isTrue);
-    expect(File(restored.skeletonPath).existsSync(), isTrue);
-    expect(
-      p.isWithin(
-        p.absolute(p.join(directories.analyses.path, 'dwpose')),
-        p.absolute(restored.skeletonPath),
-      ),
-      isTrue,
-      reason: '不得覆盖外部参考骨架文件',
-    );
-  });
-
-  test('DWPose 提取结构化数据按左到右持久化 133 点与模特槽', () async {
-    final root = await Directory.systemTemp.createTemp(
-      'replicate_pose_extract_structured_',
-    );
-    final directories = await AppDirectories.create(executableDirectory: root);
-    final database = await AppDatabase.open(directories.databaseFile);
-    final settingsRepository = SettingsRepository(database, directories);
-    final settingsController = SettingsController(
-      repository: settingsRepository,
-      initialSettings: settingsRepository.load(),
-    );
-    final shootingController = ShootingScriptController(
-      repository: ShootingScriptRepository(database),
-      directories: directories,
-    )..createEmpty(name: 'DWPose 结构化提取测试');
+    )..createEmpty(name: '高精度深度图提取测试');
     final frame = File(p.join(root.path, 'frame.png'))
       ..writeAsBytesSync(img.encodePng(img.Image(width: 100, height: 80)));
     final shot = shootingController.addShot()!;
@@ -168,13 +63,7 @@ void main() {
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
-      dwPoseModelManager: _FakeDwPoseModelManager(root),
-      dwPoseService: _FakeDwPoseService(
-        people: [
-          _dwPosePerson(left: 60, score: 0.99),
-          _dwPosePerson(left: 5, score: 0.8),
-        ],
-      ),
+      personDepthService: _FakePersonDepthService(),
     );
     addTearDown(() async {
       controller.dispose();
@@ -184,24 +73,13 @@ void main() {
       await root.delete(recursive: true);
     });
 
-    await controller.extractDwPoseForShot(shot.id);
+    await controller.extractDepthForShot(shot.id);
 
     final guide = repository.getShotGuide(shot.id)!;
-    expect(guide.poseStatus, ProcessingStatus.completed);
-    expect(guide.editablePose.sourceWidth, 100);
-    expect(guide.editablePose.sourceHeight, 80);
-    expect(guide.editablePose.people, hasLength(2));
-    expect(guide.editablePose.people.map((person) => person.bounds.x), [5, 60]);
-    expect(guide.editablePose.people.map((person) => person.modelSlotIndex), [
-      0,
-      1,
-    ]);
-    expect(
-      guide.editablePose.people.every(
-        (person) => person.keypoints.length == 133,
-      ),
-      isTrue,
-    );
+    expect(guide.depthStatus, ProcessingStatus.completed);
+    expect(guide.depthPath, endsWith('${shot.id}-depth.png'));
+    expect(File(guide.depthPath).existsSync(), isTrue);
+    expect(controller.value.message, contains('100×80'));
   });
 
   test('从故事板生成新脚本后复刻工作区跟随新脚本', () async {
@@ -587,6 +465,8 @@ void main() {
     ]) {
       workflowRepository.upsertLink(link);
     }
+    final depth = File(p.join(root.path, 'frame-depth.png'))
+      ..writeAsBytesSync([137, 80, 78, 71, 5]);
     final repository = ReplicateRepository(database);
     repository.upsertShotGuide(
       ReplicateShotGuide(
@@ -610,6 +490,8 @@ void main() {
         sourceFrameFingerprint: sha256
             .convert(frame.readAsBytesSync())
             .toString(),
+        depthPath: depth.path,
+        depthStatus: ProcessingStatus.completed,
         analysisStatus: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
@@ -641,6 +523,7 @@ void main() {
     final request = imageService.requests.single;
     expect(request.referenceImagePaths, [
       frame.path,
+      depth.path,
       modelReference.path,
       productReference.path,
     ]);
@@ -653,9 +536,9 @@ void main() {
     expect(repository.getShotGuide(shot.id)!.wearableProductLinks, isEmpty);
   });
 
-  test('移除动作骨架会清空提交状态并只删除项目内生成文件', () async {
+  test('移除高精度深度图会清空提交状态并只删除项目内生成文件', () async {
     final root = await Directory.systemTemp.createTemp(
-      'replicate_remove_dwpose_',
+      'replicate_remove_depth_',
     );
     final directories = await AppDirectories.create(executableDirectory: root);
     final database = await AppDatabase.open(directories.databaseFile);
@@ -667,33 +550,26 @@ void main() {
     final shootingController = ShootingScriptController(
       repository: ShootingScriptRepository(database),
       directories: directories,
-    )..createEmpty(name: '移除动作骨架测试');
+    )..createEmpty(name: '移除高精度深度图测试');
     final shot = shootingController.addShot()!;
-    final generatedSkeleton = File(
-      p.join(directories.analyses.path, 'dwpose', 'script', 'shot.png'),
+    final generatedDepth = File(
+      p.join(
+        directories.analyses.path,
+        'person-depth',
+        'script',
+        'shot-depth.png',
+      ),
     );
-    generatedSkeleton.parent.createSync(recursive: true);
-    generatedSkeleton.writeAsBytesSync([137, 80, 78, 71]);
+    generatedDepth.parent.createSync(recursive: true);
+    generatedDepth.writeAsBytesSync([137, 80, 78, 71]);
     final repository = ReplicateRepository(database);
     final now = DateTime.now().toUtc();
     repository.upsertShotGuide(
       ReplicateShotGuide(
         shotId: shot.id,
         personCount: 2,
-        editablePose: const ReplicateEditablePoseData(
-          sourceWidth: 100,
-          sourceHeight: 80,
-          people: [
-            ReplicatePosePerson(
-              id: 'pose-person-0',
-              leftToRightOrder: 0,
-              modelSlotIndex: 0,
-              bounds: ReplicatePoseBounds(x: 10, y: 5, width: 70, height: 70),
-            ),
-          ],
-        ),
-        skeletonPath: generatedSkeleton.path,
-        poseStatus: ProcessingStatus.completed,
+        depthPath: generatedDepth.path,
+        depthStatus: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
       ),
@@ -712,14 +588,13 @@ void main() {
       await root.delete(recursive: true);
     });
 
-    await controller.removeDwPoseForShot(shot.id);
+    await controller.removeDepthForShot(shot.id);
 
-    expect(generatedSkeleton.existsSync(), isFalse);
+    expect(generatedDepth.existsSync(), isFalse);
     final guide = repository.getShotGuide(shot.id);
-    expect(guide?.skeletonPath, isEmpty);
-    expect(guide?.editablePose.isEmpty, isTrue);
-    expect(guide?.poseStatus, ProcessingStatus.pending);
-    expect(guide?.personCount, 2, reason: '移除骨架不应丢失已经识别的人数');
+    expect(guide?.depthPath, isEmpty);
+    expect(guide?.depthStatus, ProcessingStatus.pending);
+    expect(guide?.personCount, 2, reason: '移除深度图不应丢失已经识别的人数');
   });
 
   test('合成提示词规则跟随当前视频模型切换格式和并发额度', () async {
@@ -1878,7 +1753,7 @@ void main() {
     ]) {
       workflowRepository.upsertLink(link);
     }
-    final skeleton = File('${root.path}/frame-1-dwpose.png')
+    final skeleton = File('${root.path}/frame-1-depth.png')
       ..writeAsBytesSync([137, 80, 78, 71, 9]);
     ReplicateRepository(database).upsertShotGuide(
       ReplicateShotGuide(
@@ -1959,9 +1834,9 @@ void main() {
             location: '瓶身正面',
           ),
         ],
-        skeletonPath: skeleton.path,
+        depthPath: skeleton.path,
         analysisStatus: ProcessingStatus.completed,
-        poseStatus: ProcessingStatus.completed,
+        depthStatus: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
       ),
@@ -1981,6 +1856,8 @@ void main() {
             decision: ReplicateSubjectDecision.replace,
           ),
         ],
+        depthPath: skeleton.path,
+        depthStatus: ProcessingStatus.completed,
         analysisStatus: ProcessingStatus.completed,
         createdAt: now,
         updatedAt: now,
@@ -2036,7 +1913,7 @@ void main() {
     expect(quickRequest.prompt, contains('模特B与产品B一一对应'));
     expect(quickRequest.prompt, contains('图片2'));
     expect(quickRequest.prompt, isNot(contains('确定性精准复刻协议')));
-    expect(quickRequest.prompt, isNot(contains('DWPose')));
+    expect(quickRequest.prompt, isNot(contains('高精度深度图')));
     expect(quickRequest.prompt.length, lessThan(1400));
     expect(visionService.completionPrompts, isEmpty);
     expect(generationReviewService.inputs, isEmpty);
@@ -2250,7 +2127,11 @@ void main() {
       productDetailB.path,
       scene.path,
     ]);
-    expect(secondShotRequest.referenceImagePaths, [frame2.path, product.path]);
+    expect(secondShotRequest.referenceImagePaths, [
+      frame2.path,
+      skeleton.path,
+      product.path,
+    ]);
     expect(
       firstShotRequest.referenceImagePaths,
       isNot(contains(unboundProp.path)),
@@ -2291,8 +2172,8 @@ void main() {
     );
     expect(imageService.requests[0].prompt, contains('禁止继承其身份或外观'));
     expect(imageService.requests[0].prompt, contains('绑定资产硬约束'));
-    expect(imageService.requests[0].prompt, contains('图片2是 DWPose 姿势骨架'));
-    expect(imageService.requests[0].prompt, contains('只定义关节位置、肢体方向'));
+    expect(imageService.requests[0].prompt, contains('图片2是与图片1逐像素配准的高精度人物深度图'));
+    expect(imageService.requests[0].prompt, contains('【深度几何硬锁】'));
     expect(imageService.requests[0].prompt, contains('模特A 使用图片3'));
     expect(imageService.requests[0].prompt, contains('模特B 使用图片6'));
     expect(imageService.requests[0].prompt, contains('对应图片1从左到右第1个人物槽位'));
@@ -2495,7 +2376,7 @@ void main() {
       const ReplicationGenerationReviewResult(
         decision: ReplicationPoseReviewDecision.correctionRequired,
         issue: ReplicationGenerationReviewIssue(
-          code: 'pose_contact',
+          code: 'depth_geometry',
           priority: 1,
           summary: '右手没有握住产品',
           evidence: '待审核图右手与瓶身之间存在明显空隙',
@@ -2510,7 +2391,7 @@ void main() {
     expect(
       imageService.requests.length - conditionalCorrectionRequestStart,
       3,
-      reason: '产品细节只回填一次，DWPose 明确反证姿势偏差时也只能再追加一次续轮校正',
+      reason: '产品细节只回填一次，高精度深度图明确反证姿势偏差时也只能再追加一次续轮校正',
     );
     expect(
       generationReviewService.inputs.length - conditionalReviewStart,
@@ -2520,10 +2401,10 @@ void main() {
     final correctionRequest = imageService.requests.last;
     expect(correctionRequest.referenceImagePaths, isEmpty);
     expect(correctionRequest.geminiContinuation, isNotNull);
-    expect(correctionRequest.prompt, contains('这是一次姿势保护校正，不是重新生成'));
+    expect(correctionRequest.prompt, contains('这是一次深度几何保护校正，不是重新生成'));
     expect(correctionRequest.prompt, contains('不得修补产品局部细节'));
     expect(correctionRequest.prompt, contains('不得新增、删除或顺带改动其他元素'));
-    expect(generationReviewService.inputs.last.poseReferenceImageNumber, 2);
+    expect(generationReviewService.inputs.last.depthReferenceImageNumber, 2);
     expect(
       generationReviewService.inputs.last.orderedReferenceImages[1].path,
       skeleton.path,
@@ -2544,11 +2425,11 @@ void main() {
     const repeatedPoseIssue = ReplicationGenerationReviewResult(
       decision: ReplicationPoseReviewDecision.correctionRequired,
       issue: ReplicationGenerationReviewIssue(
-        code: 'pose_contact',
+        code: 'depth_geometry',
         priority: 1,
-        summary: '右腕仍偏离骨架',
-        evidence: '待审核图右腕仍高于 DWPose 目标位置',
-        correction: '只把右腕恢复到骨架目标位置',
+        summary: '右腕仍偏离深度图',
+        evidence: '待审核图右腕仍高于 高精度深度图目标位置',
+        correction: '只把右腕恢复到深度图目标位置',
       ),
       rawResponse: '{"decision":"correction_required"}',
     );
@@ -2573,11 +2454,12 @@ void main() {
     expect(terminalCorrectionRecord.errorMessage, contains('已停止继续付费校正'));
 
     final noPoseReviewStart = generationReviewService.inputs.length;
-    expect(await controller.replicateShot(second.id), isTrue);
+    await controller.removeDepthForShot(second.id);
+    expect(await controller.replicateShot(second.id), isFalse);
     expect(
       generationReviewService.inputs.length,
       noPoseReviewStart,
-      reason: '没有有效 DWPose 的镜头不得调用姿势审核或续轮校正',
+      reason: '没有有效高精度深度图的镜头必须在提交前阻断，不能调用审核或续轮校正',
     );
 
     final inconclusiveRequestStart = imageService.requests.length;
@@ -2674,10 +2556,10 @@ void main() {
       const ReplicationGenerationReviewResult(
         decision: ReplicationPoseReviewDecision.correctionRequired,
         issue: ReplicationGenerationReviewIssue(
-          code: 'pose_contact',
+          code: 'depth_geometry',
           priority: 1,
-          summary: '左肘角度偏离骨架',
-          evidence: '待审核图左肘伸直，而 DWPose 明确弯曲',
+          summary: '左肘角度偏离深度图',
+          evidence: '待审核图左肘伸直，而 高精度深度图明确弯曲',
           correction: '只恢复左肘弯曲角度',
         ),
         rawResponse: '{"decision":"correction_required"}',
@@ -2846,6 +2728,8 @@ void main() {
       (shot: shotA, frame: frameA),
       (shot: shotB, frame: frameB),
     ]) {
+      final depth = File('${root.path}/${entry.shot.id}-depth.png')
+        ..writeAsBytesSync([137, 80, 78, 71, 14]);
       guideRepository.upsertShotGuide(
         ReplicateShotGuide(
           shotId: entry.shot.id,
@@ -2861,6 +2745,8 @@ void main() {
               decision: ReplicateSubjectDecision.replace,
             ),
           ],
+          depthPath: depth.path,
+          depthStatus: ProcessingStatus.completed,
           analysisStatus: ProcessingStatus.completed,
           createdAt: now,
           updatedAt: now,
@@ -4177,55 +4063,6 @@ ReplicationGenerationReviewResult _generationReviewPassed() =>
       rawResponse: '{"decision":"passed","issue":null}',
     );
 
-class _FakeDwPoseModelManager extends DwPoseModelManager {
-  _FakeDwPoseModelManager(this.root);
-
-  final Directory root;
-
-  @override
-  Future<DwPoseModelFiles> loadBundledModels() async => DwPoseModelFiles(
-    detector: File(p.join(root.path, 'detector.onnx')),
-    pose: File(p.join(root.path, 'pose.onnx')),
-  );
-}
-
-class _FakeDwPoseService extends DwPoseService {
-  _FakeDwPoseService({required this.people});
-
-  final List<DwPosePerson> people;
-
-  @override
-  Future<DwPoseExtractionResult> extract({
-    required File imageFile,
-    required File outputFile,
-    required DwPoseModelFiles models,
-  }) async {
-    await outputFile.parent.create(recursive: true);
-    await outputFile.writeAsBytes(
-      img.encodePng(img.Image(width: 100, height: 80)),
-    );
-    return DwPoseExtractionResult(
-      skeletonFile: outputFile,
-      sourceWidth: 100,
-      sourceHeight: 80,
-      people: people,
-    );
-  }
-}
-
-DwPosePerson _dwPosePerson({required double left, required double score}) =>
-    DwPosePerson(
-      box: DwPoseBox(left, 5, left + 30, 75, score),
-      keypoints: [
-        for (var index = 0; index < 133; index++)
-          DwPosePoint(
-            left + (index % 5),
-            (10 + index ~/ 5).clamp(0, 79).toDouble(),
-            0.9,
-          ),
-      ],
-    );
-
 class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {
   _QueuedFrameAnalysisService(this.results);
 
@@ -4245,6 +4082,31 @@ class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {
     previousSelections.add([...previousElements]);
     this.previousSubjects.add([...previousSubjects]);
     return results.removeAt(0);
+  }
+}
+
+class _FakePersonDepthService extends PersonDepthService {
+  @override
+  Future<PersonDepthResult> extract({
+    required File imageFile,
+    required File outputFile,
+  }) async {
+    await outputFile.parent.create(recursive: true);
+    await outputFile.writeAsBytes(
+      img.encodePng(img.Image(width: 100, height: 80, numChannels: 1)),
+    );
+    final master = File(
+      p.join(
+        outputFile.parent.path,
+        '${p.basenameWithoutExtension(outputFile.path)}-16bit.png',
+      ),
+    )..writeAsBytesSync([137, 80, 78, 71]);
+    return PersonDepthResult(
+      depthFile: outputFile,
+      masterFile: master,
+      width: 100,
+      height: 80,
+    );
   }
 }
 

@@ -36,9 +36,7 @@ import '../../video_generation/domain/video_action_sequence.dart';
 import '../../video_generation/domain/h3_video_prompt_adapter.dart';
 import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/bundled_video_skill_library.dart';
-import '../data/dwpose_editable_pose_mapper.dart';
-import '../data/dwpose_model_manager.dart';
-import '../data/dwpose_service.dart';
+import '../data/person_depth_service.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/quick_replication_person_count_service.dart';
@@ -222,8 +220,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     QuickReplicationPersonCountService? quickPersonCountService,
     ReplicationFrameAnalysisService? frameAnalysisService,
     ReplicationGenerationReviewService? generationReviewService,
-    DwPoseModelManager? dwPoseModelManager,
-    DwPoseService? dwPoseService,
+    PersonDepthService? personDepthService,
     H3PromptWritingService h3PromptWritingService =
         const H3PromptWritingService(),
     FreeCreationVideoPromptWritingService freeCreationPromptWritingService =
@@ -265,9 +262,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _generationReviewService =
         generationReviewService ??
         ReplicationGenerationReviewService(visionService: _visionService);
-    _dwPoseModelManager = dwPoseModelManager ?? DwPoseModelManager();
-    _dwPoseService = dwPoseService ?? DwPoseService();
-    _ownsDwPoseService = dwPoseService == null;
+    _personDepthService = personDepthService ?? PersonDepthService.shared;
     _shootingScriptController.addListener(_handleShootingScriptChanged);
     _assetBindingController?.addListener(_handleWorkflowChanged);
     _settingsController.addListener(_handleSettingsChanged);
@@ -301,9 +296,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   late final QuickReplicationPersonCountService _quickPersonCountService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
-  late final DwPoseModelManager _dwPoseModelManager;
-  late final DwPoseService _dwPoseService;
-  late final bool _ownsDwPoseService;
+  late final PersonDepthService _personDepthService;
   final H3PromptWritingService _h3PromptWritingService;
   final FreeCreationVideoPromptWritingService _freeCreationPromptWritingService;
   final H3SkillLibrary _h3SkillLibrary;
@@ -336,7 +329,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     if (_ownsVisionService) {
       _visionService.close();
     }
-    if (_ownsDwPoseService) unawaited(_dwPoseService.close());
     super.dispose();
   }
 
@@ -769,12 +761,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       actionDescription: previous?.actionDescription ?? '',
       poseConstraints: previous?.poseConstraints ?? '',
       personCount: previous?.personCount ?? 0,
-      skeletonPath: previous?.skeletonPath ?? '',
+      depthPath: previous?.depthPath ?? '',
       analysisModel: quickMode
           ? '$_quickPersonCountAnalysisMarker:${_settingsController.value.visionModel.trim()}'
           : _settingsController.value.visionModel.trim(),
       analysisStatus: ProcessingStatus.running,
-      poseStatus: previous?.poseStatus ?? ProcessingStatus.pending,
+      depthStatus: previous?.depthStatus ?? ProcessingStatus.pending,
       rawResponse: previous?.rawResponse ?? '',
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
@@ -936,7 +928,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     return message;
   }
 
-  Future<void> extractDwPoseForShot(String shotId) async {
+  Future<void> extractDepthForShot(String shotId) async {
     final shot = _shotById(shotId);
     final scriptId = value.selectedScriptId;
     if (shot == null || scriptId.isEmpty) return;
@@ -946,7 +938,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return;
     }
     if (kIsWeb || !Platform.isWindows) {
-      value = value.copyWith(errorMessage: '当前版本仅支持在 Windows 桌面端提取 DWPose 骨架');
+      value = value.copyWith(errorMessage: '当前版本仅支持在 Windows 桌面端提取高精度深度图');
       return;
     }
     final stored = _repository.getShotGuide(shotId);
@@ -958,45 +950,49 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final running =
         previous?.copyWith(
           sourceFrameFingerprint: fingerprint,
-          poseStatus: ProcessingStatus.running,
+          depthStatus: ProcessingStatus.running,
           errorMessage: '',
           updatedAt: now,
         ) ??
         ReplicateShotGuide(
           shotId: shotId,
           sourceFrameFingerprint: fingerprint,
-          poseStatus: ProcessingStatus.running,
+          depthStatus: ProcessingStatus.running,
           createdAt: now,
           updatedAt: now,
         );
     _repository.upsertShotGuide(running);
     _reloadShotGuides(
       scriptId,
-      message: '正在提取镜头 ${shot.shotNumber} 的 DWPose 高精度姿势骨架…',
+      message: '正在提取镜头 ${shot.shotNumber} 的高精度人物深度图…',
     );
     try {
-      final models = await _dwPoseModelManager.loadBundledModels();
       final outputDirectory = Directory(
-        p.join(_directories.analyses.path, 'dwpose', _safeFileName(scriptId)),
-      );
-      final result = await _dwPoseService.extract(
-        imageFile: source,
-        outputFile: DwPoseService.outputFileFor(
-          directory: outputDirectory,
-          shotId: shotId,
+        p.join(
+          _directories.analyses.path,
+          'person-depth',
+          _safeFileName(scriptId),
         ),
-        models: models,
       );
-      final editablePose = DwPoseEditablePoseMapper.fromExtraction(
-        result,
-        previous: running.editablePose,
+      final result = await _personDepthService.extract(
+        imageFile: source,
+        outputFile: File(p.join(outputDirectory.path, '$shotId-depth.png')),
       );
+      final latest = _repository.getShotGuide(shotId) ?? running;
+      if (latest.sourceFrameFingerprint != fingerprint) {
+        for (final file in [result.depthFile, result.masterFile]) {
+          if (await file.exists()) await file.delete();
+        }
+        _reloadShotGuides(
+          scriptId,
+          message: '镜头 ${shot.shotNumber} 的原帧已变化，本次深度结果已丢弃，请重新提取',
+        );
+        return;
+      }
       _repository.upsertShotGuide(
-        running.copyWith(
-          skeletonPath: result.skeletonFile.path,
-          editablePose: editablePose,
-          personCount: math.max(running.personCount, result.personCount),
-          poseStatus: ProcessingStatus.completed,
+        latest.copyWith(
+          depthPath: result.depthFile.path,
+          depthStatus: ProcessingStatus.completed,
           errorMessage: '',
           updatedAt: DateTime.now().toUtc(),
         ),
@@ -1004,54 +1000,63 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _reloadShotGuides(
         scriptId,
         message:
-            '镜头 ${shot.shotNumber} 已提取 ${result.personCount} 个人物的 DWPose 骨架',
+            '镜头 ${shot.shotNumber} 的 ${result.width}×${result.height} 高精度深度图已生成',
       );
     } catch (error) {
+      final latest = _repository.getShotGuide(shotId) ?? running;
+      if (latest.sourceFrameFingerprint != fingerprint) {
+        _reloadShotGuides(scriptId);
+        return;
+      }
       _repository.upsertShotGuide(
-        running.copyWith(
-          poseStatus: ProcessingStatus.failed,
+        latest.copyWith(
+          depthStatus: ProcessingStatus.failed,
           errorMessage: '$error',
           updatedAt: DateTime.now().toUtc(),
         ),
       );
       _reloadShotGuides(
         scriptId,
-        errorMessage: '镜头 ${shot.shotNumber} DWPose 提取失败：$error',
+        errorMessage: '镜头 ${shot.shotNumber} 深度图提取失败：$error',
       );
     }
   }
 
-  Future<void> extractDwPoseForAllShots() async {
+  Future<void> extractDepthForAllShots() async {
     for (final shot in value.confirmedShots) {
-      await extractDwPoseForShot(shot.id);
+      await extractDepthForShot(shot.id);
     }
   }
 
-  Future<void> removeDwPoseForShot(String shotId) async {
+  Future<void> removeDepthForShot(String shotId) async {
     final guide = _repository.getShotGuide(shotId);
     final scriptId = value.selectedScriptId;
     if (guide == null || scriptId.isEmpty) return;
-    final skeletonPath = guide.skeletonPath.trim();
+    final depthPath = guide.depthPath.trim();
     var cleanupWarning = '';
-    if (skeletonPath.isNotEmpty) {
+    if (depthPath.isNotEmpty) {
       final generatedRoot = p.normalize(
-        p.absolute(p.join(_directories.analyses.path, 'dwpose')),
+        p.absolute(p.join(_directories.analyses.path, 'person-depth')),
       );
-      final candidate = p.normalize(p.absolute(skeletonPath));
+      final candidate = p.normalize(p.absolute(depthPath));
       if (p.isWithin(generatedRoot, candidate)) {
         try {
-          final file = File(candidate);
-          if (await file.exists()) await file.delete();
+          final master = p.join(
+            p.dirname(candidate),
+            '${p.basenameWithoutExtension(candidate)}-16bit.png',
+          );
+          for (final file in [File(candidate), File(master)]) {
+            if (await file.exists()) await file.delete();
+          }
         } on FileSystemException catch (error) {
-          cleanupWarning = '；本地骨架缓存删除失败：${error.message}';
+          cleanupWarning = '；本地深度缓存删除失败：${error.message}';
         }
       }
     }
     _repository.upsertShotGuide(
       guide.copyWith(
-        skeletonPath: '',
-        editablePose: ReplicateEditablePoseData.empty,
-        poseStatus: ProcessingStatus.pending,
+        depthPath: '',
+        depthStatus: ProcessingStatus.pending,
         errorMessage: '',
         updatedAt: DateTime.now().toUtc(),
       ),
@@ -1060,118 +1065,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _reloadShotGuides(
       scriptId,
       message:
-          '${shotNumber == null ? '当前镜头' : '镜头 $shotNumber'}的动作骨架已移除$cleanupWarning',
+          '${shotNumber == null ? '当前镜头' : '镜头 $shotNumber'}的高精度深度图已移除$cleanupWarning',
     );
   }
-
-  Future<void> saveEditablePoseForShot(
-    String shotId,
-    ReplicateEditablePoseData editablePose,
-  ) async {
-    final guide = _repository.getShotGuide(shotId);
-    final scriptId = value.selectedScriptId;
-    if (guide == null || scriptId.isEmpty || !isShotGuideCurrent(shotId)) {
-      return;
-    }
-    final validationError = _editablePoseValidationError(
-      current: guide.editablePose,
-      candidate: editablePose,
-    );
-    if (validationError != null) {
-      value = value.copyWith(errorMessage: validationError);
-      return;
-    }
-    final normalized = _normalizeManualPose(editablePose);
-    final outputDirectory = Directory(
-      p.join(_directories.analyses.path, 'dwpose', _safeFileName(scriptId)),
-    );
-    final outputFile = DwPoseService.outputFileFor(
-      directory: outputDirectory,
-      shotId: shotId,
-    );
-    final canvas = DwPoseService.renderSkeleton(
-      width: normalized.sourceWidth,
-      height: normalized.sourceHeight,
-      people: [
-        for (final person in normalized.peopleFromLeftToRight)
-          [
-            for (final point in person.keypoints)
-              DwPosePoint(point.x, point.y, point.confidence),
-          ],
-      ],
-    );
-    await outputFile.parent.create(recursive: true);
-    await outputFile.writeAsBytes(img.encodePng(canvas), flush: true);
-    _repository.upsertShotGuide(
-      guide.copyWith(
-        editablePose: normalized,
-        skeletonPath: outputFile.path,
-        personCount: normalized.people.length,
-        poseStatus: ProcessingStatus.completed,
-        errorMessage: '',
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    _reloadShotGuides(scriptId, message: '人工关节调整已保存，动作骨架已同步更新');
-  }
-
-  static String? _editablePoseValidationError({
-    required ReplicateEditablePoseData current,
-    required ReplicateEditablePoseData candidate,
-  }) {
-    if (current.isEmpty || candidate.isEmpty) return '当前镜头没有可编辑的结构化姿势';
-    if (candidate.sourceWidth <= 0 ||
-        candidate.sourceHeight <= 0 ||
-        candidate.sourceWidth != current.sourceWidth ||
-        candidate.sourceHeight != current.sourceHeight) {
-      return '关节编辑画布与原始 DWPose 画布不一致';
-    }
-    final currentById = {
-      for (final person in current.people) person.id: person,
-    };
-    if (candidate.people.length != current.people.length ||
-        candidate.people.any((person) {
-          final original = currentById[person.id];
-          return original == null ||
-              original.modelSlotIndex != person.modelSlotIndex ||
-              original.leftToRightOrder != person.leftToRightOrder ||
-              person.keypoints.length != DwPoseService.wholeBodyKeypointCount ||
-              person.keypoints.asMap().entries.any(
-                (entry) => entry.value.index != entry.key,
-              );
-        })) {
-      return '关节编辑数据的人物绑定或 133 点结构无效';
-    }
-    return null;
-  }
-
-  static ReplicateEditablePoseData _normalizeManualPose(
-    ReplicateEditablePoseData pose,
-  ) => ReplicateEditablePoseData(
-    sourceWidth: pose.sourceWidth,
-    sourceHeight: pose.sourceHeight,
-    people: [
-      for (final person in pose.people)
-        person.copyWith(
-          keypoints: [
-            for (final point in person.keypoints)
-              if (point.manuallyAdjusted)
-                point.copyWith(
-                  x: point.x.isFinite
-                      ? point.x.clamp(0, pose.sourceWidth - 1).toDouble()
-                      : 0,
-                  y: point.y.isFinite
-                      ? point.y.clamp(0, pose.sourceHeight - 1).toDouble()
-                      : 0,
-                  confidence: 1,
-                  manuallyAdjusted: true,
-                )
-              else
-                point,
-          ],
-        ),
-    ],
-  );
 
   void setPreservedElementSelected(
     String shotId,
@@ -2206,11 +2102,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _persistQuickReplicationPlan(shot.id, quickPlanningOutcome.plan);
     }
     final guide = preciseMode ? _currentShotGuide(shot) : null;
-    final skeletonPath = guide?.poseStatus == ProcessingStatus.completed
-        ? guide!.skeletonPath.trim()
+    final depthPath = guide?.depthStatus == ProcessingStatus.completed
+        ? guide!.depthPath.trim()
         : '';
-    final skeleton = skeletonPath.isNotEmpty && File(skeletonPath).existsSync()
-        ? File(skeletonPath)
+    final depth = depthPath.isNotEmpty && File(depthPath).existsSync()
+        ? File(depthPath)
         : null;
     final now = DateTime.now().toUtc();
     final existing = _replicatedImageForShot(shot.id);
@@ -2253,7 +2149,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               references,
               model,
               guide: guide,
-              hasPoseSkeleton: skeleton != null,
+              hasDepthMap: depth != null,
               sourceFrameMode: run.sourceFrameMode,
               colorStyleSnapshot: colorStyleSnapshot,
             )
@@ -2345,11 +2241,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         nanoBananaFirstRoundProtocol = NanoBananaFirstRoundProtocol.build(
           manifest: nanoBananaManifest,
           structuralReferences: [
-            if (skeleton != null)
+            if (depth != null)
               NanoBananaStructuralReference(
-                id: '${shot.id}:dwpose',
-                path: skeleton.path,
-                description: 'DWPose 高精度人物姿势骨架，只锁定关节位置、肢体方向、身体重心和动作轮廓',
+                id: '${shot.id}:person-depth',
+                path: depth.path,
+                description:
+                    '原帧配准的高精度人物深度图，锁定人体前后关系、表面起伏、遮挡边界、动作几何及可辨认的衣物褶皱峰谷；白近灰远，纯黑主体外区域不提供外观',
               ),
           ],
         );
@@ -2374,9 +2271,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
                 preparedReferences,
                 model,
                 guide: guide,
-                hasPoseSkeleton: skeleton != null,
+                hasDepthMap: depth != null,
               ),
-              hasPoseSkeleton: skeleton != null,
+              hasDepthMap: depth != null,
               nanoBananaManifest: nanoBananaManifest,
               nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
               authorizedProductMarks:
@@ -2399,11 +2296,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       _saveReplicatedImage(record);
       final referenceCount =
-          1 + (skeleton == null ? 0 : 1) + preparedReferences.length;
+          1 + (depth == null ? 0 : 1) + preparedReferences.length;
       if (referenceCount > descriptor.maxReferenceImages) {
         throw FormatException(
           '${descriptor.label} 最多支持 ${descriptor.maxReferenceImages} 张参考图；'
-          '当前为原视频帧 1 张、DWPose 骨架 ${skeleton == null ? 0 : 1} 张、绑定及裁切资产 ${preparedReferences.length} 张。请减少绑定资产后重试。',
+          '当前为原视频帧 1 张、高精度深度图 ${depth == null ? 0 : 1} 张、绑定及裁切资产 ${preparedReferences.length} 张。请减少绑定资产后重试。',
         );
       }
       final aspectRatio = run.inheritSourceAspectRatio
@@ -2439,7 +2336,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           nanoBananaFirstRoundProtocol?.inputPaths ??
           [
             original.path,
-            if (skeleton != null) skeleton.path,
+            if (depth != null) depth.path,
             for (final reference in preparedReferences) reference.path,
           ];
       nanoBananaFirstRoundProtocol?.validateSubmissionPaths(
@@ -2468,7 +2365,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         previousPath: existing?.generatedFramePath ?? '',
       );
       final shouldProtectPose =
-          skeleton != null && nanoBananaFirstRoundProtocol != null;
+          depth != null && nanoBananaFirstRoundProtocol != null;
       if (productDetailRefillProtocol?.shouldRun == true) {
         record = record.copyWith(
           generatedFramePath: persistedPath,
@@ -2755,7 +2652,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               for (final path in generationRequest.referenceImagePaths)
                 File(path),
             ],
-            poseReferenceImageNumber: 2,
+            depthReferenceImageNumber: 2,
             generatedImage: File(persistedPath),
             structuredConstraints: record.prompt,
           ),
@@ -2799,7 +2696,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         reviews.add(firstReview);
       } catch (error) {
         return fail(
-          diagnostic: '首轮成图已保留，但姿势保护审核失败：$error',
+          diagnostic: '首轮成图已保留，但深度几何审核失败：$error',
           stoppedReason: 'initial_review_error',
         );
       }
@@ -2872,7 +2769,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         final unavailableReason = recovery.continuationDiagnostic.trim();
         return fail(
           diagnostic:
-              '姿势保护审核未通过：${_replicationReviewDiagnostic(issue!)}；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，已停止付费纠错并保留生成结果。',
+              '深度几何审核未通过：${_replicationReviewDiagnostic(issue!)}；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，已停止付费纠错并保留生成结果。',
           stoppedReason:
               recovery.continuationTransport ==
                   ReplicatedShotContinuationTransport.generateContent
@@ -3245,7 +3142,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     required ScriptShot shot,
     required String model,
     required String automaticPrompt,
-    required bool hasPoseSkeleton,
+    required bool hasDepthMap,
     NanoBananaAssetManifest? nanoBananaManifest,
     NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol,
     List<NanoBananaAuthorizedProductMark> authorizedProductMarks = const [],
@@ -3264,8 +3161,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           automaticPrompt: automaticPrompt,
           manifest: manifest,
           userInstructions: shot.replicationInstructions,
-          structuralReferenceDescriptions: hasPoseSkeleton
-              ? const ['DWPose 高精度人物姿势骨架，只锁定关节位置、肢体方向、身体重心和动作轮廓']
+          structuralReferenceDescriptions: hasDepthMap
+              ? const [
+                  '原帧配准高精度人物深度图：以白近灰远表达人体前后关系、表面起伏、遮挡边界、动作几何与可辨认服装褶皱峰谷；纯黑主体外区域不提供背景或外观',
+                ]
               : const [],
           firstRoundProtocol: nanoBananaFirstRoundProtocol,
           authorizedProductMarks: authorizedProductMarks,
@@ -3314,7 +3213,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     List<_ReplacementReference> references,
     String model, {
     ReplicateShotGuide? guide,
-    bool hasPoseSkeleton = false,
+    bool hasDepthMap = false,
     ReplicateSourceFrameMode sourceFrameMode =
         ReplicateSourceFrameMode.colorReference,
     LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
@@ -3323,7 +3222,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       shot,
       references,
       guide: guide,
-      hasPoseSkeleton: hasPoseSkeleton,
+      hasDepthMap: hasDepthMap,
     );
     if (NanoBananaProModelCapability.supports(model)) {
       return base;
@@ -5582,6 +5481,14 @@ $playbackSpeedBoundary
           .join('、');
       return '请先为以下原帧主体选择“保留、替换或移除”：$labels';
     }
+    if (guide.depthStatus == ProcessingStatus.running) {
+      return '镜头 ${shot.shotNumber} 的高精度深度图仍在提取，请等待完成';
+    }
+    if (guide.depthStatus != ProcessingStatus.completed ||
+        guide.depthPath.trim().isEmpty ||
+        !File(guide.depthPath).existsSync()) {
+      return '请先提取镜头 ${shot.shotNumber} 的高精度深度图，再进行精确复刻';
+    }
     for (final subject in guide.subjects) {
       if (subject.decision != ReplicateSubjectDecision.replace) continue;
       final hasReplacement = references.any((reference) {
@@ -5799,7 +5706,7 @@ $playbackSpeedBoundary
     ScriptShot shot,
     List<_ReplacementReference> references, {
     ReplicateShotGuide? guide,
-    bool hasPoseSkeleton = false,
+    bool hasDepthMap = false,
   }) {
     const multiAngleModelReferenceRule =
         '若模特参考是一张包含同一人物多个角度的拼图，按图片1中该人物的可见朝向选择对应角度作为本帧主证据；其他角度仅用于身份与后续动作一致性补充，不得把拼图中的多个人影同时生成到画面。';
@@ -5827,7 +5734,7 @@ $playbackSpeedBoundary
             .where(productSlotLabelsByIndex.containsKey)
             .toList(growable: false)
           ..sort();
-    final assetStartNumber = hasPoseSkeleton ? 3 : 2;
+    final assetStartNumber = hasDepthMap ? 3 : 2;
     for (var index = 0; index < references.length; index++) {
       final reference = references[index];
       final imageLabel = '图片${index + assetStartNumber}';
@@ -5918,8 +5825,12 @@ $playbackSpeedBoundary
     return [
       '任务：生成镜头 ${shot.shotNumber} 的受控复刻分镜。',
       '图片1是原视频镜头的编辑底图与结构参考：锁定画幅、景别、机位、构图、透视、主体槽位、姿态、接触和遮挡。只有下方处理计划明确标记“保留”的主体，才允许继续使用图片1中的身份、服装或产品外观；替换与移除项不得继承对应原主体外观。',
-      if (hasPoseSkeleton)
-        '图片2是 DWPose 姿势骨架，只定义关节位置、肢体方向、身体重心和动作轮廓；不得从骨架的颜色、线条或背景推断任何外观。',
+      if (hasDepthMap)
+        '图片2是与图片1逐像素配准的高精度人物深度图：白近灰远，纯黑主体外区域不提供背景。它是姿态、人体前后关系、遮挡边界、身体表面起伏以及可辨认衣物褶皱峰谷的硬结构证据，不提供身份、产品设计、材质、颜色、文字、光照或场景外观。',
+      if (hasDepthMap)
+        '【深度几何硬锁】逐区保持图片2可辨认的头颈角度、肩髋倾斜、脊柱方向、重心、四肢弯曲、肘腕与手指位置、持物接触、人物间前后层级和轮廓遮挡。对应衣片内逐一保留褶皱的相对位置、起止点、走向、曲率、折峰折谷、宽窄、间距、分叉交汇、叠压顺序、密集区与留白区；先匹配起伏，再渲染绑定产品的颜色、纹样、材质、结构和环境光。深度图没有证据的细节只做最小补全。',
+      if (hasDepthMap)
+        '【结构冲突的局部适配】新产品不存在的袖子、衣片或边界不得继承旧褶皱；版型和材料厚度确实冲突时，只调整不对应区域，保留其余深度锚点、受力方向和接触关系。不得为了保留旧起伏而把新产品改回原产品设计，也不得以新产品为由自由重画整套姿势和褶皱。',
       ...definitions,
       if (subjectDecisionRules.isNotEmpty)
         '【原帧主体处理计划】每项必须独立执行，不得用模型自行判断覆盖：\n${subjectDecisionRules.join('\n')}',

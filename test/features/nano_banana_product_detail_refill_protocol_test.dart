@@ -29,7 +29,7 @@ void main() {
         NanoBananaStructuralReference(
           id: 'pose',
           path: 'pose.png',
-          description: 'DWPose',
+          description: '高精度人物深度图',
         ),
       ],
     );

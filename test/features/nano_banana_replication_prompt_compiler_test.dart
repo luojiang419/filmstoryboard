@@ -71,7 +71,7 @@ void main() {
       automaticPrompt: '【原帧主体处理计划】人物1替换，产品1保留。\n【未勾选元素：必须移除】耳环。',
       manifest: manifest,
       userInstructions: '人物看向镜头，但不要恢复耳环',
-      structuralReferenceDescriptions: const ['DWPose 姿势骨架'],
+      structuralReferenceDescriptions: const ['高精度人物深度图'],
     );
     const compiler = NanoBananaReplicationPromptCompiler();
 
@@ -81,7 +81,7 @@ void main() {
     expect(second, first, reason: '相同结构化输入必须得到逐字一致的最终提示词');
     expect(first, startsWith('【Nano Banana Pro 确定性精准复刻协议】'));
     expect(first, contains('图片1是原帧编辑底图'));
-    expect(first, contains('图片2是结构辅助图：DWPose 姿势骨架'));
+    expect(first, contains('图片2是结构控制图：高精度人物深度图'));
     expect(first, contains('图片3是模特资产，槽位A'));
     expect(first, contains('人物身份、脸部、发型、体型'));
     expect(first, contains('图片4是产品资产，槽位A'));
@@ -156,7 +156,7 @@ void main() {
         NanoBananaStructuralReference(
           id: 'pose',
           path: 'pose.png',
-          description: 'DWPose 姿势骨架',
+          description: '高精度人物深度图',
         ),
       ],
     );
@@ -170,7 +170,7 @@ void main() {
       ),
     );
 
-    expect(prompt, contains('图片2是结构辅助图：DWPose 姿势骨架'));
+    expect(prompt, contains('图片2是结构控制图：高精度人物深度图'));
     expect(prompt, contains('图片3是完整穿搭资产，槽位A（侧面视图）'));
     expect(prompt, contains('与产品槽位B联动'));
     expect(prompt, contains('人物身份、脸部、发型、体型、人物穿搭外观'));
