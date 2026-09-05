@@ -785,14 +785,22 @@ void main() {
       of: detectedPersonSlot,
       matching: find.byType(DropdownButton<ReplicateSubjectDecision>),
     );
+    expect(
+      tester
+          .widget<DropdownButton<ReplicateSubjectDecision>>(
+            subjectDecisionDropdown,
+          )
+          .value,
+      ReplicateSubjectDecision.keep,
+    );
     await tester.ensureVisible(personDecision);
     await tester.pump();
     await tester.tap(subjectDecisionDropdown);
     await tester.pumpAndSettle();
-    expect(find.text('保留（沿用原视频帧）'), findsOneWidget);
+    expect(find.text('保留（沿用原视频帧）'), findsWidgets);
     expect(find.text('从画面移除'), findsOneWidget);
-    expect(find.text('替换（必须绑定对应资产）'), findsWidgets);
-    await tester.tap(find.text('保留（沿用原视频帧）'));
+    expect(find.text('替换（使用已绑定资产）'), findsWidgets);
+    await tester.tap(find.text('保留（沿用原视频帧）').last);
     await tester.pumpAndSettle();
     expect(
       replicateController.shotGuideFor(shot.id)?.subjects.first.decision,

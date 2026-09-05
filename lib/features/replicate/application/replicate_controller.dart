@@ -43,7 +43,6 @@ import '../data/replicate_prompt_export_service.dart';
 import '../data/quick_replication_person_count_service.dart';
 import '../data/quick_replication_prompt_planning_service.dart';
 import '../data/replication_frame_analysis_service.dart';
-import '../data/replication_generation_review_service.dart';
 import '../data/seedance_prompt_generation_service.dart';
 import '../data/free_creation_video_prompt_writing_service.dart';
 import '../data/h3_prompt_writing_service.dart';
@@ -52,6 +51,7 @@ import '../data/line_art_color_style_repository.dart';
 import '../data/line_art_color_style_thumbnail_service.dart';
 import '../data/video_skill_router.dart';
 import '../domain/h3_prompt_style.dart';
+import '../domain/deterministic_replacement_prompt_catalog.dart';
 import '../domain/line_art_color_style_catalog.dart';
 import '../domain/lightweight_replication_prompt_compiler.dart';
 import '../domain/line_art_color_style_prompt_compiler.dart';
@@ -219,10 +219,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         const SeedancePromptGenerationService(),
     ImageGenerationService? imageGenerationService,
     VisionStoryboardService? visionService,
-    QuickReplicationPromptPlanningService? quickPlanningService,
     QuickReplicationPersonCountService? quickPersonCountService,
     ReplicationFrameAnalysisService? frameAnalysisService,
-    ReplicationGenerationReviewService? generationReviewService,
     PersonDepthService? personDepthService,
     H3PromptWritingService h3PromptWritingService =
         const H3PromptWritingService(),
@@ -256,15 +254,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _frameAnalysisService =
         frameAnalysisService ??
         ReplicationFrameAnalysisService(visionService: _visionService);
-    _quickPlanningService =
-        quickPlanningService ??
-        QuickReplicationPromptPlanningService(visionService: _visionService);
     _quickPersonCountService =
         quickPersonCountService ??
         QuickReplicationPersonCountService(visionService: _visionService);
-    _generationReviewService =
-        generationReviewService ??
-        ReplicationGenerationReviewService(visionService: _visionService);
     _personDepthService = personDepthService ?? PersonDepthService.shared;
     _shootingScriptController.addListener(_handleShootingScriptChanged);
     _assetBindingController?.addListener(_handleWorkflowChanged);
@@ -295,10 +287,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   final bool _ownsImageGenerationService;
   final VisionStoryboardService _visionService;
   final bool _ownsVisionService;
-  late final QuickReplicationPromptPlanningService _quickPlanningService;
   late final QuickReplicationPersonCountService _quickPersonCountService;
   late final ReplicationFrameAnalysisService _frameAnalysisService;
-  late final ReplicationGenerationReviewService _generationReviewService;
   late final PersonDepthService _personDepthService;
   ValueListenable<DepthModelProgress?> get depthModelProgress =>
       _personDepthService.modelProgress;
@@ -2113,6 +2103,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _persistQuickReplicationPlan(shot.id, quickPlanningOutcome.plan);
     }
     final guide = preciseMode ? _currentShotGuide(shot) : null;
+    if (preciseMode) {
+      references = _referencesForSubjectDecisions(references, guide);
+    }
     final depthPath = guide?.depthStatus == ProcessingStatus.completed
         ? guide!.depthPath.trim()
         : '';
@@ -2187,23 +2180,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       );
       _saveReplicatedImage(record);
       return false;
-    }
-    if (preciseMode && references.isEmpty) {
-      final hasExplicitSubjectDecision =
-          guide != null &&
-          guide.subjects.isNotEmpty &&
-          guide.undecidedSubjects.isEmpty;
-      if (hasExplicitSubjectDecision) {
-        // 原帧本身仍会作为参考图；全部主体显式移除时无需额外资产。
-      } else {
-        record = record.copyWith(
-          status: ProcessingStatus.failed,
-          errorMessage: '当前镜头没有已绑定且可用的图片资产',
-          updatedAt: DateTime.now().toUtc(),
-        );
-        _saveReplicatedImage(record);
-        return false;
-      }
     }
     final readinessError = preciseMode
         ? _replicationInputReadinessError(
@@ -2289,6 +2265,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               nanoBananaFirstRoundProtocol: nanoBananaFirstRoundProtocol,
               authorizedProductMarks:
                   productDetailRefillProtocol?.authorizedMarks ?? const [],
+              wearableProductSlots: _wearableProductSlots(
+                guide,
+                preparedReferences,
+              ),
               sourceFrameMode: run.sourceFrameMode,
               colorStyleSnapshot: colorStyleSnapshot,
             )
@@ -2375,19 +2355,16 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         shot: shot,
         previousPath: existing?.generatedFramePath ?? '',
       );
-      final shouldProtectPose =
-          depth != null && nanoBananaFirstRoundProtocol != null;
       if (productDetailRefillProtocol?.shouldRun == true) {
         record = record.copyWith(
           generatedFramePath: persistedPath,
           rawResponse: result.rawResponse,
-          generationRecovery: _initialPoseReviewRecovery(
+          generationRecovery: _initialGenerationRecovery(
             generationRequest: generationRequest,
             continuation: result.geminiContinuation,
             stage: ReplicatedShotRecoveryStage.awaitingProductDetailRefill,
             productDetailRefillPrompt: productDetailRefillProtocol!
                 .compileContinuationPrompt(),
-            poseProtectionRequired: shouldProtectPose,
           ),
           status: ProcessingStatus.running,
           errorMessage: '',
@@ -2397,33 +2374,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         return _refillProductDetails(
           shot: shot,
           context: context,
-          original: original,
-          generationRequest: generationRequest,
-          initialResult: result,
-          initialPersistedPath: persistedPath,
-          outputDirectory: outputDirectory,
-          record: record,
-          shouldProtectPose: shouldProtectPose,
-        );
-      }
-      if (shouldProtectPose) {
-        record = record.copyWith(
-          generatedFramePath: persistedPath,
-          rawResponse: result.rawResponse,
-          generationRecovery: _initialPoseReviewRecovery(
-            generationRequest: generationRequest,
-            continuation: result.geminiContinuation,
-            poseProtectionRequired: true,
-          ),
-          status: ProcessingStatus.running,
-          errorMessage: '',
-          updatedAt: DateTime.now().toUtc(),
-        );
-        _saveReplicatedImage(record);
-        return _reviewAndCorrectReplicatedShot(
-          shot: shot,
-          context: context,
-          original: original,
           generationRequest: generationRequest,
           initialResult: result,
           initialPersistedPath: persistedPath,
@@ -2455,13 +2405,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   Future<bool> _refillProductDetails({
     required ScriptShot shot,
     required _ReplicationContext context,
-    required File original,
     required ImageGenerationRequest generationRequest,
     required ImageGenerationResult initialResult,
     required String initialPersistedPath,
     required Directory outputDirectory,
     required ReplicatedShotImage record,
-    required bool shouldProtectPose,
   }) async {
     var recovery = record.generationRecovery;
     final initialRawResponse = _storedGenerationRawResponse(
@@ -2489,8 +2437,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         record.copyWith(
           rawResponse: _replicationAuditRawResponse(
             initialRawResponse: initialRawResponse,
-            reviews: const [],
-            correctionAttempted: false,
             stoppedReason: 'product_detail_refill_continuation_unavailable',
           ),
           status: ProcessingStatus.failed,
@@ -2540,61 +2486,24 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       final audit = _replicationAuditRawResponse(
         initialRawResponse: initialRawResponse,
         productDetailRefillRawResponse: refillResult.rawResponse,
-        reviews: const [],
-        correctionAttempted: false,
-        stoppedReason: shouldProtectPose
-            ? 'product_detail_refill_completed_awaiting_pose_review'
-            : 'product_detail_refill_completed',
+        stoppedReason: 'product_detail_refill_completed',
       );
-      if (!shouldProtectPose) {
-        _saveReplicatedImage(
-          record.copyWith(
-            generatedFramePath: persistedPath,
-            rawResponse: audit,
-            generationRecovery: ReplicatedShotGenerationRecovery.empty,
-            status: ProcessingStatus.completed,
-            errorMessage: '',
-            updatedAt: DateTime.now().toUtc(),
-          ),
-        );
-        return true;
-      }
-      final poseRecovery = _initialPoseReviewRecovery(
-        generationRequest: generationRequest,
-        continuation: refillResult.geminiContinuation,
-        poseProtectionRequired: true,
-      );
-      record = record.copyWith(
-        generatedFramePath: persistedPath,
-        rawResponse: audit,
-        generationRecovery: poseRecovery,
-        status: ProcessingStatus.running,
-        errorMessage: '',
-        updatedAt: DateTime.now().toUtc(),
-      );
-      _saveReplicatedImage(record);
-      return _reviewAndCorrectReplicatedShot(
-        shot: shot,
-        context: context,
-        original: original,
-        generationRequest: generationRequest,
-        initialResult: ImageGenerationResult(
-          localPath: persistedPath,
-          remoteUrl: refillResult.remoteUrl,
-          rawResponse: initialRawResponse,
-          geminiContinuation: refillResult.geminiContinuation,
+      _saveReplicatedImage(
+        record.copyWith(
+          generatedFramePath: persistedPath,
+          rawResponse: audit,
+          generationRecovery: ReplicatedShotGenerationRecovery.empty,
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
         ),
-        initialPersistedPath: persistedPath,
-        outputDirectory: outputDirectory,
-        record: record,
       );
+      return true;
     } catch (error) {
       _saveReplicatedImage(
         record.copyWith(
           rawResponse: _replicationAuditRawResponse(
             initialRawResponse: initialRawResponse,
-            reviews: const [],
-            correctionAttempted: false,
             stoppedReason: 'product_detail_refill_error',
           ),
           status: ProcessingStatus.failed,
@@ -2606,328 +2515,11 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
   }
 
-  Future<bool> _reviewAndCorrectReplicatedShot({
-    required ScriptShot shot,
-    required _ReplicationContext context,
-    required File original,
-    required ImageGenerationRequest generationRequest,
-    required ImageGenerationResult initialResult,
-    required String initialPersistedPath,
-    required Directory outputDirectory,
-    required ReplicatedShotImage record,
-  }) async {
-    var recovery = record.generationRecovery;
-    final reviews = _storedGenerationReviews(recovery.reviewAttempts);
-    final restoredCorrectionRawResponse = _storedGenerationRawResponse(
-      record,
-      key: 'correctionGenerationRawResponse',
-    );
-    final storedProductDetailRefillRawResponse = _storedGenerationRawResponse(
-      record,
-      key: 'productDetailRefillRawResponse',
-    );
-    String auditRawResponse({
-      String? correctionRawResponse,
-      required bool correctionAttempted,
-      required String stoppedReason,
-    }) => _replicationAuditRawResponse(
-      initialRawResponse: initialResult.rawResponse,
-      productDetailRefillRawResponse:
-          storedProductDetailRefillRawResponse.isEmpty
-          ? null
-          : storedProductDetailRefillRawResponse,
-      correctionRawResponse: correctionRawResponse,
-      reviews: reviews,
-      correctionAttempted: correctionAttempted,
-      stoppedReason: stoppedReason,
-    );
-    ImageGenerationResult? correctionResult =
-        restoredCorrectionRawResponse.isEmpty
-        ? null
-        : ImageGenerationResult(
-            localPath: initialPersistedPath,
-            remoteUrl: '',
-            rawResponse: restoredCorrectionRawResponse,
-          );
-    var correctionAttempted =
-        recovery.stage == ReplicatedShotRecoveryStage.awaitingCorrectedReview;
-    var persistedPath = initialPersistedPath;
-
-    Future<ReplicationGenerationReviewResult> reviewCurrent() =>
-        _generationReviewService.review(
-          settings: _settingsController.value,
-          input: ReplicationGenerationReviewInput(
-            shotNumber: shot.shotNumber,
-            originalFrame: original,
-            orderedReferenceImages: [
-              for (final path in generationRequest.referenceImagePaths)
-                File(path),
-            ],
-            depthReferenceImageNumber: 2,
-            generatedImage: File(persistedPath),
-            structuredConstraints: record.prompt,
-          ),
-          allowThinking: _settingsController.value.videoAnalysisThinkingEnabled,
-        );
-
-    Future<bool> fail({
-      required String diagnostic,
-      required String stoppedReason,
-      bool clearRecovery = false,
-    }) async {
-      record = record.copyWith(
-        generatedFramePath: persistedPath,
-        rawResponse: auditRawResponse(
-          correctionRawResponse: correctionResult?.rawResponse,
-          correctionAttempted: correctionAttempted,
-          stoppedReason: stoppedReason,
-        ),
-        generationRecovery: clearRecovery
-            ? ReplicatedShotGenerationRecovery.empty
-            : record.generationRecovery,
-        status: ProcessingStatus.failed,
-        errorMessage: diagnostic,
-        updatedAt: DateTime.now().toUtc(),
-      );
-      _saveReplicatedImage(record);
-      return false;
-    }
-
-    ReplicationGenerationReviewIssue? issue;
-    if (recovery.stage == ReplicatedShotRecoveryStage.awaitingInitialReview) {
-      if (!_disposed) {
-        _setReplicationMessage(
-          context.scriptId,
-          '正在审核镜头 ${shot.shotNumber} 的复刻结果…',
-        );
-      }
-      ReplicationGenerationReviewResult firstReview;
-      try {
-        firstReview = await reviewCurrent();
-        reviews.add(firstReview);
-      } catch (error) {
-        return fail(
-          diagnostic: '首轮成图已保留，但深度几何审核失败：$error',
-          stoppedReason: 'initial_review_error',
-        );
-      }
-      if (firstReview.passed) {
-        record = record.copyWith(
-          rawResponse: auditRawResponse(
-            correctionAttempted: false,
-            stoppedReason: 'passed_initial_review',
-          ),
-          generationRecovery: ReplicatedShotGenerationRecovery.empty,
-          status: ProcessingStatus.completed,
-          errorMessage: '',
-          updatedAt: DateTime.now().toUtc(),
-        );
-        _saveReplicatedImage(record);
-        return true;
-      }
-      if (firstReview.isInconclusive) {
-        record = record.copyWith(
-          rawResponse: auditRawResponse(
-            correctionAttempted: false,
-            stoppedReason: 'pose_review_inconclusive',
-          ),
-          generationRecovery: ReplicatedShotGenerationRecovery.empty,
-          status: ProcessingStatus.completed,
-          errorMessage: '',
-          updatedAt: DateTime.now().toUtc(),
-        );
-        _saveReplicatedImage(record);
-        return true;
-      }
-      issue = firstReview.issue;
-      if (issue == null) {
-        return fail(
-          diagnostic: '首轮成图已保留，但姿势审核未返回可验证的单一问题',
-          stoppedReason: 'missing_review_issue',
-        );
-      }
-      recovery = recovery.copyWith(
-        stage: ReplicatedShotRecoveryStage.awaitingCorrection,
-        reviewAttempts: [for (final review in reviews) review.toJson()],
-      );
-      record = record.copyWith(
-        rawResponse: auditRawResponse(
-          correctionAttempted: false,
-          stoppedReason: 'awaiting_correction',
-        ),
-        generationRecovery: recovery,
-        status: ProcessingStatus.running,
-        errorMessage: '',
-        updatedAt: DateTime.now().toUtc(),
-      );
-      _saveReplicatedImage(record);
-    } else if (recovery.stage ==
-        ReplicatedShotRecoveryStage.awaitingCorrection) {
-      issue = reviews.isEmpty ? null : reviews.first.issue;
-      if (issue == null) {
-        return fail(
-          diagnostic: '生成结果已保留，但持久化的首审问题无效，无法安全续轮纠错。',
-          stoppedReason: 'invalid_persisted_review_issue',
-        );
-      }
-    }
-
-    if (recovery.stage != ReplicatedShotRecoveryStage.awaitingCorrectedReview) {
-      final continuation =
-          initialResult.geminiContinuation ??
-          _restoredGeminiContinuation(recovery);
-      if (continuation == null) {
-        final unavailableReason = recovery.continuationDiagnostic.trim();
-        return fail(
-          diagnostic:
-              '深度几何审核未通过：${_replicationReviewDiagnostic(issue!)}；${unavailableReason.isEmpty ? '当前 Gemini 响应没有可用续轮状态' : unavailableReason}，已停止付费纠错并保留生成结果。',
-          stoppedReason:
-              recovery.continuationTransport ==
-                  ReplicatedShotContinuationTransport.generateContent
-              ? 'generate_content_restart_continuation_unavailable'
-              : 'missing_gemini_continuation',
-        );
-      }
-
-      if (!_disposed) {
-        _setReplicationMessage(
-          context.scriptId,
-          '镜头 ${shot.shotNumber} 姿势审核确认一个问题，正在执行唯一一次续轮校正…',
-        );
-      }
-      recovery = recovery.copyWith(
-        stage: ReplicatedShotRecoveryStage.correctionInFlight,
-      );
-      record = record.copyWith(
-        rawResponse: auditRawResponse(
-          correctionAttempted: true,
-          stoppedReason: 'correction_in_flight',
-        ),
-        generationRecovery: recovery,
-        status: ProcessingStatus.running,
-        errorMessage: '',
-        updatedAt: DateTime.now().toUtc(),
-      );
-      _saveReplicatedImage(record);
-      try {
-        correctionAttempted = true;
-        correctionResult = await _imageGenerationService.generateEditedImage(
-          ImageGenerationRequest(
-            provider: generationRequest.provider,
-            model: generationRequest.model,
-            prompt: ReplicationGenerationReviewService.buildCorrectionPrompt(
-              issue!,
-            ),
-            aspectRatio: generationRequest.aspectRatio,
-            imageSize: generationRequest.imageSize,
-            quality: generationRequest.quality,
-            referenceImagePaths: const [],
-            outputDirectory: generationRequest.outputDirectory,
-            geminiContinuation: continuation,
-          ),
-        );
-        persistedPath = await _persistGeneratedFrame(
-          sourcePath: correctionResult.localPath,
-          outputDirectory: outputDirectory,
-          shot: shot,
-          previousPath: persistedPath,
-        );
-        recovery = recovery.copyWith(
-          stage: ReplicatedShotRecoveryStage.awaitingCorrectedReview,
-          reviewAttempts: [for (final review in reviews) review.toJson()],
-        );
-        record = record.copyWith(
-          generatedFramePath: persistedPath,
-          rawResponse: auditRawResponse(
-            correctionRawResponse: correctionResult.rawResponse,
-            correctionAttempted: true,
-            stoppedReason: 'awaiting_corrected_review',
-          ),
-          generationRecovery: recovery,
-          status: ProcessingStatus.running,
-          errorMessage: '',
-          updatedAt: DateTime.now().toUtc(),
-        );
-        _saveReplicatedImage(record);
-      } catch (error) {
-        return fail(
-          diagnostic: '首轮成图已保留；唯一一次 Gemini 姿势校正失败，已停止付费循环：$error',
-          stoppedReason: 'correction_error',
-        );
-      }
-    }
-
-    if (!_disposed) {
-      _setReplicationMessage(
-        context.scriptId,
-        '正在复核镜头 ${shot.shotNumber} 的姿势校正结果…',
-      );
-    }
-    ReplicationGenerationReviewResult secondReview;
-    try {
-      secondReview = await reviewCurrent();
-      reviews.add(secondReview);
-    } catch (error) {
-      return fail(
-        diagnostic: '姿势校正结果已保留，但第二次审核失败；已停止继续付费校正：$error',
-        stoppedReason: 'corrected_review_error',
-      );
-    }
-    if (!secondReview.passed) {
-      if (secondReview.isInconclusive) {
-        record = record.copyWith(
-          rawResponse: auditRawResponse(
-            correctionRawResponse:
-                correctionResult?.rawResponse ?? restoredCorrectionRawResponse,
-            correctionAttempted: true,
-            stoppedReason: 'corrected_pose_review_inconclusive',
-          ),
-          generationRecovery: ReplicatedShotGenerationRecovery.empty,
-          status: ProcessingStatus.completed,
-          errorMessage: '',
-          updatedAt: DateTime.now().toUtc(),
-        );
-        _saveReplicatedImage(record);
-        return true;
-      }
-      final remainingIssue = secondReview.issue;
-      return fail(
-        diagnostic: remainingIssue == null
-            ? '姿势校正后审核仍未通过，且未返回可验证问题；已停止继续付费校正并保留结果。'
-            : '姿势校正后审核仍未通过：${_replicationReviewDiagnostic(remainingIssue)}；已停止继续付费校正并保留结果。',
-        stoppedReason: 'failed_after_single_correction',
-        clearRecovery: true,
-      );
-    }
-
-    record = record.copyWith(
-      generatedFramePath: persistedPath,
-      rawResponse: auditRawResponse(
-        correctionRawResponse:
-            correctionResult?.rawResponse ?? restoredCorrectionRawResponse,
-        correctionAttempted: true,
-        stoppedReason: 'passed_after_single_correction',
-      ),
-      generationRecovery: ReplicatedShotGenerationRecovery.empty,
-      status: ProcessingStatus.completed,
-      errorMessage: '',
-      updatedAt: DateTime.now().toUtc(),
-    );
-    _saveReplicatedImage(record);
-    return true;
-  }
-
-  static String _replicationReviewDiagnostic(
-    ReplicationGenerationReviewIssue issue,
-  ) => '${issue.summary}（证据：${issue.evidence}）';
-
-  static ReplicatedShotGenerationRecovery _initialPoseReviewRecovery({
+  static ReplicatedShotGenerationRecovery _initialGenerationRecovery({
     required ImageGenerationRequest generationRequest,
     required GeminiImageContinuation? continuation,
-    ReplicatedShotRecoveryStage stage =
-        ReplicatedShotRecoveryStage.awaitingInitialReview,
+    required ReplicatedShotRecoveryStage stage,
     String productDetailRefillPrompt = '',
-    bool poseProtectionRequired = false,
   }) {
     final transport = switch (continuation?.transport) {
       GeminiImageContinuationTransport.interactions =>
@@ -2962,7 +2554,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       continuationResumable: hasResumableInteraction,
       continuationDiagnostic: diagnostic,
       productDetailRefillPrompt: productDetailRefillPrompt,
-      poseProtectionRequired: poseProtectionRequired,
     );
   }
 
@@ -2975,19 +2566,6 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       apiModel: recovery.continuationApiModel,
       previousInteractionId: recovery.previousInteractionId,
     );
-  }
-
-  static List<ReplicationGenerationReviewResult> _storedGenerationReviews(
-    List<Map<String, Object?>> stored,
-  ) {
-    try {
-      return [
-        for (final review in stored)
-          ReplicationGenerationReviewResult.fromJson(review),
-      ];
-    } on FormatException {
-      return const [];
-    }
   }
 
   static String _storedGenerationRawResponse(
@@ -3030,26 +2608,25 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return false;
     }
     final generated = File(record.generatedFramePath.trim());
+    final awaitingProductDetailRefill =
+        recovery.stage ==
+        ReplicatedShotRecoveryStage.awaitingProductDetailRefill;
+    if (!awaitingProductDetailRefill && await generated.exists()) {
+      _saveReplicatedImage(
+        record.copyWith(
+          generationRecovery: ReplicatedShotGenerationRecovery.empty,
+          status: ProcessingStatus.completed,
+          errorMessage: '',
+          updatedAt: DateTime.now().toUtc(),
+        ),
+      );
+      return true;
+    }
     final references = recovery.orderedReferencePaths;
-    final storedReviews = _storedGenerationReviews(recovery.reviewAttempts);
     final storedInitialRawResponse = _storedGenerationRawResponse(
       record,
       key: 'initialGenerationRawResponse',
     );
-    final storedCorrectionRawResponse = _storedGenerationRawResponse(
-      record,
-      key: 'correctionGenerationRawResponse',
-    );
-    final awaitingProductDetailRefill =
-        recovery.stage ==
-        ReplicatedShotRecoveryStage.awaitingProductDetailRefill;
-    final needsStoredFirstReview =
-        recovery.stage != ReplicatedShotRecoveryStage.awaitingInitialReview &&
-        !awaitingProductDetailRefill;
-    final hasValidStoredFirstReview =
-        storedReviews.length == 1 &&
-        !storedReviews.single.passed &&
-        storedReviews.single.issue != null;
     final invalidInput =
         !NanoBananaProModelCapability.supports(record.model) ||
         !original.existsSync() ||
@@ -3063,11 +2640,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         recovery.quality.trim().isEmpty ||
         storedInitialRawResponse.trim().isEmpty ||
         (awaitingProductDetailRefill &&
-            recovery.productDetailRefillPrompt.trim().isEmpty) ||
-        (needsStoredFirstReview && !hasValidStoredFirstReview) ||
-        (recovery.stage ==
-                ReplicatedShotRecoveryStage.awaitingCorrectedReview &&
-            storedCorrectionRawResponse.trim().isEmpty);
+            recovery.productDetailRefillPrompt.trim().isEmpty);
     if (invalidInput) {
       _saveReplicatedImage(
         record.copyWith(
@@ -3110,41 +2683,35 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       return _refillProductDetails(
         shot: shot,
         context: context,
-        original: original,
         generationRequest: generationRequest,
         initialResult: initialResult,
         initialPersistedPath: generated.path,
         outputDirectory: outputDirectory,
         record: record,
-        shouldProtectPose: recovery.poseProtectionRequired,
       );
     }
-    return _reviewAndCorrectReplicatedShot(
-      shot: shot,
-      context: context,
-      original: original,
-      generationRequest: generationRequest,
-      initialResult: initialResult,
-      initialPersistedPath: generated.path,
-      outputDirectory: outputDirectory,
-      record: record,
+    _saveReplicatedImage(
+      record.copyWith(
+        generationRecovery: ReplicatedShotGenerationRecovery.empty,
+        status: ProcessingStatus.completed,
+        errorMessage: '',
+        updatedAt: DateTime.now().toUtc(),
+      ),
     );
+    return true;
   }
 
   static String _replicationAuditRawResponse({
     required String initialRawResponse,
     String? productDetailRefillRawResponse,
-    String? correctionRawResponse,
-    required List<ReplicationGenerationReviewResult> reviews,
-    required bool correctionAttempted,
     required String stoppedReason,
   }) => jsonEncode({
     'initialGenerationRawResponse': initialRawResponse,
     'productDetailRefillRawResponse': ?productDetailRefillRawResponse,
-    'correctionGenerationRawResponse': ?correctionRawResponse,
     'postGenerationReview': {
-      'attempts': [for (final review in reviews) review.toJson()],
-      'correctionAttempted': correctionAttempted,
+      'attempts': const [],
+      'correctionAttempted': false,
+      'automaticReview': 'disabled',
       'stoppedReason': stoppedReason,
     },
   });
@@ -3157,6 +2724,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     NanoBananaAssetManifest? nanoBananaManifest,
     NanoBananaFirstRoundProtocol? nanoBananaFirstRoundProtocol,
     List<NanoBananaAuthorizedProductMark> authorizedProductMarks = const [],
+    Set<int> wearableProductSlots = const {},
     ReplicateSourceFrameMode sourceFrameMode =
         ReplicateSourceFrameMode.colorReference,
     LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
@@ -3179,6 +2747,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               : const [],
           firstRoundProtocol: nanoBananaFirstRoundProtocol,
           authorizedProductMarks: authorizedProductMarks,
+          wearableProductSlots: wearableProductSlots,
           sourceFrameMode: sourceFrameMode,
           colorStyleSnapshot: colorStyleSnapshot,
         ),
@@ -5248,13 +4817,16 @@ $playbackSpeedBoundary
         ),
     ];
     final supplement = shot.replicationInstructions.trim();
-    return _quickPlanningService.plan(
-      settings: _settingsController.value,
+    final plan = const QuickReplicationLocalPlanner().plan(
       references: quickReferences,
-      imageFilesByAssetId: {
-        for (final reference in references) reference.id: File(reference.path),
-      },
       supplement: supplement,
+    );
+    return Future.value(
+      QuickReplicationPlanningOutcome(
+        plan: plan,
+        usedVision: false,
+        cacheHit: false,
+      ),
     );
   }
 
@@ -5310,29 +4882,42 @@ $playbackSpeedBoundary
     ReplicateShotGuide? guide,
   ) {
     if (guide == null || guide.subjects.isEmpty) return references;
-    final decisions = {
-      for (final subject in guide.subjects)
-        (subject.type, subject.slotIndex): subject.decision,
-    };
     final hasReplacingProduct = guide.subjects.any(
       (subject) =>
           subject.type == ReplicateSubjectType.product &&
-          subject.decision == ReplicateSubjectDecision.replace,
+          _effectiveSubjectDecision(subject, references) ==
+              ReplicateSubjectDecision.replace,
     );
     final result = <_ReplacementReference>[];
     for (final reference in references) {
       var include = true;
       final characterIndex = _characterSlotIndex(reference.slotLabel);
       if (characterIndex != null) {
-        final decision =
-            decisions[(ReplicateSubjectType.person, characterIndex)];
+        final subject = guide.subjects
+            .where(
+              (candidate) =>
+                  candidate.type == ReplicateSubjectType.person &&
+                  candidate.slotIndex == characterIndex,
+            )
+            .firstOrNull;
+        final decision = subject == null
+            ? null
+            : _effectiveSubjectDecision(subject, references);
         include =
             decision == null || decision == ReplicateSubjectDecision.replace;
       } else {
         final productIndex = _productSlotIndex(reference.slotLabel);
         if (productIndex != null) {
-          final decision =
-              decisions[(ReplicateSubjectType.product, productIndex)];
+          final subject = guide.subjects
+              .where(
+                (candidate) =>
+                    candidate.type == ReplicateSubjectType.product &&
+                    candidate.slotIndex == productIndex,
+              )
+              .firstOrNull;
+          final decision = subject == null
+              ? null
+              : _effectiveSubjectDecision(subject, references);
           include =
               decision == null || decision == ReplicateSubjectDecision.replace;
         } else {
@@ -5340,8 +4925,16 @@ $playbackSpeedBoundary
             reference.slotLabel,
           );
           if (productDetailIndex != null) {
-            final decision =
-                decisions[(ReplicateSubjectType.product, productDetailIndex)];
+            final subject = guide.subjects
+                .where(
+                  (candidate) =>
+                      candidate.type == ReplicateSubjectType.product &&
+                      candidate.slotIndex == productDetailIndex,
+                )
+                .firstOrNull;
+            final decision = subject == null
+                ? null
+                : _effectiveSubjectDecision(subject, references);
             include = decision == null
                 ? hasReplacingProduct
                 : decision == ReplicateSubjectDecision.replace;
@@ -5351,6 +4944,53 @@ $playbackSpeedBoundary
       if (include) result.add(reference);
     }
     return result;
+  }
+
+  static ReplicateSubjectDecision _effectiveSubjectDecision(
+    ReplicateDetectedSubject subject,
+    List<_ReplacementReference> references,
+  ) {
+    if (subject.decision == ReplicateSubjectDecision.keep ||
+        subject.decision == ReplicateSubjectDecision.remove) {
+      return subject.decision;
+    }
+    final hasReplacement = references.any((reference) {
+      return switch (subject.type) {
+        ReplicateSubjectType.person =>
+          _characterSlotIndex(reference.slotLabel) == subject.slotIndex,
+        ReplicateSubjectType.product =>
+          _productSlotIndex(reference.slotLabel) == subject.slotIndex,
+      };
+    });
+    return hasReplacement
+        ? ReplicateSubjectDecision.replace
+        : ReplicateSubjectDecision.keep;
+  }
+
+  static Set<int> _wearableProductSlots(
+    ReplicateShotGuide? guide,
+    List<_ReplacementReference> references,
+  ) {
+    if (guide == null) return const {};
+    final replacedProductSlots = {
+      for (final reference in references)
+        if (_productSlotIndex(reference.slotLabel) != null)
+          _productSlotIndex(reference.slotLabel)!,
+    };
+    final personSlots = {
+      for (final subject in guide.subjects)
+        if (subject.type == ReplicateSubjectType.person) subject.slotIndex,
+    };
+    return {
+      for (final subject in guide.subjects)
+        if (subject.type == ReplicateSubjectType.product &&
+            replacedProductSlots.contains(subject.slotIndex) &&
+            (personSlots.contains(subject.slotIndex) ||
+                RegExp(
+                  r'穿|戴|服装|衣|裤|裙|鞋|帽|包|配饰|佩戴',
+                ).hasMatch(subject.relationship)))
+          subject.slotIndex,
+    };
   }
 
   static NanoBananaAssetManifest _nanoBananaAssetManifest({
@@ -5484,13 +5124,7 @@ $playbackSpeedBoundary
     if (guide == null ||
         guide.sourceFrameFingerprint != _sourceFrameFingerprint(shot) ||
         guide.analysisStatus != ProcessingStatus.completed) {
-      return '请先分析镜头 ${shot.shotNumber} 的原帧，再确认每个可见人物和产品的处理方式';
-    }
-    if (guide.undecidedSubjects.isNotEmpty) {
-      final labels = guide.undecidedSubjects
-          .map((subject) => subject.label)
-          .join('、');
-      return '请先为以下原帧主体选择“保留、替换或移除”：$labels';
+      return '请先分析镜头 ${shot.shotNumber} 的原帧，再绑定需要替换的人物、产品或场景资产';
     }
     if (guide.depthStatus == ProcessingStatus.running) {
       return '镜头 ${shot.shotNumber} 的高精度深度图仍在提取，请等待完成';
@@ -5500,28 +5134,17 @@ $playbackSpeedBoundary
         !File(guide.depthPath).existsSync()) {
       return '请先提取镜头 ${shot.shotNumber} 的高精度深度图，再进行精确复刻';
     }
-    for (final subject in guide.subjects) {
-      if (subject.decision != ReplicateSubjectDecision.replace) continue;
-      final hasReplacement = references.any((reference) {
-        return switch (subject.type) {
-          ReplicateSubjectType.person =>
-            _characterSlotIndex(reference.slotLabel) == subject.slotIndex,
-          ReplicateSubjectType.product =>
-            _productSlotIndex(reference.slotLabel) == subject.slotIndex,
-        };
-      });
-      if (!hasReplacement) {
-        final subjectCount = guide.subjects
-            .where((candidate) => candidate.type == subject.type)
-            .length;
-        final prefix = subject.type == ReplicateSubjectType.person
-            ? '模特'
-            : '产品';
-        final slotLabel = subjectCount <= 1 && subject.slotIndex == 0
-            ? prefix
-            : '$prefix${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}';
-        return '${subject.label} 已选择“替换”，请先为$slotLabel绑定对应资产';
-      }
+    final effectiveReferences = _referencesForSubjectDecisions(
+      references,
+      guide,
+    );
+    final hasRemoval = guide.subjects.any(
+      (subject) =>
+          _effectiveSubjectDecision(subject, references) ==
+          ReplicateSubjectDecision.remove,
+    );
+    if (effectiveReferences.isEmpty && !hasRemoval) {
+      return '当前镜头没有需要替换或移除的主体；空资产格默认保留原视频帧，无需提交生成';
     }
     return null;
   }
@@ -5727,6 +5350,12 @@ $playbackSpeedBoundary
     final productSlotLabelsByIndex = <int, String>{};
     final characterImageBySlot = <int, String>{};
     final productImageBySlot = <int, String>{};
+    final productRelationshipBySlot = {
+      for (final subject
+          in guide?.subjects ?? const <ReplicateDetectedSubject>[])
+        if (subject.type == ReplicateSubjectType.product)
+          subject.slotIndex: subject.relationship.trim(),
+    };
     for (final reference in references) {
       final characterIndex = _characterSlotIndex(reference.slotLabel);
       if (characterIndex != null) {
@@ -5785,15 +5414,15 @@ $playbackSpeedBoundary
           '$slotLabel 使用$imageLabel 的身份、脸部、发型和体型，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；身份不得与其他槽位交换。'
               '服装、鞋帽和配饰以$pairedProductLabel为准：可穿戴商品须完整穿着，非穿戴商品保持图片1的持拿或展示关系。$multiAngleModelReferenceRule',
         (_, final slotLabel) when characterSlotIndex != null =>
-          '$slotLabel 使用$imageLabel 的身份、脸部、发型、体型和穿搭，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；不得继承原人物外观或与其他槽位交换。$multiAngleModelReferenceRule',
+          '$slotLabel 只使用$imageLabel 的身份、脸部、发型、肤色和体型，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；原帧中没有绑定产品资产的服装、鞋帽、配饰及其他产品必须保持不变，不得带入模特资产图中的穿搭、姿势或背景。$multiAngleModelReferenceRule',
         (ReplicateAssetType.character, _) =>
           '人物使用$imageLabel 中“${reference.name}”的身份、脸部、发型、体型和穿搭；图片1只提供姿态与空间关系。$multiAngleModelReferenceRule',
         (ReplicateAssetType.product, final slotLabel)
             when productSlotIndex != null && pairedCharacterLabel != null =>
           '$slotLabel 使用$imageLabel 中“${reference.name}”的整体轮廓、比例、结构、接缝、边缘、纹理、材质和反光；'
-              '$pairedCharacterLabel与$slotLabel一一绑定，可穿戴商品须完整穿着，手持商品保持图片1的接触关系。不得使用原产品外观、交叉分配或生成品牌文字。',
+              '$pairedCharacterLabel与$slotLabel一一绑定，按图片1已有关系${productRelationshipBySlot[productSlotIndex]?.isEmpty ?? true ? '' : '“${productRelationshipBySlot[productSlotIndex]}”'}执行；可穿戴商品须完整穿着，手持商品保持图片1的接触关系。不得使用原产品外观、交叉分配或生成品牌文字。',
         (ReplicateAssetType.product, _) =>
-          '产品使用$imageLabel 中“${reference.name}”的整体轮廓、比例、结构、接缝、边缘、纹理、材质和反光；图片1只提供位置、朝向和接触关系，不得继承原产品外观或品牌文字。',
+          '产品使用$imageLabel 中“${reference.name}”的整体轮廓、比例、结构、接缝、边缘、纹理、材质和反光；按图片1已有关系${productSlotIndex == null || (productRelationshipBySlot[productSlotIndex]?.isEmpty ?? true) ? '' : '“${productRelationshipBySlot[productSlotIndex]}”'}保持穿着、持拿、接触或独立摆放，图片1只提供位置、朝向和接触关系，不得继承原产品外观或品牌文字。',
         (ReplicateAssetType.scene, _) =>
           '场景使用$imageLabel 中“${reference.name}”的环境元素，并服从图片1的镜位、透视和主体位置。',
         (ReplicateAssetType.prop, _) =>
@@ -5816,10 +5445,11 @@ $playbackSpeedBoundary
             '${element.relationship.trim().isEmpty ? '' : '，原关系：${element.relationship.trim()}'}',
     ];
     final firstBoundImageLabel = '图片$assetStartNumber';
+    final route = _replacementCombinationRoute(references);
     final subjectDecisionRules = <String>[
       for (final subject
           in guide?.subjects ?? const <ReplicateDetectedSubject>[])
-        switch (subject.decision) {
+        switch (_effectiveSubjectDecision(subject, references)) {
           ReplicateSubjectDecision.replace =>
             '${subject.label}（${subject.type == ReplicateSubjectType.person ? '人物' : '产品'}槽位${subject.slotIndex + 1}）：替换。'
                 '保留图片1中的位置、尺度、朝向、动作、接触和遮挡关系，但禁止继承其身份或外观；'
@@ -5835,6 +5465,7 @@ $playbackSpeedBoundary
     ]..removeWhere((rule) => rule.isEmpty);
     return [
       '任务：生成镜头 ${shot.shotNumber} 的受控复刻分镜。',
+      '【组合路由】${route.id}：${route.instruction}',
       '图片1是原视频镜头的编辑底图与结构参考：锁定画幅、景别、机位、构图、透视、主体槽位、姿态、接触和遮挡。只有下方处理计划明确标记“保留”的主体，才允许继续使用图片1中的身份、服装或产品外观；替换与移除项不得继承对应原主体外观。',
       if (hasDepthMap)
         '图片2是与图片1逐像素配准的高精度人物深度图：白近灰远，纯黑主体外区域不提供背景。它是姿态、人体前后关系、遮挡边界、身体表面起伏以及可辨认衣物褶皱峰谷的硬结构证据，不提供身份、产品设计、材质、颜色、文字、光照或场景外观。',
@@ -5866,6 +5497,31 @@ $playbackSpeedBoundary
       ..._shotStructureInstructions(shot),
       '最终交付：一张自然真实、专业清晰、严格执行主体处理计划的复刻分镜图。',
     ].join('\n');
+  }
+
+  static ({String id, String instruction}) _replacementCombinationRoute(
+    List<_ReplacementReference> references,
+  ) {
+    final hasModel = references.any(
+      (reference) => reference.type == ReplicateAssetType.character,
+    );
+    final hasProduct = references.any(
+      (reference) =>
+          reference.type == ReplicateAssetType.product &&
+          _productDetailSlotIndex(reference.slotLabel) == null,
+    );
+    final hasScene = references.any(
+      (reference) => reference.type == ReplicateAssetType.scene,
+    );
+    final scenario = DeterministicReplacementPromptCatalog.resolve(
+      hasModel: hasModel,
+      hasProduct: hasProduct,
+      hasScene: hasScene,
+    );
+    return (
+      id: '${scenario.id} · ${scenario.title}',
+      instruction: scenario.instruction,
+    );
   }
 
   List<String> _shotStructureInstructions(ScriptShot shot) => [

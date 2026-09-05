@@ -56,7 +56,10 @@ void main() {
   });
 
   test('可穿戴产品覆盖模特服装区域但不覆盖人物身份', () {
-    const context = ReplicationAuthorityContext(hasWearableProductAsset: true);
+    const context = ReplicationAuthorityContext(
+      hasWearableProductAsset: true,
+      modelSlots: {0},
+    );
 
     expect(
       ReplicationAuthorityPolicy.authorityFor(
@@ -69,8 +72,30 @@ void main() {
       ReplicationAuthorityPolicy.authorityFor(
         ReplicationAuthorityScope.personIdentity,
         context: context,
+        slotIndex: 0,
       ),
       ReplicationAuthoritySource.modelAsset,
+    );
+  });
+
+  test('没有产品资产时原帧继续拥有人物穿搭权威', () {
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personIdentity,
+      ),
+      ReplicationAuthoritySource.sourceFrame,
+    );
+    expect(
+      ReplicationAuthorityPolicy.authorityFor(
+        ReplicationAuthorityScope.personWardrobeAppearance,
+      ),
+      ReplicationAuthoritySource.sourceFrame,
+    );
+    expect(
+      ReplicationAuthorityPolicy.scopesFor(
+        ReplicationAuthoritySource.modelAsset,
+      ),
+      isNot(contains(ReplicationAuthorityScope.personWardrobeAppearance)),
     );
   });
 
@@ -78,6 +103,7 @@ void main() {
     const context = ReplicationAuthorityContext(
       fullOutfitProductSlotByPersonSlot: {1: 2},
       productDetailSlots: {0},
+      modelSlots: {0},
     );
 
     expect(

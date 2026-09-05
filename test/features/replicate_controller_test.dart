@@ -11,7 +11,6 @@ import 'package:filmstoryboard/features/replicate/data/person_depth_service.dart
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
 import 'package:filmstoryboard/features/replicate/data/quick_replication_person_count_service.dart';
 import 'package:filmstoryboard/features/replicate/data/replication_frame_analysis_service.dart';
-import 'package:filmstoryboard/features/replicate/data/replication_generation_review_service.dart';
 import 'package:filmstoryboard/features/replicate/domain/h3_prompt_style.dart';
 import 'package:filmstoryboard/features/replicate/domain/replicate_models.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
@@ -1865,7 +1864,6 @@ void main() {
     );
     final imageService = _RecordingImageGenerationService();
     final visionService = _RecordingVisionStoryboardService();
-    final generationReviewService = _QueuedGenerationReviewService();
     var controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
@@ -1874,7 +1872,6 @@ void main() {
       workflowRepository: workflowRepository,
       imageGenerationService: imageService,
       visionService: visionService,
-      generationReviewService: generationReviewService,
     );
     expect(controller.value.run?.multiViewEnhancementEnabled, isFalse);
     final generationModel = controller.resolvedGenerationModel;
@@ -1916,7 +1913,6 @@ void main() {
     expect(quickRequest.prompt, isNot(contains('高精度深度图')));
     expect(quickRequest.prompt.length, lessThan(1400));
     expect(visionService.completionPrompts, isEmpty);
-    expect(generationReviewService.inputs, isEmpty);
     imageService.requests.clear();
     await controller.replicateAllShotsQuick(
       stagger: Duration.zero,
@@ -1938,33 +1934,32 @@ void main() {
       product.path,
     ]);
     expect(visionService.completionPrompts, isEmpty);
-    expect(generationReviewService.inputs, isEmpty);
     imageService.requests.clear();
     controller.setDetectedSubjectDecision(
       first.id,
       'product:1',
       ReplicateSubjectDecision.undecided,
     );
-    expect(await controller.replicateShot(first.id), isFalse);
-    expect(imageService.requests, isEmpty);
+    expect(await controller.replicateShot(first.id), isTrue);
+    expect(imageService.requests, isNotEmpty);
     expect(
-      controller.value.replicatedImages
-          .firstWhere((image) => image.scriptShotId == first.id)
-          .errorMessage,
-      contains('保留、替换或移除'),
+      imageService.requests.first.prompt,
+      contains('【组合路由】M1-P1-S1 · 模特、产品与场景'),
+      reason: '旧 undecided 状态必须按当前已绑定产品自动解析为替换',
     );
+    imageService.requests.clear();
     controller.setDetectedSubjectDecision(
       first.id,
-      'product:1',
+      'product:2',
       ReplicateSubjectDecision.replace,
     );
-    expect(await controller.replicateShot(first.id), isFalse);
+    expect(await controller.replicateShot(first.id), isTrue);
     expect(
-      controller.value.replicatedImages
-          .firstWhere((image) => image.scriptShotId == first.id)
-          .errorMessage,
-      contains('请先为产品C绑定对应资产'),
+      imageService.requests.first.prompt,
+      contains('下装牛仔裤（产品槽位3）：保留'),
+      reason: '空资产格即使残留旧 replace 状态也必须自动恢复为保留',
     );
+    imageService.requests.clear();
     controller.setDetectedSubjectDecision(
       first.id,
       'product:2',
@@ -2370,246 +2365,49 @@ void main() {
       reason: '用户指定文本时只开放该段文本，参考图中的其他文字与 Logo 仍必须禁止',
     );
 
-    final conditionalCorrectionRequestStart = imageService.requests.length;
-    final conditionalReviewStart = generationReviewService.inputs.length;
-    generationReviewService.results.addAll([
-      const ReplicationGenerationReviewResult(
-        decision: ReplicationPoseReviewDecision.correctionRequired,
-        issue: ReplicationGenerationReviewIssue(
-          code: 'depth_geometry',
-          priority: 1,
-          summary: '右手没有握住产品',
-          evidence: '待审核图右手与瓶身之间存在明显空隙',
-          correction: '只让右手手指贴合瓶身并恢复握持关系',
-        ),
-        rawResponse: '{"decision":"correction_required"}',
-      ),
-      _generationReviewPassed(),
-    ]);
-
+    final deterministicRequestStart = imageService.requests.length;
+    final deterministicVisionStart = visionService.completionPrompts.length;
     expect(await controller.replicateShot(first.id), isTrue);
     expect(
-      imageService.requests.length - conditionalCorrectionRequestStart,
-      3,
-      reason: '产品细节只回填一次，高精度深度图明确反证姿势偏差时也只能再追加一次续轮校正',
-    );
-    expect(
-      generationReviewService.inputs.length - conditionalReviewStart,
+      imageService.requests.length - deterministicRequestStart,
       2,
-      reason: '姿势偏差应首审一次，并在唯一一次校正后复核一次',
+      reason: '只允许首轮图片生成和已授权的产品细节回填，不再追加视觉审核或姿势校正',
     );
-    final correctionRequest = imageService.requests.last;
-    expect(correctionRequest.referenceImagePaths, isEmpty);
-    expect(correctionRequest.geminiContinuation, isNotNull);
-    expect(correctionRequest.prompt, contains('这是一次深度几何保护校正，不是重新生成'));
-    expect(correctionRequest.prompt, contains('不得修补产品局部细节'));
-    expect(correctionRequest.prompt, contains('不得新增、删除或顺带改动其他元素'));
-    expect(generationReviewService.inputs.last.depthReferenceImageNumber, 2);
     expect(
-      generationReviewService.inputs.last.orderedReferenceImages[1].path,
-      skeleton.path,
+      visionService.completionPrompts.length,
+      deterministicVisionStart,
+      reason: '点击一键替换产品后视觉模型调用必须为零',
     );
-    final correctedRecord = controller.value.replicatedImages.firstWhere(
+    expect(visionService.completionPrompts, isEmpty);
+    final deterministicRecord = controller.value.replicatedImages.firstWhere(
       (image) => image.scriptShotId == first.id,
     );
-    expect(correctedRecord.status, ProcessingStatus.completed);
-    expect(correctedRecord.generationRecovery.isEmpty, isTrue);
+    expect(deterministicRecord.status, ProcessingStatus.completed);
+    expect(deterministicRecord.generationRecovery.isEmpty, isTrue);
     expect(
-      correctedRecord.rawResponse,
-      contains('passed_after_single_correction'),
+      deterministicRecord.rawResponse,
+      contains('product_detail_refill_completed'),
     );
+    expect(deterministicRecord.rawResponse, isNot(contains('pose_review')));
 
-    final failedAfterCorrectionRequestStart = imageService.requests.length;
-    final failedAfterCorrectionReviewStart =
-        generationReviewService.inputs.length;
-    const repeatedPoseIssue = ReplicationGenerationReviewResult(
-      decision: ReplicationPoseReviewDecision.correctionRequired,
-      issue: ReplicationGenerationReviewIssue(
-        code: 'depth_geometry',
-        priority: 1,
-        summary: '右腕仍偏离深度图',
-        evidence: '待审核图右腕仍高于 高精度深度图目标位置',
-        correction: '只把右腕恢复到深度图目标位置',
-      ),
-      rawResponse: '{"decision":"correction_required"}',
-    );
-    generationReviewService.results.addAll(const [
-      repeatedPoseIssue,
-      repeatedPoseIssue,
-    ]);
-    expect(await controller.replicateShot(first.id), isFalse);
-    expect(
-      imageService.requests.length - failedAfterCorrectionRequestStart,
-      3,
-      reason: '第二次审核仍失败时也只能有首轮、一次细节回填和一次姿势校正',
-    );
-    expect(
-      generationReviewService.inputs.length - failedAfterCorrectionReviewStart,
-      2,
-    );
-    final terminalCorrectionRecord = controller.value.replicatedImages
-        .firstWhere((image) => image.scriptShotId == first.id);
-    expect(terminalCorrectionRecord.status, ProcessingStatus.failed);
-    expect(terminalCorrectionRecord.generationRecovery.isEmpty, isTrue);
-    expect(terminalCorrectionRecord.errorMessage, contains('已停止继续付费校正'));
-
-    final noPoseReviewStart = generationReviewService.inputs.length;
-    await controller.removeDepthForShot(second.id);
-    expect(await controller.replicateShot(second.id), isFalse);
-    expect(
-      generationReviewService.inputs.length,
-      noPoseReviewStart,
-      reason: '没有有效高精度深度图的镜头必须在提交前阻断，不能调用审核或续轮校正',
-    );
-
-    final inconclusiveRequestStart = imageService.requests.length;
-    final inconclusiveReviewStart = generationReviewService.inputs.length;
-    generationReviewService.results.add(
-      const ReplicationGenerationReviewResult(
-        decision: ReplicationPoseReviewDecision.inconclusive,
-        diagnostic: '右臂被前景完全遮挡，无法可靠比较',
-        rawResponse: '{"decision":"inconclusive","reason":"右臂被前景完全遮挡，无法可靠比较"}',
-      ),
-    );
+    for (final subjectId in ['product:0', 'product:1', 'product:2']) {
+      controller.setDetectedSubjectDecision(
+        first.id,
+        subjectId,
+        ReplicateSubjectDecision.keep,
+      );
+    }
+    workflowRepository.deleteLink(first.id, sceneAssetId);
+    imageService.requests.clear();
     expect(await controller.replicateShot(first.id), isTrue);
-    expect(imageService.requests.length - inconclusiveRequestStart, 2);
-    expect(generationReviewService.inputs.length - inconclusiveReviewStart, 1);
-    final inconclusiveRecord = controller.value.replicatedImages.firstWhere(
-      (image) => image.scriptShotId == first.id,
-    );
-    expect(inconclusiveRecord.status, ProcessingStatus.completed);
+    expect(imageService.requests, hasLength(1));
+    final modelOnlyPrompt = imageService.requests.single.prompt;
+    expect(modelOnlyPrompt, contains('【组合路由】M1-P0-S0 · 仅替换模特'));
+    expect(modelOnlyPrompt, contains('原帧中没有绑定产品资产的服装、鞋帽、配饰及其他产品必须保持不变'));
     expect(
-      inconclusiveRecord.rawResponse,
-      contains('pose_review_inconclusive'),
-    );
-
-    final failedReviewRequestStart = imageService.requests.length;
-    final failedReviewStart = generationReviewService.inputs.length;
-    generationReviewService.error = const FormatException('姿势审核未返回可解析的 JSON');
-    expect(await controller.replicateShot(first.id), isFalse);
-    expect(imageService.requests.length - failedReviewRequestStart, 2);
-    expect(generationReviewService.inputs.length - failedReviewStart, 1);
-    final failedReviewRecord = controller.value.replicatedImages.firstWhere(
-      (image) => image.scriptShotId == first.id,
-    );
-    expect(failedReviewRecord.status, ProcessingStatus.failed);
-    expect(
-      failedReviewRecord.generationRecovery.stage,
-      ReplicatedShotRecoveryStage.awaitingInitialReview,
-    );
-    expect(File(failedReviewRecord.generatedFramePath).existsSync(), isTrue);
-    expect(
-      (jsonDecode(failedReviewRecord.rawResponse)
-          as Map<String, dynamic>)['productDetailRefillRawResponse'],
-      '{"ok":true}',
-      reason: '姿势审核失败时仍必须保留已经完成的产品局部回填审计响应',
-    );
-
-    controller.dispose();
-    generationReviewService.error = null;
-    controller = ReplicateController(
-      repository: ReplicateRepository(database),
-      shootingScriptController: shootingController,
-      directories: directories,
-      settingsController: settingsController,
-      workflowRepository: workflowRepository,
-      imageGenerationService: imageService,
-      visionService: visionService,
-      generationReviewService: generationReviewService,
-    );
-    final resumedRequestStart = imageService.requests.length;
-    final resumedReviewStart = generationReviewService.inputs.length;
-    expect(await controller.replicateShot(first.id), isTrue);
-    expect(
-      imageService.requests.length,
-      resumedRequestStart,
-      reason: '审核异常后的跨进程恢复不得重复首轮图片生成',
-    );
-    expect(generationReviewService.inputs.length - resumedReviewStart, 1);
-    final resumedRecord = controller.value.replicatedImages.firstWhere(
-      (image) => image.scriptShotId == first.id,
-    );
-    expect(resumedRecord.status, ProcessingStatus.completed);
-    expect(resumedRecord.generationRecovery.isEmpty, isTrue);
-    expect(
-      (jsonDecode(resumedRecord.rawResponse)
-          as Map<String, dynamic>)['productDetailRefillRawResponse'],
-      '{"ok":true}',
-      reason: '跨进程恢复姿势审核后不得丢失前一阶段产品局部回填审计响应',
-    );
-
-    controller.setDetectedSubjectDecision(
-      first.id,
-      'product:0',
-      ReplicateSubjectDecision.keep,
-    );
-    controller.setDetectedSubjectDecision(
-      first.id,
-      'product:0',
-      ReplicateSubjectDecision.replace,
-    );
-    workflowRepository
-      ..deleteLink(first.id, productDetailAssetId)
-      ..deleteLink(first.id, productDetailBAssetId);
-    imageService.includeGeminiContinuation = false;
-    generationReviewService.results.add(
-      const ReplicationGenerationReviewResult(
-        decision: ReplicationPoseReviewDecision.correctionRequired,
-        issue: ReplicationGenerationReviewIssue(
-          code: 'depth_geometry',
-          priority: 1,
-          summary: '左肘角度偏离深度图',
-          evidence: '待审核图左肘伸直，而 高精度深度图明确弯曲',
-          correction: '只恢复左肘弯曲角度',
-        ),
-        rawResponse: '{"decision":"correction_required"}',
-      ),
-    );
-    final missingContinuationRequestStart = imageService.requests.length;
-    final missingContinuationReviewStart =
-        generationReviewService.inputs.length;
-    expect(await controller.replicateShot(first.id), isFalse);
-    expect(imageService.requests.length - missingContinuationRequestStart, 1);
-    expect(
-      generationReviewService.inputs.length - missingContinuationReviewStart,
-      1,
-    );
-    final missingContinuationRecord = controller.value.replicatedImages
-        .firstWhere((image) => image.scriptShotId == first.id);
-    expect(
-      missingContinuationRecord.generationRecovery.stage,
-      ReplicatedShotRecoveryStage.awaitingCorrection,
-    );
-    expect(missingContinuationRecord.errorMessage, contains('没有返回可用续轮状态'));
-
-    final blockedRetryRequestStart = imageService.requests.length;
-    final blockedRetryReviewStart = generationReviewService.inputs.length;
-    expect(await controller.replicateShot(first.id), isFalse);
-    expect(imageService.requests.length, blockedRetryRequestStart);
-    expect(generationReviewService.inputs.length, blockedRetryReviewStart);
-
-    final inFlightRecord = missingContinuationRecord.copyWith(
-      generationRecovery: missingContinuationRecord.generationRecovery.copyWith(
-        stage: ReplicatedShotRecoveryStage.correctionInFlight,
-      ),
-      status: ProcessingStatus.running,
-      errorMessage: '',
-      updatedAt: DateTime.now().toUtc(),
-    );
-    ReplicateRepository(database).upsertReplicatedShotImage(inFlightRecord);
-    controller.refresh();
-    final inFlightRetryRequestStart = imageService.requests.length;
-    expect(await controller.replicateShot(first.id), isFalse);
-    expect(
-      imageService.requests.length,
-      inFlightRetryRequestStart,
-      reason: '校正请求已发出但未安全落盘时必须禁止重发以避免重复计费',
-    );
-    expect(
-      controller.value.replicatedImages
-          .firstWhere((image) => image.scriptShotId == first.id)
-          .errorMessage,
-      contains('无法确认该请求是否已执行或计费'),
+      modelOnlyPrompt,
+      contains('人物穿搭外观'),
+      reason: 'Nano Banana 权威清单必须把空产品槽的穿搭权威留给原帧',
     );
   });
 
@@ -2635,7 +2433,6 @@ void main() {
     final workflowRepository = ShootingScriptWorkflowRepository(database);
     final imageService = _RecordingImageGenerationService();
     final visionService = _RecordingVisionStoryboardService();
-    final generationReviewService = _QueuedGenerationReviewService();
     final controller = ReplicateController(
       repository: ReplicateRepository(database),
       shootingScriptController: shootingController,
@@ -2644,7 +2441,6 @@ void main() {
       workflowRepository: workflowRepository,
       imageGenerationService: imageService,
       visionService: visionService,
-      generationReviewService: generationReviewService,
     );
     addTearDown(() async {
       controller.dispose();
@@ -4038,30 +3834,6 @@ class _RecordingImageGenerationService extends ImageGenerationService {
     );
   }
 }
-
-class _QueuedGenerationReviewService
-    extends ReplicationGenerationReviewService {
-  final results = <ReplicationGenerationReviewResult>[];
-  final inputs = <ReplicationGenerationReviewInput>[];
-  Object? error;
-
-  @override
-  Future<ReplicationGenerationReviewResult> review({
-    required AppSettings settings,
-    required ReplicationGenerationReviewInput input,
-    bool allowThinking = false,
-  }) async {
-    inputs.add(input);
-    if (error case final error?) throw error;
-    return results.isEmpty ? _generationReviewPassed() : results.removeAt(0);
-  }
-}
-
-ReplicationGenerationReviewResult _generationReviewPassed() =>
-    const ReplicationGenerationReviewResult(
-      decision: ReplicationPoseReviewDecision.passed,
-      rawResponse: '{"decision":"passed","issue":null}',
-    );
 
 class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {
   _QueuedFrameAnalysisService(this.results);

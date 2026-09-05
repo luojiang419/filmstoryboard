@@ -32,13 +32,14 @@ void main() {
 
     expect(prompt, startsWith('让金发模特在露台长椅旁自然坐下'));
     expect(prompt, contains('使用图片2中的“露台背景”作为背景环境'));
-    expect(prompt, contains('使用图片3中的“金发模特”作为模特A'));
+    expect(prompt, contains('只使用图片3中的“金发模特”的身份、脸部、发型、肤色和体型'));
+    expect(prompt, contains('【组合路由】M1-P1-S1'));
     expect(prompt, contains('穿着或使用图片4中的“蓝色长裤”（产品A）'));
     expect(prompt, contains('图片2是新场景与背景的唯一权威来源'));
     expect(prompt, contains('必须完整替换图片1的原背景'));
     expect(prompt, contains('不得继承图片1的场景、背景或环境光'));
     expect(prompt, contains('环境光、色温和阴影以场景参考图为准'));
-    expect(prompt.length, lessThan(620));
+    expect(prompt.length, lessThan(900));
     expect(prompt, isNot(contains('确定性精准复刻协议')));
     expect(prompt, isNot(contains('高精度深度图')));
   });
@@ -128,7 +129,7 @@ void main() {
     expect(prompt, startsWith('只输出一张完成的分镜图'));
     expect(
       prompt.indexOf('图片2是新场景与背景的唯一权威来源'),
-      lessThan(prompt.indexOf('模特A以图片3')),
+      lessThan(prompt.indexOf('模特A只以图片3')),
     );
     expect(prompt, contains('禁止继承图片1中的建筑、家具、道路、地面、植物、天空'));
     expect(prompt, contains('环境光、色温、阴影与空间氛围以场景参考图为准'));
@@ -136,6 +137,7 @@ void main() {
     expect(prompt, contains('图片5只补充产品A'));
     expect(prompt, contains('产品B以图片6为主图'));
     expect(prompt, contains('模特A与产品A一一对应'));
+    expect(prompt, contains('不继承该图的服装、姿势和背景'));
     expect(prompt, contains('图片7只补充产品B'));
     expect(prompt, contains('图片5说明：产品A的腰头和口袋'));
     expect(prompt, contains('补充关系：图3模特穿产品A和产品B，佩戴图8配饰'));

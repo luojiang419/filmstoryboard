@@ -38,9 +38,27 @@ class LightweightReplicationPromptCompiler {
         if (reference.role == QuickReferenceRole.scene) reference.imageNumber,
     ];
     final hasSceneReference = sceneImageNumbers.isNotEmpty;
+    final hasModelReference = plan.references.any(
+      (reference) => reference.role == QuickReferenceRole.model,
+    );
+    final hasProductReference = plan.references.any(
+      (reference) => const {
+        QuickReferenceRole.product,
+        QuickReferenceRole.clothing,
+        QuickReferenceRole.shoes,
+        QuickReferenceRole.accessory,
+        QuickReferenceRole.prop,
+      }.contains(reference.role),
+    );
+    final route = _combinationRoute(
+      hasModel: hasModelReference,
+      hasProduct: hasProductReference,
+      hasScene: hasSceneReference,
+    );
 
     final lines = <String>[
       '只输出一张完成的分镜图。画面目标：$normalizedInstruction',
+      '【组合路由】${route.$1}：${route.$2}',
       if (sourceFrameMode == ReplicateSourceFrameMode.lineArt)
         LineArtColorStylePromptCompiler.lineArtSourceFrameAuthority,
       if (hasSceneReference)
@@ -138,8 +156,22 @@ class LightweightReplicationPromptCompiler {
         if (reference.type == ReplicateAssetType.scene) reference.imageNumber,
     ];
     final hasSceneReference = sceneImageNumbers.isNotEmpty;
+    final hasModelReference = references.any(
+      (reference) => reference.type == ReplicateAssetType.character,
+    );
+    final hasProductReference = references.any(
+      (reference) =>
+          reference.type == ReplicateAssetType.product ||
+          reference.type == ReplicateAssetType.prop,
+    );
+    final route = _combinationRoute(
+      hasModel: hasModelReference,
+      hasProduct: hasProductReference,
+      hasScene: hasSceneReference,
+    );
     final lines = <String>[
       normalizedInstruction,
+      '【组合路由】${route.$1}：${route.$2}',
       if (sourceFrameMode == ReplicateSourceFrameMode.lineArt)
         LineArtColorStylePromptCompiler.lineArtSourceFrameAuthority,
       if (clauses.isNotEmpty) '${clauses.join('，')}。',
@@ -181,7 +213,8 @@ class LightweightReplicationPromptCompiler {
     final named = name.isEmpty ? image : '$image中的“$name”';
     final slot = reference.slotLabel.trim();
     return switch (reference.type) {
-      ReplicateAssetType.character => '使用$named作为${slot.isEmpty ? '人物' : slot}',
+      ReplicateAssetType.character =>
+        '只使用$named的身份、脸部、发型、肤色和体型替换${slot.isEmpty ? '对应人物' : slot}；不使用该图的服装、姿势和背景',
       ReplicateAssetType.product =>
         '让对应人物穿着或使用$named${slot.isEmpty ? '' : '（$slot）'}',
       ReplicateAssetType.scene => '使用$named作为背景环境',
@@ -225,14 +258,40 @@ class LightweightReplicationPromptCompiler {
     ];
     for (var index = 0; index < models.length; index++) {
       final label = QuickReplicationLocalPlanner.productLabelForIndex(index);
-      lines.add('模特$label以图片${models[index].imageNumber}为身份与外观参考。');
+      lines.add(
+        '模特$label只以图片${models[index].imageNumber}为身份、脸部、发型、肤色和体型参考；不继承该图的服装、姿势和背景。',
+      );
       if (index < plan.productGroups.length) {
         lines.add(
           '模特$label与产品${plan.productGroups[index].label}一一对应，产品不得跨模特互换、串用或混搭。',
         );
       }
     }
+    if (models.isNotEmpty && plan.productGroups.isEmpty) {
+      lines.add('没有绑定产品的模特槽位继续穿着图片1中的原服装、鞋帽和配饰。');
+    }
   }
+
+  static (String, String) _combinationRoute({
+    required bool hasModel,
+    required bool hasProduct,
+    required bool hasScene,
+  }) => switch ((hasModel, hasProduct, hasScene)) {
+    (false, false, false) => ('M0-P0-S0 · 全部保留', '空资产格沿用图片1，只执行明确指定的局部调整。'),
+    (true, false, false) => ('M1-P0-S0 · 仅替换模特', '只替换人物身份，原服装、产品与场景保持图片1不变。'),
+    (false, true, false) => (
+      'M0-P1-S0 · 仅替换产品',
+      '保留原人物身份与场景，按原穿着、持拿或摆放关系替换产品。',
+    ),
+    (false, false, true) => ('M0-P0-S1 · 仅替换场景', '保留原人物与产品，只重建环境外观和环境光。'),
+    (true, true, false) => ('M1-P1-S0 · 模特与产品', '同槽位模特穿着或使用对应产品，保持原动作与场景。'),
+    (true, false, true) => ('M1-P0-S1 · 模特与场景', '替换人物身份并进入新场景，原服装与产品保持不变。'),
+    (false, true, true) => ('M0-P1-S1 · 产品与场景', '原人物穿着或使用对应产品并进入新场景。'),
+    (true, true, true) => (
+      'M1-P1-S1 · 模特、产品与场景',
+      '同槽位模特穿着或使用对应产品，保持原动作并进入新场景。',
+    ),
+  };
 
   static void _addSceneReplacementLines(
     List<String> lines,

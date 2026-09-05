@@ -7743,7 +7743,12 @@ class _ShotAssetDropRow extends StatelessWidget {
             removeKey: ValueKey(
               'remove-detected-subject-asset-slot-${shot.id}-${subject.id}',
             ),
-            subject: subject,
+            subject: subject.copyWith(
+              decision: _subjectDecisionForDisplay(
+                subject,
+                hasBinding: assignments[subject.id] != null,
+              ),
+            ),
             asset: assignments[subject.id] == null
                 ? null
                 : assetsByLink[assignments[subject.id]!],
@@ -7788,7 +7793,13 @@ class _ShotAssetDropRow extends StatelessWidget {
             },
             onRemove: assignments[subject.id] == null
                 ? null
-                : () => onRemove(assignments[subject.id]!.scriptAssetId),
+                : () {
+                    onRemove(assignments[subject.id]!.scriptAssetId);
+                    onSetSubjectDecision(
+                      subject.id,
+                      ReplicateSubjectDecision.undecided,
+                    );
+                  },
             onRemoveSlot: () {
               final assignment = assignments[subject.id];
               if (assignment != null) onRemove(assignment.scriptAssetId);
@@ -8014,6 +8025,19 @@ String _detectedSubjectBindingLabel(
   final prefix = subject.type == ReplicateSubjectType.person ? '模特' : '产品';
   if (count <= 1 && subject.slotIndex == 0) return prefix;
   return '$prefix${ScriptAssetSlotPolicy.characterSuffix(subject.slotIndex)}';
+}
+
+ReplicateSubjectDecision _subjectDecisionForDisplay(
+  ReplicateDetectedSubject subject, {
+  required bool hasBinding,
+}) {
+  if (subject.decision == ReplicateSubjectDecision.keep ||
+      subject.decision == ReplicateSubjectDecision.remove) {
+    return subject.decision;
+  }
+  return hasBinding
+      ? ReplicateSubjectDecision.replace
+      : ReplicateSubjectDecision.keep;
 }
 
 class _ProductMarkReferenceOption {
@@ -8771,7 +8795,7 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            active ? '松开绑定' : '点击绑定替换资产',
+                                            active ? '松开绑定' : '未上传，默认保留',
                                             style: Theme.of(
                                               context,
                                             ).textTheme.labelSmall,
@@ -8817,20 +8841,17 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
                         value: subject.decision,
                         isDense: true,
                         isExpanded: true,
-                        items: const [
-                          DropdownMenuItem(
-                            value: ReplicateSubjectDecision.undecided,
-                            child: Text('请选择处理方式'),
-                          ),
-                          DropdownMenuItem(
+                        items: [
+                          const DropdownMenuItem(
                             value: ReplicateSubjectDecision.keep,
                             child: Text('保留（沿用原视频帧）'),
                           ),
                           DropdownMenuItem(
                             value: ReplicateSubjectDecision.replace,
-                            child: Text('替换（必须绑定对应资产）'),
+                            enabled: bound,
+                            child: const Text('替换（使用已绑定资产）'),
                           ),
-                          DropdownMenuItem(
+                          const DropdownMenuItem(
                             value: ReplicateSubjectDecision.remove,
                             child: Text('从画面移除'),
                           ),

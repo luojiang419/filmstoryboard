@@ -39,6 +39,7 @@ class ReplicationAuthorityContext {
     this.hasProductDetailAsset = false,
     this.isSourceElementSelected = false,
     this.wearableProductSlots = const {},
+    this.modelSlots = const {},
     this.productDetailSlots = const {},
     this.fullOutfitPersonSlots = const {},
     this.fullOutfitProductSlotByPersonSlot = const {},
@@ -49,6 +50,7 @@ class ReplicationAuthorityContext {
   final bool hasProductDetailAsset;
   final bool isSourceElementSelected;
   final Set<int> wearableProductSlots;
+  final Set<int> modelSlots;
   final Set<int> productDetailSlots;
   final Set<int> fullOutfitPersonSlots;
   final Map<int, int> fullOutfitProductSlotByPersonSlot;
@@ -89,14 +91,18 @@ class ReplicationAuthorityPolicy {
     ReplicationAuthorityScope.personBodyShape =>
       context.isFullOutfitPersonSlot(slotIndex)
           ? ReplicationAuthoritySource.fullOutfitAsset
-          : ReplicationAuthoritySource.modelAsset,
+          : (slotIndex == null
+                ? context.modelSlots.isNotEmpty
+                : context.modelSlots.contains(slotIndex))
+          ? ReplicationAuthoritySource.modelAsset
+          : ReplicationAuthoritySource.sourceFrame,
     ReplicationAuthorityScope.personWardrobeAppearance =>
       context.wearableProductSlots.contains(slotIndex) ||
               (slotIndex == null && context.hasWearableProductAsset)
           ? ReplicationAuthoritySource.productAsset
           : context.isFullOutfitPersonSlot(slotIndex)
           ? ReplicationAuthoritySource.fullOutfitAsset
-          : ReplicationAuthoritySource.modelAsset,
+          : ReplicationAuthoritySource.sourceFrame,
     ReplicationAuthorityScope.productSilhouetteAndProportion ||
     ReplicationAuthorityScope.productStructure ||
     ReplicationAuthorityScope.productColorAndMaterial =>

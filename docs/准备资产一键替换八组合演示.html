@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>准备资产 · 一键替换八组合演示</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      color: light-dark(#20211f, #f4f3ee);
+      background: light-dark(#f4f5f2, #171816);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+    button, input { font: inherit; }
+    button:focus-visible, input:focus-visible { outline: 3px solid light-dark(#2868c7, #8cbcff); outline-offset: 2px; }
+    .app-shell { min-height: 100vh; background: light-dark(#f4f5f2, #171816); }
+    .topbar {
+      min-height: 58px;
+      padding: 10px clamp(14px, 3vw, 28px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid light-dark(#d7d9d3, #393b36);
+      background: light-dark(#ffffff, #22231f);
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 500; }
+    h2 { margin: 0; font-size: 15px; font-weight: 500; }
+    .api-stats { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .stat {
+      padding: 4px 8px;
+      border-radius: 4px;
+      color: light-dark(#31573b, #a6e2b3);
+      background: light-dark(#e5f2e7, #24382a);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .stat.image { color: light-dark(#234f8c, #afd0ff); background: light-dark(#e4eefb, #22354d); }
+    main { width: min(1180px, 100%); margin: 0 auto; padding: 18px clamp(12px, 2.5vw, 26px) 28px; }
+    .preset-bar {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(74px, 1fr));
+      gap: 6px;
+      margin: 12px 0 14px;
+    }
+    .preset {
+      min-height: 48px;
+      padding: 6px;
+      border: 1px solid light-dark(#cfd2ca, #484a44);
+      border-radius: 5px;
+      color: inherit;
+      background: light-dark(#ffffff, #22231f);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .preset[aria-pressed="true"] {
+      color: light-dark(#ffffff, #10120f);
+      border-color: light-dark(#2b5f3b, #92c99f);
+      background: light-dark(#2b5f3b, #92c99f);
+    }
+    .control-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      padding: 10px 0 14px;
+      border-bottom: 1px solid light-dark(#d7d9d3, #393b36);
+    }
+    .switch { min-height: 42px; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+    .switch input { width: 18px; height: 18px; accent-color: light-dark(#2b5f3b, #92c99f); }
+    .play-button {
+      min-height: 38px;
+      margin-left: auto;
+      padding: 6px 12px;
+      border: 1px solid light-dark(#92968e, #73776e);
+      border-radius: 5px;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+    }
+    .play-button:disabled { opacity: .55; cursor: default; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); gap: 18px; margin-top: 18px; }
+    .visual-column, .logic-column { min-width: 0; }
+    .frame {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      border-radius: 6px;
+      background: light-dark(#d9dcd5, #292b27);
+      border: 1px solid light-dark(#c7cac2, #454740);
+    }
+    .frame > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .frame .scene-layer { opacity: 0; transform: scale(1.03); transition: opacity .42s ease, transform .42s ease; }
+    .frame.has-scene .scene-layer { opacity: .82; transform: scale(1); }
+    .subject-mask {
+      position: absolute;
+      left: 41%;
+      top: 7%;
+      width: 31%;
+      height: 88%;
+      border: 2px solid light-dark(#ffffff, #f8f7f2);
+      border-radius: 46% 46% 18% 18%;
+      box-shadow: 0 0 0 999px light-dark(rgba(18, 20, 17, .08), rgba(0, 0, 0, .18));
+      transition: border-color .3s ease, transform .3s ease;
+    }
+    .frame.has-model .subject-mask { border-color: light-dark(#cf3f5d, #ff8ca2); transform: translateX(-2px); }
+    .wardrobe-zone {
+      position: absolute;
+      left: 44%;
+      top: 25%;
+      width: 25%;
+      height: 43%;
+      border: 2px dashed transparent;
+      border-radius: 5px;
+      transition: border-color .3s ease, background-color .3s ease;
+    }
+    .frame.has-product .wardrobe-zone { border-color: light-dark(#2169b2, #84bfff); background: light-dark(rgba(33, 105, 178, .12), rgba(132, 191, 255, .13)); }
+    .frame-label {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      max-width: calc(100% - 20px);
+      padding: 5px 8px;
+      border-radius: 4px;
+      color: #ffffff;
+      background: rgba(17, 18, 16, .78);
+      font-size: 12px;
+    }
+    .frame.is-updating .subject-mask, .frame.is-updating .wardrobe-zone { animation: source-change .42s ease; }
+    @keyframes source-change { 0% { transform: scale(.96); opacity: .45; } 100% { opacity: 1; } }
+    .authority-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+    .authority {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      padding: 7px;
+      border-bottom: 2px solid light-dark(#c8cbc4, #454840);
+      background: light-dark(#ffffff, #22231f);
+    }
+    .authority img { width: 52px; height: 42px; object-fit: cover; border-radius: 3px; }
+    .authority strong, .authority span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .authority strong { font-size: 12px; font-weight: 500; }
+    .authority span { margin-top: 2px; color: light-dark(#666a63, #b6b9b1); font-size: 11px; }
+    .authority.changed { border-color: light-dark(#2f70bd, #84bfff); animation: authority-in .4s ease; }
+    @keyframes authority-in { 0% { transform: translateY(7px); opacity: .4; } 100% { transform: translateY(0); opacity: 1; } }
+    .logic-list { margin: 10px 0 0; padding: 0; list-style: none; }
+    .logic-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; padding: 8px 0; border-bottom: 1px solid light-dark(#dde0d9, #363832); }
+    .step-number { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: light-dark(#ffffff, #10120f); background: light-dark(#4a6d52, #9cc6a6); font-size: 12px; }
+    .logic-list strong { display: block; font-size: 13px; font-weight: 500; }
+    .logic-list span { display: block; margin-top: 2px; color: light-dark(#666a63, #b6b9b1); font-size: 12px; }
+    .order-line { margin-top: 14px; padding-top: 10px; border-top: 1px solid light-dark(#d7d9d3, #393b36); }
+    .order-items { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .order-item { padding: 4px 7px; border-radius: 4px; background: light-dark(#e9ebe5, #30322d); font-size: 12px; animation: authority-in .35s ease; }
+    .route-title { margin-top: 18px; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .route-id { color: light-dark(#2b5f3b, #9cc6a6); font: 500 13px Consolas, monospace; }
+    pre {
+      margin: 9px 0 0;
+      padding: 14px;
+      border: 1px solid light-dark(#d2d5cd, #42443e);
+      border-radius: 5px;
+      color: light-dark(#292b27, #efeee9);
+      background: light-dark(#ffffff, #1f201d);
+      font: 12px/1.65 Consolas, "Microsoft YaHei", monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 860px) {
+      .preset-bar { grid-template-columns: repeat(4, 1fr); }
+      .workspace { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .api-stats { justify-content: flex-start; }
+      .preset-bar { grid-template-columns: repeat(2, 1fr); }
+      .authority-grid { grid-template-columns: 1fr; }
+      .play-button { width: 100%; margin-left: 0; }
+      .frame-label { font-size: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell" id="replacement-demo">
+    <header class="topbar">
+      <h1>准备资产 · 确定性一键替换</h1>
+      <div class="api-stats" aria-label="单次生成调用">
+        <span class="stat">视觉模型 0 次</span>
+        <span class="stat image">图片生成 1 次</span>
+      </div>
+    </header>
+    <main>
+      <h2>八种组合</h2>
+      <div class="preset-bar" id="presets" aria-label="八种资产组合"></div>
+      <div class="control-row" aria-label="资产格状态">
+        <label class="switch"><input id="model-toggle" type="checkbox"><span>模特 A</span></label>
+        <label class="switch"><input id="product-toggle" type="checkbox"><span>服装 / 产品 A</span></label>
+        <label class="switch"><input id="scene-toggle" type="checkbox"><span>场景</span></label>
+        <label class="switch"><input id="multi-toggle" type="checkbox"><span>显示 A / B 配对</span></label>
+        <button class="play-button" id="play" type="button">播放 8 种组合</button>
+      </div>
+
+      <div class="workspace">
+        <section class="visual-column" aria-labelledby="effect-heading">
+          <h2 id="effect-heading">属性来源变化</h2>
+          <div class="frame" id="frame" role="img" aria-label="原帧中的人物身份、服装产品和场景属性来源动画">
+            <img src="../assets/color_style_thumbnails/natural_cinema.jpg" alt="原视频帧示例">
+            <img class="scene-layer" src="../assets/color_style_thumbnails/tungsten_night.jpg" alt="新场景参考示例">
+            <div class="subject-mask" aria-hidden="true"></div>
+            <div class="wardrobe-zone" aria-hidden="true"></div>
+            <div class="frame-label" id="effect-label" aria-live="polite"></div>
+          </div>
+          <div class="authority-grid" id="authority-grid">
+            <div class="authority" id="identity-authority">
+              <img src="../assets/color_style_thumbnails/natural_cinema.jpg" alt="">
+              <div><strong>人物身份</strong><span>原帧 · 保留</span></div>
+            </div>
+            <div class="authority" id="product-authority">
+              <img src="../assets/color_style_thumbnails/natural_cinema.jpg" alt="">
+              <div><strong>服装 / 产品</strong><span>原帧 · 保留</span></div>
+            </div>
+            <div class="authority" id="scene-authority">
+              <img src="../assets/color_style_thumbnails/natural_cinema.jpg" alt="">
+              <div><strong>场景环境</strong><span>原帧 · 保留</span></div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="logic-column" aria-labelledby="pipeline-heading">
+          <h2 id="pipeline-heading">生成链路</h2>
+          <ol class="logic-list">
+            <li><span class="step-number">1</span><div><strong>原帧解析</strong><span>读取已缓存的人物、产品、关系与动作</span></div></li>
+            <li><span class="step-number">2</span><div><strong>槽位决策</strong><span>空格保留，有图替换，显式选择才移除</span></div></li>
+            <li><span class="step-number">3</span><div><strong>本地编译</strong><span id="compile-status">M0-P0-S0 · 不调用视觉模型</span></div></li>
+            <li><span class="step-number">4</span><div><strong>图片生成</strong><span>原帧与编号资产一次提交</span></div></li>
+          </ol>
+          <div class="order-line">
+            <h2>参考图顺序</h2>
+            <div class="order-items" id="order-items" aria-live="polite"></div>
+          </div>
+        </aside>
+      </div>
+
+      <section aria-labelledby="prompt-heading">
+        <div class="route-title">
+          <h2 id="prompt-heading">完整组合提示词</h2>
+          <span class="route-id" id="route-id">M0-P0-S0</span>
+        </div>
+        <pre id="prompt" aria-live="polite"></pre>
+      </section>
+    </main>
+  </div>
+  <script>
+    const routes = [
+      { m: false, p: false, s: false, title: '全部保留', text: '没有绑定替换资产的主体完整沿用图片1；只执行处理计划中显式要求的移除。' },
+      { m: true,  p: false, s: false, title: '仅模特', text: '只替换人物身份；原服装、产品、动作与场景保持图片1不变。' },
+      { m: false, p: true,  s: false, title: '仅产品', text: '保留原人物身份与场景；按原穿着、持拿、接触或独立摆放关系替换产品。' },
+      { m: false, p: false, s: true,  title: '仅场景', text: '保留全部人物、服装与产品；只重建环境外观和环境光。' },
+      { m: true,  p: true,  s: false, title: '模特 + 产品', text: '同槽位模特穿着、持拿或使用对应产品；动作与原场景保持不变。' },
+      { m: true,  p: false, s: true,  title: '模特 + 场景', text: '替换人物身份并置入新场景；原服装和原产品保持不变。' },
+      { m: false, p: true,  s: true,  title: '产品 + 场景', text: '原人物穿着、持拿或使用对应产品，并置入新场景。' },
+      { m: true,  p: true,  s: true,  title: '模特 + 产品 + 场景', text: '同槽位模特穿着、持拿或使用对应产品，保持原动作并置入新场景。' }
+    ];
+    const root = document.getElementById('replacement-demo');
+    const toggles = {
+      m: document.getElementById('model-toggle'),
+      p: document.getElementById('product-toggle'),
+      s: document.getElementById('scene-toggle')
+    };
+    const multiToggle = document.getElementById('multi-toggle');
+    const frame = document.getElementById('frame');
+    const presets = document.getElementById('presets');
+    const play = document.getElementById('play');
+    let playing = false;
+
+    function routeId(route) { return `M${route.m ? 1 : 0}-P${route.p ? 1 : 0}-S${route.s ? 1 : 0}`; }
+    function currentRoute() {
+      return routes.find(route => route.m === toggles.m.checked && route.p === toggles.p.checked && route.s === toggles.s.checked);
+    }
+    function authority(nodeId, enabled, source, image) {
+      const node = document.getElementById(nodeId);
+      node.classList.toggle('changed', enabled);
+      node.querySelector('img').src = image;
+      node.querySelector('span').textContent = enabled ? `${source} · 替换` : '原帧 · 保留';
+    }
+    function compilePrompt(route) {
+      const lines = [
+        '【确定性一键替换协议】',
+        `【组合路由】${routeId(route)} · ${route.title}：${route.text}`,
+        '图片1是原视频帧，也是构图、机位、透视、主体位置、姿势、接触、遮挡和所有空资产槽外观的唯一来源。',
+        '图片2是原帧配准深度图，只锁定人体前后关系、动作几何、遮挡边界和可辨认褶皱起伏，不提供身份、产品、材质、颜色或场景外观。'
+      ];
+      if (route.m) lines.push('模特资产只提供对应人物槽位的身份、脸部、发型、肤色和体型；不得带入素材图的服装、姿势、背景、机位或调色。');
+      if (route.p) lines.push('产品资产只提供对应产品槽位的轮廓、结构、颜色、材质和细节；按首次原帧分析保存的穿着、持拿、接触或独立摆放关系执行。');
+      if (route.s) lines.push('场景资产只提供环境外观、材质和环境光；主体布局、动作、接触、遮挡、机位和透视继续服从图片1。');
+      lines.push('【默认保留】任何没有绑定资产的对应格子都完整保留图片1内容；不得擅自替换、删除、美化或重绘。');
+      lines.push(multiToggle.checked
+        ? '【槽位规则】模特A只对应人物A，产品A只对应产品A；模特B只对应人物B，产品B只对应产品B。任一空槽独立保留，不得合并、互换、串穿或混搭。'
+        : '【槽位规则】模特A只对应人物A，产品A只对应产品A；后续槽位依次类推。不得合并、互换、串穿或混搭。');
+      lines.push('【输出规则】只输出一张完成的连续分镜画面，不输出拼图、对照图、参考图、深度图、界面或说明文字。');
+      return lines.join('\n');
+    }
+    function render() {
+      const route = currentRoute();
+      const id = routeId(route);
+      frame.className = `frame${route.m ? ' has-model' : ''}${route.p ? ' has-product' : ''}${route.s ? ' has-scene' : ''} is-updating`;
+      window.setTimeout(() => frame.classList.remove('is-updating'), 430);
+      document.getElementById('effect-label').textContent = `${id} · ${route.title} · 空槽保持原帧`;
+      document.getElementById('compile-status').textContent = `${id} · 不调用视觉模型`;
+      document.getElementById('route-id').textContent = id;
+      document.getElementById('prompt').textContent = compilePrompt(route);
+      authority('identity-authority', route.m, '模特 A', '../assets/color_style_thumbnails/forest_warmth.jpg');
+      authority('product-authority', route.p, '产品 A', '../assets/color_style_thumbnails/blue_gold_twilight.jpg');
+      authority('scene-authority', route.s, '场景', '../assets/color_style_thumbnails/tungsten_night.jpg');
+      const order = ['图片1 · 原帧', '图片2 · 深度图'];
+      if (route.m) order.push('图片3 · 模特 A');
+      if (route.p) order.push(`图片${order.length + 1} · 产品 A`);
+      if (multiToggle.checked && route.m) order.push(`图片${order.length + 1} · 模特 B`);
+      if (multiToggle.checked && route.p) order.push(`图片${order.length + 1} · 产品 B`);
+      if (route.s) order.push(`图片${order.length + 1} · 场景`);
+      document.getElementById('order-items').replaceChildren(...order.map(text => {
+        const item = document.createElement('span');
+        item.className = 'order-item';
+        item.textContent = text;
+        return item;
+      }));
+      [...presets.children].forEach((button, index) => button.setAttribute('aria-pressed', String(routes[index] === route)));
+    }
+    routes.forEach((route, index) => {
+      const button = document.createElement('button');
+      button.className = 'preset';
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(index === 0));
+      button.textContent = `${routeId(route)}\n${route.title}`;
+      button.style.whiteSpace = 'pre-line';
+      button.addEventListener('click', () => {
+        toggles.m.checked = route.m;
+        toggles.p.checked = route.p;
+        toggles.s.checked = route.s;
+        render();
+      });
+      presets.appendChild(button);
+    });
+    Object.values(toggles).forEach(toggle => toggle.addEventListener('change', render));
+    multiToggle.addEventListener('change', render);
+    play.addEventListener('click', async () => {
+      if (playing) return;
+      playing = true;
+      play.disabled = true;
+      for (const route of routes) {
+        toggles.m.checked = route.m;
+        toggles.p.checked = route.p;
+        toggles.s.checked = route.s;
+        render();
+        await new Promise(resolve => window.setTimeout(resolve, 780));
+      }
+      playing = false;
+      play.disabled = false;
+    });
+    render();
+  </script>
+</body>
+</html>

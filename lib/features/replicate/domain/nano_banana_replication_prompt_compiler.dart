@@ -21,6 +21,7 @@ class NanoBananaReplicationPromptInput {
     this.userInstructions = '',
     this.structuralReferenceDescriptions = const [],
     this.productOverridesWardrobeAppearance = false,
+    this.wearableProductSlots = const {},
     this.firstRoundProtocol,
     this.authorizedProductMarks = const [],
     this.sourceFrameMode = ReplicateSourceFrameMode.colorReference,
@@ -35,6 +36,7 @@ class NanoBananaReplicationPromptInput {
   /// Structural-only images inserted after image 1, such as a depth map.
   final List<String> structuralReferenceDescriptions;
   final bool productOverridesWardrobeAppearance;
+  final Set<int> wearableProductSlots;
   final NanoBananaFirstRoundProtocol? firstRoundProtocol;
   final List<NanoBananaAuthorizedProductMark> authorizedProductMarks;
   final ReplicateSourceFrameMode sourceFrameMode;
@@ -74,11 +76,21 @@ class NanoBananaReplicationPromptCompiler {
       hasSceneAsset: input.manifest.entries.any(
         (entry) => entry.kind == NanoBananaAssetKind.scene,
       ),
-      hasWearableProductAsset: input.productOverridesWardrobeAppearance,
+      hasWearableProductAsset:
+          input.productOverridesWardrobeAppearance ||
+          input.wearableProductSlots.isNotEmpty,
       hasProductDetailAsset: input.manifest.entries.any(
         (entry) => entry.kind == NanoBananaAssetKind.productDetail,
       ),
-      wearableProductSlots: input.productOverridesWardrobeAppearance
+      modelSlots: {
+        for (final entry in input.manifest.entries)
+          if (entry.kind == NanoBananaAssetKind.model &&
+              entry.slotIndex != null)
+            entry.slotIndex!,
+      },
+      wearableProductSlots: input.wearableProductSlots.isNotEmpty
+          ? input.wearableProductSlots
+          : input.productOverridesWardrobeAppearance
           ? {
               for (final entry in input.manifest.entries)
                 if (entry.kind == NanoBananaAssetKind.product &&
