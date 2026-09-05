@@ -246,12 +246,28 @@ void main() {
       find.byKey(const ValueKey('replication-generation-mode')),
       findsOneWidget,
     );
+    expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
+    expect(find.byKey(const ValueKey('extract-all-depth')), findsOneWidget);
+    expect(find.text('提取全部深度图'), findsOneWidget);
+    await tester.tap(find.text('快速'));
+    await tester.pump();
     expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
+    expect(
+      database.getSetting(
+        ReplicateRepository.replicationGenerationModeSettingKey,
+      ),
+      ReplicationGenerationMode.quick.name,
+    );
     expect(find.byKey(const ValueKey('extract-all-depth')), findsNothing);
-    expect(find.text('提取全部深度图'), findsNothing);
     await tester.tap(find.text('精确'));
     await tester.pump();
     expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
+    expect(
+      database.getSetting(
+        ReplicateRepository.replicationGenerationModeSettingKey,
+      ),
+      ReplicationGenerationMode.precise.name,
+    );
     expect(find.byKey(const ValueKey('extract-all-depth')), findsOneWidget);
     expect(find.text('提取全部深度图'), findsOneWidget);
     expect(find.text('部署骨架模型'), findsNothing);
@@ -597,9 +613,6 @@ void main() {
       find.byKey(ValueKey('replicate-user-instructions-${shot.id}')),
       findsOneWidget,
     );
-    expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
-    await tester.tap(find.text('精确'));
-    await tester.pump();
     expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('prepare-assets-right-asset-library-panel')),
@@ -1584,6 +1597,9 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 220));
 
+    await tester.tap(find.text('快速'));
+    await tester.pump();
+
     expect(
       find.byKey(const ValueKey('full-outfit-panel-shot-placeholder')),
       findsNothing,
@@ -1625,7 +1641,7 @@ void main() {
     expect(restored.subjects.last.decision, ReplicateSubjectDecision.keep);
   });
 
-  testWidgets('准备资产默认快速复刻且可切换精确资产控制', (tester) async {
+  testWidgets('准备资产默认精确且可持久切换快速资产控制', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1865,6 +1881,9 @@ void main() {
       find.byKey(ValueKey('shot-asset-visual-row-${shot.id}')),
       findsOneWidget,
     );
+    expect(find.text('步骤 1 · 精确匹配资产'), findsOneWidget);
+    await tester.tap(find.text('快速'));
+    await tester.pump();
     expect(find.text('步骤 1 · 快速多图复刻'), findsOneWidget);
     expect(
       find.byKey(ValueKey('quick-reference-images-${shot.id}')),

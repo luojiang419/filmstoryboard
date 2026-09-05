@@ -62,7 +62,8 @@ bool _replicatePageStateChanged(ReplicateState previous, ReplicateState next) {
       !identical(previous.shotGuides, next.shotGuides) ||
       !identical(previous.colorStylePresets, next.colorStylePresets) ||
       previous.isBusy != next.isBusy ||
-      previous.isAnalyzingFrames != next.isAnalyzingFrames;
+      previous.isAnalyzingFrames != next.isAnalyzingFrames ||
+      previous.generationMode != next.generationMode;
 }
 
 class ReplicatePage extends ConsumerStatefulWidget {
@@ -5539,8 +5540,6 @@ class _NewPrepareAssetsStep extends StatefulWidget {
 }
 
 class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
-  ReplicationGenerationMode _mode = ReplicationGenerationMode.quick;
-
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
@@ -5551,7 +5550,8 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
     final onImportLocalAsset = widget.onImportLocalAsset;
     final onManageAssets = widget.onManageAssets;
     final externalizeRightPanel = widget.externalizeRightPanel;
-    final preciseMode = _mode == ReplicationGenerationMode.precise;
+    final mode = state.generationMode;
+    final preciseMode = mode == ReplicationGenerationMode.precise;
     final canContinue = state.assets.any(
       (item) =>
           item.status == ProcessingStatus.completed && item.path.isNotEmpty,
@@ -5602,7 +5602,7 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
         assetBindingController: assetBindingController,
         assetLibraryState: assetLibraryState,
         onImportLocalAsset: onImportLocalAsset,
-        mode: _mode,
+        mode: mode,
       ),
     );
     return _WorkspacePanel(
@@ -5628,10 +5628,11 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
                     label: Text('精确'),
                   ),
                 ],
-                selected: {_mode},
+                selected: {mode},
                 onSelectionChanged: state.isBusy
                     ? null
-                    : (selection) => setState(() => _mode = selection.single),
+                    : (selection) =>
+                          controller.updateGenerationMode(selection.single),
                 showSelectedIcon: false,
               ),
               if (preciseMode)
@@ -5748,7 +5749,7 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
                         context,
                         state,
                         controller,
-                        mode: _mode,
+                        mode: mode,
                       )
                     : null,
                 icon: const Icon(Icons.auto_awesome_motion_rounded),

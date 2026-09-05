@@ -13,6 +13,19 @@ class ReplicateRepository {
   final AppDatabase _database;
   final VideoAnalysisRepository _delegate;
 
+  static const replicationGenerationModeSettingKey =
+      'replicationGenerationMode';
+
+  ReplicationGenerationMode loadGenerationMode() =>
+      _database.getSetting(replicationGenerationModeSettingKey) ==
+          ReplicationGenerationMode.quick.name
+      ? ReplicationGenerationMode.quick
+      : ReplicationGenerationMode.precise;
+
+  void saveGenerationMode(ReplicationGenerationMode mode) {
+    _database.setSetting(replicationGenerationModeSettingKey, mode.name);
+  }
+
   ReplicateRun? getRun(String id) => _delegate.getReplicateRun(id);
 
   List<ReplicateRun> listRuns() => _delegate.listReplicateRuns();

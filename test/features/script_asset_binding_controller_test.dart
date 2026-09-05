@@ -338,4 +338,112 @@ void main() {
       isNot(contains(ScriptAssetSlotPolicy.productDetailSortOrder)),
     );
   });
+
+  test('资产新增和编辑后自动按字母槽位回填且不覆盖手动锁定', () async {
+    final root = await Directory.systemTemp.createTemp('asset_live_match_');
+    addTearDown(() => root.delete(recursive: true));
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final settingsRepository = SettingsRepository(database, directories);
+    final settingsController = SettingsController(
+      repository: settingsRepository,
+      initialSettings: settingsRepository.load(),
+    );
+    final scriptController = ShootingScriptController(
+      repository: ShootingScriptRepository(database),
+      directories: directories,
+    );
+    scriptController.createEmpty(name: '资产实时匹配脚本');
+    final shot = scriptController.addShot()!;
+    scriptController.updateShot(
+      shot.copyWith(content: '模特A和模特B在明亮客厅展示两套服装', scene: '明亮客厅'),
+    );
+    final libraryController = ShootingAssetLibraryController(
+      repository: ShootingAssetLibraryRepository(
+        database: database,
+        directories: directories,
+      ),
+      directories: directories,
+    );
+    final bindingController = ShootingScriptAssetBindingController(
+      shootingScriptController: scriptController,
+      libraryController: libraryController,
+      repository: ShootingScriptWorkflowRepository(database),
+      settingsController: settingsController,
+    );
+    addTearDown(() {
+      bindingController.dispose();
+      libraryController.dispose();
+      scriptController.dispose();
+      settingsController.dispose();
+    });
+
+    Future<ShootingAssetLibraryItem> importAsset(
+      String filename,
+      String name,
+    ) async {
+      final file = File(p.join(root.path, filename));
+      await file.writeAsBytes([1, 2, 3]);
+      return (await libraryController.importItem(
+        sourcePath: file.path,
+        type: ReplicateAssetType.reference,
+        name: name,
+      ))!;
+    }
+
+    final manual = await importAsset('manual.png', '手动主角');
+    await bindingController.waitForPendingLibraryAutoMatch();
+    await bindingController.addLibraryAssetToShot(
+      manual,
+      shot.id,
+      slotSortOrder: ScriptAssetSlotPolicy.characterSortOrderBase,
+      slotLabel: '模特A',
+    );
+    final modelB = await importAsset('model-b.png', '模特B');
+    final outfitB = await importAsset('outfit-b.png', '服装B');
+    final modelA = await importAsset('model-a.png', '模特A');
+    final outfitA = await importAsset('outfit-a.png', '服装A');
+    final pendingScene = await importAsset('scene.png', '待编辑资产');
+    await bindingController.waitForPendingLibraryAutoMatch();
+
+    libraryController.updateItem(
+      pendingScene.copyWith(name: '室内环境', description: '明亮客厅'),
+    );
+    await bindingController.waitForPendingLibraryAutoMatch();
+
+    final scriptAssetsByLibraryId = {
+      for (final asset in bindingController.value.assets)
+        asset.libraryAssetId: asset,
+    };
+    final linksByLibraryId = {
+      for (final link in bindingController.value.links)
+        scriptAssetsByLibraryId.entries
+                .singleWhere((entry) => entry.value.id == link.scriptAssetId)
+                .key:
+            link,
+    };
+    expect(
+      linksByLibraryId[manual.id]?.sortOrder,
+      ScriptAssetSlotPolicy.characterSortOrderBase,
+    );
+    expect(
+      linksByLibraryId[modelB.id]?.sortOrder,
+      ScriptAssetSlotPolicy.characterSortOrderBase + 1,
+    );
+    expect(linksByLibraryId, isNot(contains(modelA.id)));
+    expect(
+      linksByLibraryId[outfitA.id]?.sortOrder,
+      ScriptAssetSlotPolicy.productSortOrder,
+    );
+    expect(
+      linksByLibraryId[outfitB.id]?.sortOrder,
+      ScriptAssetSlotPolicy.productSortOrderForIndex(1),
+    );
+    expect(
+      linksByLibraryId[pendingScene.id]?.sortOrder,
+      ScriptAssetSlotPolicy.sceneSortOrder,
+    );
+    expect(linksByLibraryId[manual.id]?.locked, isTrue);
+  });
 }

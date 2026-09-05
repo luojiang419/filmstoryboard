@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -105,6 +106,7 @@ class ShootingScriptAssetBindingController
        super(const ScriptAssetBindingState()) {
     _shootingScriptController.addListener(_handleScriptChanged);
     _libraryController.addListener(_handleLibraryChanged);
+    _libraryFingerprints = _fingerprintsFor(_libraryController.value.items);
     refresh();
   }
 
@@ -116,10 +118,14 @@ class ShootingScriptAssetBindingController
   final bool _ownsMatchingService;
   final Uuid _uuid;
   bool _disposed = false;
+  Map<String, String> _libraryFingerprints = const {};
+  final Set<String> _pendingLibraryAssetIds = {};
+  Future<void> _libraryAutoMatchFuture = Future<void>.value();
 
   @override
   void dispose() {
     _disposed = true;
+    _pendingLibraryAssetIds.clear();
     _shootingScriptController.removeListener(_handleScriptChanged);
     _libraryController.removeListener(_handleLibraryChanged);
     if (_ownsMatchingService) _matchingService.close();
@@ -420,6 +426,9 @@ class ShootingScriptAssetBindingController
     );
   }
 
+  @visibleForTesting
+  Future<void> waitForPendingLibraryAutoMatch() => _libraryAutoMatchFuture;
+
   void cancelMatching() {
     _matchingService.cancel();
     value = value.copyWith(isBusy: false, message: '已取消资产匹配');
@@ -497,15 +506,24 @@ class ShootingScriptAssetBindingController
       if (existing != null) {
         occupiedSortOrders.remove(existing.sortOrder);
       }
-      final preferredSortOrder =
-          ScriptAssetSlotPolicy.preferredSortOrderForAsset(
-            type: libraryItem.type,
-            name: libraryItem.name,
-            description: libraryItem.description,
-            aliases: libraryItem.aliases,
-            occupiedSortOrders: occupiedSortOrders,
-            maximumProductCount: effectiveMaximumProductCount,
-          );
+      int? preferredSortOrder;
+      final hintedSortOrder = candidate.preferredSortOrder;
+      final hintedSlot = hintedSortOrder == null
+          ? null
+          : ScriptAssetSlotPolicy.presetSlotForSortOrder(hintedSortOrder);
+      if (hintedSlot != null && hintedSlot.accepts(scriptAsset.type)) {
+        if (occupiedSortOrders.contains(hintedSortOrder)) continue;
+        preferredSortOrder = hintedSortOrder;
+      } else {
+        preferredSortOrder = ScriptAssetSlotPolicy.preferredSortOrderForAsset(
+          type: libraryItem.type,
+          name: libraryItem.name,
+          description: libraryItem.description,
+          aliases: libraryItem.aliases,
+          occupiedSortOrders: occupiedSortOrders,
+          maximumProductCount: effectiveMaximumProductCount,
+        );
+      }
       final sortOrder =
           preferredSortOrder ??
           existing?.sortOrder ??
@@ -558,11 +576,17 @@ class ShootingScriptAssetBindingController
         )
         .firstOrNull;
     if (existing != null) {
-      if (existing.type == effectiveType) return existing;
       final updated = existing.copyWith(
         type: effectiveType,
+        name: item.name,
+        description: item.description,
+        path: item.path,
+        status: item.path.trim().isEmpty
+            ? ProcessingStatus.failed
+            : ProcessingStatus.completed,
         updatedAt: DateTime.now().toUtc(),
       );
+      if (_sameScriptAsset(existing, updated)) return existing;
       _repository.upsertScriptAsset(updated);
       value = value.copyWith(
         assets: [
@@ -746,13 +770,84 @@ class ShootingScriptAssetBindingController
     return sortOrder;
   }
 
+  static bool _sameScriptAsset(ScriptAsset left, ScriptAsset right) =>
+      left.type == right.type &&
+      left.name == right.name &&
+      left.description == right.description &&
+      left.path == right.path &&
+      left.status == right.status;
+
   void _handleScriptChanged() {
     if (!_disposed) refresh(preserveBusy: true);
   }
 
   void _handleLibraryChanged() {
-    if (!_disposed) refresh(preserveBusy: true);
+    if (_disposed) return;
+    final items = _libraryController.value.items;
+    final currentFingerprints = _fingerprintsFor(items);
+    final changedIds = <String>{
+      for (final item in items)
+        if (_libraryFingerprints[item.id] != currentFingerprints[item.id])
+          item.id,
+    };
+    _libraryFingerprints = currentFingerprints;
+    refresh(preserveBusy: true);
+    if (changedIds.isEmpty || _libraryController.value.isBusy) return;
+    _pendingLibraryAssetIds.addAll(changedIds);
+    _libraryAutoMatchFuture = _libraryAutoMatchFuture.then(
+      (_) => _autoMatchPendingLibraryAssets(),
+    );
   }
+
+  Future<void> _autoMatchPendingLibraryAssets() async {
+    if (_disposed || _pendingLibraryAssetIds.isEmpty) return;
+    final pendingIds = {..._pendingLibraryAssetIds};
+    _pendingLibraryAssetIds.removeAll(pendingIds);
+    final items = [
+      for (final item in _libraryController.value.items)
+        if (pendingIds.contains(item.id)) item,
+    ];
+    final script = _shootingScriptController.value.selectedScript;
+    final shots = [..._shootingScriptController.value.shots];
+    if (script == null || shots.isEmpty || items.isEmpty) return;
+    value = value.copyWith(
+      isBusy: true,
+      message: '正在自动匹配新增或更新的资产…',
+      errorMessage: '',
+    );
+    try {
+      for (final shot in shots) {
+        if (_disposed ||
+            _shootingScriptController.value.selectedScript?.id != script.id) {
+          return;
+        }
+        await _matchShot(script.id, shot, items);
+      }
+      if (_disposed) return;
+      refresh();
+      value = value.copyWith(isBusy: false, message: '已自动匹配新增或更新的资产');
+    } catch (error) {
+      if (_disposed) return;
+      refresh();
+      value = value.copyWith(
+        isBusy: false,
+        errorMessage: '自动匹配新增或更新资产失败：$error',
+      );
+    }
+  }
+
+  static Map<String, String> _fingerprintsFor(
+    List<ShootingAssetLibraryItem> items,
+  ) => {
+    for (final item in items)
+      item.id: [
+        item.type.name,
+        item.name.trim(),
+        item.description.trim(),
+        ...([...item.aliases]..sort()).map((alias) => alias.trim()),
+        item.path.trim(),
+      ].join('\u0000'),
+  };
 }
 
 extension<T> on Iterable<T> {

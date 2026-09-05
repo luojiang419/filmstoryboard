@@ -62,8 +62,6 @@ import '../domain/quick_replication_reference.dart';
 import '../domain/quick_replication_input_capacity.dart';
 import '../domain/replicate_models.dart';
 
-enum ReplicationGenerationMode { quick, precise }
-
 final replicateControllerProvider = Provider<ReplicateController>(
   (ref) {
     final controller = ReplicateController(
@@ -109,6 +107,7 @@ class ReplicateState {
     this.colorStylePresets = const [],
     this.isBusy = false,
     this.isAnalyzingFrames = false,
+    this.generationMode = ReplicationGenerationMode.precise,
     this.message = '',
     this.errorMessage = '',
   });
@@ -124,6 +123,7 @@ class ReplicateState {
   final List<LineArtColorStylePreset> colorStylePresets;
   final bool isBusy;
   final bool isAnalyzingFrames;
+  final ReplicationGenerationMode generationMode;
   final String message;
   final String errorMessage;
 
@@ -154,6 +154,7 @@ class ReplicateState {
     List<LineArtColorStylePreset>? colorStylePresets,
     bool? isBusy,
     bool? isAnalyzingFrames,
+    ReplicationGenerationMode? generationMode,
     String? message,
     String? errorMessage,
   }) => ReplicateState(
@@ -168,6 +169,7 @@ class ReplicateState {
     colorStylePresets: colorStylePresets ?? this.colorStylePresets,
     isBusy: isBusy ?? this.isBusy,
     isAnalyzingFrames: isAnalyzingFrames ?? this.isAnalyzingFrames,
+    generationMode: generationMode ?? this.generationMode,
     message: message ?? this.message,
     errorMessage: errorMessage ?? this.errorMessage,
   );
@@ -250,7 +252,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
        _videoSkillLibrary = videoSkillLibrary ?? BundledVideoSkillLibrary(),
        _enforceFreeCreationMode = enforceFreeCreationMode,
        _uuid = uuid,
-       super(const ReplicateState()) {
+       super(ReplicateState(generationMode: repository.loadGenerationMode())) {
     _frameAnalysisService =
         frameAnalysisService ??
         ReplicationFrameAnalysisService(visionService: _visionService);
@@ -341,6 +343,12 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     }
     _shootingScriptController.selectScript(scriptId);
     _restoreFromShootingScript(selectScriptId: scriptId);
+  }
+
+  void updateGenerationMode(ReplicationGenerationMode mode) {
+    if (value.generationMode == mode) return;
+    _repository.saveGenerationMode(mode);
+    value = value.copyWith(generationMode: mode);
   }
 
   /// 保存当前复刻任务的默认出图参数；一键复刻和一键替换产品共用。
@@ -4521,7 +4529,7 @@ $playbackSpeedBoundary
     final shooting = _shootingScriptController.value;
     final scripts = shooting.scripts;
     if (scripts.isEmpty) {
-      value = const ReplicateState();
+      value = ReplicateState(generationMode: value.generationMode);
       return;
     }
     final requested = selectScriptId ?? shooting.selectedScriptId;

@@ -14,6 +14,8 @@ enum ReplicateStep {
 
 enum ShotPromptFormat { sd2, kling, h3 }
 
+enum ReplicationGenerationMode { quick, precise }
+
 enum ReplicateAssetType {
   character,
   product,
