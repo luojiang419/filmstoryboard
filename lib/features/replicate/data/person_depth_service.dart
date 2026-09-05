@@ -5,6 +5,9 @@ import 'dart:isolate';
 
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
+import 'package:flutter/foundation.dart';
+
+import 'person_depth_models.dart';
 
 class PersonDepthResult {
   const PersonDepthResult({
@@ -24,10 +27,15 @@ class PersonDepthService {
   PersonDepthService({
     this.componentRoot,
     this.timeout = const Duration(minutes: 10),
-  });
+    PersonDepthModels? models,
+  }) : _models = models ?? PersonDepthModels();
   static final shared = PersonDepthService();
   final Directory? componentRoot;
   final Duration timeout;
+  final PersonDepthModels _models;
+  final modelProgress = ValueNotifier<DepthModelProgress?>(null);
+  File? _logFile;
+  Future<void> _logQueue = Future<void>.value();
   Process? _process;
   Future<void> _queue = Future<void>.value();
   final _pending = <String, Completer<Map<String, dynamic>>>{};
@@ -56,30 +64,20 @@ class PersonDepthService {
           ];
     for (final root in candidates) {
       if (await File(
-            p.join(root.path, 'runtime', 'person-depth-worker.exe'),
-          ).exists() &&
-          await File(
-            p.join(
-              root.path,
-              'models',
-              'depth-anything-v2-large',
-              'model.safetensors',
-            ),
-          ).exists() &&
-          await File(
-            p.join(root.path, 'models', 'birefnet', 'model.safetensors'),
-          ).exists()) {
+        p.join(root.path, 'runtime', 'person-depth-worker.exe'),
+      ).exists()) {
         return root.absolute;
       }
     }
-    throw StateError(
-      '高精度深度组件不完整，请运行 scripts/copy_person_depth_component.ps1 或安装完整深度组件',
-    );
+    throw StateError('未找到深度运行组件，请重新安装当前版本软件');
   }
 
   Future<void> _start() async {
     if (_process != null) return;
     final root = await resolveComponent();
+    _logFile = File(p.join(root.parent.path, 'logs', 'person_depth.jsonl'));
+    _log('prepare', {'componentRoot': root.path});
+    await _models.ensure(root, (progress) => modelProgress.value = progress);
     final process = await Process.start(
       p.join(root.path, 'runtime', 'person-depth-worker.exe'),
       ['--component-root', root.path, '--stdio'],
@@ -90,7 +88,7 @@ class PersonDepthService {
     _process = process;
     _errors.clear();
     process.stdout
-        .transform(utf8.decoder)
+        .transform(systemEncoding.decoder)
         .transform(const LineSplitter())
         .listen((line) {
           try {
@@ -103,14 +101,18 @@ class PersonDepthService {
           }
         }, onError: (Object error) => _failPending(error));
     process.stderr
-        .transform(const Utf8Decoder(allowMalformed: true))
+        .transform(systemEncoding.decoder)
         .transform(const LineSplitter())
-        .listen((line) {
-          _errors.add(line);
-          if (_errors.length > 8) {
-            _errors.removeAt(0);
-          }
-        });
+        .listen(
+          (line) {
+            _errors.add(line);
+            _log('stderr', {'message': line});
+            if (_errors.length > 8) {
+              _errors.removeAt(0);
+            }
+          },
+          onError: (Object error) => _log('stderr_error', {'error': '$error'}),
+        );
     unawaited(
       process.exitCode.then((code) {
         if (identical(_process, process)) {
@@ -120,6 +122,7 @@ class PersonDepthService {
       }),
     );
     final hello = await _request({'op': 'hello'});
+    _log('hello', hello);
     if (hello['protocol_version'] != 1) {
       close();
       throw StateError('深度组件协议版本不兼容');
@@ -131,8 +134,11 @@ class PersonDepthService {
     final completer = Completer<Map<String, dynamic>>();
     _pending[id] = completer;
     try {
-      _process!.stdin.writeln(jsonEncode({...payload, 'id': id}));
+      _log('request', {'id': id, ...payload});
+      _process!.stdin.writeln(encodeRequest({...payload, 'id': id}));
+      await _process!.stdin.flush();
       final response = await completer.future.timeout(timeout);
+      _log('response', response);
       if (response['ok'] != true) {
         throw StateError('${response['error'] ?? '深度推理失败'}');
       }
@@ -158,6 +164,14 @@ class PersonDepthService {
         }
         await outputFile.parent.create(recursive: true);
         await _start();
+        final ready = modelProgress.value;
+        if (ready != null) {
+          modelProgress.value = DepthModelProgress(
+            '模型已就绪，正在生成深度图',
+            ready.total,
+            ready.total,
+          );
+        }
         final master = File(
           p.join(
             outputFile.parent.path,
@@ -172,9 +186,7 @@ class PersonDepthService {
         });
         final width = response['width'] as int;
         final height = response['height'] as int;
-        await Isolate.run(
-          () => createPreview(master.path, outputFile.path, width, height),
-        );
+        await createPreviewAsync(master.path, outputFile.path, width, height);
         result.complete(
           PersonDepthResult(
             depthFile: outputFile,
@@ -183,7 +195,22 @@ class PersonDepthService {
             height: height,
           ),
         );
+        _log('completed', {
+          'output': outputFile.path,
+          'width': width,
+          'height': height,
+        });
+        final prepared = modelProgress.value;
+        if (prepared != null) {
+          modelProgress.value = DepthModelProgress(
+            '模型已就绪，深度图生成完成',
+            prepared.total,
+            prepared.total,
+          );
+        }
       } catch (error, stack) {
+        _log('failed', {'error': '$error', 'stack': '$stack'});
+        modelProgress.value = null;
         result.completeError(error, stack);
       } finally {
         _idleTimer = Timer(const Duration(minutes: 2), close);
@@ -191,6 +218,44 @@ class PersonDepthService {
     });
     return result.future;
   }
+
+  /// Frozen Python uses the Windows code page even with PYTHONUTF8 set.
+  /// ASCII JSON preserves every Unicode path across either code page.
+  static String encodeRequest(Map<String, Object?> payload) =>
+      jsonEncode(payload).split('').map((character) {
+        final unit = character.codeUnitAt(0);
+        return unit > 127
+            ? '\\u${unit.toRadixString(16).padLeft(4, '0')}'
+            : character;
+      }).join();
+
+  void _log(String phase, Map<String, Object?> details) {
+    final file = _logFile;
+    if (file == null) return;
+    _logQueue = _logQueue
+        .then((_) async {
+          await file.parent.create(recursive: true);
+          if (await file.exists() && await file.length() > 4 * 1024 * 1024) {
+            await file.rename('${file.path}.previous');
+          }
+          await file.writeAsString(
+            '${jsonEncode({'time': DateTime.now().toUtc().toIso8601String(), 'phase': phase, ...details})}\n',
+            mode: FileMode.append,
+          );
+        })
+        .catchError((Object _) {
+          /* Logging cannot interrupt inference. */
+        });
+  }
+
+  // Keep the closure in its own scope so the extraction queue's Completer
+  // and live Process are never captured and sent to the isolate.
+  static Future<void> createPreviewAsync(
+    String masterPath,
+    String outputPath,
+    int width,
+    int height,
+  ) => Isolate.run(() => createPreview(masterPath, outputPath, width, height));
 
   static void createPreview(
     String masterPath,

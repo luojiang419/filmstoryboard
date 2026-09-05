@@ -37,6 +37,7 @@ import '../../video_generation/domain/h3_video_prompt_adapter.dart';
 import '../../video_generation/domain/kling_video_prompt_adapter.dart';
 import '../data/bundled_video_skill_library.dart';
 import '../data/person_depth_service.dart';
+import '../data/person_depth_models.dart';
 import '../data/replicate_repository.dart';
 import '../data/replicate_prompt_export_service.dart';
 import '../data/quick_replication_person_count_service.dart';
@@ -297,6 +298,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
   late final ReplicationFrameAnalysisService _frameAnalysisService;
   late final ReplicationGenerationReviewService _generationReviewService;
   late final PersonDepthService _personDepthService;
+  ValueListenable<DepthModelProgress?> get depthModelProgress =>
+      _personDepthService.modelProgress;
   final H3PromptWritingService _h3PromptWritingService;
   final FreeCreationVideoPromptWritingService _freeCreationPromptWritingService;
   final H3SkillLibrary _h3SkillLibrary;

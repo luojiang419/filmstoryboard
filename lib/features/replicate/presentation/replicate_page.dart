@@ -36,6 +36,7 @@ import '../domain/h3_prompt_style.dart';
 import '../domain/quick_replication_input_capacity.dart';
 import '../domain/replicate_models.dart';
 import 'line_art_color_style_picker.dart';
+import 'depth_model_progress.dart';
 import 'replicate_shot_navigation_controller.dart';
 
 bool _hasActiveComposing(TextEditingController controller) {
@@ -5769,6 +5770,8 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
               ),
             ],
           ),
+          if (preciseMode)
+            DepthModelProgressPanel(progress: controller.depthModelProgress),
           const Divider(height: 1),
           Expanded(
             child: externalizeRightPanel

@@ -15,8 +15,6 @@ $appPath = Join-Path $Root 'build\windows\x64\runner\Release\filmstoryboard.exe'
 $bundledFfmpegPath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffmpeg.exe'
 $bundledFfprobePath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffprobe.exe'
 $personDepthWorkerPath = Join-Path $Root 'build\windows\x64\runner\Release\data\person-depth\runtime\person-depth-worker.exe'
-$personDepthModelPath = Join-Path $Root 'build\windows\x64\runner\Release\data\person-depth\models\depth-anything-v2-large\model.safetensors'
-$personMaskModelPath = Join-Path $Root 'build\windows\x64\runner\Release\data\person-depth\models\birefnet\model.safetensors'
 $assetName = "filmstoryboard-Setup-$Version.exe"
 $assetPath = Join-Path $Root "dist\installer\$assetName"
 
@@ -25,8 +23,6 @@ foreach ($requiredPath in @(
     $bundledFfmpegPath,
     $bundledFfprobePath,
     $personDepthWorkerPath,
-    $personDepthModelPath,
-    $personMaskModelPath,
     $assetPath
 )) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -34,9 +30,20 @@ foreach ($requiredPath in @(
     }
 }
 
-foreach ($componentFile in @($personDepthWorkerPath, $personDepthModelPath, $personMaskModelPath)) {
+foreach ($componentFile in @($personDepthWorkerPath)) {
     if ((Get-Item -LiteralPath $componentFile).Length -lt 1MB) {
         throw "Bundled person-depth component file is unexpectedly small: $componentFile"
+    }
+}
+
+$depthRoot = Split-Path (Split-Path $personDepthWorkerPath)
+$weights = @(Get-ChildItem -LiteralPath $depthRoot -Recurse -File -Filter '*.safetensors')
+if ($weights.Count -gt 0) {
+    throw 'Release must not contain model weights; models are downloaded on first use.'
+}
+foreach ($relative in @('models\depth-anything-v2-large\config.json', 'models\depth-anything-v2-large\preprocessor_config.json', 'models\birefnet\config.json', 'models\birefnet\birefnet.py', 'models\birefnet\BiRefNet_config.py')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $depthRoot $relative))) {
+        throw "Missing bundled model configuration: $relative"
     }
 }
 

@@ -107,9 +107,20 @@ install(DIRECTORY "${BUNDLED_FFMPEG_DIR}/bin"
   COMPONENT Runtime)
 
 if(EXISTS "${PERSON_DEPTH_COMPONENT_DIR}/runtime/person-depth-worker.exe")
+  # Remove only obsolete generated weight copies from the build staging area.
+  # This does not affect models in an installed application's directory.
+  install(CODE "
+    file(REMOVE
+      \"${INSTALL_BUNDLE_DATA_DIR}/person-depth/models/depth-anything-v2-large/model.safetensors\"
+      \"${INSTALL_BUNDLE_DATA_DIR}/person-depth/models/birefnet/model.safetensors\"
+      \"${INSTALL_BUNDLE_DATA_DIR}/person-depth/copy-manifest.json\")
+    " COMPONENT Runtime)
   install(DIRECTORY "${PERSON_DEPTH_COMPONENT_DIR}/"
     DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/person-depth"
-    COMPONENT Runtime)
+    COMPONENT Runtime
+    PATTERN "*.safetensors" EXCLUDE
+    PATTERN "*.part" EXCLUDE
+    PATTERN "copy-manifest.json" EXCLUDE)
 else()
   message(WARNING "High precision person-depth component is not copied; run scripts/copy_person_depth_component.ps1 before release build.")
 endif()
