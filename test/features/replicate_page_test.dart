@@ -1040,7 +1040,9 @@ void main() {
       const ValueKey('video-generation-five-column-table'),
     );
     expect(videoTable, findsOneWidget);
-    final table = tester.widget<Table>(videoTable);
+    final table = tester.widget<Table>(
+      find.descendant(of: videoTable, matching: find.byType(Table)).first,
+    );
     expect(table.children.first.children, hasLength(5));
     for (final header in const ['原视频帧', '复刻分镜图', '时长', '生成视频', '生成提示词']) {
       expect(

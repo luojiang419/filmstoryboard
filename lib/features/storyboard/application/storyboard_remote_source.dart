@@ -19,6 +19,7 @@ class StoryboardRemoteSource implements RemoteStoryboardSource {
   late Map<String, String> _boardSignatures;
   late String _groupSignature;
   bool _disposed = false;
+  final _signatureBoards = <String, StoryboardBoard>{};
 
   @override
   List<RemoteStoryboardBoardRecord> get boards =>
@@ -176,10 +177,20 @@ class StoryboardRemoteSource implements RemoteStoryboardSource {
     );
   }
 
-  Map<String, String> _captureBoardSignatures() => {
-    for (final board in _controller.value.boards)
-      board.id: jsonEncode(_boardSignatureJson(board)),
-  };
+  Map<String, String> _captureBoardSignatures() {
+    final next = <String, String>{};
+    for (final board in _controller.value.boards) {
+      next[board.id] = identical(_signatureBoards[board.id], board)
+          ? _boardSignatures[board.id]!
+          : jsonEncode(_boardSignatureJson(board));
+    }
+    _signatureBoards
+      ..clear()
+      ..addEntries(
+        _controller.value.boards.map((board) => MapEntry(board.id, board)),
+      );
+    return next;
+  }
 
   String _captureGroupSignature() => jsonEncode([
     for (final group in _controller.value.boardGroups)

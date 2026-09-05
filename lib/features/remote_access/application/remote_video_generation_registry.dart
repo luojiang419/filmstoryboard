@@ -26,12 +26,32 @@ class RemoteVideoGenerationRegistry {
   final Uuid _uuid;
 
   RemoteVideoGenerationSource? _source;
+  RemoteVideoGenerationSource Function()? _sourceFactory;
+  RemoteVideoGenerationSource Function()? _factoryOwner;
   String? _projectId;
 
   RemoteVideoGenerationSource? get source {
     final workspace = _workspaceRegistry.current;
     if (workspace == null || workspace.projectId != _projectId) return null;
+    final factory = _sourceFactory;
+    if (_source == null && factory != null) {
+      _sourceFactory = null;
+      try {
+        attach(factory());
+        _factoryOwner = factory;
+      } catch (_) {
+        _sourceFactory = factory;
+        rethrow;
+      }
+    }
     return _source;
+  }
+
+  void attachDeferred(RemoteVideoGenerationSource Function() factory) {
+    detach();
+    _projectId = _workspaceRegistry.current?.projectId;
+    _sourceFactory = factory;
+    _factoryOwner = factory;
   }
 
   void attach(RemoteVideoGenerationSource source) {
@@ -45,8 +65,14 @@ class RemoteVideoGenerationRegistry {
     _handleSourceChanged();
   }
 
-  void detach({RemoteVideoGenerationSource? source}) {
+  void detach({
+    RemoteVideoGenerationSource? source,
+    RemoteVideoGenerationSource Function()? factory,
+  }) {
+    if (factory != null && factory != _factoryOwner) return;
     if (source != null && !identical(source, _source)) return;
+    _sourceFactory = null;
+    _factoryOwner = null;
     _source?.removeListener(_handleSourceChanged);
     _source = null;
     _projectId = null;
@@ -196,10 +222,8 @@ class RemoteVideoGenerationRegistry {
     _changeBus.publish(
       type: 'videoGeneration.changed',
       projectId: projectId,
-      data: {
-        'taskCount': current.tasks.length,
-        'workCount': current.works.length,
-      },
+      // This is an invalidation event. Clients request the snapshot when needed;
+      // producing it here made every local selection scan all tasks and files.
     );
   }
 

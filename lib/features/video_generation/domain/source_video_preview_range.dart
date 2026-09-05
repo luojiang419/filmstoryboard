@@ -60,11 +60,13 @@ class SourceVideoPreviewResolver {
     ScriptShot? endShot,
     required Directory workspaceRoot,
     double paddingSeconds = 1.5,
+    bool Function(File)? fileExists,
   }) {
-    final sourceVideo = _firstExistingFile([
-      video.storedPath,
-      video.originalPath,
-    ], workspaceRoot);
+    final sourceVideo = _firstExistingFile(
+      [video.storedPath, video.originalPath],
+      workspaceRoot,
+      fileExists,
+    );
     if (sourceVideo == null || video.durationMs <= 0) return null;
 
     final frame = _matchingFrame(frames, shot, workspaceRoot);
@@ -78,7 +80,11 @@ class SourceVideoPreviewResolver {
           sourceVideo: sourceVideo,
           inPoint: Duration(milliseconds: startMs),
           outPoint: Duration(milliseconds: endMs),
-          thumbnailFile: _firstExistingFile([frame.path], workspaceRoot),
+          thumbnailFile: _firstExistingFile(
+            [frame.path],
+            workspaceRoot,
+            fileExists,
+          ),
           aspectRatio: video.displayAspectRatio,
         );
       }
@@ -91,7 +97,7 @@ class SourceVideoPreviewResolver {
       aspectRatio: video.displayAspectRatio,
       thumbnailFile: frame == null
           ? null
-          : _firstExistingFile([frame.path], workspaceRoot),
+          : _firstExistingFile([frame.path], workspaceRoot, fileExists),
     );
   }
 
@@ -127,12 +133,16 @@ class SourceVideoPreviewResolver {
     return index >= 0 && index < candidates.length ? candidates[index] : null;
   }
 
-  static File? _firstExistingFile(List<String> paths, Directory workspaceRoot) {
+  static File? _firstExistingFile(
+    List<String> paths,
+    Directory workspaceRoot,
+    bool Function(File)? fileExists,
+  ) {
     for (final path in paths) {
       final absolute = _absolutePath(path, workspaceRoot);
       if (absolute.isEmpty) continue;
       final file = File(absolute);
-      if (file.existsSync()) return file;
+      if (fileExists?.call(file) ?? file.existsSync()) return file;
     }
     return null;
   }

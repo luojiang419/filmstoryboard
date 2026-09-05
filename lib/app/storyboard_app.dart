@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/providers/app_providers.dart';
 import '../core/widgets/middle_drag_auto_scroll.dart';
+import '../core/widgets/value_listenable_selector.dart';
 import '../features/updater/domain/app_update_config.dart';
 import '../features/settings/domain/app_settings.dart';
 import 'app_theme.dart';
@@ -40,15 +41,16 @@ class _StoryboardAppState extends ConsumerState<StoryboardApp> {
   @override
   Widget build(BuildContext context) {
     final settingsController = ref.watch(settingsControllerProvider);
-    return ValueListenableBuilder(
+    return ValueListenableSelector<AppSettings, AppThemePreference>(
       valueListenable: settingsController,
-      builder: (context, settings, _) {
+      selector: (settings) => settings.themePreference,
+      builder: (context, preference, _) {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           title: AppUpdateConfig.windowTitle,
           theme: AppTheme.light(),
           darkTheme: AppTheme.dark(),
-          themeMode: settings.themePreference.themeMode,
+          themeMode: preference.themeMode,
           scrollBehavior: MiddleDragScrollBehavior(
             controller: _middleDragScrollController,
           ),

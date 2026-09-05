@@ -9,6 +9,7 @@ import '../core/providers/app_providers.dart';
 import '../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../core/widgets/desktop_drop_target_scope.dart';
 import '../core/widgets/value_listenable_selector.dart';
+import '../core/widgets/retained_page.dart';
 import '../features/exporter/presentation/exporter_page.dart';
 import '../features/exporter/application/export_remote_source.dart';
 import '../features/grid_cut/presentation/grid_cut_page.dart';
@@ -71,16 +72,18 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   late int _tabIndex;
   final _visitedTabIndexes = <int>{};
+  final _pages = <int, Widget>{};
+  final _pageHostKey = GlobalKey();
   late final UpdaterController _updaterController;
   late final OnboardingController _onboardingController;
   late final StoryboardController _storyboardController;
   late final StoryboardRemoteSource _storyboardRemoteSource;
   late final RemoteStoryboardRegistry _remoteStoryboardRegistry;
-  late final ShootingScriptRemoteSource _shootingScriptRemoteSource;
+  ShootingScriptRemoteSource? _shootingScriptRemoteSource;
   late final RemoteShootingWorkflowRegistry _remoteShootingWorkflowRegistry;
-  late final VideoAnalysisRemoteSource _videoAnalysisRemoteSource;
+  VideoAnalysisRemoteSource? _videoAnalysisRemoteSource;
   late final RemoteVideoAnalysisRegistry _remoteVideoAnalysisRegistry;
-  late final VideoGenerationRemoteSource _videoGenerationRemoteSource;
+  VideoGenerationRemoteSource? _videoGenerationRemoteSource;
   late final RemoteVideoGenerationRegistry _remoteVideoGenerationRegistry;
   late final ExportRemoteSource _exportRemoteSource;
   late final RemoteExportRegistry _remoteExportRegistry;
@@ -117,25 +120,14 @@ class _AppShellState extends ConsumerState<AppShell> {
     _storyboardRemoteSource = StoryboardRemoteSource(_storyboardController);
     _remoteStoryboardRegistry = ref.read(remoteStoryboardRegistryProvider)
       ..attach(_storyboardRemoteSource);
-    _shootingScriptRemoteSource = ShootingScriptRemoteSource(
-      replicateController: ref.read(replicateControllerProvider),
-      analysisController: ref.read(scriptAnalysisControllerProvider),
-      assetBindingController: ref.read(scriptAssetBindingControllerProvider),
-    );
     _remoteShootingWorkflowRegistry = ref.read(
       remoteShootingWorkflowRegistryProvider,
-    )..attach(_shootingScriptRemoteSource);
-    _videoAnalysisRemoteSource = VideoAnalysisRemoteSource(
-      ref.read(videoAnalysisControllerProvider),
-    );
+    )..attachDeferred(_createShootingSource);
     _remoteVideoAnalysisRegistry = ref.read(remoteVideoAnalysisRegistryProvider)
-      ..attach(_videoAnalysisRemoteSource);
-    _videoGenerationRemoteSource = VideoGenerationRemoteSource(
-      ref.read(videoGenerationControllerProvider),
-    );
+      ..attachDeferred(_createAnalysisSource);
     _remoteVideoGenerationRegistry = ref.read(
       remoteVideoGenerationRegistryProvider,
-    )..attach(_videoGenerationRemoteSource);
+    )..attachDeferred(_createGenerationSource);
     _settingsRemoteSource = SettingsRemoteSource(_settingsController);
     _remoteSettingsRegistry = ref.read(remoteSettingsRegistryProvider)
       ..attach(_settingsRemoteSource);
@@ -160,6 +152,13 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (!mounted) {
         return;
       }
+      final resumable = ref
+          .read(appDatabaseProvider)
+          .selectRows(
+            "SELECT 1 FROM video_generation_tasks WHERE status IN "
+            "('submitting', 'queued', 'running', 'timedOut') LIMIT 1;",
+          );
+      if (resumable.isNotEmpty) _remoteVideoGenerationRegistry.source;
       if (_onboardingController.shouldStartAutomatically) {
         _onboardingController.start(originTabIndex: _tabIndex, automatic: true);
       }
@@ -176,11 +175,11 @@ class _AppShellState extends ConsumerState<AppShell> {
     _storyboardController.removeListener(_handleAssetNormalizationStateChanged);
     _remoteStoryboardRegistry.detach(source: _storyboardRemoteSource);
     _storyboardRemoteSource.dispose();
-    _remoteShootingWorkflowRegistry.detach(source: _shootingScriptRemoteSource);
-    _shootingScriptRemoteSource.dispose();
-    _remoteVideoAnalysisRegistry.detach(source: _videoAnalysisRemoteSource);
-    _remoteVideoGenerationRegistry.detach(source: _videoGenerationRemoteSource);
-    _videoGenerationRemoteSource.dispose();
+    _remoteShootingWorkflowRegistry.detach(factory: _createShootingSource);
+    _shootingScriptRemoteSource?.dispose();
+    _remoteVideoAnalysisRegistry.detach(factory: _createAnalysisSource);
+    _remoteVideoGenerationRegistry.detach(factory: _createGenerationSource);
+    _videoGenerationRemoteSource?.dispose();
     _remoteSettingsRegistry.detach(source: _settingsRemoteSource);
     _settingsRemoteSource.dispose();
     _remoteExportRegistry.detach(source: _exportRemoteSource);
@@ -265,6 +264,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   Widget _buildPageSwitcher() {
     return Stack(
+      key: _pageHostKey,
       fit: StackFit.expand,
       children: [
         for (final index in _visitedTabIndexes.toList()..sort())
@@ -272,12 +272,9 @@ class _AppShellState extends ConsumerState<AppShell> {
             key: ValueKey('app-shell-page-$index'),
             child: DesktopDropTargetScope(
               enabled: index == _tabIndex,
-              child: Offstage(
-                offstage: index != _tabIndex,
-                child: TickerMode(
-                  enabled: index == _tabIndex,
-                  child: _buildPage(index),
-                ),
+              child: RetainedPage(
+                active: index == _tabIndex,
+                child: _pages.putIfAbsent(index, () => _buildPage(index)),
               ),
             ),
           ),
@@ -285,15 +282,39 @@ class _AppShellState extends ConsumerState<AppShell> {
     );
   }
 
-  Widget _buildPage(int index) => switch (index) {
-    0 => StoryDesignPage(onOpenGridCutPage: _showLegacyGridCutPage),
-    1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
-    2 => const StoryboardPage(),
-    3 => const ShootingScriptPage(),
-    4 => const VideoGenerationPage(),
-    5 => const ExporterPage(),
-    _ => const SettingsPage(),
-  };
+  ShootingScriptRemoteSource _createShootingSource() =>
+      _shootingScriptRemoteSource ??= ShootingScriptRemoteSource(
+        replicateController: ref.read(replicateControllerProvider),
+        analysisController: ref.read(scriptAnalysisControllerProvider),
+        assetBindingController: ref.read(scriptAssetBindingControllerProvider),
+      );
+
+  VideoAnalysisRemoteSource _createAnalysisSource() =>
+      _videoAnalysisRemoteSource ??= VideoAnalysisRemoteSource(
+        ref.read(videoAnalysisControllerProvider),
+      );
+
+  VideoGenerationRemoteSource _createGenerationSource() =>
+      _videoGenerationRemoteSource ??= VideoGenerationRemoteSource(
+        ref.read(videoGenerationControllerProvider),
+      );
+
+  Widget _buildPage(int index) {
+    // Attach lightweight events as soon as a desktop module is visited. Remote
+    // requests use the same deferred factory, so both paths share controllers.
+    if (index == 1) _remoteVideoAnalysisRegistry.source;
+    if (index == 3) _remoteShootingWorkflowRegistry.source;
+    if (index == 4) _remoteVideoGenerationRegistry.source;
+    return switch (index) {
+      0 => StoryDesignPage(onOpenGridCutPage: _showLegacyGridCutPage),
+      1 => VideoAnalysisPage(onOpenStoryboard: () => _selectTab(2)),
+      2 => const StoryboardPage(),
+      3 => const ShootingScriptPage(),
+      4 => const VideoGenerationPage(),
+      5 => const ExporterPage(),
+      _ => const SettingsPage(),
+    };
+  }
 
   int? _loadSavedTabIndex() {
     try {

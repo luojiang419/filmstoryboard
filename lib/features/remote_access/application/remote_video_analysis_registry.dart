@@ -26,12 +26,32 @@ class RemoteVideoAnalysisRegistry {
   final Map<String, String> _analysisTaskIds = {};
 
   RemoteVideoAnalysisSource? _source;
+  RemoteVideoAnalysisSource Function()? _sourceFactory;
+  RemoteVideoAnalysisSource Function()? _factoryOwner;
   String? _projectId;
 
   RemoteVideoAnalysisSource? get source {
     final workspace = _workspaceRegistry.current;
     if (workspace == null || workspace.projectId != _projectId) return null;
+    final factory = _sourceFactory;
+    if (_source == null && factory != null) {
+      _sourceFactory = null;
+      try {
+        attach(factory());
+        _factoryOwner = factory;
+      } catch (_) {
+        _sourceFactory = factory;
+        rethrow;
+      }
+    }
     return _source;
+  }
+
+  void attachDeferred(RemoteVideoAnalysisSource Function() factory) {
+    detach();
+    _projectId = _workspaceRegistry.current?.projectId;
+    _sourceFactory = factory;
+    _factoryOwner = factory;
   }
 
   void attach(RemoteVideoAnalysisSource source) {
@@ -45,8 +65,14 @@ class RemoteVideoAnalysisRegistry {
     _handleSourceChanged();
   }
 
-  void detach({RemoteVideoAnalysisSource? source}) {
+  void detach({
+    RemoteVideoAnalysisSource? source,
+    RemoteVideoAnalysisSource Function()? factory,
+  }) {
+    if (factory != null && factory != _factoryOwner) return;
     if (source != null && !identical(source, _source)) return;
+    _sourceFactory = null;
+    _factoryOwner = null;
     _source?.removeListener(_handleSourceChanged);
     _source = null;
     _projectId = null;

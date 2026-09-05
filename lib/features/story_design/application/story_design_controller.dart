@@ -26,7 +26,7 @@ final storyDesignControllerProvider = Provider<StoryDesignController>(
     final controller = StoryDesignController(
       directories: ref.watch(projectDirectoriesProvider),
       settingsController: ref.watch(settingsControllerProvider),
-      gridCutController: ref.watch(gridCutControllerProvider),
+      loadGridCutController: () => ref.read(gridCutControllerProvider),
       fileDialogService: ref.watch(desktopFileDialogServiceProvider),
       preferencesRepository: StoryDesignPreferencesRepository(
         ref.watch(appDatabaseProvider),
@@ -49,7 +49,8 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   StoryDesignController({
     required WorkspaceDirectories directories,
     required SettingsController settingsController,
-    required GridCutController gridCutController,
+    GridCutController? gridCutController,
+    GridCutController Function()? loadGridCutController,
     DesktopFileDialogService? fileDialogService,
     StoryDesignPreferencesRepository? preferencesRepository,
     ProjectAspectController? projectAspectController,
@@ -57,7 +58,8 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     ImageGenerationService? imageGenerationService,
   }) : _directories = directories,
        _settingsController = settingsController,
-       _gridCutController = gridCutController,
+       _loadGridCutController =
+           loadGridCutController ?? (() => gridCutController!),
        _fileDialogService =
            fileDialogService ??
            DesktopFileDialogService(defaultDirectory: directories.imports),
@@ -77,14 +79,13 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
        super(
          _initialState(
            preferencesRepository: preferencesRepository,
-           resultRepository:
-               resultRepository ?? StoryDesignResultRepository(directories),
            fallbackModel: settingsController.value.imageGenerationModel,
            projectAspectRatio:
                projectAspectController?.state.effectiveRatio.label ?? '16:9',
          ),
        ) {
     _projectAspectController?.addListener(_handleProjectAspectChanged);
+    ready = _loadResults();
   }
 
   static const _imageTypes = XTypeGroup(
@@ -96,7 +97,28 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
 
   final WorkspaceDirectories _directories;
   final SettingsController _settingsController;
-  final GridCutController _gridCutController;
+  final GridCutController Function() _loadGridCutController;
+  late final Future<void> ready;
+  bool _resultsLoaded = false;
+
+  Future<void> _loadResults() async {
+    try {
+      final results = await _resultRepository.loadAsync(
+        fallbackModel: value.model,
+      );
+      if (_disposed) return;
+      _resultsLoaded = true;
+      value = value.copyWith(
+        results: results,
+        message: results.isEmpty
+            ? '输入提示词后生成设计分镜图'
+            : '已恢复 ${results.length} 张设计分镜图',
+      );
+    } catch (error) {
+      if (!_disposed) value = value.copyWith(message: '设计分镜图加载失败：$error');
+    }
+  }
+
   final DesktopFileDialogService _fileDialogService;
   final bool _ownsFileDialogService;
   final StoryDesignPreferencesRepository? _preferencesRepository;
@@ -353,6 +375,7 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
   }
 
   Future<void> generate() async {
+    if (_disposed) return;
     final prompt = value.prompt.trim();
     if (prompt.isEmpty) {
       value = value.copyWith(message: '请先输入生成提示词');
@@ -391,6 +414,8 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
       ),
     );
     final total = value.batchCount;
+    if (!_resultsLoaded) await ready;
+    if (_disposed || !_resultsLoaded) return;
     final tasks = <StoryDesignGenerationTask>[
       for (var index = 0; index < total; index++)
         StoryDesignGenerationTask(
@@ -580,7 +605,7 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
       value = value.copyWith(message: '请先勾选要添加的生成图');
       return 0;
     }
-    await _gridCutController.importPaths(paths);
+    await _loadGridCutController().importPaths(paths);
     value = value.copyWith(message: '已添加 ${paths.length} 张图片到多宫格裁切页');
     return paths.length;
   }
@@ -608,7 +633,6 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
 
   static StoryDesignState _initialState({
     required StoryDesignPreferencesRepository? preferencesRepository,
-    required StoryDesignResultRepository resultRepository,
     required String fallbackModel,
     required String projectAspectRatio,
   }) {
@@ -631,7 +655,6 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
     final gridCount = storyDesignGridOptions.contains(preferences.gridCount)
         ? preferences.gridCount
         : storyDesignNoGridCount;
-    final results = resultRepository.load(fallbackModel: model);
     return StoryDesignState.initial(model: model).copyWith(
       aspectRatio: normalized.aspectRatio,
       imageSize: normalized.imageSize,
@@ -640,10 +663,7 @@ class StoryDesignController extends ValueNotifier<StoryDesignState> {
       gridCount: gridCount,
       portraitGrid:
           gridCount != storyDesignNoGridCount && preferences.portraitGrid,
-      results: results,
-      message: results.isEmpty
-          ? '输入提示词后生成设计分镜图'
-          : '已恢复 ${results.length} 张设计分镜图',
+      message: '正在加载设计分镜图...',
     );
   }
 

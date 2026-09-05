@@ -16,6 +16,8 @@ import '../../../core/services/file_availability_cache.dart';
 import '../../../core/widgets/adaptive_video_viewport.dart';
 import '../../../core/widgets/collapsible_panel_shortcut_scope.dart';
 import '../../../core/widgets/preview_file_image.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
+import '../../../core/widgets/retained_page.dart';
 import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../shooting_script/domain/script_shot_group.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
@@ -104,9 +106,10 @@ class _VideoGenerationWorkspaceState
     _syncRequestedScript(controller);
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<VideoGenerationState>(
+      child: PageValueListenableBuilder<VideoGenerationState>(
         valueListenable: controller,
         builder: (context, state, _) {
+          PerformanceProbe.shared.countBuild('video_generation.content');
           _scheduleCliInstallPrompt(state, controller);
           _scheduleLoginPrompt(state, controller);
           if (state.scripts.isEmpty) {
@@ -468,30 +471,31 @@ class _VideoGenerationWorkspaceState
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => ValueListenableBuilder<VideoGenerationState>(
-        valueListenable: controller,
-        builder: (context, state, _) => AlertDialog(
-          title: Text('正在安装${controller.activeCliProviderName} CLI'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const LinearProgressIndicator(minHeight: 3),
-                const SizedBox(height: 16),
-                Text(
-                  state.cliInstallMessage.isEmpty
-                      ? '正在准备安装命令…'
-                      : state.cliInstallMessage,
+      builder: (dialogContext) =>
+          PageValueListenableBuilder<VideoGenerationState>(
+            valueListenable: controller,
+            builder: (context, state, _) => AlertDialog(
+              title: Text('正在安装${controller.activeCliProviderName} CLI'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const LinearProgressIndicator(minHeight: 3),
+                    const SizedBox(height: 16),
+                    Text(
+                      state.cliInstallMessage.isEmpty
+                          ? '正在准备安装命令…'
+                          : state.cliInstallMessage,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('请勿关闭软件；系统安装程序可能会短暂弹出。'),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                const Text('请勿关闭软件；系统安装程序可能会短暂弹出。'),
-              ],
+              ),
             ),
           ),
-        ),
-      ),
     );
     _installWaitDialogOpen = false;
   }
@@ -579,41 +583,42 @@ class _VideoGenerationWorkspaceState
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => ValueListenableBuilder<VideoGenerationState>(
-        valueListenable: controller,
-        builder: (context, state, _) => AlertDialog(
-          title: Text('等待${controller.activeCliProviderName}授权完成'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const LinearProgressIndicator(minHeight: 3),
-                const SizedBox(height: 16),
-                Text(
-                  state.loginAuthorizationMessage.isEmpty
-                      ? '浏览器已打开。请在浏览器中完成登录授权，完成后软件会自动继续。'
-                      : state.loginAuthorizationMessage,
+      builder: (dialogContext) =>
+          PageValueListenableBuilder<VideoGenerationState>(
+            valueListenable: controller,
+            builder: (context, state, _) => AlertDialog(
+              title: Text('等待${controller.activeCliProviderName}授权完成'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const LinearProgressIndicator(minHeight: 3),
+                    const SizedBox(height: 16),
+                    Text(
+                      state.loginAuthorizationMessage.isEmpty
+                          ? '浏览器已打开。请在浏览器中完成登录授权，完成后软件会自动继续。'
+                          : state.loginAuthorizationMessage,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    controller.cancelLoginAuthorization();
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: controller.reopenLoginBrowser,
+                  child: const Text('重新打开浏览器'),
                 ),
               ],
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                controller.cancelLoginAuthorization();
-                Navigator.pop(dialogContext);
-              },
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: controller.reopenLoginBrowser,
-              child: const Text('重新打开浏览器'),
-            ),
-          ],
-        ),
-      ),
     );
     _loginWaitDialogOpen = false;
   }
@@ -1202,7 +1207,7 @@ class _Toolbar extends StatelessWidget {
             ),
             PopupMenuButton<_TimelineExportAction>(
               key: const ValueKey('export-timeline-menu'),
-              enabled: !state.isBusy && controller.canExportTimelineXml,
+              enabled: !state.isBusy && controller.hasTimelineCandidates,
               tooltip: '导出或发送时间线',
               onSelected: (action) {
                 switch (action) {
@@ -1234,7 +1239,7 @@ class _Toolbar extends StatelessWidget {
               ],
               child: IgnorePointer(
                 child: OutlinedButton.icon(
-                  onPressed: !state.isBusy && controller.canExportTimelineXml
+                  onPressed: !state.isBusy && controller.hasTimelineCandidates
                       ? () {}
                       : null,
                   icon: const Icon(Icons.account_tree_outlined),
@@ -1244,7 +1249,7 @@ class _Toolbar extends StatelessWidget {
             ),
             FilledButton.tonalIcon(
               key: const ValueKey('export-composed-video'),
-              onPressed: state.isBusy || !controller.canExportVideo
+              onPressed: state.isBusy || !controller.hasTimelineCandidates
                   ? null
                   : controller.exportVideo,
               icon: const Icon(Icons.video_file_outlined),
@@ -1290,7 +1295,7 @@ class _VideoGenerationExternalWorkPanelState
     _syncRequestedScript(controller);
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ValueListenableBuilder<VideoGenerationState>(
+      child: PageValueListenableBuilder<VideoGenerationState>(
         valueListenable: controller,
         builder: (context, state, _) {
           if (state.scripts.isEmpty) {
@@ -1441,7 +1446,7 @@ class _WorkManagementPanel extends StatelessWidget {
                       TextButton.icon(
                         key: const ValueKey('clean-invalid-generated-works'),
                         onPressed:
-                            state.isBusy || controller.invalidWorkTaskCount == 0
+                            state.isBusy || !controller.hasTimelineCandidates
                             ? null
                             : controller.cleanInvalidWorks,
                         icon: const Icon(Icons.cleaning_services_outlined),
@@ -1982,59 +1987,88 @@ class _GenerationTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final groups = ScriptShotGroup.group(state.shots);
-    return Scrollbar(
-      child: SingleChildScrollView(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: 1670,
-            child: Table(
-              key: const ValueKey('video-generation-five-column-table'),
-              border: TableBorder.all(
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
-              columnWidths: const {
-                0: FixedColumnWidth(320),
-                1: FixedColumnWidth(320),
-                2: FixedColumnWidth(110),
-                3: FixedColumnWidth(380),
-                4: FlexColumnWidth(),
-              },
-              defaultVerticalAlignment: TableCellVerticalAlignment.top,
-              children: [
-                TableRow(
-                  children: [
-                    const _HeaderCell('原视频帧'),
-                    const _HeaderCell('复刻分镜图'),
-                    const _HeaderCell('时长'),
-                    const _HeaderCell('生成视频'),
-                    const _HeaderCell('生成提示词'),
-                  ],
-                ),
-                for (final group in groups)
+    PerformanceProbe.shared.countBuild('video_generation.table');
+    const widths = <int, TableColumnWidth>{
+      0: FixedColumnWidth(320),
+      1: FixedColumnWidth(320),
+      2: FixedColumnWidth(110),
+      3: FixedColumnWidth(380),
+      4: FlexColumnWidth(),
+    };
+    final border = TableBorder.all(
+      color: Theme.of(context).colorScheme.outlineVariant,
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          key: const ValueKey('video-generation-five-column-table'),
+          width: 1670,
+          height: constraints.maxHeight,
+          child: Column(
+            children: [
+              Table(
+                border: border,
+                columnWidths: widths,
+                children: const [
                   TableRow(
                     children: [
-                      _OriginalVideoCell(group: group, controller: controller),
-                      _SourceImageCell(group: group, controller: controller),
-                      _GenerationDurationCell(
-                        shot: group.shots.first,
-                        controller: controller,
-                      ),
-                      _GeneratedVideoCell(
-                        shot: group.shots.first,
-                        controller: controller,
-                        enabled: true,
-                        onGenerate: () => onGenerateShot(group.shots.first),
-                      ),
-                      _PromptCell(
-                        shot: group.shots.first,
-                        draft: state.drafts[group.shots.first.id],
-                        controller: controller,
-                      ),
+                      _HeaderCell('原视频帧'),
+                      _HeaderCell('复刻分镜图'),
+                      _HeaderCell('时长'),
+                      _HeaderCell('生成视频'),
+                      _HeaderCell('生成提示词'),
                     ],
                   ),
-              ],
-            ),
+                ],
+              ),
+              Expanded(
+                child: ListView.builder(
+                  key: const PageStorageKey('video-generation-rows'),
+                  itemCount: groups.length,
+                  itemBuilder: (context, index) {
+                    final group = groups[index];
+                    PerformanceProbe.shared.countBuild('video_generation.row');
+                    return Table(
+                      key: ValueKey('generation-row-${group.shots.first.id}'),
+                      border: border,
+                      columnWidths: widths,
+                      defaultVerticalAlignment: TableCellVerticalAlignment.top,
+                      children: [
+                        TableRow(
+                          children: [
+                            _OriginalVideoCell(
+                              group: group,
+                              controller: controller,
+                            ),
+                            _SourceImageCell(
+                              group: group,
+                              controller: controller,
+                            ),
+                            _GenerationDurationCell(
+                              shot: group.shots.first,
+                              controller: controller,
+                            ),
+                            _GeneratedVideoCell(
+                              shot: group.shots.first,
+                              controller: controller,
+                              enabled: true,
+                              onGenerate: () =>
+                                  onGenerateShot(group.shots.first),
+                            ),
+                            _PromptCell(
+                              shot: group.shots.first,
+                              draft: state.drafts[group.shots.first.id],
+                              controller: controller,
+                            ),
+                          ],
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -2192,6 +2226,7 @@ class _OriginalVideoCell extends StatelessWidget {
     final range = controller.sourcePreviewFor(
       shot,
       endShot: group.shots.length > 1 ? group.shots.last : null,
+      fileExists: (file) => _videoFileExists(context, file),
     );
     final thumbnail = range?.thumbnailFile;
     void openPreview() {
@@ -3009,6 +3044,8 @@ class _HistoryVideoVersionCardState extends State<_HistoryVideoVersionCard> {
   }
 }
 
+/// Browsing rows never opens native media. Only the user's active inline
+/// preview owns a player; switching preview or hiding the page releases it.
 class _InlineGeneratedVideoPlayer extends StatefulWidget {
   const _InlineGeneratedVideoPlayer({
     super.key,
@@ -3030,6 +3067,110 @@ class _InlineGeneratedVideoPlayer extends StatefulWidget {
 
 class _InlineGeneratedVideoPlayerState
     extends State<_InlineGeneratedVideoPlayer> {
+  static final _owner = ValueNotifier<Object?>(null);
+  final _token = Object();
+  bool _active = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _active = PageActivityScope.isActive(context);
+    if (!_active && identical(_owner.value, _token)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (identical(_owner.value, _token)) _owner.value = null;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    // Do not notify other elements while the tree is being finalized.
+    if (identical(_owner.value, _token)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (identical(_owner.value, _token)) _owner.value = null;
+      });
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<Object?>(
+    valueListenable: _owner,
+    builder: (context, owner, _) {
+      if (_active && identical(owner, _token)) {
+        return _MountedInlineGeneratedVideoPlayer(
+          file: widget.file,
+          range: widget.range,
+          onTap: widget.onTap,
+          onFullscreen: () {
+            _owner.value = null;
+            widget.onFullscreen();
+          },
+        );
+      }
+      return AspectRatio(
+        aspectRatio: 16 / 9,
+        child: Material(
+          color: Colors.black,
+          borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              InkWell(
+                key: ValueKey('generated-video-play-${widget.file.path}'),
+                onTap: () {
+                  if (widget.onTap != null) {
+                    widget.onTap!();
+                  } else {
+                    _owner.value = _token;
+                  }
+                },
+                child: const Center(
+                  child: Icon(
+                    Icons.play_circle_outline,
+                    color: Colors.white,
+                    size: 44,
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton.filledTonal(
+                  tooltip: '全屏播放',
+                  onPressed: widget.onFullscreen,
+                  icon: const Icon(Icons.fullscreen),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _MountedInlineGeneratedVideoPlayer extends StatefulWidget {
+  const _MountedInlineGeneratedVideoPlayer({
+    required this.file,
+    required this.range,
+    this.onTap,
+    required this.onFullscreen,
+  });
+
+  final File file;
+  final GeneratedVideoTrimRange range;
+  final VoidCallback? onTap;
+  final VoidCallback onFullscreen;
+
+  @override
+  State<_MountedInlineGeneratedVideoPlayer> createState() =>
+      _MountedInlineGeneratedVideoPlayerState();
+}
+
+class _MountedInlineGeneratedVideoPlayerState
+    extends State<_MountedInlineGeneratedVideoPlayer> {
   late final Player _player;
   late final VideoController _videoController;
   late final FocusNode _keyboardFocusNode;
@@ -3042,6 +3183,7 @@ class _InlineGeneratedVideoPlayerState
   @override
   void initState() {
     super.initState();
+    PerformanceProbe.shared.increment('media.inline_created');
     _player = Player();
     _videoController = VideoController(_player);
     _keyboardFocusNode = FocusNode();
@@ -3054,7 +3196,7 @@ class _InlineGeneratedVideoPlayerState
   }
 
   @override
-  void didUpdateWidget(covariant _InlineGeneratedVideoPlayer oldWidget) {
+  void didUpdateWidget(covariant _MountedInlineGeneratedVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.file.path != widget.file.path) {
       unawaited(_open());
@@ -3067,7 +3209,10 @@ class _InlineGeneratedVideoPlayerState
   Future<void> _open() async {
     try {
       await _player.open(Media(widget.file.path), play: false);
+      if (!mounted) return;
       await _applyRange();
+      if (!mounted) return;
+      await _player.play();
       if (mounted) {
         setState(() => _error = '');
       }

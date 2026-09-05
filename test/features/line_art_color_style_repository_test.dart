@@ -41,7 +41,7 @@ void main() {
 
     expect(
       database.selectRows('PRAGMA user_version;').single['user_version'],
-      29,
+      AppDatabase.currentSchemaVersion,
     );
     final run = database.selectRows(
       'SELECT * FROM replicate_runs WHERE id = ?;',

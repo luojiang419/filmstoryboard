@@ -1607,6 +1607,7 @@ void main() {
     await recoveredFile.parent.create(recursive: true);
     await missingFile.rename(recoveredFile.path);
     controller.refresh();
+    await controller.pendingImageRecovery;
     expect(controller.replicatedImageRecoveryScanCount, 1);
     expect(
       controller.value.replicatedImages.first.generatedFramePath,

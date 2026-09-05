@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
@@ -12,6 +13,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
+import '../../../core/services/generated_image_recovery.dart';
 import '../../settings/application/settings_controller.dart';
 import '../../settings/domain/video_generation_api_config.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
@@ -686,7 +688,10 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       ScriptShotGroup.group(value.confirmedShots).length -
       structuredPromptContextReadyCount;
 
-  void refresh() => _restoreFromShootingScript();
+  void refresh() {
+    _imageRecoveryKeys.clear();
+    _restoreFromShootingScript();
+  }
 
   ReplicateShotGuide? shotGuideFor(String shotId) {
     for (final guide in value.shotGuides) {
@@ -872,11 +877,24 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       _analyzeAllReplicationFrames(quickMode: true);
 
   Future<void> _analyzeAllReplicationFrames({required bool quickMode}) async {
+    final scriptId = value.selectedScriptId;
+    final paths = {
+      for (final shot in value.confirmedShots) shot.id: shot.framePath.trim(),
+    };
+    final fingerprints = await Isolate.run(
+      () => {
+        for (final entry in paths.entries)
+          entry.key: _fingerprintForPath(entry.value),
+      },
+    );
+    if (_disposed || value.selectedScriptId != scriptId) return;
     final shotIds = [
       for (final shot in value.confirmedShots)
-        if (quickMode
-            ? !isQuickReplicationAnalysisReady(shot.id)
-            : !isPreciseReplicationAnalysisReady(shot.id))
+        if (!_matchesStoredAnalysis(
+          shot.id,
+          fingerprints[shot.id],
+          quickMode: quickMode,
+        ))
           shot.id,
     ];
     if (shotIds.isEmpty) {
@@ -893,6 +911,18 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           _analyzeReplicationFrame(shotId, quickMode: quickMode),
       ]);
     }
+  }
+
+  bool _matchesStoredAnalysis(
+    String shotId,
+    String? fingerprint, {
+    required bool quickMode,
+  }) {
+    final guide = shotGuideFor(shotId);
+    return guide != null &&
+        guide.sourceFrameFingerprint == fingerprint &&
+        guide.analysisStatus == ProcessingStatus.completed &&
+        (quickMode || !_isQuickPersonCountGuide(guide));
   }
 
   static String _frameAnalysisErrorMessage(Object error) {
@@ -5111,7 +5141,10 @@ $playbackSpeedBoundary
   }
 
   String _sourceFrameFingerprint(ScriptShot shot) {
-    final path = shot.framePath.trim();
+    return _fingerprintForPath(shot.framePath.trim());
+  }
+
+  static String _fingerprintForPath(String path) {
     if (path.isEmpty) return '';
     final file = File(path);
     if (!file.existsSync()) return 'missing:${p.normalize(path)}';
@@ -5145,46 +5178,55 @@ $playbackSpeedBoundary
 
   List<ReplicatedShotImage> _restoreReplicatedImages(String runId) {
     final images = _repository.listReplicatedShotImages(runId);
-    final missingBasenames = <String>{
-      for (final image in images)
-        if (image.generatedFramePath.trim().isNotEmpty &&
-            !File(image.generatedFramePath.trim()).existsSync())
-          p.basename(image.generatedFramePath.trim()),
-    }..removeWhere((basename) => basename.isEmpty);
-    if (missingBasenames.isEmpty) return images;
-    final generatedRoot = _directories.generatedImages;
-    if (!generatedRoot.existsSync()) {
-      return images;
+    final paths = {
+      for (final image in images) image.id: image.generatedFramePath.trim(),
+    };
+    final key = jsonEncode(paths);
+    if (paths.isNotEmpty && _imageRecoveryKeys[runId] != key) {
+      _imageRecoveryKeys[runId] = key;
+      final previous = _imageRecoveryTail;
+      _imageRecoveryTail = () async {
+        await previous;
+        if (_disposed || _imageRecoveryKeys[runId] != key) return;
+        try {
+          final result = await GeneratedImageRecovery.resolve(
+            _directories.generatedImages.path,
+            paths,
+          );
+          if (_disposed || _imageRecoveryKeys[runId] != key) return;
+          if (result.scanned) _replicatedImageRecoveryScanCount++;
+          if (result.paths.isEmpty) return;
+          final current = _repository.listReplicatedShotImages(runId);
+          for (final image in current) {
+            final recovered = result.paths[image.id];
+            if (recovered == null ||
+                image.generatedFramePath.trim() != paths[image.id]) {
+              continue;
+            }
+            _repository.upsertReplicatedShotImage(
+              image.copyWith(
+                generatedFramePath: recovered,
+                updatedAt: DateTime.now().toUtc(),
+              ),
+            );
+          }
+          if (value.run?.id == runId) {
+            value = value.copyWith(
+              replicatedImages: _repository.listReplicatedShotImages(runId),
+            );
+          }
+        } on FileSystemException {
+          // An unavailable directory is not evidence that a record is obsolete.
+          _imageRecoveryKeys.remove(runId);
+        }
+      }();
     }
-    _replicatedImageRecoveryScanCount++;
-    final filesByName = <String, File>{};
-    for (final entity in generatedRoot.listSync(recursive: true)) {
-      if (entity is! File) continue;
-      final basename = p.basename(entity.path);
-      if (missingBasenames.contains(basename)) filesByName[basename] = entity;
-    }
-    final restored = <ReplicatedShotImage>[];
-    for (final image in images) {
-      final currentPath = image.generatedFramePath.trim();
-      if (currentPath.isNotEmpty && File(currentPath).existsSync()) {
-        restored.add(image);
-        continue;
-      }
-      final basename = currentPath.isEmpty ? '' : p.basename(currentPath);
-      final recovered = basename.isEmpty ? null : filesByName[basename];
-      if (recovered == null) {
-        restored.add(image);
-        continue;
-      }
-      final updated = image.copyWith(
-        generatedFramePath: recovered.path,
-        updatedAt: DateTime.now().toUtc(),
-      );
-      _repository.upsertReplicatedShotImage(updated);
-      restored.add(updated);
-    }
-    return restored;
+    return images;
   }
+
+  final _imageRecoveryKeys = <String, String>{};
+  Future<void> _imageRecoveryTail = Future<void>.value();
+  Future<void> get pendingImageRecovery => _imageRecoveryTail;
 
   List<_ReplacementReference> _replacementReferences(
     String shotId, {

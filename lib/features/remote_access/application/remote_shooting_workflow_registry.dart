@@ -14,13 +14,33 @@ class RemoteShootingWorkflowRegistry {
   final RemoteWorkspaceRegistry _workspaceRegistry;
   final RemoteChangeBus _changeBus;
   RemoteShootingWorkflowSource? _source;
+  RemoteShootingWorkflowSource Function()? _sourceFactory;
+  RemoteShootingWorkflowSource Function()? _factoryOwner;
   StreamSubscription<String>? _subscription;
   String? _projectId;
 
   RemoteShootingWorkflowSource? get source {
     final workspace = _workspaceRegistry.current;
     if (workspace == null || workspace.projectId != _projectId) return null;
+    final factory = _sourceFactory;
+    if (_source == null && factory != null) {
+      _sourceFactory = null;
+      try {
+        attach(factory());
+        _factoryOwner = factory;
+      } catch (_) {
+        _sourceFactory = factory;
+        rethrow;
+      }
+    }
     return _source;
+  }
+
+  void attachDeferred(RemoteShootingWorkflowSource Function() factory) {
+    detach();
+    _projectId = _workspaceRegistry.current?.projectId;
+    _sourceFactory = factory;
+    _factoryOwner = factory;
   }
 
   void attach(RemoteShootingWorkflowSource source) {
@@ -33,8 +53,14 @@ class RemoteShootingWorkflowRegistry {
     _subscription = source.changes.listen(_publishChanged);
   }
 
-  void detach({RemoteShootingWorkflowSource? source}) {
+  void detach({
+    RemoteShootingWorkflowSource? source,
+    RemoteShootingWorkflowSource Function()? factory,
+  }) {
+    if (factory != null && factory != _factoryOwner) return;
     if (source != null && !identical(source, _source)) return;
+    _sourceFactory = null;
+    _factoryOwner = null;
     unawaited(_subscription?.cancel());
     _subscription = null;
     _source = null;

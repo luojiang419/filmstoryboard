@@ -14,6 +14,7 @@ import '../../../core/widgets/fullscreen_zoom_gallery.dart';
 import '../../../core/widgets/image_file_context_menu.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector_builder.dart';
+import '../../../core/widgets/retained_page.dart';
 import '../../replicate/domain/replicate_models.dart';
 import '../../shooting_script/application/shooting_asset_library_controller.dart';
 import '../../storyboard/data/image_generation_service.dart';
@@ -1213,6 +1214,14 @@ class _GenerationTaskTile extends StatefulWidget {
 
 class _GenerationTaskTileState extends State<_GenerationTaskTile> {
   Timer? _ticker;
+  bool _pageActive = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _pageActive = PageActivityScope.isActive(context);
+    _syncTicker();
+  }
 
   @override
   void initState() {
@@ -1237,7 +1246,7 @@ class _GenerationTaskTileState extends State<_GenerationTaskTile> {
   void _syncTicker() {
     _ticker?.cancel();
     _ticker = null;
-    if (!widget.task.isRunning) {
+    if (!_pageActive || !widget.task.isRunning) {
       return;
     }
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {

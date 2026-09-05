@@ -15,7 +15,7 @@ void main() {
     for (final (sql, indexName) in [
       (
         'SELECT * FROM script_shots WHERE script_id = ? ORDER BY shot_number',
-        'idx_script_shots_script_order',
+        'sqlite_autoindex_script_shots',
       ),
       (
         'SELECT * FROM video_generation_drafts WHERE script_id = ?',

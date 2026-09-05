@@ -18,6 +18,54 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'deferred sources instantiate once and local events do not read snapshots',
+    () async {
+      final fixture = await _Fixture.create('deferred-generation');
+      addTearDown(fixture.dispose);
+      final source = await _FakeGenerationSource.create(fixture.directories);
+      final registry = RemoteVideoGenerationRegistry(
+        workspaceRegistry: fixture.workspaceRegistry,
+        changeBus: fixture.changeBus,
+        mediaRegistry: RemoteMediaRegistry(
+          workspaceRegistry: fixture.workspaceRegistry,
+          secret: 'test-secret',
+        ),
+        taskRegistry: RemoteTaskRegistry(
+          workspaceRegistry: fixture.workspaceRegistry,
+          changeBus: fixture.changeBus,
+        ),
+      );
+      addTearDown(() {
+        registry.dispose();
+        source.dispose();
+      });
+      var constructions = 0;
+      RemoteVideoGenerationSource factory() {
+        constructions++;
+        return source;
+      }
+
+      registry.attachDeferred(factory);
+      expect(constructions, 0);
+      registry.options();
+      registry.options();
+      expect(constructions, 1);
+      for (var i = 0; i < 100; i++) {
+        source.selectScript(i.isEven ? 'script-a' : 'script-b');
+      }
+      expect(source.snapshotReads, 0);
+      registry.detach(factory: () => source);
+      expect(
+        registry.source,
+        same(source),
+        reason: 'An obsolete owner cannot detach a newer binding.',
+      );
+      registry.detach(factory: factory);
+      expect(registry.source, isNull);
+    },
+  );
+
   test('视频生成 registry 投影动态参数、镜头、任务、作品并驱动启动取消重试', () async {
     final fixture = await _Fixture.create('generation-registry');
     addTearDown(fixture.dispose);
@@ -293,6 +341,7 @@ class _FakeGenerationSource extends ChangeNotifier
   String _selectedScriptId = 'script-a';
   int _generationCount = 0;
   int cancelOperationCalls = 0;
+  int snapshotReads = 0;
   RemoteVideoGenerationCommand? lastCommand;
 
   static Future<_FakeGenerationSource> create(
@@ -372,11 +421,16 @@ class _FakeGenerationSource extends ChangeNotifier
   ];
 
   @override
-  List<RemoteVideoGenerationTaskRecord> get tasks => List.unmodifiable(_tasks);
+  List<RemoteVideoGenerationTaskRecord> get tasks {
+    snapshotReads++;
+    return List.unmodifiable(_tasks);
+  }
 
   @override
-  List<RemoteVideoGenerationTaskRecord> get works =>
-      _tasks.where((task) => task.hasLocalResult).toList(growable: false);
+  List<RemoteVideoGenerationTaskRecord> get works {
+    snapshotReads++;
+    return _tasks.where((task) => task.hasLocalResult).toList(growable: false);
+  }
 
   @override
   void selectScript(String scriptId) {

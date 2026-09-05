@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:path/path.dart' as p;
 
@@ -7,6 +8,8 @@ import '../../../core/services/workspace_directories.dart';
 import '../domain/story_design_models.dart';
 
 class StoryDesignResultRepository {
+  StoryDesignResultRepository._fromPath(String path)
+    : _directory = Directory(path);
   StoryDesignResultRepository(WorkspaceDirectories directories)
     : _directory = Directory(
         p.join(directories.generatedImages.path, 'design'),
@@ -29,7 +32,6 @@ class StoryDesignResultRepository {
     try {
       if (_indexFile.existsSync()) {
         final restored = _loadIndex();
-        save(restored);
         return restored;
       }
       final migrated = _scanExistingImages(fallbackModel: fallbackModel);
@@ -42,6 +44,15 @@ class StoryDesignResultRepository {
       save(recovered);
       return recovered;
     }
+  }
+
+  Future<List<StoryDesignResult>> loadAsync({required String fallbackModel}) {
+    final directoryPath = _directory.path;
+    return Isolate.run(
+      () => StoryDesignResultRepository._fromPath(
+        directoryPath,
+      ).load(fallbackModel: fallbackModel),
+    );
   }
 
   void save(Iterable<StoryDesignResult> results) {

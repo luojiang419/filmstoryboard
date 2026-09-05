@@ -81,6 +81,21 @@ class VideoGenerationRepository {
     );
   }
 
+  void upsertDrafts(List<VideoGenerationDraft> drafts) {
+    if (drafts.isEmpty) return;
+    _database.executeStatement('SAVEPOINT video_draft_refresh;');
+    try {
+      for (final draft in drafts) {
+        upsertDraft(draft);
+      }
+      _database.executeStatement('RELEASE video_draft_refresh;');
+    } catch (_) {
+      _database.executeStatement('ROLLBACK TO video_draft_refresh;');
+      _database.executeStatement('RELEASE video_draft_refresh;');
+      rethrow;
+    }
+  }
+
   VideoGenerationTask? getTask(String id) {
     final rows = _database.selectRows(
       'SELECT * FROM video_generation_tasks WHERE id = ? LIMIT 1;',

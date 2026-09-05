@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../../../core/services/file_explorer_service.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../exporter/data/default_export_directories.dart';
@@ -296,11 +297,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     _replicateController.addListener(_handleSourcesChanged);
     _settingsController.addListener(_handleSettingsChanged);
     _projectAspectController?.addListener(_handleProjectAspectChanged);
-    final removedTaskCount = _removeMissingGeneratedVideoTaskRecords();
     _refreshData();
-    if (removedTaskCount > 0) {
-      value = value.copyWith(message: '已移除 $removedTaskCount 条本地成片已删除的生成记录');
-    }
   }
 
   final VideoGenerationRepository _repository;
@@ -1052,18 +1049,20 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   SourceVideoPreviewRange? sourcePreviewFor(
     ScriptShot shot, {
     ScriptShot? endShot,
+    bool Function(File)? fileExists,
   }) {
     final script = value.selectedScript;
     if (script?.sourceVideoId == null) return null;
-    final video = _videoRepository.getSourceVideo(script!.sourceVideoId!);
+    final video = _previewVideo;
     if (video == null) return null;
     return const SourceVideoPreviewResolver().resolve(
       video: video,
-      frames: _videoRepository.listVideoFrames(script.sourceVideoId!),
+      frames: _previewFrames,
       shot: shot,
       endShot: endShot,
       workspaceRoot: _directories.workspaceRoot,
       paddingSeconds: _settingsController.value.videoPreviewPaddingSeconds,
+      fileExists: fileExists,
     );
   }
 
@@ -1680,11 +1679,16 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
       );
 
   VideoActionSequence actionSequenceFor(ScriptShot shot) {
-    final sequences = const VideoActionSequenceResolver().resolve(value.shots);
-    return sequences.firstWhere(
-      (sequence) => sequence.contains(shot.id),
-      orElse: () => VideoActionSequence([shot]),
-    );
+    if (!identical(_sequenceShots, value.shots)) {
+      _sequenceShots = value.shots;
+      _sequencesByShot = {
+        for (final sequence in const VideoActionSequenceResolver().resolve(
+          value.shots,
+        ))
+          for (final member in sequence.shots) member.id: sequence,
+      };
+    }
+    return _sequencesByShot[shot.id] ?? VideoActionSequence([shot]);
   }
 
   ScriptShot generationOwnerFor(ScriptShot shot) =>
@@ -1821,6 +1825,16 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   bool get canExportVideo => canExportTimelineXml;
+
+  /// A capability hint from metadata; export itself validates files once.
+  bool get hasTimelineCandidates =>
+      value.shots.isNotEmpty &&
+      value.tasks.any(
+        (task) =>
+            (task.status == VideoGenerationTaskStatus.completed ||
+                task.status == VideoGenerationTaskStatus.partialCompleted) &&
+            task.localPath.trim().isNotEmpty,
+      );
 
   Future<void> exportTimelineXml() async {
     final script = value.selectedScript;
@@ -2686,23 +2700,47 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
     value = value.copyWith(tasks: tasks);
   }
 
-  void _handleSourcesChanged() => _refreshData();
+  Object? _sourceDataKey;
+  List<ReplicatedShotImage>? _sourceImages;
+  SourceVideo? _previewVideo;
+  List<VideoFrame> _previewFrames = const [];
+  List<ScriptShot>? _sequenceShots;
+  Map<String, VideoActionSequence> _sequencesByShot = const {};
+
+  Object _currentSourceDataKey() {
+    final shooting = _shootingScriptController.value;
+    final replicate = _replicateController.value;
+    return (
+      shooting.scripts,
+      shooting.shots,
+      shooting.selectedScriptId,
+      replicate.selectedScriptId,
+      replicate.prompts,
+    );
+  }
+
+  void _handleSourcesChanged() {
+    if (_currentSourceDataKey() != _sourceDataKey) {
+      _refreshData();
+    } else if (!identical(
+      _sourceImages,
+      _replicateController.value.replicatedImages,
+    )) {
+      _sourceImages = _replicateController.value.replicatedImages;
+      final shotIds = value.shots.map((shot) => shot.id).toSet();
+      value = value.copyWith(
+        replicatedImages: _sourceImages!
+            .where((image) => shotIds.contains(image.scriptShotId))
+            .toList(),
+      );
+    }
+  }
 
   void _handleProjectAspectChanged() {
     value = value.copyWith(message: '项目画幅已切换为 $projectAspectRatioLabel');
   }
 
-  int _removeMissingGeneratedVideoTaskRecords() {
-    final missingTasks = _repository
-        .listTasks()
-        .where(_isMissingCompletedWork)
-        .toList(growable: false);
-    for (final task in missingTasks) {
-      _repository.deleteTask(task.id);
-    }
-    return missingTasks.length;
-  }
-
+  // Used only by explicit missing-work cleanup, never by opening an editor.
   bool _isMissingCompletedWork(VideoGenerationTask task) =>
       (task.status == VideoGenerationTaskStatus.completed ||
           task.status == VideoGenerationTaskStatus.partialCompleted) &&
@@ -2867,8 +2905,18 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
   }
 
   void _refreshData() {
+    PerformanceProbe.shared.increment('video_generation.data_refresh');
+    _sourceDataKey = _currentSourceDataKey();
+    _sourceImages = _replicateController.value.replicatedImages;
     final shooting = _shootingScriptController.value;
     final script = shooting.selectedScript;
+    final videoId = script?.sourceVideoId;
+    _previewVideo = videoId == null
+        ? null
+        : _videoRepository.getSourceVideo(videoId);
+    _previewFrames = videoId == null
+        ? const []
+        : _videoRepository.listVideoFrames(videoId);
     if (script == null) {
       value = value.copyWith(
         scripts: shooting.scripts,
@@ -2917,6 +2965,7 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
           }
         : const <String, String>{};
     final drafts = <String, VideoGenerationDraft>{};
+    final changedDrafts = <VideoGenerationDraft>[];
     for (final shot in shooting.shots) {
       final sourcePrompt = builtPromptsByShotId[shot.id] ?? shot.prompt;
       final existing = storedDrafts[shot.id];
@@ -2958,13 +3007,14 @@ class VideoGenerationController extends ValueNotifier<VideoGenerationState> {
               : existing?.promptMode ?? profile.promptMode,
           updatedAt: DateTime.now().toUtc(),
         );
-        _repository.upsertDraft(updated);
+        changedDrafts.add(updated);
         drafts[shot.id] = updated;
       } else {
         drafts[shot.id] = existing;
       }
     }
     final shotIds = shooting.shots.map((shot) => shot.id).toSet();
+    _repository.upsertDrafts(changedDrafts);
     final tasks = _repository.listTasks(scriptId: script.id);
     final selectedPreviewTaskId =
         value.selectedScriptId == script.id &&

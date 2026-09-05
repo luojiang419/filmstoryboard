@@ -5591,26 +5591,19 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
     final isExtractingDwPose = state.shotGuides.any(
       (guide) => guide.poseStatus == ProcessingStatus.running,
     );
-    final unanalyzedFrameCount = state.confirmedShots.where((shot) {
-      return preciseMode
-          ? !controller.isPreciseReplicationAnalysisReady(shot.id)
-          : !controller.isQuickReplicationAnalysisReady(shot.id);
-    }).length;
-    final content = ListView(
+    final content = Padding(
       key: const ValueKey('replicate-asset-library-scroll'),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 20),
-      children: [
-        _PrepareAssetsContent(
-          state: state,
-          controller: controller,
-          analysisState: analysisState,
-          bindingState: bindingState,
-          assetBindingController: assetBindingController,
-          assetLibraryState: assetLibraryState,
-          onImportLocalAsset: onImportLocalAsset,
-          mode: _mode,
-        ),
-      ],
+      child: _PrepareAssetsContent(
+        state: state,
+        controller: controller,
+        analysisState: analysisState,
+        bindingState: bindingState,
+        assetBindingController: assetBindingController,
+        assetLibraryState: assetLibraryState,
+        onImportLocalAsset: onImportLocalAsset,
+        mode: _mode,
+      ),
     );
     return _WorkspacePanel(
       child: Column(
@@ -5644,10 +5637,7 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
               if (preciseMode)
                 OutlinedButton.icon(
                   key: const ValueKey('analyze-all-replication-frames'),
-                  onPressed:
-                      state.shots.isEmpty ||
-                          state.isAnalyzingFrames ||
-                          unanalyzedFrameCount == 0
+                  onPressed: state.shots.isEmpty || state.isAnalyzingFrames
                       ? null
                       : controller.analyzeAllReplicationFrames,
                   icon: state.isAnalyzingFrames
@@ -5657,21 +5647,12 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.center_focus_strong_rounded),
-                  label: Text(
-                    state.isAnalyzingFrames
-                        ? '分析原帧中…'
-                        : unanalyzedFrameCount == 0 && state.shots.isNotEmpty
-                        ? '原帧均已分析'
-                        : '分析全部原帧',
-                  ),
+                  label: Text(state.isAnalyzingFrames ? '分析原帧中…' : '分析全部原帧'),
                 ),
               if (!preciseMode)
                 OutlinedButton.icon(
                   key: const ValueKey('quick-parse-all-replication-frames'),
-                  onPressed:
-                      state.shots.isEmpty ||
-                          state.isAnalyzingFrames ||
-                          unanalyzedFrameCount == 0
+                  onPressed: state.shots.isEmpty || state.isAnalyzingFrames
                       ? null
                       : controller.analyzeAllQuickReplicationFrames,
                   icon: state.isAnalyzingFrames
@@ -5681,13 +5662,7 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.document_scanner_outlined),
-                  label: Text(
-                    state.isAnalyzingFrames
-                        ? '解析原帧中…'
-                        : unanalyzedFrameCount == 0 && state.shots.isNotEmpty
-                        ? '原帧均已解析'
-                        : '全部一键解析',
-                  ),
+                  label: Text(state.isAnalyzingFrames ? '解析原帧中…' : '全部一键解析'),
                 ),
               if (preciseMode)
                 OutlinedButton.icon(
@@ -6770,9 +6745,7 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
     final showReplicationProgress =
         runningReplicationCount > 0 ||
         (widget.state.isBusy && replicationMessage.contains('复刻'));
-    _expandedShotIds.removeWhere(
-      (id) => !widget.rows.any((shot) => shot.id == id),
-    );
+    _expandedShotIds.removeWhere((id) => !shotIds.contains(id));
     return DecoratedBox(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
@@ -6871,81 +6844,109 @@ class _ShotAssetBindingBoardState extends State<_ShotAssetBindingBoard>
             if (widget.rows.isEmpty)
               const Text('当前脚本暂无镜头')
             else if (_isShotListVisible)
-              for (final shot in widget.rows) ...[
-                _ShotAssetDropRow(
-                  shot: shot,
-                  tailShot: widget.tailShotForDisplay(shot),
-                  replicatedByShotId: replicatedByShotId,
-                  startEndFrameMode: widget.startEndFrameMode,
-                  analysis: widget.analysisState.forShot(shot.id),
-                  links: widget.bindingState.linksForShot(shot.id),
-                  bindingState: widget.bindingState,
-                  libraryItems: widget.libraryState.items,
-                  stepAssets: widget.state.assets,
-                  expanded: _expandedShotIds.contains(shot.id),
-                  onToggleExpanded: () => setState(() {
-                    if (!_expandedShotIds.add(shot.id)) {
-                      _expandedShotIds.remove(shot.id);
-                    }
-                  }),
-                  onDrop: (item, replaceId, sortOrder, slotLabel) => widget
-                      .onDrop(item, shot.id, replaceId, sortOrder, slotLabel),
-                  onSelectStepAsset: (item, replaceId, sortOrder, slotLabel) =>
-                      widget.onSelectStepAsset(
-                        item,
-                        shot.id,
-                        replaceId,
-                        sortOrder,
-                        slotLabel,
+              Expanded(
+                child: ListView.separated(
+                  key: const PageStorageKey('replicate-asset-rows'),
+                  itemCount: widget.rows.length,
+                  separatorBuilder: (context, index) =>
+                      const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final shot = widget.rows[index];
+                    PerformanceProbe.shared.countBuild('replicate.asset_row');
+                    return RepaintBoundary(
+                      key: ValueKey('replicate-asset-row-${shot.id}'),
+                      child: _ShotAssetDropRow(
+                        shot: shot,
+                        tailShot: widget.tailShotForDisplay(shot),
+                        replicatedByShotId: replicatedByShotId,
+                        startEndFrameMode: widget.startEndFrameMode,
+                        analysis: widget.analysisState.forShot(shot.id),
+                        links: widget.bindingState.linksForShot(shot.id),
+                        bindingState: widget.bindingState,
+                        libraryItems: widget.libraryState.items,
+                        stepAssets: widget.state.assets,
+                        expanded: _expandedShotIds.contains(shot.id),
+                        onToggleExpanded: () => setState(() {
+                          if (!_expandedShotIds.add(shot.id)) {
+                            _expandedShotIds.remove(shot.id);
+                          }
+                        }),
+                        onDrop: (item, replaceId, sortOrder, slotLabel) =>
+                            widget.onDrop(
+                              item,
+                              shot.id,
+                              replaceId,
+                              sortOrder,
+                              slotLabel,
+                            ),
+                        onSelectStepAsset:
+                            (item, replaceId, sortOrder, slotLabel) =>
+                                widget.onSelectStepAsset(
+                                  item,
+                                  shot.id,
+                                  replaceId,
+                                  sortOrder,
+                                  slotLabel,
+                                ),
+                        onSelectLibraryAsset:
+                            (item, replaceId, sortOrder, slotLabel) =>
+                                widget.onSelectLibraryAsset(
+                                  item,
+                                  shot.id,
+                                  replaceId,
+                                  sortOrder,
+                                  slotLabel,
+                                ),
+                        onSelectLocalAsset:
+                            (type, replaceId, sortOrder, slotLabel) =>
+                                widget.onSelectLocalAsset(
+                                  type,
+                                  shot.id,
+                                  replaceId,
+                                  sortOrder,
+                                  slotLabel,
+                                ),
+                        onRemove: (assetId) =>
+                            widget.onRemove(shot.id, assetId),
+                        onUpdateLink: widget.onUpdateLink,
+                        onMatch: () => widget.onMatchShot(shot.id),
+                        onUpdateInstructions: (instructions) =>
+                            widget.onUpdateInstructions(shot, instructions),
+                        guide: widget.guideForShot(shot.id),
+                        guideIsCurrent: widget.isGuideCurrent(shot.id),
+                        onAnalyzeFrame: () => widget.onAnalyzeFrame(shot.id),
+                        onExtractPose: () => widget.onExtractPose(shot.id),
+                        onRemovePose: () => widget.onRemovePose(shot.id),
+                        onSaveEditablePose: (editablePose) =>
+                            widget.onSaveEditablePose(shot.id, editablePose),
+                        onTogglePreservedElement: (elementId, selected) =>
+                            widget.onTogglePreservedElement(
+                              shot.id,
+                              elementId,
+                              selected,
+                            ),
+                        onSetSubjectDecision: (subjectId, decision) => widget
+                            .onSetSubjectDecision(shot.id, subjectId, decision),
+                        onSetProductMarkAuthorization: (authorization) =>
+                            widget.onSetProductMarkAuthorization(
+                              shot.id,
+                              authorization,
+                            ),
+                        onRemoveSubject: (subjectId) =>
+                            widget.onRemoveSubject(shot.id, subjectId),
+                        onAddPreservedElement: (label) =>
+                            widget.onAddPreservedElement(shot.id, label),
+                        replicatedImage: replicatedByShotId[shot.id],
+                        onReplicate: () => widget.onReplicateShot(shot.id),
+                        quickCapacity: widget.quickCapacityForShot(shot.id),
+                        onOpenOriginalFrame: widget.onOpenOriginalFrame,
+                        onOpenReplicatedFrame: widget.onOpenReplicatedFrame,
+                        mode: widget.mode,
                       ),
-                  onSelectLibraryAsset:
-                      (item, replaceId, sortOrder, slotLabel) =>
-                          widget.onSelectLibraryAsset(
-                            item,
-                            shot.id,
-                            replaceId,
-                            sortOrder,
-                            slotLabel,
-                          ),
-                  onSelectLocalAsset: (type, replaceId, sortOrder, slotLabel) =>
-                      widget.onSelectLocalAsset(
-                        type,
-                        shot.id,
-                        replaceId,
-                        sortOrder,
-                        slotLabel,
-                      ),
-                  onRemove: (assetId) => widget.onRemove(shot.id, assetId),
-                  onUpdateLink: widget.onUpdateLink,
-                  onMatch: () => widget.onMatchShot(shot.id),
-                  onUpdateInstructions: (instructions) =>
-                      widget.onUpdateInstructions(shot, instructions),
-                  guide: widget.guideForShot(shot.id),
-                  guideIsCurrent: widget.isGuideCurrent(shot.id),
-                  onAnalyzeFrame: () => widget.onAnalyzeFrame(shot.id),
-                  onExtractPose: () => widget.onExtractPose(shot.id),
-                  onRemovePose: () => widget.onRemovePose(shot.id),
-                  onSaveEditablePose: (editablePose) =>
-                      widget.onSaveEditablePose(shot.id, editablePose),
-                  onTogglePreservedElement: (elementId, selected) => widget
-                      .onTogglePreservedElement(shot.id, elementId, selected),
-                  onSetSubjectDecision: (subjectId, decision) =>
-                      widget.onSetSubjectDecision(shot.id, subjectId, decision),
-                  onSetProductMarkAuthorization: (authorization) => widget
-                      .onSetProductMarkAuthorization(shot.id, authorization),
-                  onRemoveSubject: (subjectId) =>
-                      widget.onRemoveSubject(shot.id, subjectId),
-                  onAddPreservedElement: (label) =>
-                      widget.onAddPreservedElement(shot.id, label),
-                  replicatedImage: replicatedByShotId[shot.id],
-                  onReplicate: () => widget.onReplicateShot(shot.id),
-                  quickCapacity: widget.quickCapacityForShot(shot.id),
-                  onOpenOriginalFrame: widget.onOpenOriginalFrame,
-                  onOpenReplicatedFrame: widget.onOpenReplicatedFrame,
-                  mode: widget.mode,
+                    );
+                  },
                 ),
-                if (shot != widget.rows.last) const SizedBox(height: 8),
-              ],
+              ),
           ],
         ),
       ),

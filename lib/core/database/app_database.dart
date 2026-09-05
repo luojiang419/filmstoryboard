@@ -1194,10 +1194,6 @@ class AppDatabase {
       // Cover the project-scoped hot paths. Keep legacy partial databases
       // migratable by checking columns before creating each index.
       const indexes = <String, (String, List<String>)>{
-        'idx_script_shots_script_order': (
-          'script_shots',
-          ['script_id', 'shot_number'],
-        ),
         'idx_video_drafts_script': ('video_generation_drafts', ['script_id']),
         'idx_replicate_runs_script': ('replicate_runs', ['script_id']),
         'idx_replicate_assets_run': ('replicate_assets', ['run_id']),

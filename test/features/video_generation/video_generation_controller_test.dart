@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:filmstoryboard/core/database/app_database.dart';
+import 'package:filmstoryboard/core/performance/performance_probe.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
 import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
 import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
@@ -47,6 +48,33 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'selection and progress notifications do not rebuild video drafts',
+    () async {
+      final fixture = await _createControllerFixture(
+        cliService: _FakeKlingCliService(succeedAfterAttempts: 1),
+      );
+      addTearDown(fixture.dispose);
+      final shot = fixture.shootingController.addShot()!;
+      final probe = PerformanceProbe.shared;
+      probe.clear();
+      for (var index = 0; index < 100; index++) {
+        fixture.shootingController.value = fixture.shootingController.value
+            .copyWith(
+              selectedShotId: index.isEven ? shot.id : '',
+              message: 'progress-$index',
+            );
+        fixture.replicateController.value = fixture.replicateController.value
+            .copyWith(message: 'progress-$index');
+      }
+      expect(probe.counters['video_generation.data_refresh'], 0);
+      fixture.shootingController.updateShot(
+        shot.copyWith(prompt: 'changed prompt'),
+      );
+      expect(probe.counters['video_generation.data_refresh'], greaterThan(0));
+    },
+  );
+
   test('发送到达芬奇时桥接离线会自动拉起并恢复连接', () async {
     final bridge = _RecoveringDaVinciBridgeClient();
     var launchCount = 0;
@@ -3129,7 +3157,7 @@ non_diegetic_music: Minimal ambient music.''',
     );
   });
 
-  test('启动时移除本地成片已删除的完成任务，保留失败任务记录', () async {
+  test('启动仅恢复任务，不因本地文件暂不可用而删除历史', () async {
     late VideoGenerationTask missingCompleted;
     late VideoGenerationTask failed;
     final fixture = await _createControllerFixture(
@@ -3177,16 +3205,16 @@ non_diegetic_music: Minimal ambient music.''',
     addTearDown(fixture.dispose);
     final repository = VideoGenerationRepository(fixture.database);
 
-    expect(repository.getTask(missingCompleted.id), isNull);
+    expect(repository.getTask(missingCompleted.id), isNotNull);
     expect(
       repository.getTask(failed.id)?.status,
       VideoGenerationTaskStatus.failed,
     );
     expect(
       fixture.controller.value.tasks.map((task) => task.id),
-      isNot(contains(missingCompleted.id)),
+      contains(missingCompleted.id),
     );
-    expect(fixture.controller.value.message, contains('已移除 1 条'));
+    expect(fixture.controller.value.message, isNot(contains('已移除')));
   });
 
   test('生成页手动修改镜头组时长会写入组尾并同步提示词秒数', () async {

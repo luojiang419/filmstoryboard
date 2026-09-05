@@ -99,7 +99,16 @@ class ProjectWorkspaceController extends ChangeNotifier {
 
   Future<void> refreshProjects() async {
     final revision = ++_catalogRevision;
-    final loaded = await _catalog.loadAsync();
+    List<ProjectEntry> loaded;
+    try {
+      loaded = await _catalog.loadAsync();
+    } catch (error) {
+      if (!_disposed && revision == _catalogRevision) {
+        errorMessage = '工程目录刷新失败：$error';
+        notifyListeners();
+      }
+      return;
+    }
     if (_disposed || revision != _catalogRevision) return;
     projects = loaded;
     notifyListeners();
@@ -209,19 +218,12 @@ class ProjectWorkspaceController extends ChangeNotifier {
     errorMessage = null;
     notifyListeners();
     await _waitForViewRelease();
+    ProjectSession opened;
     try {
-      final opened = await _projectService.openProject(File(entry.indexPath));
+      opened = await _projectService.openProject(File(entry.indexPath));
       if (_disposed) {
         await opened.close();
         return;
-      }
-      session = opened;
-      phase = ProjectWorkspacePhase.editor;
-      notifyListeners();
-      await refreshProjects();
-      if (closing != null) {
-        await _waitForViewRelease();
-        await closing.close();
       }
     } catch (error) {
       session = closing;
@@ -232,6 +234,21 @@ class ProjectWorkspaceController extends ChangeNotifier {
       notifyListeners();
       rethrow;
     }
+    // Opening failure can restore the old editor; cleanup failure after
+    // publication must never restore a partly closed session.
+    session = opened;
+    phase = ProjectWorkspacePhase.editor;
+    notifyListeners();
+    if (closing != null) {
+      await _waitForViewRelease();
+      try {
+        await closing.close();
+      } catch (error) {
+        errorMessage = '已打开新工程，旧工程释放失败：$error';
+        notifyListeners();
+      }
+    }
+    await refreshProjects();
   }
 
   Future<void> closeProject() async {
@@ -239,11 +256,11 @@ class ProjectWorkspaceController extends ChangeNotifier {
     session = null;
     phase = ProjectWorkspacePhase.home;
     notifyListeners();
-    await refreshProjects();
     if (closing != null) {
       await _waitForViewRelease();
       await closing.close();
     }
+    await refreshProjects();
   }
 
   Future<void> removeFromCatalog(String projectId) async {

@@ -86,17 +86,17 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
             gridCutController,
             details.files.map((file) => file.path).toList(),
           ),
-          child: ValueListenableBuilder<VideoAnalysisState>(
+          child: PageValueListenableBuilder<VideoAnalysisState>(
             valueListenable: controller,
             child: _VideoAnalysisWorkspace(
               controller: controller,
               gridCutController: gridCutController,
             ),
             builder: (context, state, workspace) =>
-                ValueListenableBuilder<GridCutState>(
+                PageValueListenableBuilder<GridCutState>(
                   valueListenable: gridCutController,
                   builder: (context, gridCutState, _) =>
-                      ValueListenableBuilder<StoryboardState>(
+                      PageValueListenableBuilder<StoryboardState>(
                         valueListenable: storyboardController,
                         builder: (context, storyboardState, _) => ColoredBox(
                           key: const ValueKey('video-analysis-page'),
@@ -438,7 +438,7 @@ class _VideoAnalysisWorkspace extends StatelessWidget {
       valueListenable: controller,
       selector: (state) => state,
       shouldRebuild: _workspaceStateChanged,
-      builder: (context, state, _) => ValueListenableBuilder<GridCutState>(
+      builder: (context, state, _) => PageValueListenableBuilder<GridCutState>(
         valueListenable: gridCutController,
         builder: (context, gridCutState, _) => LayoutBuilder(
           builder: (context, constraints) {

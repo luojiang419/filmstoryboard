@@ -92,9 +92,9 @@ void main() {
       source,
       contains('final groups = ScriptShotGroup.group(state.shots)'),
     );
-    expect(source, contains("const _HeaderCell('原视频帧')"));
-    expect(source, contains("const _HeaderCell('复刻分镜图')"));
-    expect(source, contains("const _HeaderCell('时长')"));
+    expect(source, contains("_HeaderCell('原视频帧')"));
+    expect(source, contains("_HeaderCell('复刻分镜图')"));
+    expect(source, contains("_HeaderCell('时长')"));
     expect(source, contains("'video-generation-five-column-table'"));
     expect(source, contains('class _GenerationDurationCell'));
     expect(source, contains('controller.updateDesiredDurationFor'));
@@ -280,7 +280,7 @@ void main() {
       contains("key: const ValueKey('clean-invalid-generated-works')"),
     );
     expect(source, contains("label: const Text('清理')"));
-    expect(source, contains('controller.invalidWorkTaskCount == 0'));
+    expect(source, contains('!controller.hasTimelineCandidates'));
     expect(source, contains('controller.cleanInvalidWorks'));
     expect(
       source,

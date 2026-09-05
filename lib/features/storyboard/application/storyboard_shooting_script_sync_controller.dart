@@ -34,8 +34,10 @@ class StoryboardShootingScriptSyncController {
     }
     final changedBoards = [
       for (final board in _storyboardController.value.boards)
-        if (_boardsById[board.id] == null ||
-            _boardSignature(_boardsById[board.id]) != _boardSignature(board))
+        if (!identical(_boardsById[board.id], board) &&
+            (_boardsById[board.id] == null ||
+                _boardSignature(_boardsById[board.id]) !=
+                    _boardSignature(board)))
           (board: board, previousBoard: _boardsById[board.id]),
     ];
     final currentBoardIds = {

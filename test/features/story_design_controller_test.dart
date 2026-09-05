@@ -33,6 +33,7 @@ void main() {
       preferencesRepository: StoryDesignPreferencesRepository(fixture.database),
       projectAspectController: aspectController,
     );
+    await controller.ready;
     addTearDown(() {
       controller.dispose();
       aspectController.dispose();
@@ -51,6 +52,7 @@ void main() {
       preferencesRepository: StoryDesignPreferencesRepository(fixture.database),
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     expect(StoryDesignController.gridOptions, [0, 4, 6, 9, 12, 16, 24]);
@@ -82,6 +84,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller
@@ -111,6 +114,7 @@ void main() {
       preferencesRepository: preferencesRepository,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await first.ready;
 
     const targetModel = 'apimart:gpt-image-2';
     first.setModel(targetModel);
@@ -146,6 +150,7 @@ void main() {
       preferencesRepository: preferencesRepository,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await restored.ready;
     addTearDown(restored.dispose);
 
     expect(restored.value.model, expected.model);
@@ -169,6 +174,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     const model = 'apimart:gpt-image-2-official';
@@ -198,6 +204,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await first.ready;
     first.setPrompt('需要持久化的山间日出');
     await first.generate();
 
@@ -220,6 +227,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await restored.ready;
     expect(restored.value.results, hasLength(1));
     expect(restored.value.results.single.id, generated.id);
     expect(restored.value.results.single.path, generated.path);
@@ -236,6 +244,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await afterRemoval.ready;
     addTearDown(afterRemoval.dispose);
     expect(afterRemoval.value.results, isEmpty);
     expect(generatedFile.existsSync(), isTrue);
@@ -263,6 +272,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     expect(controller.value.results, hasLength(1));
@@ -283,6 +293,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: _FakeImageGenerationService(),
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setGridCount(24);
@@ -305,6 +316,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setGridCount(9);
@@ -333,6 +345,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setGridCount(6);
@@ -358,6 +371,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setPrompt('雨夜街头的电影感分镜图');
@@ -397,6 +411,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setPrompt('APIMart 路由验证');
@@ -419,6 +434,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setPrompt('并发雪景任务');
@@ -454,6 +470,7 @@ void main() {
       gridCutController: fixture.gridCutController,
       imageGenerationService: imageService,
     );
+    await controller.ready;
     addTearDown(controller.dispose);
 
     controller.setBatchCount(2);

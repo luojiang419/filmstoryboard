@@ -15,6 +15,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/services/file_availability_cache.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../../core/widgets/preview_file_image.dart';
+import '../../../core/widgets/value_listenable_selector.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../storyboard/application/storyboard_controller.dart';
@@ -81,7 +82,7 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
 
     return FileAvailabilityScope(
       cache: _fileAvailabilityCache,
-      child: ListenableBuilder(
+      child: PageListenableBuilder(
         listenable: Listenable.merge([
           storyboardController,
           shootingScriptController,
@@ -543,16 +544,12 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     if (script == null) {
       return false;
     }
-    final repository = VideoGenerationRepository(database);
-    return const VideoTimelineXmlExportService()
-        .timelineClips(
-          script: script,
-          shots: shooting.shots,
-          tasks: repository.listTasks(scriptId: script.id),
-          fileForTask: (task) =>
-              _generatedVideoFileForTask(task, projectDirectories),
-        )
-        .isNotEmpty;
+    return shooting.shots.isNotEmpty &&
+        database.selectRows(
+          "SELECT 1 FROM video_generation_tasks WHERE script_id = ? "
+          "AND status IN ('completed', 'partialCompleted') AND local_path <> '' LIMIT 1;",
+          [script.id],
+        ).isNotEmpty;
   }
 
   Future<void> _exportTimelineXml({

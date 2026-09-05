@@ -40,17 +40,24 @@ class ProjectSession {
   final ProjectDirectories directories;
   final AppDatabase database;
   final RandomAccessFile _lockFile;
-  bool _closed = false;
+  Future<void>? _closing;
 
-  Future<void> close() async {
-    if (_closed) {
-      return;
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
+    try {
+      try {
+        database.checkpoint();
+      } finally {
+        database.dispose();
+      }
+    } finally {
+      try {
+        await _lockFile.unlock();
+      } finally {
+        await _lockFile.close();
+      }
     }
-    _closed = true;
-    database.checkpoint();
-    database.dispose();
-    await _lockFile.unlock();
-    await _lockFile.close();
   }
 }
 

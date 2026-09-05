@@ -272,6 +272,7 @@ void main() {
         gridCutController: gridCutController,
         imageGenerationService: imageService,
       )..setPrompt('下雪氛围');
+      await storyDesignController.ready;
     });
     addTearDown(() async {
       storyDesignController.dispose();
