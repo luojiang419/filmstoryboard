@@ -50,6 +50,7 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
       catalog: ref.read(projectCatalogRepositoryProvider),
       projectService: ref.read(projectServiceProvider),
       legacyMigrator: ref.read(legacyProjectMigratorProvider),
+      waitForViewRelease: () => WidgetsBinding.instance.endOfFrame,
     )..addListener(_handleChanged);
     _projectRemoteSource = ProjectRemoteSource(_controller);
     _remoteProjectRegistry.attach(_projectRemoteSource);
@@ -240,7 +241,7 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
       return;
     }
     if (!decision.permanent) {
-      _controller.removeFromCatalog(entry.projectId);
+      await _controller.removeFromCatalog(entry.projectId);
       return;
     }
     try {
@@ -254,7 +255,7 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
               confirmedName: decision.confirmedName,
             ),
       );
-      _controller.refreshProjects();
+      await _controller.refreshProjects();
     } catch (error) {
       _showError(error);
     }
@@ -289,7 +290,7 @@ class _ProjectPortalState extends ConsumerState<ProjectPortal> {
             .read(projectOperationsServiceProvider)
             .migrateProject(entry: entry, targetParent: Directory(path));
       });
-      _controller.refreshProjects();
+      await _controller.refreshProjects();
     } catch (error) {
       _showError(error);
     }

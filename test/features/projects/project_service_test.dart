@@ -334,7 +334,7 @@ void main() {
       );
       final targetId = targetSession.manifest.projectId;
       await targetSession.close();
-      controller.refreshProjects();
+      await controller.refreshProjects();
       final target = controller.projects.singleWhere(
         (entry) => entry.projectId == targetId,
       );
@@ -349,7 +349,7 @@ void main() {
       );
       final brokenId = brokenSession.manifest.projectId;
       await brokenSession.close();
-      controller.refreshProjects();
+      await controller.refreshProjects();
       final staleAvailableEntry = controller.projects.singleWhere(
         (entry) => entry.projectId == brokenId,
       );

@@ -20,11 +20,13 @@ class ProjectWorkspaceController extends ChangeNotifier {
     required ProjectCatalogRepository catalog,
     required ProjectService projectService,
     required LegacyProjectMigrator legacyMigrator,
+    Future<void> Function()? waitForViewRelease,
   }) : _appDirectories = appDirectories,
        _globalDatabase = globalDatabase,
        _catalog = catalog,
        _projectService = projectService,
-       _legacyMigrator = legacyMigrator;
+       _legacyMigrator = legacyMigrator,
+       _waitForViewRelease = waitForViewRelease ?? _nextEvent;
 
   static const showWelcomeSettingKey = 'showWelcomeOnStartup';
   static const defaultProjectRootSettingKey = 'defaultProjectRoot';
@@ -34,12 +36,28 @@ class ProjectWorkspaceController extends ChangeNotifier {
   final ProjectCatalogRepository _catalog;
   final ProjectService _projectService;
   final LegacyProjectMigrator _legacyMigrator;
+  final Future<void> Function() _waitForViewRelease;
+  static Future<void> _nextEvent() => Future<void>.delayed(Duration.zero);
 
   ProjectWorkspacePhase phase = ProjectWorkspacePhase.booting;
   List<ProjectEntry> projects = const [];
   ProjectSession? session;
   String? errorMessage;
   String? migrationWarning;
+  int _catalogRevision = 0;
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _catalogRevision++;
+    super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
 
   bool get showWelcomeOnStartup =>
       _globalDatabase.getSetting(showWelcomeSettingKey) != 'false';
@@ -62,7 +80,8 @@ class ProjectWorkspaceController extends ChangeNotifier {
     } catch (error) {
       migrationWarning = '旧版数据接管未完成：$error';
     }
-    refreshProjects();
+    await refreshProjects();
+    if (_disposed) return;
     final initialPath = initialProjectIndexPath?.trim();
     if (initialPath != null && initialPath.isNotEmpty) {
       try {
@@ -78,8 +97,11 @@ class ProjectWorkspaceController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void refreshProjects() {
-    projects = _catalog.load();
+  Future<void> refreshProjects() async {
+    final revision = ++_catalogRevision;
+    final loaded = await _catalog.loadAsync();
+    if (_disposed || revision != _catalogRevision) return;
+    projects = loaded;
     notifyListeners();
   }
 
@@ -114,6 +136,7 @@ class ProjectWorkspaceController extends ChangeNotifier {
     Directory? parentDirectory,
     ProjectAspectMode aspectMode = ProjectAspectMode.auto,
   }) async {
+    _ensureCanOpen();
     final previousPhase = phase == ProjectWorkspacePhase.welcome
         ? ProjectWorkspacePhase.welcome
         : ProjectWorkspacePhase.home;
@@ -128,10 +151,14 @@ class ProjectWorkspaceController extends ChangeNotifier {
         parentDirectory: parent,
         aspectMode: aspectMode,
       );
+      if (_disposed) {
+        await opened.close();
+        return;
+      }
       session = opened;
-      refreshProjects();
       phase = ProjectWorkspacePhase.editor;
       notifyListeners();
+      await refreshProjects();
     } catch (error) {
       phase = previousPhase;
       errorMessage = error.toString();
@@ -141,6 +168,7 @@ class ProjectWorkspaceController extends ChangeNotifier {
   }
 
   Future<void> openProject(File indexFile) async {
+    _ensureCanOpen(allowBooting: true);
     final previousPhase = phase == ProjectWorkspacePhase.welcome
         ? ProjectWorkspacePhase.welcome
         : ProjectWorkspacePhase.home;
@@ -149,10 +177,14 @@ class ProjectWorkspaceController extends ChangeNotifier {
     notifyListeners();
     try {
       final opened = await _projectService.openProject(indexFile);
+      if (_disposed) {
+        await opened.close();
+        return;
+      }
       session = opened;
-      refreshProjects();
       phase = ProjectWorkspacePhase.editor;
       notifyListeners();
+      await refreshProjects();
     } catch (error) {
       phase = previousPhase;
       errorMessage = error.toString();
@@ -176,15 +208,19 @@ class ProjectWorkspaceController extends ChangeNotifier {
     phase = ProjectWorkspacePhase.opening;
     errorMessage = null;
     notifyListeners();
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+    await _waitForViewRelease();
     try {
       final opened = await _projectService.openProject(File(entry.indexPath));
+      if (_disposed) {
+        await opened.close();
+        return;
+      }
       session = opened;
-      refreshProjects();
       phase = ProjectWorkspacePhase.editor;
       notifyListeners();
+      await refreshProjects();
       if (closing != null) {
-        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await _waitForViewRelease();
         await closing.close();
       }
     } catch (error) {
@@ -201,30 +237,30 @@ class ProjectWorkspaceController extends ChangeNotifier {
   Future<void> closeProject() async {
     final closing = session;
     session = null;
-    refreshProjects();
     phase = ProjectWorkspacePhase.home;
     notifyListeners();
+    await refreshProjects();
     if (closing != null) {
-      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await _waitForViewRelease();
       await closing.close();
     }
   }
 
-  void removeFromCatalog(String projectId) {
+  Future<void> removeFromCatalog(String projectId) async {
     _catalog.remove(projectId);
-    refreshProjects();
+    await refreshProjects();
   }
 
   Future<void> renameProject(ProjectEntry entry, String name) async {
     await _projectService.renameProject(entry: entry, name: name);
-    refreshProjects();
+    await refreshProjects();
   }
 
   Future<void> retryLegacyMigration() async {
     migrationWarning = null;
     try {
       await _legacyMigrator.migrateIfNeeded();
-      refreshProjects();
+      await refreshProjects();
     } catch (error) {
       migrationWarning = '旧版数据接管未完成：$error';
       notifyListeners();
@@ -252,6 +288,15 @@ class ProjectWorkspaceController extends ChangeNotifier {
       await probe.delete();
     } catch (error) {
       throw ProjectException('工程目录不可写，请选择其他位置：$error');
+    }
+  }
+
+  void _ensureCanOpen({bool allowBooting = false}) {
+    if (_disposed ||
+        phase == ProjectWorkspacePhase.opening ||
+        (!allowBooting && phase == ProjectWorkspacePhase.booting) ||
+        session != null) {
+      throw const ProjectException('工作区正在使用或切换工程，请先关闭当前工程');
     }
   }
 }

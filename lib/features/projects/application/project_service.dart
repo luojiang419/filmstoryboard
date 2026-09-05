@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/performance/performance_probe.dart';
 import '../data/project_catalog_repository.dart';
 import '../data/project_aspect_repository.dart';
 import '../data/project_directories.dart';
@@ -124,7 +125,7 @@ class ProjectService {
   }
 
   Future<ProjectSession> openProject(File indexFile) async {
-    if (!indexFile.existsSync()) {
+    if (!await indexFile.exists()) {
       throw const ProjectException('工程索引不存在');
     }
     ProjectManifest manifest;
@@ -141,7 +142,7 @@ class ProjectService {
     }
     final resolver = ProjectPathResolver(directories.root);
     final databaseFile = File(resolver.toRuntimePath(manifest.databasePath));
-    if (!databaseFile.existsSync()) {
+    if (!await databaseFile.exists()) {
       throw const ProjectException('工程数据库不存在');
     }
     await directories.database.create(recursive: true);
@@ -153,12 +154,16 @@ class ProjectService {
       throw const ProjectException('工程正在被其他窗口使用');
     }
     try {
-      final database = await AppDatabase.open(databaseFile);
-      if (!database.integrityCheck()) {
+      final database = await PerformanceProbe.shared.measureAsync(
+        'project.database.open',
+        () => AppDatabase.open(databaseFile, verifyIntegrity: true),
+      );
+      try {
+        _catalog.register(manifest, indexFile);
+      } catch (_) {
         database.dispose();
-        throw const ProjectException('工程数据库完整性检查失败');
+        rethrow;
       }
-      _catalog.register(manifest, indexFile);
       return ProjectSession(
         manifest: manifest,
         directories: directories,

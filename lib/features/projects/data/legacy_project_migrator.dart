@@ -71,7 +71,7 @@ class LegacyProjectMigrator {
     if (isComplete) {
       return const LegacyMigrationResult(LegacyMigrationStatus.alreadyMigrated);
     }
-    final existingLegacy = _catalog.load().where(
+    final existingLegacy = (await _catalog.loadAsync()).where(
       (entry) => entry.displayName == '旧版工程' && entry.exists,
     );
     if (existingLegacy.isNotEmpty) {

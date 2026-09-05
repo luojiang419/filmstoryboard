@@ -175,7 +175,7 @@ class ProjectOperationsService {
       var manifest = ProjectManifest.decode(
         await File(p.join(staging.path, 'project.storyboard')).readAsString(),
       );
-      final duplicateId = _catalog.load().any(
+      final duplicateId = (await _catalog.loadAsync()).any(
         (entry) => entry.projectId == manifest.projectId,
       );
       final preferredName = duplicateId
@@ -197,7 +197,7 @@ class ProjectOperationsService {
       await staging.rename(target.path);
       final indexFile = File(p.join(target.path, 'project.storyboard'));
       _catalog.register(manifest, indexFile);
-      return _catalog.load().firstWhere(
+      return (await _catalog.loadAsync()).firstWhere(
         (entry) => entry.projectId == manifest.projectId,
       );
     } catch (_) {
@@ -241,7 +241,7 @@ class ProjectOperationsService {
       } catch (_) {
         retained = true;
       }
-      final migratedEntry = _catalog.load().firstWhere(
+      final migratedEntry = (await _catalog.loadAsync()).firstWhere(
         (candidate) => candidate.projectId == manifest.projectId,
       );
       return ProjectMigrationResult(

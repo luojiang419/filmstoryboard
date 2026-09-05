@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:sqlite3/sqlite3.dart';
 
@@ -223,7 +224,7 @@ class ImageGenerationRecord {
 }
 
 class AppDatabase {
-  static const currentSchemaVersion = 29;
+  static const currentSchemaVersion = 30;
 
   AppDatabase._(this._database, this._settingWriteObserver);
 
@@ -233,15 +234,29 @@ class AppDatabase {
   static Future<AppDatabase> open(
     File file, {
     void Function(String key)? settingWriteObserver,
+    bool verifyIntegrity = false,
   }) async {
-    if (!file.parent.existsSync()) {
-      await file.parent.create(recursive: true);
-    }
-
+    await file.parent.create(recursive: true);
+    // A Future around synchronous SQLite does not move it off the UI isolate.
+    // Prepare and verify using a worker-owned connection; never transfer FFI
+    // handles between isolates. Only the short-lived runtime open stays here.
+    final path = file.path;
+    await Isolate.run(() => _prepareDatabase(path, verifyIntegrity));
     final database = sqlite3.open(file.path);
-    final appDatabase = AppDatabase._(database, settingWriteObserver);
-    appDatabase._initialize();
-    return appDatabase;
+    database.execute('PRAGMA foreign_keys = ON;');
+    return AppDatabase._(database, settingWriteObserver);
+  }
+
+  static void _prepareDatabase(String path, bool verifyIntegrity) {
+    final database = AppDatabase._(sqlite3.open(path), null);
+    try {
+      database._initialize();
+      if (verifyIntegrity && !database.integrityCheck()) {
+        throw StateError('工程数据库完整性检查失败');
+      }
+    } finally {
+      database.dispose();
+    }
   }
 
   void _initialize() {
@@ -1174,6 +1189,41 @@ class AppDatabase {
           );
         ''')
         ..execute('PRAGMA user_version = 29;');
+    }
+    if (version < 30) {
+      // Cover the project-scoped hot paths. Keep legacy partial databases
+      // migratable by checking columns before creating each index.
+      const indexes = <String, (String, List<String>)>{
+        'idx_script_shots_script_order': (
+          'script_shots',
+          ['script_id', 'shot_number'],
+        ),
+        'idx_video_drafts_script': ('video_generation_drafts', ['script_id']),
+        'idx_replicate_runs_script': ('replicate_runs', ['script_id']),
+        'idx_replicate_assets_run': ('replicate_assets', ['run_id']),
+        'idx_replicated_images_run': ('replicated_shot_images', ['run_id']),
+        'idx_vision_runs_board_created': (
+          'vision_analysis_runs',
+          ['board_id', 'created_at'],
+        ),
+        'idx_vision_items_run_slot': (
+          'vision_analysis_items',
+          ['run_id', 'slot_index'],
+        ),
+        'idx_script_assets_script': ('script_assets', ['script_id']),
+        'idx_shot_asset_links_shot': ('script_shot_asset_links', ['shot_id']),
+      };
+      for (final entry in indexes.entries) {
+        final (table, columns) = entry.value;
+        if (_tableExists(table) &&
+            columns.every((column) => _columnExists(table, column))) {
+          _database.execute(
+            'CREATE INDEX IF NOT EXISTS ${entry.key} '
+            'ON $table (${columns.join(', ')});',
+          );
+        }
+      }
+      _database.execute('PRAGMA user_version = 30;');
     }
   }
 

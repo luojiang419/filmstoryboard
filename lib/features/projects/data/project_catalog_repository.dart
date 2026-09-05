@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import '../../../core/database/app_database.dart';
 import '../domain/project_manifest.dart';
@@ -9,9 +10,18 @@ class ProjectCatalogRepository {
 
   final AppDatabase _database;
 
-  List<ProjectEntry> load() {
+  List<ProjectEntry> load() => _inspectRecords(_database.listProjectCatalog());
+
+  Future<List<ProjectEntry>> loadAsync() {
+    final records = _database.listProjectCatalog();
+    return Isolate.run(() => _inspectRecords(records));
+  }
+
+  static List<ProjectEntry> _inspectRecords(
+    List<ProjectCatalogRecord> records,
+  ) {
     final entries = <ProjectEntry>[];
-    for (final record in _database.listProjectCatalog()) {
+    for (final record in records) {
       final indexFile = File(record.indexPath);
       var health = ProjectHealth.available;
       var displayName = record.displayName;
