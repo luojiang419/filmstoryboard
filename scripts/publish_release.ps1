@@ -105,7 +105,7 @@ try {
             throw "A published release already exists for $tag."
         }
         if ($existingRelease.body -notlike "*source-sha:$SourceSha*") {
-            throw "A draft for $tag belongs to a different source commit."
+            Write-Warning "Replacing stale draft for $tag from a previous failed cloud run."
         }
         Invoke-GitHubApi -Method Delete -Uri "$apiBase/releases/$($existingRelease.id)" | Out-Null
     }

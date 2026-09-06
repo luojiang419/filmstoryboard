@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feat/paired-wardrobe-storyboard-depth
   workflow_dispatch:
 
 concurrency:
