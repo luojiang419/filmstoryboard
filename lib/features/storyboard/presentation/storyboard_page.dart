@@ -1251,6 +1251,14 @@ class _StoryboardImageComparisonDialogState
   }
 }
 
+@visibleForTesting
+double resolveStoryboardComparisonSplit({
+  required double positionX,
+  required double viewportWidth,
+}) {
+  return (positionX / math.max(1, viewportWidth)).clamp(0.0, 1.0);
+}
+
 class _WipeImageComparison extends StatefulWidget {
   const _WipeImageComparison({
     required this.originalPath,
@@ -1278,7 +1286,7 @@ class _WipeImageComparisonState extends State<_WipeImageComparison> {
     final scheme = Theme.of(context).colorScheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final dividerX = constraints.maxWidth * widget.split.clamp(0.05, 0.95);
+        final dividerX = constraints.maxWidth * widget.split.clamp(0.0, 1.0);
         return ClipRRect(
           borderRadius: BorderRadius.circular(10),
           child: ColoredBox(
@@ -1409,7 +1417,12 @@ class _WipeImageComparisonState extends State<_WipeImageComparison> {
   }
 
   void _updateSplit(double x, double viewportWidth) {
-    widget.onSplitChanged((x / math.max(1, viewportWidth)).clamp(0.05, 0.95));
+    widget.onSplitChanged(
+      resolveStoryboardComparisonSplit(
+        positionX: x,
+        viewportWidth: viewportWidth,
+      ),
+    );
   }
 
   void _stopDragging(int pointer) {
