@@ -69,16 +69,16 @@ class BridgeLoopbackClient {
             data['schema'] == 'shiyin-film-bridge' &&
             data['automatic_receive'] == true &&
             (!requireDirect || data['direct_receive'] == true)) {
-          return _BridgeDiscovery(
-            base,
-            '${data['active_canvas_id'] ?? ''}'.trim(),
-          );
+          return _BridgeDiscovery(base);
         }
       } catch (_) {
         // 继续探测下一个仅本机端口。
       }
     }
-    throw const BridgeLoopbackException('未发现正在运行的 SHIYIN-AI');
+    throw BridgeLoopbackException(
+      '未发现支持故事板直连的 SHIYIN-AI，请先启动或更新 SHIYIN-AI'
+      '（已检查本机端口：${ports.join("、")}）',
+    );
   }
 
   Future<BridgeLoopbackResult> sendDirect({
@@ -90,16 +90,15 @@ class BridgeLoopbackClient {
       throw const BridgeLoopbackException('没有可发送的故事板图片');
     }
     final discovery = await _discover(requireDirect: true);
-    final request = http.MultipartRequest(
-      'POST',
-      discovery.baseUri.resolve('api/canvas-bridges/film/receive-direct'),
-    )
-      ..fields['manifest'] = jsonEncode(manifest)
-      ..fields['canvas_title'] = canvasTitle
-      ..fields['create_prompt_nodes'] = 'false';
-    if (discovery.activeCanvasId.isNotEmpty) {
-      request.fields['canvas_id'] = discovery.activeCanvasId;
-    }
+    final request =
+        http.MultipartRequest(
+            'POST',
+            discovery.baseUri.resolve('api/canvas-bridges/film/receive-direct'),
+          )
+          ..fields['manifest'] = jsonEncode(manifest)
+          ..fields['canvas_title'] = canvasTitle
+          ..fields['create_prompt_nodes'] = 'false';
+    // 接收端按 manifest.bridge_id 创建或更新对应画布，不能绑定当前打开的画布。
     for (final upload in uploads) {
       if (!upload.file.existsSync()) {
         throw BridgeLoopbackException('故事板图片不存在：${upload.file.path}');
@@ -192,8 +191,7 @@ class BridgeLoopbackClient {
 }
 
 class _BridgeDiscovery {
-  const _BridgeDiscovery(this.baseUri, this.activeCanvasId);
+  const _BridgeDiscovery(this.baseUri);
 
   final Uri baseUri;
-  final String activeCanvasId;
 }

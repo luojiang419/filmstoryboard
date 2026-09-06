@@ -61,7 +61,8 @@ void main() {
   test('sends storyboard manifest and image files directly', () async {
     final directory = await Directory.systemTemp.createTemp('bridge-direct-');
     addTearDown(() => directory.delete(recursive: true));
-    final image = File('${directory.path}/frame.png')..writeAsBytesSync([1, 2, 3]);
+    final image = File('${directory.path}/frame.png')
+      ..writeAsBytesSync([1, 2, 3]);
     final requests = <Uri>[];
     final client = MockClient((request) async {
       requests.add(request.url);
@@ -77,13 +78,15 @@ void main() {
           200,
         );
       }
+      expect(request.body, isNot(contains('name="canvas_id"')));
+      expect(request.body, contains('film:p:b'));
       return http.Response(
         jsonEncode({
           'ok': true,
-          'canvas_id': 'canvas-open',
+          'canvas_id': 'canvas-board',
           'group_id': 'group-1',
           'frame_count': 1,
-          'editor_url': '/static/canvas.html?id=canvas-open',
+          'editor_url': '/static/canvas.html?id=canvas-board',
         }),
         200,
       );
@@ -94,7 +97,7 @@ void main() {
       uploads: [BridgeDirectUpload(file: image, uploadName: 'frame_0000.png')],
       canvasTitle: '直接故事板',
     );
-    expect(result.canvasId, 'canvas-open');
+    expect(result.canvasId, 'canvas-board');
     expect(result.frameCount, 1);
     expect(requests, hasLength(2));
     bridge.close();
