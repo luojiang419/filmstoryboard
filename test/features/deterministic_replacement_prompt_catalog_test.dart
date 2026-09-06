@@ -43,7 +43,7 @@ void main() {
   test('查阅文档逐段包含运行时导出的八种完整模板', () {
     final document = File('docs/准备资产一键替换八组合提示词.md');
     expect(document.existsSync(), isTrue);
-    final content = document.readAsStringSync();
+    final content = document.readAsStringSync().replaceAll('\r\n', '\n');
 
     for (final scenario in DeterministicReplacementPromptCatalog.scenarios) {
       expect(content, contains(scenario.compileReviewTemplate()));
