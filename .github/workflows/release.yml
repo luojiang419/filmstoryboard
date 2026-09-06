@@ -152,6 +152,19 @@ jobs:
             }
             Remove-Item -LiteralPath $archive -Force
           }
+          $modelAsset = 'person-depth-models-1.0.0.zip'
+          gh release download $release --repo $repo --pattern $modelAsset --dir $downloadRoot --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download person-depth model configuration asset: $modelAsset"
+          }
+          $modelArchive = Join-Path $downloadRoot $modelAsset
+          & $sevenZip x $modelArchive "-o$componentRoot" -y
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract person-depth model configuration asset: $modelAsset"
+          }
+          Get-ChildItem -LiteralPath $componentRoot -Recurse -File -Filter '*.safetensors' |
+            Remove-Item -Force
+          Remove-Item -LiteralPath $modelArchive -Force
           $worker = Join-Path $componentRoot 'runtime\person-depth-worker.exe'
           if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) {
             throw "Restored person-depth worker is missing: $worker"
