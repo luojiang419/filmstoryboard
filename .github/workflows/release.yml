@@ -121,6 +121,43 @@ jobs:
           CI: 'true'
         run: flutter test --no-pub
 
+      - name: Restore person-depth runtime component
+        if: steps.version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $componentRoot = Join-Path $env:GITHUB_WORKSPACE 'local_components\person-depth'
+          $downloadRoot = Join-Path $env:RUNNER_TEMP 'person-depth-download'
+          $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
+          $release = 'person-depth-v1.0.0'
+          $repo = 'luojiang419/SHIYIN-AI-source'
+          $assets = @(
+            'person-depth-runtime-1.0.0-windows-x64-part-001.zip',
+            'person-depth-runtime-1.0.0-windows-x64-part-002.zip',
+            'person-depth-runtime-1.0.0-windows-x64-part-003.zip'
+          )
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) {
+            throw "7-Zip was not found at $sevenZip"
+          }
+          New-Item -ItemType Directory -Force -Path $componentRoot, $downloadRoot | Out-Null
+          foreach ($asset in $assets) {
+            gh release download $release --repo $repo --pattern $asset --dir $downloadRoot --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to download person-depth runtime asset: $asset"
+            }
+            $archive = Join-Path $downloadRoot $asset
+            & $sevenZip x $archive "-o$componentRoot" -y
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract person-depth runtime asset: $asset"
+            }
+            Remove-Item -LiteralPath $archive -Force
+          }
+          $worker = Join-Path $componentRoot 'runtime\person-depth-worker.exe'
+          if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) {
+            throw "Restored person-depth worker is missing: $worker"
+          }
+          Write-Host "Restored person-depth runtime component at $componentRoot"
+
       - name: Build Windows release
         if: steps.version.outputs.skip != 'true'
         shell: pwsh
