@@ -166,6 +166,15 @@ jobs:
           --build-name '${{ steps.version.outputs.build_name }}'
           --build-number '${{ steps.version.outputs.build_number }}'
 
+      - name: Build remote web release
+        if: steps.version.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Push-Location website/app
+          flutter pub get
+          flutter build web --release --no-pub
+          Pop-Location
+
       - name: Install Inno Setup 6.7.1
         if: steps.version.outputs.skip != 'true'
         shell: pwsh
