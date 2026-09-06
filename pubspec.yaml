@@ -110,6 +110,7 @@ flutter:
     - assets/video_cli_skills/libtv-cli/node-types/
     - assets/video_cli_skills/libtv-cli/prompt-guides/
     - assets/video_cli_skills/libtv-cli/scripts/
+    - plugins/depth-map-tuner/bin/SHIYIN-Depth-Tuner.exe
 
   # To add assets to your application, add an assets section, like this:
   # assets:

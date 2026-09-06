@@ -57,12 +57,13 @@ void main() {
     final shot = shootingController.addShot()!;
     shootingController.updateShot(shot.copyWith(framePath: frame.path));
     final repository = ReplicateRepository(database);
+    final depthService = _FakePersonDepthService();
     final controller = ReplicateController(
       repository: repository,
       shootingScriptController: shootingController,
       directories: directories,
       settingsController: settingsController,
-      personDepthService: _FakePersonDepthService(),
+      personDepthService: depthService,
     );
     addTearDown(() async {
       controller.dispose();
@@ -72,6 +73,9 @@ void main() {
       await root.delete(recursive: true);
     });
 
+    await settingsController.setDepthProcessingMode(
+      DepthProcessingMode.professional,
+    );
     await controller.extractDepthForShot(shot.id);
 
     final guide = repository.getShotGuide(shot.id)!;
@@ -79,6 +83,7 @@ void main() {
     expect(guide.depthPath, endsWith('${shot.id}-depth.png'));
     expect(File(guide.depthPath).existsSync(), isTrue);
     expect(controller.value.message, contains('100×80'));
+    expect(depthService.lastMode, DepthProcessingMode.professional);
   });
 
   test('从故事板生成新脚本后复刻工作区跟随新脚本', () async {
@@ -3860,11 +3865,15 @@ class _QueuedFrameAnalysisService extends ReplicationFrameAnalysisService {
 }
 
 class _FakePersonDepthService extends PersonDepthService {
+  DepthProcessingMode? lastMode;
+
   @override
   Future<PersonDepthResult> extract({
     required File imageFile,
     required File outputFile,
+    DepthProcessingMode mode = DepthProcessingMode.person,
   }) async {
+    lastMode = mode;
     await outputFile.parent.create(recursive: true);
     await outputFile.writeAsBytes(
       img.encodePng(img.Image(width: 100, height: 80, numChannels: 1)),

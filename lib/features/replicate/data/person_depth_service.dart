@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:flutter/foundation.dart';
 
 import 'person_depth_models.dart';
+import 'depth_map_configuration.dart';
+import '../../settings/domain/app_settings.dart';
 
 class PersonDepthResult {
   const PersonDepthResult({
@@ -28,11 +31,16 @@ class PersonDepthService {
     this.componentRoot,
     this.timeout = const Duration(minutes: 10),
     PersonDepthModels? models,
-  }) : _models = models ?? PersonDepthModels();
+    DepthMapConfigurationStore? configurationStore,
+  }) : _models = models ?? PersonDepthModels(),
+       _configurationStore =
+           configurationStore ??
+           DepthMapConfigurationStore(DepthMapConfigurationStore.defaultFile());
   static final shared = PersonDepthService();
   final Directory? componentRoot;
   final Duration timeout;
   final PersonDepthModels _models;
+  final DepthMapConfigurationStore _configurationStore;
   final modelProgress = ValueNotifier<DepthModelProgress?>(null);
   File? _logFile;
   Future<void> _logQueue = Future<void>.value();
@@ -154,6 +162,7 @@ class PersonDepthService {
   Future<PersonDepthResult> extract({
     required File imageFile,
     required File outputFile,
+    DepthProcessingMode mode = DepthProcessingMode.person,
   }) {
     final result = Completer<PersonDepthResult>();
     _queue = _queue.then((_) async {
@@ -183,10 +192,18 @@ class PersonDepthService {
           'input': imageFile.absolute.path,
           'output': master.absolute.path,
           'bit_depth': 16,
+          'subject': mode.workerSubject,
         });
         final width = response['width'] as int;
         final height = response['height'] as int;
-        await createPreviewAsync(master.path, outputFile.path, width, height);
+        final configuration = await _configurationStore.load();
+        await createPreviewAsync(
+          master.path,
+          outputFile.path,
+          width,
+          height,
+          configuration.controlsFor(mode),
+        );
         result.complete(
           PersonDepthResult(
             depthFile: outputFile,
@@ -199,6 +216,7 @@ class PersonDepthService {
           'output': outputFile.path,
           'width': width,
           'height': height,
+          'mode': mode.name,
         });
         final prepared = modelProgress.value;
         if (prepared != null) {
@@ -254,15 +272,19 @@ class PersonDepthService {
     String masterPath,
     String outputPath,
     int width,
-    int height,
-  ) => Isolate.run(() => createPreview(masterPath, outputPath, width, height));
+    int height, [
+    DepthMapControls controls = const DepthMapControls(),
+  ]) => Isolate.run(
+    () => createPreview(masterPath, outputPath, width, height, controls),
+  );
 
   static void createPreview(
     String masterPath,
     String outputPath,
     int width,
-    int height,
-  ) {
+    int height, [
+    DepthMapControls controls = const DepthMapControls(),
+  ]) {
     final decoded = img.decodePng(File(masterPath).readAsBytesSync());
     if (decoded == null ||
         decoded.width != width ||
@@ -272,9 +294,35 @@ class PersonDepthService {
         height <= 0) {
       throw const FormatException('深度组件输出无效，必须为原尺寸 16-bit PNG');
     }
-    File(outputPath).writeAsBytesSync(
-      img.encodePng(decoded.convert(format: img.Format.uint8, numChannels: 1)),
+    var preview = img.Image(
+      width: width,
+      height: height,
+      format: img.Format.uint8,
+      numChannels: 1,
     );
+    final far = controls.farPoint / 100;
+    final near = controls.nearPoint / 100;
+    final contrast = controls.contrast / 100;
+    final brightness = controls.brightness / 100;
+    final gamma = math.pow(2, -controls.midtone / 50);
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        var value = decoded.getPixel(x, y).r / 65535;
+        value = ((value - far) / math.max(0.01, near - far)).clamp(0, 1);
+        value = math.pow(value, gamma).toDouble();
+        value = ((value - 0.5) * contrast + 0.5 + brightness).clamp(0, 1);
+        if (controls.invert) value = 1 - value;
+        preview.setPixelR(x, y, (value * 255).round());
+      }
+    }
+    if (controls.smooth > 0) {
+      final radius = math.max(
+        1,
+        math.min(96, (controls.smooth * width / 1000).round()),
+      );
+      preview = img.gaussianBlur(preview, radius: radius);
+    }
+    File(outputPath).writeAsBytesSync(img.encodePng(preview));
   }
 
   void _failPending(Object error) {

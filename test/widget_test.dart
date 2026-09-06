@@ -171,6 +171,13 @@ void main() {
       findsOneWidget,
     );
     expect(
+      find.byKey(const ValueKey('storyboard-depth-processing-mode')),
+      findsOneWidget,
+    );
+    expect(find.text('人物模式'), findsOneWidget);
+    expect(find.byKey(const ValueKey('open-depth-map-tuner')), findsOneWidget);
+    expect(find.text('深度图参数调整'), findsOneWidget);
+    expect(
       tester
           .widget<FilledButton>(
             find.byKey(const ValueKey('extract-storyboard-depth')),

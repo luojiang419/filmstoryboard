@@ -73,6 +73,7 @@ set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 set(BUNDLED_FFMPEG_DIR "${CMAKE_BINARY_DIR}/bundled_ffmpeg")
 set(PERSON_DEPTH_COMPONENT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../local_components/person-depth")
+set(PERSON_DEPTH_WORKER_OVERRIDE "${CMAKE_CURRENT_SOURCE_DIR}/../plugins/depth-map-tuner/worker/person-depth-worker.exe")
 file(MAKE_DIRECTORY "${BUNDLED_FFMPEG_DIR}/bin")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
@@ -121,6 +122,11 @@ if(EXISTS "${PERSON_DEPTH_COMPONENT_DIR}/runtime/person-depth-worker.exe")
     PATTERN "*.safetensors" EXCLUDE
     PATTERN "*.part" EXCLUDE
     PATTERN "copy-manifest.json" EXCLUDE)
+  if(EXISTS "${PERSON_DEPTH_WORKER_OVERRIDE}")
+    install(FILES "${PERSON_DEPTH_WORKER_OVERRIDE}"
+      DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/person-depth/runtime"
+      COMPONENT Runtime)
+  endif()
 else()
   message(WARNING "High precision person-depth component is not copied; run scripts/copy_person_depth_component.ps1 before release build.")
 endif()

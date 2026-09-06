@@ -148,6 +148,12 @@ class SettingsController extends ValueNotifier<AppSettings> {
     value = next;
   }
 
+  Future<void> setDepthProcessingMode(DepthProcessingMode mode) async {
+    final next = value.copyWith(depthProcessingMode: mode);
+    _repository.save(next);
+    value = next;
+  }
+
   Future<void> setStoryboardSummaryPageEnabled(bool enabled) async {
     final next = value.copyWith(storyboardSummaryPageEnabled: enabled);
     _repository.save(next);

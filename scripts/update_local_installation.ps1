@@ -30,6 +30,7 @@ $files = @(
     }
     Get-Item -LiteralPath (Join-Path $sourceRoot 'data/app.so')
     Get-Item -LiteralPath (Join-Path $sourceRoot 'data/icudtl.dat')
+    Get-Item -LiteralPath (Join-Path $sourceRoot 'data/person-depth/runtime/person-depth-worker.exe')
     Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'data/flutter_assets') -Recurse -File
 )
 $manifest = foreach ($file in $files) {

@@ -56,6 +56,7 @@ class SettingsRepository {
       'storyboardCaptionNumberEnabled';
   static const _storyboardSummaryPageEnabledKey =
       'storyboardSummaryPageEnabled';
+  static const _depthProcessingModeKey = 'depthProcessingMode';
   static const _visionApiBaseUrlKey = 'visionApiBaseUrl';
   static const _visionApiKeyKey = 'visionApiKey';
   static const _visionModelKey = 'visionModel';
@@ -230,6 +231,9 @@ class SettingsRepository {
           _database.getSetting(_storyboardCaptionNumberEnabledKey) != 'false',
       storyboardSummaryPageEnabled:
           _database.getSetting(_storyboardSummaryPageEnabledKey) != 'false',
+      depthProcessingMode: DepthProcessingMode.fromName(
+        _database.getSetting(_depthProcessingModeKey),
+      ),
       visionApiBaseUrl: activeVisionApiConfig.baseUrl,
       visionApiKey: activeVisionApiConfig.apiKey,
       visionModel: activeVisionApiConfig.model,
@@ -336,6 +340,7 @@ class SettingsRepository {
         _storyboardSummaryPageEnabledKey,
         settings.storyboardSummaryPageEnabled.toString(),
       )
+      ..setSetting(_depthProcessingModeKey, settings.depthProcessingMode.name)
       ..setSetting(_visionApiBaseUrlKey, settings.visionApiBaseUrl)
       ..setSetting(_visionApiKeyKey, settings.visionApiKey)
       ..setSetting(_visionModelKey, settings.visionModel)
@@ -447,6 +452,7 @@ class SettingsRepository {
       cutImageNumberTextScale: AppSettings.defaultCutImageNumberTextScale,
       storyboardCaptionNumberEnabled: true,
       storyboardSummaryPageEnabled: true,
+      depthProcessingMode: DepthProcessingMode.person,
       visionApiBaseUrl: visionApiConfigs.first.baseUrl,
       visionApiKey: visionApiConfigs.first.apiKey,
       visionModel: visionApiConfigs.first.model,

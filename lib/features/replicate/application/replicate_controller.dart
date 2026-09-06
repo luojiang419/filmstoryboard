@@ -16,6 +16,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/services/workspace_directories.dart';
 import '../../../core/services/generated_image_recovery.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../settings/domain/app_settings.dart';
 import '../../settings/domain/video_generation_api_config.dart';
 import '../../shooting_script/domain/shooting_asset_library_models.dart';
 import '../../shooting_script/application/script_asset_binding_controller.dart';
@@ -966,7 +967,8 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     _repository.upsertShotGuide(running);
     _reloadShotGuides(
       scriptId,
-      message: '正在提取镜头 ${shot.shotNumber} 的高精度人物深度图…',
+      message:
+          '正在提取镜头 ${shot.shotNumber} 的${_settingsController.value.depthProcessingMode.label}深度图…',
     );
     try {
       final outputDirectory = Directory(
@@ -979,6 +981,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
       final result = await _personDepthService.extract(
         imageFile: source,
         outputFile: File(p.join(outputDirectory.path, '$shotId-depth.png')),
+        mode: _settingsController.value.depthProcessingMode,
       );
       final latest = _repository.getShotGuide(shotId) ?? running;
       if (latest.sourceFrameFingerprint != fingerprint) {
@@ -2236,8 +2239,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
               NanoBananaStructuralReference(
                 id: '${shot.id}:person-depth',
                 path: depth.path,
-                description:
-                    '原帧配准的高精度人物深度图，锁定人体前后关系、表面起伏、遮挡边界、动作几何及可辨认的衣物褶皱峰谷；白近灰远，纯黑主体外区域不提供外观',
+                description: _depthReferenceDescription,
               ),
           ],
         );
@@ -2745,9 +2747,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           manifest: manifest,
           userInstructions: shot.replicationInstructions,
           structuralReferenceDescriptions: hasDepthMap
-              ? const [
-                  '原帧配准高精度人物深度图：以白近灰远表达人体前后关系、表面起伏、遮挡边界、动作几何与可辨认服装褶皱峰谷；纯黑主体外区域不提供背景或外观',
-                ]
+              ? [_depthReferenceDescription]
               : const [],
           firstRoundProtocol: nanoBananaFirstRoundProtocol,
           authorizedProductMarks: authorizedProductMarks,
@@ -5533,10 +5533,8 @@ $playbackSpeedBoundary
       '任务：生成镜头 ${shot.shotNumber} 的受控复刻分镜。',
       '【组合路由】${route.id}：${route.instruction}',
       '图片1是原视频镜头的编辑底图与结构参考：锁定画幅、景别、机位、构图、透视、主体槽位、姿态、接触和遮挡。只有下方处理计划明确标记“保留”的主体，才允许继续使用图片1中的身份、服装或产品外观；替换与移除项不得继承对应原主体外观。',
-      if (hasDepthMap)
-        '图片2是与图片1逐像素配准的高精度人物深度图：白近灰远，纯黑主体外区域不提供背景。它是姿态、人体前后关系、遮挡边界、身体表面起伏以及可辨认衣物褶皱峰谷的硬结构证据，不提供身份、产品设计、材质、颜色、文字、光照或场景外观。',
-      if (hasDepthMap)
-        '【深度几何硬锁】逐区保持图片2可辨认的头颈角度、肩髋倾斜、脊柱方向、重心、四肢弯曲、肘腕与手指位置、持物接触、人物间前后层级和轮廓遮挡。对应衣片内逐一保留褶皱的相对位置、起止点、走向、曲率、折峰折谷、宽窄、间距、分叉交汇、叠压顺序、密集区与留白区；先匹配起伏，再渲染绑定产品的颜色、纹样、材质、结构和环境光。深度图没有证据的细节只做最小补全。',
+      if (hasDepthMap) '图片2是与图片1逐像素配准的$_depthReferenceDescription。',
+      if (hasDepthMap) _depthGeometryConstraint,
       if (hasDepthMap)
         '【结构冲突的局部适配】新产品不存在的袖子、衣片或边界不得继承旧褶皱；版型和材料厚度确实冲突时，只调整不对应区域，保留其余深度锚点、受力方向和接触关系。不得为了保留旧起伏而把新产品改回原产品设计，也不得以新产品为由自由重画整套姿势和褶皱。',
       ...definitions,
@@ -5574,6 +5572,18 @@ $playbackSpeedBoundary
       '最终交付：一张自然真实、专业清晰、严格执行主体处理计划的复刻分镜图。',
     ].join('\n');
   }
+
+  String get _depthReferenceDescription =>
+      _settingsController.value.depthProcessingMode ==
+          DepthProcessingMode.professional
+      ? '高精度完整场景深度图：白近灰远，表达整幅画面的前后层级、主体与环境几何、遮挡边界和表面起伏；不提供身份、材质、颜色、文字或光照外观'
+      : '高精度人物深度图：以白近灰远表达人体前后关系、表面起伏、遮挡边界、动作几何与可辨认服装褶皱峰谷；纯黑主体外区域不提供背景或外观';
+
+  String get _depthGeometryConstraint =>
+      _settingsController.value.depthProcessingMode ==
+          DepthProcessingMode.professional
+      ? '【深度几何硬锁】逐区保持图片2可辨认的主体位置、相机透视、前中后景层级、环境结构、轮廓遮挡、人物姿态和接触关系。场景与主体的深度边界均是几何证据；先匹配整幅画面的空间起伏，再渲染绑定资产的身份、颜色、材质和环境光。深度图没有证据的细节只做最小补全。'
+      : '【深度几何硬锁】逐区保持图片2可辨认的头颈角度、肩髋倾斜、脊柱方向、重心、四肢弯曲、肘腕与手指位置、持物接触、人物间前后层级和轮廓遮挡。对应衣片内逐一保留褶皱的相对位置、起止点、走向、曲率、折峰折谷、宽窄、间距、分叉交汇、叠压顺序、密集区与留白区；先匹配起伏，再渲染绑定产品的颜色、纹样、材质、结构和环境光。深度图没有证据的细节只做最小补全。';
 
   static ({String id, String instruction}) _replacementCombinationRoute(
     List<_ReplacementReference> references,

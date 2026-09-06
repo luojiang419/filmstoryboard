@@ -15,6 +15,7 @@ $appPath = Join-Path $Root 'build\windows\x64\runner\Release\filmstoryboard.exe'
 $bundledFfmpegPath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffmpeg.exe'
 $bundledFfprobePath = Join-Path $Root 'build\windows\x64\runner\Release\ffmpeg\bin\ffprobe.exe'
 $personDepthWorkerPath = Join-Path $Root 'build\windows\x64\runner\Release\data\person-depth\runtime\person-depth-worker.exe'
+$depthTunerPath = Join-Path $Root 'build\windows\x64\runner\Release\data\flutter_assets\plugins\depth-map-tuner\bin\SHIYIN-Depth-Tuner.exe'
 $assetName = "filmstoryboard-Setup-$Version.exe"
 $assetPath = Join-Path $Root "dist\installer\$assetName"
 
@@ -23,6 +24,7 @@ foreach ($requiredPath in @(
     $bundledFfmpegPath,
     $bundledFfprobePath,
     $personDepthWorkerPath,
+    $depthTunerPath,
     $assetPath
 )) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -30,7 +32,7 @@ foreach ($requiredPath in @(
     }
 }
 
-foreach ($componentFile in @($personDepthWorkerPath)) {
+foreach ($componentFile in @($personDepthWorkerPath, $depthTunerPath)) {
     if ((Get-Item -LiteralPath $componentFile).Length -lt 1MB) {
         throw "Bundled person-depth component file is unexpectedly small: $componentFile"
     }

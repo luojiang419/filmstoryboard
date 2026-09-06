@@ -5611,7 +5611,7 @@ class _NewPrepareAssetsStepState extends State<_NewPrepareAssetsStep> {
           _StepToolbar(
             title: preciseMode ? '步骤 1 · 精确匹配资产' : '步骤 1 · 快速多图复刻',
             subtitle: preciseMode
-                ? '以高精度人物深度图锁定动作、遮挡和表面起伏，再逐项控制主体保留、替换或移除。'
+                ? '以高精度深度图锁定动作、遮挡和表面起伏，再逐项控制主体保留、替换或移除。'
                 : '可一键解析原帧人数并生成模特、产品与可选场景槽；也可直接添加编号参考图。',
             actions: [
               SegmentedButton<ReplicationGenerationMode>(
@@ -7812,7 +7812,10 @@ class _ShotAssetDropRow extends StatelessWidget {
             onRemoveSlot: () {
               final assignment = assignments[subject.id];
               if (assignment != null) onRemove(assignment.scriptAssetId);
-              onSetSubjectDecision(subject.id, ReplicateSubjectDecision.undecided);
+              onSetSubjectDecision(
+                subject.id,
+                ReplicateSubjectDecision.undecided,
+              );
             },
             onDecisionChanged: (decision) =>
                 _changeSubjectDecision(subject, decision),
@@ -9534,7 +9537,7 @@ class _DepthAssetSlot extends StatelessWidget {
               ),
               clipBehavior: Clip.antiAlias,
               child: Tooltip(
-                message: '高精度人物深度图，点击全屏浏览',
+                message: '高精度深度图，点击全屏浏览',
                 child: InkWell(
                   onTap: onTap,
                   child: Padding(

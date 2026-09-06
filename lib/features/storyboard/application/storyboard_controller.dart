@@ -24,6 +24,7 @@ import '../../grid_cut/application/grid_cut_controller.dart';
 import '../../projects/application/project_aspect_controller.dart';
 import '../../projects/data/project_path_resolver.dart';
 import '../../settings/application/settings_controller.dart';
+import '../../settings/domain/app_settings.dart';
 import '../../shooting_script/domain/shooting_script_models.dart';
 import '../data/image_generation_service.dart';
 import '../data/image_generation_diagnostic_logger.dart';
@@ -3289,13 +3290,16 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     if (board == null || _guardLockedBoard(board, '提取深度图')) return false;
     if ((_activeImageGenerationCountByBoardId[board.id] ?? 0) > 0) return false;
     final tasks = <_PreparedImageReplacementTask>[];
+    final depthMode =
+        _settingsController?.value.depthProcessingMode ??
+        DepthProcessingMode.person;
     final sourceBoard = boardForShootingScript(board);
     for (final item in _orderedVisibleItems(board)) {
       final source =
           sourceBoard.itemAtSlot(item.slotIndex)?.asset.path ?? item.asset.path;
       final task = _prepareImageReplacementTask(
         item: item,
-        prompt: '提取与源分镜配准的高精度人物深度图',
+        prompt: '提取与源分镜配准的${depthMode.label}深度图',
         model: depthExtractionModel,
         aspectRatio: 'auto',
         imageSize: 'native',
@@ -3331,6 +3335,9 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           '${task.generationId}.png',
         ),
       ),
+      mode:
+          _settingsController?.value.depthProcessingMode ??
+          DepthProcessingMode.person,
     );
     if (_disposed ||
         !source.existsSync() ||

@@ -34,6 +34,9 @@ void main() {
       personDepthService: depth,
     );
     final controller = fixture.controller;
+    await fixture.settingsController.setDepthProcessingMode(
+      DepthProcessingMode.professional,
+    );
     final asset = await _registeredAsset(fixture.database, fixture.root, 1);
     controller.setAssetsUsed([asset], true);
     final shooting = ShootingScriptController(
@@ -85,6 +88,7 @@ void main() {
       'succeeded',
     );
     expect(fixture.imageService.lastRequest, isNull);
+    expect(depth.lastMode, DepthProcessingMode.professional);
     final firstDepth = guide.depthPath;
     expect(controller.enqueueDepthExtractionForSelectedBoard(), isTrue);
     await _waitUntil(() => !controller.value.isGeneratingImage);
@@ -3740,11 +3744,14 @@ class _StoryboardDepthService extends PersonDepthService {
   final bool paused;
   final started = Completer<void>();
   final release = Completer<void>();
+  DepthProcessingMode? lastMode;
   @override
   Future<PersonDepthResult> extract({
     required File imageFile,
     required File outputFile,
+    DepthProcessingMode mode = DepthProcessingMode.person,
   }) async {
+    lastMode = mode;
     if (!started.isCompleted) started.complete();
     if (paused) await release.future;
     await outputFile.parent.create(recursive: true);

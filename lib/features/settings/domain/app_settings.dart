@@ -89,6 +89,23 @@ enum UpdateDownloadMode {
   }
 }
 
+enum DepthProcessingMode {
+  person('人物模式', 'person'),
+  professional('专业模式', 'scene');
+
+  const DepthProcessingMode(this.label, this.workerSubject);
+
+  final String label;
+  final String workerSubject;
+
+  static DepthProcessingMode fromName(String? value) {
+    return DepthProcessingMode.values.firstWhere(
+      (mode) => mode.name == value,
+      orElse: () => DepthProcessingMode.person,
+    );
+  }
+}
+
 class AppSettings {
   const AppSettings({
     required this.exportDirectory,
@@ -115,6 +132,7 @@ class AppSettings {
     required this.cutImageNumberTextScale,
     this.storyboardCaptionNumberEnabled = true,
     required this.storyboardSummaryPageEnabled,
+    this.depthProcessingMode = DepthProcessingMode.person,
     required this.visionApiBaseUrl,
     required this.visionApiKey,
     required this.visionModel,
@@ -181,6 +199,7 @@ class AppSettings {
   final double cutImageNumberTextScale;
   final bool storyboardCaptionNumberEnabled;
   final bool storyboardSummaryPageEnabled;
+  final DepthProcessingMode depthProcessingMode;
   final String visionApiBaseUrl;
   final String visionApiKey;
   final String visionModel;
@@ -256,6 +275,7 @@ class AppSettings {
     double? cutImageNumberTextScale,
     bool? storyboardCaptionNumberEnabled,
     bool? storyboardSummaryPageEnabled,
+    DepthProcessingMode? depthProcessingMode,
     String? visionApiBaseUrl,
     String? visionApiKey,
     String? visionModel,
@@ -320,6 +340,7 @@ class AppSettings {
           storyboardCaptionNumberEnabled ?? this.storyboardCaptionNumberEnabled,
       storyboardSummaryPageEnabled:
           storyboardSummaryPageEnabled ?? this.storyboardSummaryPageEnabled,
+      depthProcessingMode: depthProcessingMode ?? this.depthProcessingMode,
       visionApiBaseUrl: visionApiBaseUrl ?? this.visionApiBaseUrl,
       visionApiKey: visionApiKey ?? this.visionApiKey,
       visionModel: visionModel ?? this.visionModel,

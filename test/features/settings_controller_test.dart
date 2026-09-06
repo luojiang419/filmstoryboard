@@ -11,6 +11,29 @@ import 'package:filmstoryboard/features/settings/domain/vision_api_config.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('深度处理模式默认人物模式并可持久化专业模式', () async {
+    final root = await Directory.systemTemp.createTemp('settings_depth_mode_');
+    addTearDown(() => root.delete(recursive: true));
+    final directories = await AppDirectories.create(executableDirectory: root);
+    final database = await AppDatabase.open(directories.databaseFile);
+    addTearDown(database.dispose);
+    final repository = SettingsRepository(database, directories);
+    final controller = SettingsController(
+      repository: repository,
+      initialSettings: repository.load(),
+    );
+    addTearDown(controller.dispose);
+
+    expect(controller.value.depthProcessingMode, DepthProcessingMode.person);
+    await controller.setDepthProcessingMode(DepthProcessingMode.professional);
+
+    expect(
+      repository.load().depthProcessingMode,
+      DepthProcessingMode.professional,
+    );
+    expect(database.getSetting('depthProcessingMode'), 'professional');
+  });
+
   test('功能菜单位置会持久化且默认使用底部布局', () async {
     final root = await Directory.systemTemp.createTemp('settings_navigation_');
     addTearDown(() => root.delete(recursive: true));

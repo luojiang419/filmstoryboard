@@ -1,4 +1,5 @@
 import '../../replicate/presentation/depth_model_progress.dart';
+import '../../replicate/data/depth_map_tuner_launcher.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -9532,6 +9533,10 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
               children: [
                 const Text('提取当前画板分镜的深度图。完成后可查看原图、双击对比，并自动沿用到影视制作的分镜深度图资产格。'),
                 const SizedBox(height: 8),
+                _DepthProcessingControls(
+                  enabled: !locked && !state.isGeneratingImage,
+                ),
+                const SizedBox(height: 8),
                 DepthModelProgressPanel(
                   progress: widget.controller.depthModelProgress,
                 ),
@@ -10180,6 +10185,66 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
       return;
     }
     widget.controller.clearSelectedBoard();
+  }
+}
+
+class _DepthProcessingControls extends ConsumerWidget {
+  const _DepthProcessingControls({required this.enabled});
+
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settingsController = ref.watch(settingsControllerProvider);
+    return ValueListenableBuilder<AppSettings>(
+      valueListenable: settingsController,
+      builder: (context, settings, _) {
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<DepthProcessingMode>(
+                key: const ValueKey('storyboard-depth-processing-mode'),
+                initialValue: settings.depthProcessingMode,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '处理模式'),
+                items: [
+                  for (final mode in DepthProcessingMode.values)
+                    DropdownMenuItem(value: mode, child: Text(mode.label)),
+                ],
+                onChanged: enabled
+                    ? (mode) {
+                        if (mode != null) {
+                          settingsController.setDepthProcessingMode(mode);
+                        }
+                      }
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              key: const ValueKey('open-depth-map-tuner'),
+              onPressed: enabled
+                  ? () async {
+                      try {
+                        await const DepthMapTunerLauncher().launch(
+                          directories: ref.read(appDirectoriesProvider),
+                          mode: settings.depthProcessingMode,
+                        );
+                      } catch (error) {
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(SnackBar(content: Text('$error')));
+                      }
+                    }
+                  : null,
+              child: const Text('深度图参数调整'),
+            ),
+          ],
+        );
+      },
+    );
   }
 }
 
