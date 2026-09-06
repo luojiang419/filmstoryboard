@@ -188,7 +188,9 @@ $notes
 
     $uploadBase = $draft.upload_url -replace '\{\?name,label\}$', ''
     $uploadedInstaller = Invoke-GitHubApi -Method Post -Uri "${uploadBase}?name=$([Uri]::EscapeDataString($assetName))" -InFile $AssetPath -ContentType 'application/octet-stream'
-    $uploadedChecksum = Invoke-GitHubApi -Method Post -Uri "${uploadBase}?name=$([Uri]::EscapeDataString($checksumName))" -InFile $ChecksumPath -ContentType 'text/plain'
+    # GitHub's release upload endpoint consistently accepts binary assets; the
+    # checksum content is still verified byte-for-byte after upload.
+    $uploadedChecksum = Invoke-GitHubApi -Method Post -Uri "${uploadBase}?name=$([Uri]::EscapeDataString($checksumName))" -InFile $ChecksumPath -ContentType 'application/octet-stream'
 
     $draftCheck = Invoke-GitHubApi -Method Get -Uri "$apiBase/releases/$releaseId"
     $remoteAssets = @($draftCheck.assets)
