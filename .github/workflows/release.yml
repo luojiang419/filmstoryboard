@@ -112,7 +112,7 @@ jobs:
       - name: Static analysis
         if: steps.version.outputs.skip != 'true'
         shell: pwsh
-        run: flutter analyze --no-pub
+        run: flutter analyze --no-pub lib test integration_test
 
       - name: Automated tests
         if: steps.version.outputs.skip != 'true'
