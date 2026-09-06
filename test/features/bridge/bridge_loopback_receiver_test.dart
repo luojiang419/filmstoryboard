@@ -13,6 +13,7 @@ void main() {
       addTearDown(() => root.delete(recursive: true));
       File? received;
       final receiver = BridgeLoopbackReceiver(
+        port: 0,
         directory: root,
         onPackage: (file) async {
           received = file;
