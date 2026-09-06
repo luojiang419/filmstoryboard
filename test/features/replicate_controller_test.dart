@@ -244,7 +244,7 @@ void main() {
     );
     expect(controller.shotGuideFor(shot.id)?.selectedElements, hasLength(1));
     expect(
-      controller.shotGuideFor(shot.id)?.subjects.single.decision,
+      controller.shotGuideFor(shot.id)?.subjects.first.decision,
       ReplicateSubjectDecision.replace,
     );
 
@@ -339,7 +339,12 @@ void main() {
       ),
       hasLength(2),
     );
-    expect(guide.subjects.map((subject) => subject.label), ['模特A', '模特B']);
+    expect(guide.subjects.map((subject) => subject.label), [
+      '模特A',
+      '服装参考A',
+      '模特B',
+      '服装参考B',
+    ]);
     expect(guide.elements, isEmpty);
     expect(guide.actionDescription, isEmpty);
     expect(controller.isQuickReplicationAnalysisReady(shot.id), isTrue);
@@ -1906,12 +1911,12 @@ void main() {
     expect(quickRequest.prompt, contains('图片4是新场景与背景的唯一权威来源'));
     expect(quickRequest.prompt, contains('必须完整替换图片1的原背景'));
     expect(quickRequest.prompt, contains('不得继承图片1的场景、背景或环境光'));
-    expect(quickRequest.prompt, contains('模特A与产品A一一对应'));
-    expect(quickRequest.prompt, contains('模特B与产品B一一对应'));
+    expect(quickRequest.prompt, contains('服装参考A以图片5为唯一服装来源，只穿在模特A身上'));
+    expect(quickRequest.prompt, contains('服装参考B以图片7为唯一服装来源，只穿在模特B身上'));
     expect(quickRequest.prompt, contains('图片2'));
     expect(quickRequest.prompt, isNot(contains('确定性精准复刻协议')));
     expect(quickRequest.prompt, isNot(contains('高精度深度图')));
-    expect(quickRequest.prompt.length, lessThan(1400));
+    expect(quickRequest.prompt.length, lessThan(2600));
     expect(visionService.completionPrompts, isEmpty);
     imageService.requests.clear();
     await controller.replicateAllShotsQuick(
@@ -1956,7 +1961,7 @@ void main() {
     expect(await controller.replicateShot(first.id), isTrue);
     expect(
       imageService.requests.first.prompt,
-      contains('下装牛仔裤（产品槽位3）：保留'),
+      isNot(contains('下装牛仔裤（产品槽位3）')),
       reason: '空资产格即使残留旧 replace 状态也必须自动恢复为保留',
     );
     imageService.requests.clear();
@@ -2144,7 +2149,7 @@ void main() {
     expect(firstShotRequest.prompt, contains('【Nano Banana Pro 确定性精准复刻协议】'));
     expect(imageService.requests[0].prompt, contains('图片1是原帧编辑底图'));
     expect(imageService.requests[0].prompt, contains('【原帧主体处理计划】'));
-    expect(imageService.requests[0].prompt, contains('左侧人物（人物槽位1）：替换'));
+    expect(imageService.requests[0].prompt, contains('模特A（人物槽位1）：替换'));
     expect(
       imageService.requests[0].prompt,
       contains('不是自由创作、风格迁移、相似画面重做或素材平均融合'),
@@ -2152,8 +2157,8 @@ void main() {
     expect(imageService.requests[0].prompt, isNot(contains('补全合理的前景、中景、背景')));
     expect(imageService.requests[0].prompt, contains('屏幕左/右以查看图片1时为准'));
     expect(imageService.requests[0].prompt, contains('严禁镜像'));
-    expect(imageService.requests[0].prompt, contains('调色执行：新实体必须融入图片1'));
-    expect(imageService.requests[0].prompt, contains('资产图自身背景、构图、光照与调色不进入成图'));
+    expect(imageService.requests[0].prompt, contains('场景替换与调色执行：场景参考图是最终背景'));
+    expect(imageService.requests[0].prompt, contains('模特和服装素材背景不得进入成图'));
     expect(imageService.requests[0].prompt, contains('产品轮廓、比例、接缝、口袋'));
     expect(imageService.requests[0].prompt, contains('画面文字与标识零容忍硬约束'));
     expect(imageService.requests[0].prompt, contains('默认输出必须是纯净无字画面'));
@@ -2195,11 +2200,8 @@ void main() {
     );
     expect(imageService.requests[0].prompt, contains('【原帧精确动作硬约束】'));
     expect(imageService.requests[0].prompt, contains('【逐关节姿态硬约束】'));
-    expect(imageService.requests[0].prompt, contains('下装牛仔裤（产品槽位3）：保留'));
-    expect(
-      imageService.requests[0].prompt,
-      contains('完整沿用图片1中该产品或服装的轮廓、结构、颜色、材质、细节与穿着/接触关系'),
-    );
+    expect(imageService.requests[0].prompt, isNot(contains('下装牛仔裤（产品槽位3）')));
+    expect(imageService.requests[0].prompt, contains('未指定的内搭、下装或上装、鞋包与配饰保留原帧'));
     expect(secondShotRequest.prompt, isNot(contains('人物必须使用图片2')));
     expect(firstShotRequest.prompt, contains('【授权标识白名单：只允许以下精确项目】'));
     expect(firstShotRequest.prompt, contains('产品槽位A：仅可依据图片5'));
@@ -2220,8 +2222,8 @@ void main() {
     final mixedDecisionRequest = imageService.requests.lastWhere(
       (request) => request.referenceImagePaths.isNotEmpty,
     );
-    expect(mixedDecisionRequest.prompt, contains('右侧人物（人物槽位2）：移除'));
-    expect(mixedDecisionRequest.prompt, contains('右侧产品（产品槽位2）：保留'));
+    expect(mixedDecisionRequest.prompt, contains('模特B（人物槽位2）：移除'));
+    expect(mixedDecisionRequest.prompt, contains('服装参考B（产品槽位2）：保留'));
     expect(
       mixedDecisionRequest.referenceImagePaths,
       isNot(contains(characterB.path)),

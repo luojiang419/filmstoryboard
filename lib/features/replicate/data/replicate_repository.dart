@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'storyboard_depth_repository.dart';
+import '../domain/paired_wardrobe_policy.dart';
 import 'dart:convert';
 
 import '../../../core/database/app_database.dart';
@@ -10,6 +13,8 @@ class ReplicateRepository {
     : _database = database,
       _delegate = VideoAnalysisRepository(database);
 
+  StoryboardDepthRepository storyboardDepths(Directory root) =>
+      StoryboardDepthRepository(_database, root);
   final AppDatabase _database;
   final VideoAnalysisRepository _delegate;
 
@@ -225,7 +230,7 @@ class ReplicateRepository {
     DateTime date(Object? value) =>
         DateTime.tryParse(value as String? ?? '') ??
         DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
-    return ReplicateShotGuide(
+    final guide = ReplicateShotGuide(
       shotId: row['shot_id'] as String,
       sourceFrameFingerprint: row['source_frame_fingerprint'] as String? ?? '',
       elements: decoded is List
@@ -270,6 +275,14 @@ class ReplicateRepository {
       createdAt: date(row['created_at']),
       updatedAt: date(row['updated_at']),
     );
+    return guide.analysisStatus == ProcessingStatus.completed
+        ? guide.copyWith(
+            subjects: PairedWardrobePolicy.subjects(
+              guide.subjects,
+              guide.personCount,
+            ),
+          )
+        : guide;
   }
 
   List<ReplicatedShotImage> listReplicatedShotImages(String runId) => _database

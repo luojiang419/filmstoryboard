@@ -141,10 +141,14 @@ void main() {
     expect(restored?.actionDescription, contains('侧身面向画面右侧'));
     expect(restored?.poseConstraints, contains('右肘弯曲角度'));
     expect(restored?.personCount, 2);
-    expect(restored?.subjects, hasLength(3));
+    expect(restored?.subjects, hasLength(4));
     expect(restored?.subjects.first.decision, ReplicateSubjectDecision.replace);
     expect(restored?.subjects[1].decision, ReplicateSubjectDecision.keep);
-    expect(restored?.subjects.last.decision, ReplicateSubjectDecision.remove);
+    expect(
+      restored?.subjects.last.decision,
+      ReplicateSubjectDecision.undecided,
+      reason: '历史鞋子移除决策不得迁移成整套服装移除',
+    );
     expect(restored?.fullOutfitAssets, hasLength(1));
     expect(restored?.fullOutfitAssets.single.hasCompleteThreeViewSet, isTrue);
     expect(

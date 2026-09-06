@@ -1,3 +1,11 @@
+import 'package:filmstoryboard/features/shooting_script/application/shooting_script_controller.dart';
+import 'package:filmstoryboard/features/shooting_script/data/shooting_script_repository.dart';
+import 'package:filmstoryboard/features/replicate/application/replicate_controller.dart';
+import 'package:filmstoryboard/features/replicate/data/replicate_repository.dart';
+import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
+import 'package:filmstoryboard/features/storyboard/application/storyboard_shooting_script_sync_controller.dart';
+import 'package:filmstoryboard/features/replicate/data/person_depth_service.dart';
+import 'package:filmstoryboard/features/replicate/data/storyboard_depth_repository.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -19,6 +27,114 @@ import 'package:filmstoryboard/features/storyboard/domain/storyboard_models.dart
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('故事板深度提取保留原图并为影视制作持久化深度关联', () async {
+    final depth = _StoryboardDepthService();
+    final fixture = await _createImageGenerationFixture(
+      personDepthService: depth,
+    );
+    final controller = fixture.controller;
+    final asset = await _registeredAsset(fixture.database, fixture.root, 1);
+    controller.setAssetsUsed([asset], true);
+    final shooting = ShootingScriptController(
+      repository: ShootingScriptRepository(fixture.database),
+      directories: fixture.directories,
+    );
+    addTearDown(shooting.dispose);
+    shooting.createForStoryboard(controller.value.selectedBoard!);
+    final sync = StoryboardShootingScriptSyncController(
+      storyboardController: controller,
+      shootingScriptController: shooting,
+    );
+    addTearDown(sync.dispose);
+    final replicate = ReplicateController(
+      repository: ReplicateRepository(fixture.database),
+      shootingScriptController: shooting,
+      directories: fixture.directories,
+      settingsController: fixture.settingsController,
+    );
+    addTearDown(replicate.dispose);
+    expect(controller.enqueueDepthExtractionForSelectedBoard(), isTrue);
+    await _waitUntil(() => !controller.value.isGeneratingImage);
+    final record = fixture.database.listImageGenerationRecords().single;
+    expect(record.status, 'succeeded', reason: record.errorMessage);
+    final board = controller.value.selectedBoard!;
+    final item = board.items.single;
+    expect(item.asset.path, isNot(asset.path));
+    expect(controller.originalImagePathForItem(item), asset.path);
+    expect(
+      controller.boardForShootingScript(board).items.single.asset.path,
+      asset.path,
+    );
+    final depths = StoryboardDepthRepository(
+      fixture.database,
+      fixture.directories.workspaceRoot,
+    );
+    final fingerprint = StoryboardDepthRepository.fingerprint(File(asset.path));
+    expect(File(depths.find(fingerprint)!).existsSync(), isTrue);
+    expect(shooting.value.shots.single.framePath, asset.path);
+    final guide = replicate.shotGuideFor(shooting.value.shots.single.id)!;
+    expect(guide.depthStatus, ProcessingStatus.completed);
+    expect(guide.depthPath, depths.find(fingerprint));
+    expect(
+      replicate.isShotGuideCurrent(shooting.value.shots.single.id),
+      isTrue,
+    );
+    expect(
+      fixture.database.listImageGenerationRecords().single.status,
+      'succeeded',
+    );
+    expect(fixture.imageService.lastRequest, isNull);
+    final firstDepth = guide.depthPath;
+    expect(controller.enqueueDepthExtractionForSelectedBoard(), isTrue);
+    await _waitUntil(() => !controller.value.isGeneratingImage);
+    expect(
+      replicate.shotGuideFor(shooting.value.shots.single.id)!.depthPath,
+      isNot(firstDepth),
+    );
+    expect(shooting.value.shots.single.framePath, asset.path);
+    controller.flushWorkspaceSnapshot();
+    final reopened = StoryboardController(
+      database: fixture.database,
+      directories: fixture.directories,
+    );
+    addTearDown(reopened.dispose);
+    expect(
+      reopened.originalImagePathForItem(
+        reopened.value.selectedBoard!.items.single,
+      ),
+      asset.path,
+    );
+    expect(
+      reopened
+          .boardForShootingScript(reopened.value.selectedBoard!)
+          .items
+          .single
+          .asset
+          .path,
+      asset.path,
+    );
+  });
+
+  test('深度推理期间原格被移除不写入其他格且保留孤立结果记录', () async {
+    final depth = _StoryboardDepthService(paused: true);
+    final fixture = await _createImageGenerationFixture(
+      personDepthService: depth,
+    );
+    final controller = fixture.controller;
+    final asset = await _registeredAsset(fixture.database, fixture.root, 1);
+    controller.setAssetsUsed([asset], true);
+    expect(controller.enqueueDepthExtractionForSelectedBoard(), isTrue);
+    await depth.started.future;
+    controller.setAssetsUsed([asset], false);
+    depth.release.complete();
+    await _waitUntil(() => !controller.value.isGeneratingImage);
+    expect(controller.value.selectedBoard!.items, isEmpty);
+    expect(
+      fixture.database.listImageGenerationRecords().single.status,
+      'orphaned',
+    );
+  });
 
   test('项目自动识别为9比16后同步更新现有画板并持久化比例', () async {
     final root = await Directory.systemTemp.createTemp('storyboard_aspect_');
@@ -2920,6 +3036,7 @@ Future<
 >
 _createImageGenerationFixture({
   _FakeImageGenerationService Function(Directory root)? imageServiceFactory,
+  PersonDepthService? personDepthService,
 }) async {
   final root = await Directory.systemTemp.createTemp('storyboard_image_gen_');
   final directories = await AppDirectories.create(executableDirectory: root);
@@ -2942,6 +3059,7 @@ _createImageGenerationFixture({
     directories: directories,
     settingsController: settingsController,
     imageGenerationService: imageService,
+    personDepthService: personDepthService,
   );
   addTearDown(() async {
     controller.dispose();
@@ -3613,6 +3731,31 @@ class _ConcurrentImageGenerationService extends _FakeImageGenerationService {
       localPath: file.path,
       remoteUrl: 'https://files.example/concurrent-$requestIndex.png',
       rawResponse: '{"status":"succeeded"}',
+    );
+  }
+}
+
+class _StoryboardDepthService extends PersonDepthService {
+  _StoryboardDepthService({this.paused = false});
+  final bool paused;
+  final started = Completer<void>();
+  final release = Completer<void>();
+  @override
+  Future<PersonDepthResult> extract({
+    required File imageFile,
+    required File outputFile,
+  }) async {
+    if (!started.isCompleted) started.complete();
+    if (paused) await release.future;
+    await outputFile.parent.create(recursive: true);
+    await outputFile.writeAsBytes(
+      img.encodePng(img.Image(width: 32, height: 24, numChannels: 1)),
+    );
+    return PersonDepthResult(
+      depthFile: outputFile,
+      masterFile: outputFile,
+      width: 32,
+      height: 24,
     );
   }
 }

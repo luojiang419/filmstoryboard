@@ -1,3 +1,4 @@
+import '../../replicate/presentation/depth_model_progress.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -44,6 +45,7 @@ enum _StoryboardInspectorSection {
   analysis,
   aspectExpansion,
   lineArt,
+  frameExtraction,
   redraw,
   number,
   layout,
@@ -9499,6 +9501,48 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                   label: Text(
                     state.isGeneratingImage ? '图片任务进行中...' : '一键扩展当前画板',
                   ),
+                ),
+              ],
+            ),
+          ),
+          _StoryboardInspectorSectionPanel(
+            title: '画面提取',
+            icon: Icons.layers_outlined,
+            expanded: _sectionExpanded(
+              _StoryboardInspectorSection.frameExtraction,
+            ),
+            onToggle: () => widget.onToggleSection(
+              _StoryboardInspectorSection.frameExtraction,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('提取当前画板分镜的深度图。完成后可查看原图、双击对比，并自动沿用到影视制作的分镜深度图资产格。'),
+                const SizedBox(height: 8),
+                DepthModelProgressPanel(
+                  progress: widget.controller.depthModelProgress,
+                ),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('storyboard-depth-original-switch'),
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: widget.showOriginalStoryboard,
+                  title: const Text('查看原故事板'),
+                  onChanged: widget.canShowOriginalStoryboard
+                      ? widget.onToggleOriginalStoryboard
+                      : null,
+                ),
+                FilledButton.icon(
+                  key: const ValueKey('extract-storyboard-depth'),
+                  onPressed:
+                      locked ||
+                          state.isGeneratingImage ||
+                          board.visibleItemCount == 0
+                      ? null
+                      : () => widget.controller
+                            .enqueueDepthExtractionForSelectedBoard(),
+                  icon: const Icon(Icons.layers_outlined),
+                  label: Text(state.isGeneratingImage ? '图片任务进行中...' : '提取深度图'),
                 ),
               ],
             ),

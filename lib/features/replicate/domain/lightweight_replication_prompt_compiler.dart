@@ -1,3 +1,4 @@
+import 'paired_wardrobe_policy.dart';
 import '../../shooting_script/domain/shooting_script_workflow_models.dart';
 import 'line_art_color_style_prompt_compiler.dart';
 import 'replicate_models.dart';
@@ -23,6 +24,7 @@ class LightweightReplicationPromptCompiler {
   String compilePlan({
     required String instruction,
     required QuickReplicationPlan plan,
+    Map<String, String> slotLabelsByAssetId = const {},
     ReplicateSourceFrameMode sourceFrameMode =
         ReplicateSourceFrameMode.colorReference,
     LineArtColorStyleSelectionSnapshot? colorStyleSnapshot,
@@ -69,7 +71,26 @@ class LightweightReplicationPromptCompiler {
             : '复刻图片1的动作、构图、机位和光影，并保持主体位置、景别、透视和光影方向。',
     ];
     _addSceneReplacementLines(lines, sceneImageNumbers);
-    _addModelLines(lines, plan);
+    if (slotLabelsByAssetId.values.any((label) => label.isNotEmpty)) {
+      for (final reference in plan.references) {
+        final slot = slotLabelsByAssetId[reference.assetId] ?? '';
+        if (slot.startsWith('模特') &&
+            reference.role == QuickReferenceRole.model) {
+          lines.add(
+            '$slot只使用图片${reference.imageNumber}的人物身份、脸部、发型、肤色和体型，不继承其衣物、背景或动作；槽位按图片1从左到右字母编号，缺失编号不前移。',
+          );
+        } else if (RegExp(r'^产品[A-Z]*$').hasMatch(slot) ||
+            slot.startsWith('服装参考')) {
+          final suffix = slot.replaceFirst(RegExp(r'^(产品|服装参考)'), '');
+          lines.add(
+            '服装参考$suffix以图片${reference.imageNumber}为唯一服装来源，只穿在模特$suffix身上；模特$suffix身份未绑定时保留图片1同编号原人物身份。',
+          );
+        }
+      }
+    } else {
+      _addModelLines(lines, plan);
+    }
+    if (hasProductReference) lines.add(PairedWardrobePolicy.prompt);
     for (final group in plan.productGroups) {
       lines.add(_productGroupClause(group, plan));
     }

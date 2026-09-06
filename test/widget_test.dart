@@ -108,7 +108,7 @@ void main() {
       StoryboardTitleAlignment.center,
     );
     expect(find.text('扩展画幅'), findsOneWidget);
-    expect(find.text('生成线稿分镜'), findsOneWidget);
+    expect(find.text('画面提取'), findsOneWidget);
     await tester.tap(find.text('扩展画幅'));
     await tester.pumpAndSettle();
     expect(
@@ -144,7 +144,57 @@ void main() {
     );
     await tester.tap(find.text('扩展画幅'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('生成线稿分镜'));
+    final inspectorScrollable = find
+        .descendant(
+          of: find.byKey(const ValueKey('storyboard-inspector-list')),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('画面提取'),
+      150,
+      scrollable: inspectorScrollable,
+    );
+    await Scrollable.ensureVisible(
+      tester.element(find.text('画面提取')),
+      alignment: 0.2,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('画面提取'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('extract-storyboard-depth')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('storyboard-depth-original-switch')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('extract-storyboard-depth')),
+          )
+          .onPressed,
+      isNull,
+    );
+    await Scrollable.ensureVisible(
+      tester.element(find.text('画面提取')),
+      alignment: 0.2,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('画面提取'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('生成线稿分镜'),
+      150,
+      scrollable: inspectorScrollable,
+    );
+    await tester.pumpAndSettle();
+    await Scrollable.ensureVisible(
+      tester.element(find.text('生成线稿分镜')),
+      alignment: 0.2,
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('生成线稿分镜'));
     await tester.pumpAndSettle();
@@ -177,6 +227,11 @@ void main() {
       find.byKey(const ValueKey('storyboard-line-art-button')),
       findsOneWidget,
     );
+    await Scrollable.ensureVisible(
+      tester.element(find.text('生成线稿分镜')),
+      alignment: 0.2,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('生成线稿分镜'));
     await tester.pumpAndSettle();
     expect(find.text('高清重绘'), findsOneWidget);

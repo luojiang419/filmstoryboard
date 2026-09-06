@@ -55,11 +55,15 @@ class StoryboardShootingScriptSyncController {
       );
       for (final change in changedBoards) {
         if (change.previousBoard == null) {
-          _shootingScriptController.createForStoryboard(change.board);
+          _shootingScriptController.createForStoryboard(
+            _storyboardController.boardForShootingScript(change.board),
+          );
         } else {
           _shootingScriptController.syncFromStoryboard(
-            change.board,
-            previousBoard: change.previousBoard,
+            _storyboardController.boardForShootingScript(change.board),
+            previousBoard: _storyboardController.boardForShootingScript(
+              change.previousBoard!,
+            ),
           );
         }
       }
@@ -89,7 +93,10 @@ class StoryboardShootingScriptSyncController {
     _synchronize(() {
       _storyboardController.syncFromShootingScript(
         boardId: script.sourceStoryboardId!,
-        shots: state.shots,
+        shots: _storyboardController.shotsForStoryboardPreview(
+          script.sourceStoryboardId!,
+          state.shots,
+        ),
       );
     });
   }

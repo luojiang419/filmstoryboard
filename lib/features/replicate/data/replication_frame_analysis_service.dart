@@ -1,3 +1,4 @@
+import '../domain/paired_wardrobe_policy.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -164,7 +165,7 @@ class ReplicationFrameAnalysisService {
     ];
     return ReplicationFrameAnalysisResult(
       elements: List.unmodifiable(elements),
-      subjects: List.unmodifiable(subjects),
+      subjects: PairedWardrobePolicy.subjects(subjects, people.length),
       actionDescription: _text(json, const [
         'action_description',
         'actionDescription',
@@ -188,8 +189,8 @@ class ReplicationFrameAnalysisService {
 
 任务零：识别需要显式处理的可见主体。
 - 统计画面中可见人物总数，并严格按人物中心点横坐标从小到大（画面从左到右）列出每个人。即使人物身份、服装相似，也必须分别计数；不要把海报、屏幕、照片或镜中重复影像误算为独立人物。
-- 识别所有必须由用户选择“保留”“替换”或“移除”的商业产品，包括独立商品、包装、手持商品，以及人物正在穿着的有明确款式结构的服装、鞋、帽、包和配饰。选择“保留”时会直接沿用原视频帧中的对应主体外观。不要把普通家具、建筑构件、自然物或无法辨认的背景杂物列为产品。
-- 每个人和产品都分配从 1 开始的稳定 `slot_index`。人物按从左到右编号；产品优先使用与其穿着、持拿或交互人物相同的编号，无关联产品再按从左到右使用未占用编号。
+- products 只为每位模特返回一个同编号的服装参考项，label 使用“服装参考A”“服装参考B”依次命名，relationship 明确穿在同编号模特身上。上装、下装、套装合并为该人物一个服装项，不得把鞋、帽、包、配饰、手持商品或背景杂物拆成产品格；无人时 products 为空。用户可选择“保留”“替换”或“移除”；保留表示直接沿用原视频帧中的对应主体外观。
+- 每个人和产品都分配从 1 开始的稳定 `slot_index`。人物按从左到右编号；每个服装项必须与对应人物使用完全相同的编号，不生成无关联产品编号。
 
 任务一：只识别用户可能希望从原人物继续保留的独立配饰与关键交互道具，包括眼镜、帽子、包、鞋子、耳环、项链、手链、戒指、手表、发饰、围巾、腰带，以及人物正在拿取、穿戴、踩踏或直接交互的关键道具。
 - 不要把人物身份、脸部、肤色、发型、体型或整套服装列为候选。

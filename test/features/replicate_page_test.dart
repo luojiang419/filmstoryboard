@@ -1932,10 +1932,10 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('模特A'), findsOneWidget);
-    expect(find.text('产品A'), findsOneWidget);
+    expect(find.text('服装参考A'), findsOneWidget);
     expect(find.text('模特B'), findsOneWidget);
-    expect(find.text('产品B'), findsOneWidget);
-    expect(find.text('场景（可选）'), findsOneWidget);
+    expect(find.text('服装参考B'), findsOneWidget);
+    expect(find.text('场景'), findsOneWidget);
     expect(find.byKey(ValueKey('quick-add-asset-${shot.id}')), findsOneWidget);
     expect(find.text('添加其他资产图'), findsOneWidget);
 
@@ -2062,13 +2062,13 @@ void main() {
     expect(find.text('资产库'), findsOneWidget);
     expect(find.text('女模特'), findsAtLeastNWidgets(1));
     expect(find.text('黄色上衣模特'), findsOneWidget);
-    expect(find.textContaining('左侧女模特'), findsOneWidget);
-    expect(find.textContaining('右侧女模特'), findsOneWidget);
-    expect(find.textContaining('左侧展示产品'), findsOneWidget);
-    expect(find.textContaining('右侧展示产品'), findsOneWidget);
+    expect(find.text('模特A'), findsOneWidget);
+    expect(find.text('模特B'), findsOneWidget);
+    expect(find.text('服装参考A'), findsOneWidget);
+    expect(find.text('服装参考B'), findsOneWidget);
     expect(find.text('产品细节A'), findsNothing);
     expect(find.text('产品细节B'), findsNothing);
-    expect(find.text('场景（可选）'), findsNothing);
+    expect(find.byKey(ValueKey('scene-asset-slot-${shot.id}')), findsOneWidget);
     expect(
       find.byKey(ValueKey('detected-subject-asset-slot-${shot.id}-person:0')),
       findsOneWidget,
@@ -2118,7 +2118,7 @@ void main() {
     tester.widget<InkWell>(modelATapTarget).onTap?.call();
     await tester.pumpAndSettle();
     final assetPicker = find.byType(AlertDialog);
-    expect(find.text('选择“左侧女模特”的替换资产'), findsOneWidget);
+    expect(find.text('选择“模特A”的替换资产'), findsOneWidget);
     expect(
       find.descendant(of: assetPicker, matching: find.text('女模特')),
       findsAtLeastNWidgets(1),
@@ -2195,7 +2195,7 @@ void main() {
     expect(productBTapTarget, findsOneWidget);
     tester.widget<InkWell>(productBTapTarget).onTap?.call();
     await tester.pumpAndSettle();
-    expect(find.text('选择“右侧展示产品”的替换资产'), findsOneWidget);
+    expect(find.text('选择“服装参考B”的替换资产'), findsOneWidget);
     final productChoice = find.descendant(
       of: find.byType(AlertDialog),
       matching: find.widgetWithText(ListTile, '蓝色外套'),
@@ -2273,13 +2273,13 @@ void main() {
     await tester.pump();
     await tester.tap(removeProductB);
     await tester.pump();
-    expect(productBSlot, findsNothing);
+    expect(productBSlot, findsOneWidget);
     expect(
       replicateController
           .shotGuideFor(shot.id)
           ?.subjects
           .map((item) => item.id),
-      isNot(contains('product:1')),
+      contains('product:1'),
     );
     expect(
       bindingController.value.links.where(

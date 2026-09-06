@@ -1,3 +1,6 @@
+import '../../replicate/data/person_depth_service.dart';
+import '../../replicate/data/person_depth_models.dart';
+import '../../replicate/data/storyboard_depth_repository.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -72,8 +75,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     ProjectAspectController? projectAspectController,
     VisionStoryboardService? visionService,
     ImageGenerationService? imageGenerationService,
+    PersonDepthService? personDepthService,
   }) : _database = database,
        _directories = directories,
+       _personDepthService = personDepthService ?? PersonDepthService.shared,
        _pathResolver = directories == null
            ? null
            : ProjectPathResolver(directories.workspaceRoot),
@@ -140,6 +145,10 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
   static const defaultFrameTransformationAspectRatio = '16:9';
   static const defaultFrameTransformationImageSize = '2K';
 
+  static const depthExtractionModel = 'local-person-depth';
+  final PersonDepthService _personDepthService;
+  ValueListenable<DepthModelProgress?> get depthModelProgress =>
+      _personDepthService.modelProgress;
   final AppDatabase _database;
   final WorkspaceDirectories? _directories;
   final ProjectPathResolver? _pathResolver;
@@ -3149,7 +3158,7 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       return null;
     }
     final settingsController = _settingsController;
-    if (settingsController == null) {
+    if (settingsController == null && model != depthExtractionModel) {
       value = value.copyWith(message: '图片生成设置尚未初始化');
       return null;
     }
@@ -3228,6 +3237,110 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
       referenceImagePaths: references,
       successMessage: successMessage ?? '图片修改完成，已替换当前格',
       changedMessage: changedMessage ?? '图片已生成，但当前格内容已变化，未自动替换',
+    );
+  }
+
+  /// Depth is displayed as a derived image; scripts retain its immediate
+  /// source frame so a grayscale preview never becomes a replication base.
+  StoryboardBoard boardForShootingScript(StoryboardBoard board) {
+    final records = _imageGenerationRecordsByResultAssetIdCache();
+    return board.copyWith(
+      items: [
+        for (final item in board.items)
+          if (records[item.asset.id]?.model == depthExtractionModel)
+            item.copyWith(
+              asset: StoryboardCutAsset(
+                id: item.asset.id,
+                imageId: item.asset.imageId,
+                sourceName: item.asset.sourceName,
+                indexNo: item.asset.indexNo,
+                path: _toRuntimePath(records[item.asset.id]!.sourcePath),
+              ),
+            )
+          else
+            item,
+      ],
+    );
+  }
+
+  List<ScriptShot> shotsForStoryboardPreview(
+    String boardId,
+    List<ScriptShot> shots,
+  ) {
+    final board = value.boards
+        .where((board) => board.id == boardId)
+        .firstOrNull;
+    if (board == null) return shots;
+    final records = _imageGenerationRecordsByResultAssetIdCache();
+    return [
+      for (final shot in shots)
+        if (records[shot.sourceStoryboardAssetId] case final record?
+            when record.model == depthExtractionModel &&
+                _normalizedFilePath(shot.framePath) ==
+                    _normalizedFilePath(_toRuntimePath(record.sourcePath)))
+          shot.copyWith(framePath: _toRuntimePath(record.resultPath))
+        else
+          shot,
+    ];
+  }
+
+  bool enqueueDepthExtractionForSelectedBoard() {
+    final board = value.selectedBoard;
+    if (board == null || _guardLockedBoard(board, '提取深度图')) return false;
+    if ((_activeImageGenerationCountByBoardId[board.id] ?? 0) > 0) return false;
+    final tasks = <_PreparedImageReplacementTask>[];
+    final sourceBoard = boardForShootingScript(board);
+    for (final item in _orderedVisibleItems(board)) {
+      final source =
+          sourceBoard.itemAtSlot(item.slotIndex)?.asset.path ?? item.asset.path;
+      final task = _prepareImageReplacementTask(
+        item: item,
+        prompt: '提取与源分镜配准的高精度人物深度图',
+        model: depthExtractionModel,
+        aspectRatio: 'auto',
+        imageSize: 'native',
+        quality: 'depth',
+        extraReferenceImagePaths: const [],
+        referenceImagePath: source,
+        successMessage: '深度图提取完成，可双击对比原图；已沿用到影视制作准备资产',
+        changedMessage: '深度图已提取，但原格内容已变化，未自动替换',
+      );
+      if (task != null) tasks.add(task);
+    }
+    for (final task in tasks) {
+      unawaited(_runImageReplacementTask(task));
+    }
+    _syncVisionTaskState(
+      boardId: board.id,
+      message: tasks.isEmpty ? '当前画板没有可提取的图片' : '已提交 ${tasks.length} 张深度提取任务',
+    );
+    return tasks.isNotEmpty;
+  }
+
+  Future<ImageGenerationResult> _extractDepthImage(
+    _PreparedImageReplacementTask task,
+  ) async {
+    final source = File(task.referenceImagePaths.first);
+    final fingerprint = StoryboardDepthRepository.fingerprint(source);
+    final result = await _personDepthService.extract(
+      imageFile: source,
+      outputFile: File(
+        p.join(
+          _directories!.analyses.path,
+          'storyboard-depth',
+          '${task.generationId}.png',
+        ),
+      ),
+    );
+    if (_disposed ||
+        !source.existsSync() ||
+        StoryboardDepthRepository.fingerprint(source) != fingerprint) {
+      throw StateError('源图或项目已变化，未沿用深度结果');
+    }
+    return ImageGenerationResult(
+      localPath: result.depthFile.path,
+      remoteUrl: '',
+      rawResponse: fingerprint,
     );
   }
 
@@ -3727,27 +3840,30 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
     _PreparedImageReplacementTask task,
   ) async {
     try {
-      final settings = _settingsController!.value;
-      final provider = ImageGenerationProviderResolver.resolve(
-        settings: settings,
-        model: task.model,
-      );
-      final result = await _imageGenerationService.generateEditedImage(
-        ImageGenerationRequest(
-          provider: provider,
-          model: task.model,
-          prompt: task.prompt,
-          aspectRatio: task.aspectRatio,
-          imageSize: task.imageSize,
-          quality: task.quality,
-          referenceImagePaths: task.referenceImagePaths,
-          outputDirectory: _aiEditedImagesDirectory(
-            _directories!,
-            task.boardName,
-          ),
-        ),
-      );
-      return _withImageResultCommitLock(() async {
+      final provider = task.model == depthExtractionModel
+          ? null
+          : ImageGenerationProviderResolver.resolve(
+              settings: _settingsController!.value,
+              model: task.model,
+            );
+      final result = task.model == depthExtractionModel
+          ? await _extractDepthImage(task)
+          : await _imageGenerationService.generateEditedImage(
+              ImageGenerationRequest(
+                provider: provider!,
+                model: task.model,
+                prompt: task.prompt,
+                aspectRatio: task.aspectRatio,
+                imageSize: task.imageSize,
+                quality: task.quality,
+                referenceImagePaths: task.referenceImagePaths,
+                outputDirectory: _aiEditedImagesDirectory(
+                  _directories!,
+                  task.boardName,
+                ),
+              ),
+            );
+      return await _withImageResultCommitLock(() async {
         final archivedResult = await _archiveAiEditedImage(
           sourcePath: result.localPath,
           boardName: task.boardName,
@@ -3757,6 +3873,28 @@ class StoryboardController extends ValueNotifier<StoryboardState> {
           resultPath: archivedResult.path,
           indexNo: archivedResult.indexNo,
         );
+        if (_disposed) return false;
+        // Publish lineage before board listeners synchronize the new preview.
+        if (task.model == depthExtractionModel) {
+          final source = File(task.referenceImagePaths.first);
+          if (!source.existsSync() ||
+              StoryboardDepthRepository.fingerprint(source) !=
+                  result.rawResponse) {
+            throw StateError('源图已变化，未写回深度结果');
+          }
+          StoryboardDepthRepository(
+            _database,
+            _directories!.workspaceRoot,
+          ).save(result.rawResponse, archivedResult.path);
+          _database.updateImageGenerationRecord(
+            id: task.generationId,
+            status: 'succeeded',
+            resultAssetId: replacement.id,
+            resultPath: _toStoredPath(replacement.path),
+            rawResponse: result.rawResponse,
+          );
+          _invalidateOriginalImagePathCache();
+        }
         final applied = _replaceCurrentItemAsset(
           boardId: task.boardId,
           slotIndex: task.slotIndex,

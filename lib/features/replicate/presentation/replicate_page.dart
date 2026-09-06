@@ -7625,10 +7625,10 @@ class _ShotAssetDropRow extends StatelessWidget {
         ScriptAssetPresetSlotKind.character =>
           '模特${ScriptAssetSlotPolicy.characterSuffix(slot.characterIndex)}',
         ScriptAssetPresetSlotKind.product =>
-          '产品${ScriptAssetSlotPolicy.characterSuffix(slot.productIndex)}',
+          '服装参考${ScriptAssetSlotPolicy.characterSuffix(slot.productIndex)}',
         ScriptAssetPresetSlotKind.productDetail =>
           '产品细节${ScriptAssetSlotPolicy.characterSuffix(slot.productIndex)}',
-        ScriptAssetPresetSlotKind.scene => '场景（可选）',
+        ScriptAssetPresetSlotKind.scene => '场景',
       };
 
   Widget _buildAssetSlots(BuildContext context) {
@@ -7700,7 +7700,7 @@ class _ShotAssetDropRow extends StatelessWidget {
         final persistedSlot = ScriptAssetSlotPolicy.presetSlotForSortOrder(
           entry.key.sortOrder,
         );
-        if (persistedSlot != null && persistedSlot.kind != slot.kind) {
+        if (persistedSlot != null && persistedSlot.key != slot.key) {
           continue;
         }
         if (!slot.acceptsAsset(
@@ -7715,6 +7715,15 @@ class _ShotAssetDropRow extends StatelessWidget {
         break;
       }
     }
+    const sceneSlot = ScriptAssetPresetSlot.scene();
+    final sceneEntry = assetsByLink.entries
+        .where(
+          (entry) =>
+              entry.key.sortOrder == sceneSlot.sortOrder ||
+              entry.value.type == ReplicateAssetType.scene,
+        )
+        .firstOrNull;
+    if (sceneEntry != null) assignedLinks.add(sceneEntry.key);
     final remainingLinks = [
       for (final link in links)
         if (assetsByLink.containsKey(link) && !assignedLinks.contains(link))
@@ -7803,12 +7812,44 @@ class _ShotAssetDropRow extends StatelessWidget {
             onRemoveSlot: () {
               final assignment = assignments[subject.id];
               if (assignment != null) onRemove(assignment.scriptAssetId);
-              onRemoveSubject(subject.id);
+              onSetSubjectDecision(subject.id, ReplicateSubjectDecision.undecided);
             },
             onDecisionChanged: (decision) =>
                 _changeSubjectDecision(subject, decision),
           ),
         ],
+        if (guideIsCurrent &&
+            guide?.analysisStatus == ProcessingStatus.completed)
+          if (sceneEntry == null)
+            _EmptyAssetBindingSlot(
+              key: ValueKey('scene-asset-slot-${shot.id}'),
+              label: '场景',
+              icon: Icons.landscape_outlined,
+              accepts: (item) => sceneSlot.accepts(item.type),
+              onTap: () => _openAssetPicker(
+                context,
+                presetSlot: sceneSlot,
+                bindingLabel: '场景',
+              ),
+              onDrop: (item) => onDrop(item, null, sceneSlot.sortOrder, '场景'),
+            )
+          else
+            _AssetBindingSlot(
+              key: ValueKey('scene-asset-slot-${shot.id}'),
+              asset: sceneEntry.value,
+              link: sceneEntry.key,
+              slotLabel: '场景',
+              accepts: (item) => sceneSlot.accepts(item.type),
+              onTap: () => _openAssetPicker(
+                context,
+                replaceScriptAssetId: sceneEntry.value.id,
+                presetSlot: sceneSlot,
+                bindingLabel: '场景',
+              ),
+              onDrop: (item) =>
+                  onDrop(item, sceneEntry.value.id, sceneSlot.sortOrder, '场景'),
+              onRemove: () => onRemove(sceneEntry.value.id),
+            ),
         for (final link in remainingLinks)
           _AssetBindingSlot(
             key: ValueKey(
@@ -8674,9 +8715,6 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final typeLabel = subject.type == ReplicateSubjectType.person
-        ? '人物 ${subject.slotIndex + 1}'
-        : '产品 ${subject.slotIndex + 1}';
     final helper = [
       subject.location,
       subject.relationship,
@@ -8711,7 +8749,7 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
                     children: [
                       Expanded(
                         child: Text(
-                          '$typeLabel · ${subject.label}',
+                          subject.label,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -8722,7 +8760,7 @@ class _DetectedSubjectAssetSlot extends StatelessWidget {
                       ),
                       IconButton(
                         key: removeKey,
-                        tooltip: '移除资产参考图格子',
+                        tooltip: '清空资产并保留原帧',
                         onPressed: onRemoveSlot,
                         icon: const Icon(Icons.close_rounded, size: 16),
                         padding: EdgeInsets.zero,

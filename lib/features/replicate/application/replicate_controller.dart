@@ -1,3 +1,4 @@
+import '../domain/paired_wardrobe_policy.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -801,7 +802,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
         _repository.upsertShotGuide(
           running.copyWith(
             elements: const [],
-            subjects: people,
+            subjects: PairedWardrobePolicy.subjects(people, result.personCount),
             actionDescription: '',
             poseConstraints: '',
             personCount: result.personCount,
@@ -831,7 +832,7 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
           subjects: result.subjects,
           actionDescription: result.actionDescription,
           poseConstraints: result.poseConstraints,
-          personCount: math.max(running.personCount, result.personCount),
+          personCount: result.personCount,
           analysisStatus: ProcessingStatus.completed,
           rawResponse: result.rawResponse,
           errorMessage: '',
@@ -1033,6 +1034,9 @@ class ReplicateController extends ValueNotifier<ReplicateState> {
     final guide = _repository.getShotGuide(shotId);
     final scriptId = value.selectedScriptId;
     if (guide == null || scriptId.isEmpty) return;
+    _repository
+        .storyboardDepths(_directories.workspaceRoot)
+        .ignore(shotId, guide.sourceFrameFingerprint);
     final depthPath = guide.depthPath.trim();
     var cleanupWarning = '';
     if (depthPath.isNotEmpty) {
@@ -4035,6 +4039,45 @@ $playbackSpeedBoundary
     }
   }
 
+  List<ReplicateShotGuide> _loadShotGuides(
+    String scriptId,
+    List<ScriptShot> shots,
+  ) {
+    final depths = _repository.storyboardDepths(_directories.workspaceRoot);
+    for (final shot in shots) {
+      if (!File(shot.framePath).existsSync()) continue;
+      final fingerprint = _sourceFrameFingerprint(shot);
+      final inherited = depths.find(fingerprint, shotId: shot.id);
+      if (inherited == null) continue;
+      final previous = _repository.getShotGuide(shot.id);
+      if (previous?.sourceFrameFingerprint == fingerprint &&
+          previous?.depthStatus == ProcessingStatus.running) {
+        continue;
+      }
+      if (previous?.sourceFrameFingerprint == fingerprint &&
+          previous?.depthStatus == ProcessingStatus.completed &&
+          File(previous!.depthPath).existsSync() &&
+          (previous.depthPath == inherited ||
+              !depths.wasApplied(shot.id, fingerprint, previous.depthPath))) {
+        continue;
+      }
+      final now = DateTime.now().toUtc();
+      final guide = previous?.sourceFrameFingerprint == fingerprint
+          ? previous!
+          : ReplicateShotGuide(shotId: shot.id, createdAt: now, updatedAt: now);
+      _repository.upsertShotGuide(
+        guide.copyWith(
+          sourceFrameFingerprint: fingerprint,
+          depthPath: inherited,
+          depthStatus: ProcessingStatus.completed,
+          updatedAt: now,
+        ),
+      );
+      depths.markApplied(shot.id, fingerprint, inherited);
+    }
+    return _repository.listShotGuidesForScript(scriptId);
+  }
+
   void _reloadShotGuides(
     String scriptId, {
     String? message,
@@ -4044,7 +4087,7 @@ $playbackSpeedBoundary
       return;
     }
     value = value.copyWith(
-      shotGuides: _repository.listShotGuidesForScript(scriptId),
+      shotGuides: _loadShotGuides(scriptId, value.shots),
       isAnalyzingFrames: _isAnalyzingFrames(scriptId),
       message: message,
       errorMessage: errorMessage,
@@ -4175,7 +4218,7 @@ $playbackSpeedBoundary
       _repository.upsertRun(run);
     }
     final assets = _repository.listAssets(run.id);
-    final shotGuides = _repository.listShotGuidesForScript(scriptId);
+    final shotGuides = _loadShotGuides(scriptId, shooting.shots);
     final replicatedImages = _restoreReplicatedImages(run.id);
     var prompts = _repository.listPrompts(run.id);
     final workflowAssetIdsByShot = _confirmedScriptAssetIdsByShot(
@@ -4791,7 +4834,17 @@ $playbackSpeedBoundary
           path: bindings[index].asset.path,
           quickRole:
               bindings[index].link.quickReferenceRole ??
-              _defaultQuickRole(bindings[index].asset.type),
+              _defaultQuickRole(
+                ScriptAssetSlotPolicy.presetSlotForSortOrder(
+                      bindings[index].link.sortOrder,
+                    )?.preferredAssetType ??
+                    bindings[index].asset.type,
+              ),
+          slotLabel:
+              ScriptAssetSlotPolicy.presetSlotForSortOrder(
+                bindings[index].link.sortOrder,
+              )?.label(characterCount: 20) ??
+              '',
           quickOrder: index + 1,
           quickGroupAnchorAssetId: bindings[index].link.quickGroupAnchorAssetId,
         ),
@@ -5266,7 +5319,14 @@ $playbackSpeedBoundary
       references.add(
         _ReplacementReference(
           id: binding.asset.id,
-          type: binding.asset.type,
+          type: _characterSlotIndex(slotLabel) != null
+              ? ReplicateAssetType.character
+              : _productSlotIndex(slotLabel) != null ||
+                    _productDetailSlotIndex(slotLabel) != null
+              ? ReplicateAssetType.product
+              : slotLabel.startsWith('场景')
+              ? ReplicateAssetType.scene
+              : binding.asset.type,
           name: binding.asset.name,
           description: binding.asset.description,
           path: binding.asset.path,
@@ -5316,6 +5376,9 @@ $playbackSpeedBoundary
       return compiler.compilePlan(
         instruction: instruction,
         plan: plan,
+        slotLabelsByAssetId: {
+          for (final reference in references) reference.id: reference.slotLabel,
+        },
         sourceFrameMode: sourceFrameMode,
         colorStyleSnapshot: colorStyleSnapshot,
       );
@@ -5344,6 +5407,9 @@ $playbackSpeedBoundary
   }) {
     const multiAngleModelReferenceRule =
         '若模特参考是一张包含同一人物多个角度的拼图，按图片1中该人物的可见朝向选择对应角度作为本帧主证据；其他角度仅用于身份与后续动作一致性补充，不得把拼图中的多个人影同时生成到画面。';
+    final hasScene = references.any(
+      (reference) => reference.type == ReplicateAssetType.scene,
+    );
     final definitions = <String>[];
     final assetRequirements = <String>[];
     final characterSlotLabelsByIndex = <int, String>{};
@@ -5412,7 +5478,7 @@ $playbackSpeedBoundary
         (_, final slotLabel)
             when characterSlotIndex != null && pairedProductLabel != null =>
           '$slotLabel 使用$imageLabel 的身份、脸部、发型和体型，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；身份不得与其他槽位交换。'
-              '服装、鞋帽和配饰以$pairedProductLabel为准：可穿戴商品须完整穿着，非穿戴商品保持图片1的持拿或展示关系。$multiAngleModelReferenceRule',
+              '指定服装区域以$pairedProductLabel为准并自然穿着，未指定替换的衣物、鞋帽与配饰保留图片1。$multiAngleModelReferenceRule',
         (_, final slotLabel) when characterSlotIndex != null =>
           '$slotLabel 只使用$imageLabel 的身份、脸部、发型、肤色和体型，对应图片1从左到右第${characterSlotIndex + 1}个人物槽位；原帧中没有绑定产品资产的服装、鞋帽、配饰及其他产品必须保持不变，不得带入模特资产图中的穿搭、姿势或背景。$multiAngleModelReferenceRule',
         (ReplicateAssetType.character, _) =>
@@ -5456,7 +5522,7 @@ $playbackSpeedBoundary
                 '外观只使用${subject.type == ReplicateSubjectType.person ? characterImageBySlot[subject.slotIndex] ?? '对应模特资产' : productImageBySlot[subject.slotIndex] ?? '对应产品资产'}。',
           ReplicateSubjectDecision.keep =>
             '${subject.label}（${subject.type == ReplicateSubjectType.person ? '人物' : '产品'}槽位${subject.slotIndex + 1}）：保留。'
-                '${subject.type == ReplicateSubjectType.person ? '完整沿用图片1中该人物的身份、脸部、发型、体型、服装、配饰与可见外观' : '完整沿用图片1中该产品或服装的轮廓、结构、颜色、材质、细节与穿着/接触关系'}；不得使用绑定资产覆盖、混合或重绘该主体。',
+                '${subject.type == ReplicateSubjectType.person ? '完整沿用图片1中该人物的身份、脸部、发型与体型；服装按同编号服装槽独立处理，未替换区域才保留原帧' : '完整沿用图片1中该产品或服装的轮廓、结构、颜色、材质、细节与穿着/接触关系'}；不得使用绑定资产覆盖、混合或重绘该主体。',
           ReplicateSubjectDecision.remove =>
             '${subject.label}（${subject.type == ReplicateSubjectType.person ? '人物' : '产品'}槽位${subject.slotIndex + 1}）：移除。'
                 '成图不得出现该主体或残影，并按周围透视、纹理与光影自然补全被遮挡区域。',
@@ -5481,6 +5547,9 @@ $playbackSpeedBoundary
       if (pairedSlotIndices.length > 1)
         '多模特产品一一绑定硬约束：${pairedSlotIndices.map((index) => '${characterSlotLabelsByIndex[index]}→${productSlotLabelsByIndex[index]}').join('、')}；不得交叉套用、互换、串穿或混搭。',
       ...assetRequirements,
+      if (productImageBySlot.isNotEmpty) PairedWardrobePolicy.prompt,
+      for (final entry in productImageBySlot.entries)
+        '服装参考${ScriptAssetSlotPolicy.characterSuffix(entry.key)}只取${entry.value}，穿在图片1从左到右第${entry.key + 1}位人物身上；该人物身份取${characterImageBySlot[entry.key] ?? '图片1对应原人物'}，不按上传顺序重排槽位。',
       '绑定资产硬约束：$firstBoundImageLabel 起的图片按上文角色使用。主视图定义完整身份或产品整体；标记为局部细节裁切的图片只补充局部证据。不得遗漏、平均融合或用图片1中的同类原主体替代。',
       if (preservedElementRules.isNotEmpty)
         '【用户已勾选保留元素】从图片1保留其结构、材质、位置和佩戴/接触关系：${preservedElementRules.join('；')}。',
@@ -5491,10 +5560,17 @@ $playbackSpeedBoundary
       if (guide != null && guide.poseConstraints.trim().isNotEmpty)
         '【逐关节姿态硬约束】${guide.poseConstraints.trim()}。',
       '构图执行：保持图片1的画幅、机位、透视、槽位位置、空间方向、视线、动作、接触和遮挡；仅按主体处理计划改变实体。屏幕左/右以查看图片1时为准，严禁镜像。',
-      '调色执行：新实体必须融入图片1的光线方向、色温、曝光、阴影、高光和景深；资产图自身背景、构图、光照与调色不进入成图。',
+      if (hasScene)
+        '场景替换与调色执行：场景参考图是最终背景、环境元素、材质、光线方向、色温、阴影、反射和景深的唯一来源，必须在成图中清楚呈现其可识别环境，不得沿用图片1原背景或仅借用颜色。人物与衣物融入新环境光及地面接触阴影；模特和服装素材背景不得进入成图。'
+      else
+        '调色执行：新实体必须融入图片1的光线方向、色温、曝光、阴影、高光和景深；模特与服装资产图自身背景、构图、光照与调色不进入成图。',
       '质量执行：产品轮廓、比例、接缝、口袋、边缘、材质和反光应可辨；人物面部、手指与手物接触自然；不得出现新旧身份或产品特征融合、重复主体、残影和低清纹理。',
       _textAndLogoExclusionConstraint,
-      ..._shotStructureInstructions(shot),
+      ..._shotStructureInstructions(shot).where(
+        (line) =>
+            !hasScene ||
+            (!line.startsWith('光影与氛围') && !line.startsWith('摄影备注')),
+      ),
       '最终交付：一张自然真实、专业清晰、严格执行主体处理计划的复刻分镜图。',
     ].join('\n');
   }

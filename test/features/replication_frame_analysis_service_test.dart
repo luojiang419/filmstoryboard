@@ -65,10 +65,15 @@ void main() {
     expect(result.actionDescription, contains('右手下垂提包'));
     expect(result.poseConstraints, contains('右腕位置'));
     expect(result.personCount, 2);
-    expect(result.subjects, hasLength(3));
+    expect(result.subjects, hasLength(4));
     expect(result.subjects.first.type, ReplicateSubjectType.person);
     expect(result.subjects.last.type, ReplicateSubjectType.product);
-    expect(result.subjects.last.label, '蓝色牛仔裤');
+    expect(result.subjects.map((s) => s.label), [
+      '模特A',
+      '服装参考A',
+      '模特B',
+      '服装参考B',
+    ]);
     expect(result.subjects.last.decision, ReplicateSubjectDecision.undecided);
   });
 
@@ -119,9 +124,9 @@ void main() {
       ''');
 
     expect(result.personCount, 2);
-    expect(result.subjects, hasLength(2));
+    expect(result.subjects, hasLength(4));
     expect(result.subjects.last.slotIndex, 1);
-    expect(result.subjects.last.label, '画面人物2');
+    expect(result.subjects.last.label, '服装参考B');
     expect(result.subjects.last.decision, ReplicateSubjectDecision.undecided);
   });
 
