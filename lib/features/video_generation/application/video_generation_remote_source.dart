@@ -16,6 +16,16 @@ class VideoGenerationRemoteSource extends ChangeNotifier
   }
 
   final VideoGenerationController _controller;
+
+  /// 画布参数面板与远程生成使用同一套模型及参数校验，不触发生成。
+  Future<void> configure({
+    String? model,
+    Map<String, String> parameters = const {},
+  }) async {
+    await _applyModel(model);
+    _applyParameters(parameters);
+  }
+
   final Map<String, _RemoteGenerationOperation> _operations = {};
   final Set<String> _cancelledOperationIds = {};
   final Set<String> _cancellingTaskIds = {};

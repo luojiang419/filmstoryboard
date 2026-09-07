@@ -17,6 +17,7 @@ import '../../../core/services/workspace_directories.dart';
 import '../../../core/widgets/preview_file_image.dart';
 import '../../../core/widgets/value_listenable_selector.dart';
 import '../../settings/domain/app_settings.dart';
+import '../../bridge/data/bridge_board_export_service.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
 import '../../storyboard/application/storyboard_controller.dart';
 import '../../storyboard/domain/storyboard_canvas_style.dart';
@@ -123,6 +124,9 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
                       onCancelExport: _exportCanCancel ? _cancelExport : null,
                       onFormatChanged: _setFormat,
                       onResolutionChanged: _setResolution,
+                      onExportInfiniteCanvas: canExport
+                          ? () => _exportInfiniteCanvas(selectedBoards)
+                          : null,
                       onExportSelected: canExport
                           ? () => _exportSelected(
                               boards,
@@ -793,6 +797,51 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
     });
   }
 
+  Future<void> _exportInfiniteCanvas(List<StoryboardBoard> boards) async {
+    if (_isExporting || boards.isEmpty) return;
+    setState(() {
+      _isExporting = true;
+      _message = '正在创建无限画布工程…';
+    });
+    var completed = 0;
+    Uri? firstEditor;
+    try {
+      final projectId = ref.read(currentProjectIdProvider);
+      final projectName = ref.read(currentProjectNameProvider);
+      for (final board in boards) {
+        final result = await const BridgeBoardExportService().send(
+          board: board,
+          projectId: projectId,
+          projectName: projectName,
+          workflow: true,
+        );
+        firstEditor ??= result.editorUri;
+        completed++;
+        if (mounted) {
+          setState(() => _message = '已导出 $completed/${boards.length} 个画板');
+        }
+      }
+      if (Platform.isWindows && firstEditor != null) {
+        try {
+          await Process.start('explorer.exe', [firstEditor.toString()]);
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(
+          () => _message = '已创建或更新 $completed 个无限画布工程，含准备资产、确认镜头、视频生成工作流',
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () => _message = '已完成 $completed/${boards.length}，导出失败：$error',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   List<StoryboardBoard> _selectedBoards(List<StoryboardBoard> boards) {
     return boards
         .where((board) => _selectedBoardIds.contains(board.id))
@@ -901,6 +950,7 @@ class _ExportSidebar extends StatelessWidget {
     required this.onFormatChanged,
     required this.onResolutionChanged,
     required this.onExportSelected,
+    required this.onExportInfiniteCanvas,
     required this.onExportDefault,
     required this.onExportBoardImages,
     required this.onExportShootingScript,
@@ -920,6 +970,7 @@ class _ExportSidebar extends StatelessWidget {
   final ValueChanged<StoryboardExportFormat> onFormatChanged;
   final ValueChanged<StoryboardExportResolution> onResolutionChanged;
   final VoidCallback? onExportSelected;
+  final VoidCallback? onExportInfiniteCanvas;
   final VoidCallback? onExportDefault;
   final VoidCallback? onExportBoardImages;
   final VoidCallback? onExportShootingScript;
@@ -1048,6 +1099,13 @@ class _ExportSidebar extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
+            OutlinedButton.icon(
+              key: const ValueKey('export-infinite-canvas'),
+              onPressed: isExporting ? null : onExportInfiniteCanvas,
+              icon: const Icon(Icons.account_tree_outlined),
+              label: const Text('导出到无限画布'),
+            ),
+            const SizedBox(height: 9),
             FilledButton.icon(
               onPressed: isExporting ? null : onExportSelected,
               icon: const Icon(Icons.save_as_rounded),

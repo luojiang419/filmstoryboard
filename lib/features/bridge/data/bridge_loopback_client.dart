@@ -55,7 +55,10 @@ class BridgeLoopbackClient {
     return (await _discover()).baseUri;
   }
 
-  Future<_BridgeDiscovery> _discover({bool requireDirect = false}) async {
+  Future<_BridgeDiscovery> _discover({
+    bool requireDirect = false,
+    bool requireWorkflow = false,
+  }) async {
     for (final port in ports) {
       final base = Uri.parse('http://127.0.0.1:$port/');
       try {
@@ -68,7 +71,8 @@ class BridgeLoopbackClient {
             data['app'] == 'shiyin-ai' &&
             data['schema'] == 'shiyin-film-bridge' &&
             data['automatic_receive'] == true &&
-            (!requireDirect || data['direct_receive'] == true)) {
+            (!requireDirect || data['direct_receive'] == true) &&
+            (!requireWorkflow || data['workflow_receive'] == true)) {
           return _BridgeDiscovery(base);
         }
       } catch (_) {
@@ -85,11 +89,15 @@ class BridgeLoopbackClient {
     required Map<String, Object?> manifest,
     required List<BridgeDirectUpload> uploads,
     required String canvasTitle,
+    bool requireWorkflow = false,
   }) async {
     if (uploads.isEmpty) {
       throw const BridgeLoopbackException('没有可发送的故事板图片');
     }
-    final discovery = await _discover(requireDirect: true);
+    final discovery = await _discover(
+      requireDirect: true,
+      requireWorkflow: requireWorkflow,
+    );
     final request =
         http.MultipartRequest(
             'POST',

@@ -46,6 +46,9 @@ import '../features/video_generation/application/video_generation_controller.dar
 import '../features/video_generation/application/video_generation_remote_source.dart';
 import '../features/video_generation/presentation/video_generation_page.dart';
 import 'window_title_bar.dart';
+import '../features/bridge/data/bridge_workflow_server.dart';
+import '../features/bridge/application/bridge_workflow_controller.dart';
+import '../features/shooting_script/application/shooting_asset_library_controller.dart';
 
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({
@@ -70,6 +73,8 @@ class _AppShellState extends ConsumerState<AppShell> {
   static const _selectedTabIndexVersionKey = 'appShellSelectedTabIndexVersion';
   static const _selectedTabIndexVersion = 5;
 
+  BridgeWorkflowServer? _workflowServer;
+  BridgeWorkflowController? _workflowController;
   late int _tabIndex;
   final _visitedTabIndexes = <int>{};
   final _pages = <int, Widget>{};
@@ -106,9 +111,39 @@ class _AppShellState extends ConsumerState<AppShell> {
     _ShellTab('设置', Icons.tune_rounded),
   ];
 
+  Future<void> _startWorkflowBridge() async {
+    final server = BridgeWorkflowServer(
+      projectId: ref.read(currentProjectIdProvider),
+      onRequest: (body) async {
+        _workflowController ??= BridgeWorkflowController(
+          scripts: ref.read(shootingScriptControllerProvider),
+          storyboards: ref.read(storyboardControllerProvider),
+          replicate: ref.read(replicateControllerProvider),
+          analysis: ref.read(scriptAnalysisControllerProvider),
+          binding: ref.read(scriptAssetBindingControllerProvider),
+          library: ref.read(shootingAssetLibraryControllerProvider),
+          video: ref.read(videoGenerationControllerProvider),
+          directories: ref.read(projectDirectoriesProvider),
+          server: _workflowServer!,
+          remote: ref.read(remoteAccessFacadeProvider),
+          remoteVideo: _createGenerationSource(),
+        );
+        return _workflowController!.handle(body);
+      },
+    );
+    _workflowServer = server;
+    try {
+      await server.start();
+      if (!mounted) await server.stop();
+    } catch (error) {
+      debugPrint('无限画布工作流服务启动失败：$error');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    unawaited(_startWorkflowBridge());
     _updaterController = ref.read(updaterControllerProvider);
     _updaterController.addListener(_handleUpdaterStateChanged);
     _onboardingController = OnboardingController(
@@ -170,6 +205,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   void dispose() {
+    unawaited(_workflowServer?.stop());
     _onboardingController.removeListener(_handleOnboardingChanged);
     _onboardingController.dispose();
     _storyboardController.removeListener(_handleAssetNormalizationStateChanged);
