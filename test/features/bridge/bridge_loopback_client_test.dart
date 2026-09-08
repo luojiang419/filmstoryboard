@@ -73,6 +73,7 @@ void main() {
             'schema': 'shiyin-film-bridge',
             'automatic_receive': true,
             'direct_receive': true,
+            'dedicated_board_projects': true,
             'active_canvas_id': 'canvas-open',
           }),
           200,

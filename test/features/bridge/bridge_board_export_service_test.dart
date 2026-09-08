@@ -50,6 +50,7 @@ void main() {
                 'schema': 'shiyin-film-bridge',
                 'automatic_receive': true,
                 'direct_receive': true,
+                'dedicated_board_projects': true,
                 'workflow_receive': supportsWorkflow,
                 'active_canvas_id': 'unrelated',
               }),

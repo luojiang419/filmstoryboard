@@ -20,6 +20,7 @@ class BridgeLoopbackResult {
     required this.groupId,
     required this.frameCount,
     required this.editorUri,
+    this.canvasTitle = '',
   });
 
   final Uri baseUri;
@@ -27,6 +28,7 @@ class BridgeLoopbackResult {
   final String groupId;
   final int frameCount;
   final Uri editorUri;
+  final String canvasTitle;
 }
 
 class BridgeDirectUpload {
@@ -71,7 +73,9 @@ class BridgeLoopbackClient {
             data['app'] == 'shiyin-ai' &&
             data['schema'] == 'shiyin-film-bridge' &&
             data['automatic_receive'] == true &&
-            (!requireDirect || data['direct_receive'] == true) &&
+            (!requireDirect ||
+                (data['direct_receive'] == true &&
+                    data['dedicated_board_projects'] == true)) &&
             (!requireWorkflow || data['workflow_receive'] == true)) {
           return _BridgeDiscovery(base);
         }
@@ -80,7 +84,7 @@ class BridgeLoopbackClient {
       }
     }
     throw BridgeLoopbackException(
-      '未发现支持故事板直连的 SHIYIN-AI，请先启动或更新 SHIYIN-AI'
+      '未发现支持独立画板工程的 SHIYIN-AI，请先启动或更新 SHIYIN-AI'
       '（已检查本机端口：${ports.join("、")}）',
     );
   }
@@ -234,6 +238,7 @@ class BridgeLoopbackClient {
       groupId: groupId,
       frameCount: frameCount,
       editorUri: editor,
+      canvasTitle: '${data['canvas_title'] ?? ''}'.trim(),
     );
   }
 

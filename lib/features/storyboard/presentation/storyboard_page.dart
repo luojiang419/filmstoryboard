@@ -26,9 +26,6 @@ import '../../../core/widgets/value_listenable_selector_builder.dart';
 import '../../../core/widgets/viewport_lazy_grid.dart';
 import '../../exporter/data/storyboard_export_service.dart';
 import '../../bridge/data/bridge_board_export_service.dart';
-import '../../bridge/data/bridge_loopback_receiver.dart';
-import '../../bridge/data/bridge_package_service.dart';
-import '../../bridge/domain/bridge_manifest.dart';
 import '../../settings/domain/app_settings.dart';
 import '../../settings/presentation/cut_image_number_controls.dart';
 import '../../shooting_script/application/shooting_script_controller.dart';
@@ -276,7 +273,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
   final _assetSidebarKey = GlobalKey<_AssetSidebarState>();
   final _folderDropCoordinator = _StoryboardFolderDropCoordinator();
   final _expandedInspectorSections = <_StoryboardInspectorSection>{};
-  BridgeLoopbackReceiver? _bridgeLoopbackReceiver;
 
   @override
   void initState() {
@@ -285,7 +281,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     _storyboardTilePointerDowns.clear();
     _storyboardTileTapStamps.clear();
     _restoreUiState();
-    unawaited(_startBridgeLoopbackReceiver());
   }
 
   @override
@@ -293,32 +288,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
     _storyboardTilePointerDowns.clear();
     _storyboardTileTapStamps.clear();
     _folderDropCoordinator.dispose();
-    unawaited(_bridgeLoopbackReceiver?.stop());
     super.dispose();
-  }
-
-  Future<void> _startBridgeLoopbackReceiver() async {
-    try {
-      final directories = ref.read(projectDirectoriesProvider);
-      final receiver = BridgeLoopbackReceiver(
-        directory: directories.temp,
-        onPackage: (file) async {
-          final result = await _applyShiyinBridgeFile(file);
-          return {
-            'board_id': result.manifest.bridgeId,
-            'frame_count': result.frames.length,
-          };
-        },
-      );
-      await receiver.start();
-      if (mounted) {
-        _bridgeLoopbackReceiver = receiver;
-      } else {
-        await receiver.stop();
-      }
-    } catch (_) {
-      // 端口被占用时保留文件导入，不影响故事板页面其他功能。
-    }
   }
 
   @override
@@ -527,7 +497,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
                                     onToggleSection: _toggleInspectorSection,
                                     onExportBoardImages: _exportBoardImages,
                                     onExportShiyinBridge: _exportShiyinBridge,
-                                    onImportShiyinBridge: _importShiyinBridge,
                                     showOriginalStoryboard:
                                         _showOriginalStoryboard,
                                     canShowOriginalStoryboard:
@@ -721,7 +690,7 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('已通过后台直连创建或更新画布「${board.name}」，${result.frameCount} 张分镜已成组保存，请在 SHIYIN-AI 默认项目中查看'),
+            content: Text('已同步独立画布「${result.canvasTitle.isEmpty ? board.name : result.canvasTitle}」，${result.frameCount} 张分镜已成组保存，请在 SHIYIN-AI 默认项目中查看'),
           ),
         );
       }
@@ -732,110 +701,6 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         ).showSnackBar(SnackBar(content: Text('发送到 SHIYIN-AI 画布失败：$error')));
       }
     }
-  }
-
-  Future<void> _importShiyinBridge(StoryboardBoard currentBoard) async {
-    final directories = ref.read(projectDirectoriesProvider);
-    final selected = await ref
-        .read(desktopFileDialogServiceProvider)
-        .openFile(
-          source: 'storyboard.import_shiyin_bridge',
-          initialDirectory: directories.imports.path,
-          acceptedTypeGroups: const [
-            XTypeGroup(
-              label: 'SHIYIN 回传桥接包',
-              extensions: ['zip', 'filmbridge', 'shiyinbridge'],
-            ),
-          ],
-          confirmButtonText: '接收桥接包',
-        );
-    if (selected == null) return;
-    try {
-      await _applyShiyinBridgeFile(
-        File(selected.path),
-        fallbackBoard: currentBoard,
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('接收 SHIYIN 回传失败：$error')));
-    }
-  }
-
-  Future<BridgeImportResult> _applyShiyinBridgeFile(
-    File packageFile, {
-    StoryboardBoard? fallbackBoard,
-  }) async {
-    if (!mounted) {
-      throw StateError('故事板页面已关闭，取消接收回传');
-    }
-    final directories = ref.read(projectDirectoriesProvider);
-    final result = await const BridgePackageService().importShiyinToFilm(
-      packageFile: packageFile,
-      destinationRoot: directories.imports,
-    );
-    if (!mounted) {
-      throw StateError('故事板页面已关闭，取消写入回传结果');
-    }
-    final variantLabel = switch (result.manifest.selectedVariant) {
-      BridgeVariant.original => '原始帧',
-      BridgeVariant.expanded16x9 => '16:9 扩展',
-      BridgeVariant.lineArt => '线稿分镜',
-      BridgeVariant.replicated => '复刻帧',
-    };
-    final currentBoard =
-        fallbackBoard ??
-        ref.read(storyboardControllerProvider).value.selectedBoard;
-    final boardName = result.manifest.boardName.trim().isEmpty
-        ? '${currentBoard?.name ?? 'SHIYIN 故事板'} · $variantLabel'
-        : '${result.manifest.boardName} · $variantLabel';
-    final storyboardController = ref.read(storyboardControllerProvider);
-    final boardId = await storyboardController
-        .createOrReplaceBoardFromExternalImages(
-          sourceId: 'shiyin-bridge:${result.manifest.bridgeId}',
-          boardName: boardName,
-          images: [
-            for (final frame in result.frames)
-              StoryboardExternalImage(
-                stableId: frame.record.stableId,
-                sourceName: frame.record.sourceName,
-                path: frame.file.path,
-                width: frame.width,
-                height: frame.height,
-                caption: frame.record.caption,
-              ),
-          ],
-          selectBoard: true,
-          preserveExistingCaptions: false,
-        );
-    if (boardId == null) {
-      throw const FormatException('回传图片已解包，但故事板创建失败');
-    }
-    final importedBoard = storyboardController.value.boards
-        .cast<StoryboardBoard?>()
-        .firstWhere((board) => board?.id == boardId, orElse: () => null);
-    if (importedBoard == null) {
-      throw const FormatException('无法读取刚创建的 SHIYIN 故事板');
-    }
-    ref
-        .read(shootingScriptControllerProvider)
-        .applyBridgeShots(importedBoard, result.manifest.shots);
-    for (final obsolete in result.obsoleteFiles) {
-      try {
-        if (obsolete.existsSync()) await obsolete.delete();
-      } catch (_) {
-        // 清理失败不回滚已成功接收的故事板，下次接收会再次识别为旧文件。
-      }
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('已接收 ${result.frames.length} 张$variantLabel，并同步拍摄脚本'),
-        ),
-      );
-    }
-    return result;
   }
 
   Future<void> _openAssetFolderDirectory(StoryboardFolder folder) async {
@@ -9074,7 +8939,6 @@ class _StoryboardInspector extends StatefulWidget {
     required this.onToggleSection,
     required this.onExportBoardImages,
     required this.onExportShiyinBridge,
-    required this.onImportShiyinBridge,
     required this.showOriginalStoryboard,
     required this.canShowOriginalStoryboard,
     required this.onToggleOriginalStoryboard,
@@ -9086,7 +8950,6 @@ class _StoryboardInspector extends StatefulWidget {
   final ValueChanged<_StoryboardInspectorSection> onToggleSection;
   final Future<void> Function(StoryboardBoard board) onExportBoardImages;
   final Future<void> Function(StoryboardBoard board) onExportShiyinBridge;
-  final Future<void> Function(StoryboardBoard board) onImportShiyinBridge;
   final bool showOriginalStoryboard;
   final bool canShowOriginalStoryboard;
   final ValueChanged<bool> onToggleOriginalStoryboard;
@@ -9122,7 +8985,6 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
   StoryboardLineArtStyle _lineArtStyle = StoryboardLineArtStyle.pencil;
   bool _isExportingBoardImages = false;
   bool _isExportingShiyinBridge = false;
-  bool _isImportingShiyinBridge = false;
 
   @override
   void dispose() {
@@ -9302,35 +9164,6 @@ class _StoryboardInspectorState extends State<_StoryboardInspector> {
                     )
                   : const Icon(Icons.send_rounded),
               label: Text(_isExportingShiyinBridge ? '正在发送到画布...' : '发送到画布'),
-            ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed:
-                  state.isAnalyzing ||
-                      _isImportingShiyinBridge ||
-                      _isExportingShiyinBridge
-                  ? null
-                  : () async {
-                      setState(() => _isImportingShiyinBridge = true);
-                      try {
-                        await widget.onImportShiyinBridge(board);
-                      } finally {
-                        if (mounted) {
-                          setState(() => _isImportingShiyinBridge = false);
-                        }
-                      }
-                    },
-              icon: _isImportingShiyinBridge
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.move_to_inbox_rounded),
-              label: Text(_isImportingShiyinBridge ? '正在接收回传...' : '接收无限画布回传'),
             ),
           ),
           const SizedBox(height: 8),
