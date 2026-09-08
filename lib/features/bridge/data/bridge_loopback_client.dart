@@ -136,15 +136,11 @@ class BridgeLoopbackClient {
     if (data is! Map || data['ok'] != true) {
       throw const BridgeLoopbackException('SHIYIN-AI 返回了无效的直接接收结果');
     }
-    final editorPath = '${data['editor_url'] ?? ''}';
-    return BridgeLoopbackResult(
-      baseUri: discovery.baseUri,
-      canvasId: '${data['canvas_id'] ?? ''}',
-      groupId: '${data['group_id'] ?? ''}',
-      frameCount: (data['frame_count'] as num?)?.toInt() ?? 0,
-      editorUri: editorPath.isEmpty
-          ? discovery.baseUri
-          : discovery.baseUri.resolve(editorPath),
+    return _validatedResult(
+      discovery.baseUri,
+      data,
+      expectedFrames: uploads.length,
+      requireWorkflow: requireWorkflow,
     );
   }
 
@@ -183,13 +179,61 @@ class BridgeLoopbackClient {
     if (data is! Map || data['ok'] != true) {
       throw const BridgeLoopbackException('SHIYIN-AI 返回了无效的接收结果');
     }
+    return _validatedResult(base, data);
+  }
+
+  BridgeLoopbackResult _validatedResult(
+    Uri base,
+    Map data, {
+    int? expectedFrames,
+    bool requireWorkflow = false,
+  }) {
+    final canvasId = '${data['canvas_id'] ?? ''}'.trim();
+    final groupId = '${data['group_id'] ?? ''}'.trim();
+    final frameCount = (data['frame_count'] as num?)?.toInt() ?? 0;
+    if (canvasId.isEmpty ||
+        groupId.isEmpty ||
+        frameCount <= 0 ||
+        (expectedFrames != null && frameCount != expectedFrames)) {
+      throw const BridgeLoopbackException(
+        '无限画布未返回完整的工程、图片组和分镜数量，请更新 SHIYIN-AI 后重新导出',
+      );
+    }
+    final workflowIds = data['workflow_node_ids'];
+    if (requireWorkflow &&
+        (workflowIds is! List ||
+            workflowIds.length != 3 ||
+            workflowIds.any((id) => id is! String || id.trim().isEmpty) ||
+            workflowIds.toSet().length != 3)) {
+      throw const BridgeLoopbackException(
+        '画板已发送，但尚未确认准备资产、确认镜头和视频生成节点全部创建，请更新 SHIYIN-AI 后重新导出',
+      );
+    }
+    if (requireWorkflow && data['workflow_ready'] != true) {
+      final warning = '${data['workflow_warning'] ?? ''}'.trim();
+      throw BridgeLoopbackException(
+        '画布和图片组已保存，但准备资产与镜头数据尚未初始化。'
+        '${warning.isEmpty ? '请更新两端软件并重新导出。' : warning}',
+      );
+    }
     final editorPath = '${data['editor_url'] ?? ''}';
+    final editor = editorPath.isEmpty
+        ? base
+              .resolve('static/canvas.html')
+              .replace(queryParameters: {'id': canvasId})
+        : base.resolve(editorPath);
+    if (editor.origin != base.origin ||
+        editor.path != '/static/canvas.html' ||
+        editor.queryParameters['id'] != canvasId ||
+        editor.userInfo.isNotEmpty) {
+      throw const BridgeLoopbackException('无限画布返回的工程地址无效，请更新 SHIYIN-AI 后重新导出');
+    }
     return BridgeLoopbackResult(
       baseUri: base,
-      canvasId: '${data['canvas_id'] ?? ''}',
-      groupId: '${data['group_id'] ?? ''}',
-      frameCount: (data['frame_count'] as num?)?.toInt() ?? 0,
-      editorUri: editorPath.isEmpty ? base : base.resolve(editorPath),
+      canvasId: canvasId,
+      groupId: groupId,
+      frameCount: frameCount,
+      editorUri: editor,
     );
   }
 

@@ -68,6 +68,8 @@ void main() {
               'canvas_id': 'new-canvas',
               'group_id': 'board-group',
               'frame_count': 1,
+              'workflow_node_ids': ['prepare', 'confirm', 'video'],
+              'workflow_ready': true,
             }),
             200,
           );

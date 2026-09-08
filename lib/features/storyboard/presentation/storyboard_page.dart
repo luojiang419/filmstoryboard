@@ -718,17 +718,10 @@ class _StoryboardPageState extends ConsumerState<StoryboardPage> {
         projectId: ref.read(currentProjectIdProvider),
         projectName: ref.read(currentProjectNameProvider),
       );
-      if (Platform.isWindows) {
-        try {
-          await Process.start('explorer.exe', [result.editorUri.toString()]);
-        } catch (_) {
-          // 已成功发送；打开浏览器失败不应触发重复文件导出。
-        }
-      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('已直接发送 ${result.frameCount} 张分镜到 SHIYIN-AI 画布'),
+            content: Text('已通过后台直连创建或更新画布「${board.name}」，${result.frameCount} 张分镜已成组保存，请在 SHIYIN-AI 默认项目中查看'),
           ),
         );
       }

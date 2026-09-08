@@ -75,6 +75,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   BridgeWorkflowServer? _workflowServer;
   BridgeWorkflowController? _workflowController;
+  Timer? _workflowRetryTimer;
   late int _tabIndex;
   final _visitedTabIndexes = <int>{};
   final _pages = <int, Widget>{};
@@ -137,6 +138,11 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (!mounted) await server.stop();
     } catch (error) {
       debugPrint('无限画布工作流服务启动失败：$error');
+      if (mounted) {
+        _workflowRetryTimer = Timer(const Duration(seconds: 5), () {
+          if (mounted) unawaited(_startWorkflowBridge());
+        });
+      }
     }
   }
 
@@ -205,6 +211,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   void dispose() {
+    _workflowRetryTimer?.cancel();
     unawaited(_workflowServer?.stop());
     _onboardingController.removeListener(_handleOnboardingChanged);
     _onboardingController.dispose();

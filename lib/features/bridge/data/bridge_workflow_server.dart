@@ -12,25 +12,64 @@ class BridgeWorkflowServer {
     required this.onRequest,
     required this.projectId,
     this.port = 3211,
+    this.fallbackPorts = const [3212, 3213, 3214, 3215, 3216, 3217, 3218, 3219],
   });
   final WorkflowRequestHandler onRequest;
   final String projectId;
   final int port;
+  final List<int> fallbackPorts;
   final String token = base64Url.encode(
     List<int>.generate(32, (_) => Random.secure().nextInt(256)),
   );
   final Map<String, File> media = {};
   HttpServer? _server;
+  Future<void>? _starting;
+  bool _stopped = false;
   int? get boundPort => _server?.port;
 
   Future<void> start() async {
-    _server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
-    _server!.listen((request) => unawaited(_handle(request)));
+    if (_server != null) return;
+    if (_starting != null) return _starting;
+    _stopped = false;
+    final starting = _bind();
+    _starting = starting;
+    try {
+      await starting;
+    } finally {
+      _starting = null;
+    }
+  }
+
+  Future<void> _bind() async {
+    final candidates = <int>{port, if (port != 0) ...fallbackPorts}.toList();
+    for (final candidate in candidates) {
+      HttpServer server;
+      try {
+        server = await HttpServer.bind(InternetAddress.loopbackIPv4, candidate);
+      } on SocketException {
+        if (candidate == candidates.last) rethrow;
+        continue;
+      }
+      if (_stopped) {
+        await server.close(force: true);
+        return;
+      }
+      _server = server;
+      server.listen((request) => unawaited(_handle(request)));
+      return;
+    }
   }
 
   Future<void> stop() async {
-    await _server?.close(force: true);
+    _stopped = true;
+    try {
+      await _starting;
+    } catch (_) {
+      /* 启动异常由调用方处理。 */
+    }
+    final server = _server;
     _server = null;
+    await server?.close(force: true);
   }
 
   Future<void> _handle(HttpRequest request) async {

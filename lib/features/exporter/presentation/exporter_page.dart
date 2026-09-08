@@ -804,31 +804,24 @@ class _ExporterPageState extends ConsumerState<ExporterPage> {
       _message = '正在创建无限画布工程…';
     });
     var completed = 0;
-    Uri? firstEditor;
     try {
       final projectId = ref.read(currentProjectIdProvider);
       final projectName = ref.read(currentProjectNameProvider);
       for (final board in boards) {
-        final result = await const BridgeBoardExportService().send(
+        await const BridgeBoardExportService().send(
           board: board,
           projectId: projectId,
           projectName: projectName,
           workflow: true,
         );
-        firstEditor ??= result.editorUri;
         completed++;
         if (mounted) {
           setState(() => _message = '已导出 $completed/${boards.length} 个画板');
         }
       }
-      if (Platform.isWindows && firstEditor != null) {
-        try {
-          await Process.start('explorer.exe', [firstEditor.toString()]);
-        } catch (_) {}
-      }
       if (mounted) {
         setState(
-          () => _message = '已创建或更新 $completed 个无限画布工程，含准备资产、确认镜头、视频生成工作流',
+          () => _message = '已通过后台直连创建或更新 $completed 个无限画布工程，准备资产与镜头数据已保存。请在 SHIYIN-AI 默认项目中查看同名画布',
         );
       }
     } catch (error) {
