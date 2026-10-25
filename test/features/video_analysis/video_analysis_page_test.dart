@@ -15,6 +15,8 @@ import 'package:filmstoryboard/features/grid_cut/data/grid_detection_service.dar
 import 'package:filmstoryboard/features/storyboard/application/storyboard_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/application/video_analysis_controller.dart';
 import 'package:filmstoryboard/features/video_analysis/data/video_analysis_repository.dart';
+import 'package:filmstoryboard/features/video_analysis/domain/video_analysis_models.dart';
+import 'package:filmstoryboard/features/video_analysis/presentation/video_analysis_inspector_layout.dart';
 import 'package:filmstoryboard/features/video_analysis/presentation/video_analysis_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,6 +25,141 @@ import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 void main() {
+  testWidgets('选中镜头帧后侧栏随窗口缩放，预览与详情保持可见', (tester) async {
+    late final Directory root;
+    late final AppDirectories directories;
+    late final AppDatabase database;
+    late final SettingsController settings;
+    late final StoryboardController storyboard;
+    late final _RecordingVideoAnalysisController video;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp(
+        'analysis_inspector_layout_',
+      );
+      directories = await AppDirectories.create(executableDirectory: root);
+      database = await AppDatabase.open(directories.databaseFile);
+      final repository = SettingsRepository(database, directories);
+      settings = SettingsController(
+        repository: repository,
+        initialSettings: repository.load(),
+      );
+      storyboard = StoryboardController(
+        database: database,
+        directories: directories,
+        settingsController: settings,
+      );
+      video = _RecordingVideoAnalysisController(
+        directories: directories,
+        settingsController: settings,
+        repository: VideoAnalysisRepository(database),
+      );
+      final frameFile = File(p.join(directories.frames.path, 'portrait.png'));
+      await frameFile.writeAsBytes(
+        img.encodePng(img.Image(width: 480, height: 864)),
+      );
+      final now = DateTime.now();
+      video.value = VideoAnalysisState(
+        videos: [
+          SourceVideo(
+            id: 'video',
+            originalPath: 'test.mp4',
+            fileName: 'test.mp4',
+            storedPath: 'test.mp4',
+            durationMs: 5000,
+            frameRate: 24,
+            width: 480,
+            height: 864,
+            hasAudio: true,
+            frameCount: 1,
+            successfulFrames: 0,
+            failedFrames: 0,
+            status: ProcessingStatus.pending,
+            errorMessage: '',
+            createdAt: now,
+            updatedAt: now,
+          ),
+        ],
+        frames: [
+          VideoFrame(
+            id: 'frame',
+            videoId: 'video',
+            index: 0,
+            timestampMs: 0,
+            path: frameFile.path,
+            width: 480,
+            height: 864,
+            sharpness: 0.82,
+            brightness: 0.61,
+            motionScore: 0,
+            perceptualHash: '',
+            isFocus: false,
+            isSelected: true,
+            status: ProcessingStatus.pending,
+            errorMessage: '',
+            createdAt: now,
+          ),
+        ],
+        selectedVideoId: 'video',
+        selectedFrameId: 'frame',
+      );
+    });
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      video.dispose();
+      storyboard.dispose();
+      settings.dispose();
+      database.dispose();
+      await root.delete(recursive: true);
+    });
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.binding.setSurfaceSize(const Size(1600, 1000));
+    await _pumpPage(
+      tester,
+      database: database,
+      directories: directories,
+      settingsController: settings,
+      storyboardController: storyboard,
+      videoController: video,
+      pageSize: const Size(double.infinity, double.infinity),
+    );
+    final inspector = find.byType(VideoAnalysisInspectorLayout);
+    final wideWidth = tester.getSize(inspector).width;
+    expect(find.byType(VideoAnalysisFramePreview), findsOneWidget);
+    expect(find.text('设为焦点帧').hitTestable(), findsOneWidget);
+    expect(find.text('该帧尚未解析').hitTestable(), findsOneWidget);
+
+    await tester.binding.setSurfaceSize(const Size(1080, 720));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(inspector).width, lessThan(wideWidth));
+    expect(find.text('设为焦点帧').hitTestable(), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('该帧尚未解析'),
+      80,
+      scrollable: find.descendant(
+        of: find.byKey(const ValueKey('analysis-inspector-details')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('该帧尚未解析').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.drag(
+      find.byKey(const ValueKey('video-analysis-right-resize-handle')),
+      const Offset(-50, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getSize(inspector).width, greaterThan(260));
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byKey(const ValueKey('collapse-video-panel-解析检查器')));
+    await tester.pumpAndSettle();
+    expect(inspector, findsNothing);
+    await tester.tap(find.byTooltip('展开解析检查器'));
+    await tester.pumpAndSettle();
+    expect(inspector, findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final outcome in ['selected', 'cancelled', 'failed']) {
     testWidgets('添加视频按钮处理选择结果：$outcome', (tester) async {
       late final Directory root;
@@ -367,6 +504,7 @@ Future<void> _pumpPage(
   required _RecordingVideoAnalysisController videoController,
   GridCutController? gridCutController,
   DesktopFileDialogService? fileDialog,
+  Size pageSize = const Size(1000, 700),
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -385,8 +523,12 @@ Future<void> _pumpPage(
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: AppTheme.dark(),
-        home: const Scaffold(
-          body: SizedBox(width: 1000, height: 700, child: VideoAnalysisPage()),
+        home: Scaffold(
+          body: SizedBox(
+            width: pageSize.width,
+            height: pageSize.height,
+            child: const VideoAnalysisPage(),
+          ),
         ),
       ),
     ),

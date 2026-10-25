@@ -27,6 +27,7 @@ import '../../storyboard/domain/storyboard_models.dart';
 import '../application/video_analysis_controller.dart';
 import '../data/analysis_report_export_service.dart';
 import '../domain/video_analysis_models.dart';
+import 'video_analysis_inspector_layout.dart';
 
 class VideoAnalysisPage extends ConsumerStatefulWidget {
   const VideoAnalysisPage({super.key, this.onOpenStoryboard});
@@ -708,7 +709,7 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
   static const _handleWidth = 10.0;
 
   var _leftWidth = 230.0;
-  var _rightWidth = 310.0;
+  double? _rightWidth;
   var _leftExpanded = true;
   var _rightExpanded = true;
   var _activeSourceTab = _VideoAnalysisSidebarTab.videos;
@@ -750,15 +751,16 @@ class _WideWorkspaceState extends State<_WideWorkspace> {
           _minimumLeftWidth,
           availablePanels - _minimumCenterWidth - _minimumRightWidth,
         );
-        final rightWidth = _rightWidth
-            .clamp(
-              _minimumRightWidth,
-              math.max(
-                _minimumRightWidth,
-                availablePanels - _minimumCenterWidth - _minimumLeftWidth,
-              ),
-            )
-            .toDouble();
+        final rightWidth =
+            (_rightWidth ?? (constraints.maxWidth * 0.26).clamp(260.0, 400.0))
+                .clamp(
+                  _minimumRightWidth,
+                  math.max(
+                    _minimumRightWidth,
+                    availablePanels - _minimumCenterWidth - _minimumLeftWidth,
+                  ),
+                )
+                .toDouble();
         final leftWidth = _leftWidth
             .clamp(
               _minimumLeftWidth,
@@ -1889,99 +1891,117 @@ class _AnalysisInspector extends StatelessWidget {
       collapseTooltip: '收起解析检查器',
       child: video == null
           ? const Center(child: Text('选择一条视频查看详情'))
-          : ListView(
-              children: [
-                _VideoPreviewPane(
-                  videoFile: controller.resolveVideo(video),
-                  initialAspectRatio: video.displayAspectRatio,
-                  initialPosition: Duration(
-                    milliseconds: frame?.timestampMs ?? 0,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                if (frame == null) ...[
-                  const Text('选择一张视频帧查看详情'),
-                ] else ...[
-                  Text(
-                    '镜头帧 #${frame.index + 1} · ${_formatDuration(frame.timestampMs)}',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      Chip(
-                        label: Text(
-                          '清晰度 ${frame.sharpness.toStringAsFixed(2)}',
+          : VideoAnalysisInspectorLayout(
+              aspectRatio: frame != null && frame.width > 0 && frame.height > 0
+                  ? frame.width / frame.height
+                  : video.displayAspectRatio,
+              preview: frame == null
+                  ? _VideoPreviewPane(
+                      videoFile: controller.resolveVideo(video),
+                      initialAspectRatio: video.displayAspectRatio,
+                      initialPosition: Duration.zero,
+                    )
+                  : VideoAnalysisFramePreview(
+                      path: controller.resolveFrame(frame).path,
+                      onOpenVideo: () => showDialog<void>(
+                        context: context,
+                        useSafeArea: false,
+                        builder: (_) => _FullscreenVideoDialog(
+                          videoFile: controller.resolveVideo(video),
+                          initialPosition: Duration(
+                            milliseconds: frame.timestampMs,
+                          ),
                         ),
                       ),
-                      Chip(
-                        label: Text(
-                          '亮度 ${frame.brightness.toStringAsFixed(2)}',
-                        ),
-                      ),
-                      Chip(label: Text(_statusLabel(frame.status))),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: frame.isFocus
-                        ? null
-                        : () => controller.setFocusFrame(frame.id),
-                    icon: const Icon(Icons.center_focus_strong),
-                    label: const Text('设为焦点帧'),
-                  ),
-                  const Divider(height: 24),
-                ],
-                if (frame != null && analysis == null)
-                  const Text('该帧尚未解析')
-                else if (frame != null &&
-                    analysis?.status == ProcessingStatus.failed)
-                  Text(
-                    analysis!.errorMessage,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
                     ),
-                  )
-                else if (analysis != null)
-                  ..._analysisDimensionEntries(analysis).expand(
-                    (entry) => [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _dimensionLabel(entry.key),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
+              details: ListView(
+                key: const ValueKey('analysis-inspector-details'),
+                padding: EdgeInsets.zero,
+                children: [
+                  if (frame == null) ...[
+                    const Text('选择一张视频帧查看详情'),
+                  ] else ...[
+                    Text(
+                      '镜头帧 #${frame.index + 1} · ${_formatDuration(frame.timestampMs)}',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        Chip(
+                          label: Text(
+                            '清晰度 ${frame.sharpness.toStringAsFixed(2)}',
+                          ),
+                        ),
+                        Chip(
+                          label: Text(
+                            '亮度 ${frame.brightness.toStringAsFixed(2)}',
+                          ),
+                        ),
+                        Chip(label: Text(_statusLabel(frame.status))),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: frame.isFocus
+                          ? null
+                          : () => controller.setFocusFrame(frame.id),
+                      icon: const Icon(Icons.center_focus_strong),
+                      label: const Text('设为焦点帧'),
+                    ),
+                    const Divider(height: 24),
+                  ],
+                  if (frame != null && analysis == null)
+                    const Text('该帧尚未解析')
+                  else if (frame != null &&
+                      analysis?.status == ProcessingStatus.failed)
+                    Text(
+                      analysis!.errorMessage,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    )
+                  else if (analysis != null)
+                    ..._analysisDimensionEntries(analysis).expand(
+                      (entry) => [
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _dimensionLabel(entry.key),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 2),
-                            SelectableText(entry.value),
-                          ],
+                              const SizedBox(height: 2),
+                              SelectableText(entry.value),
+                            ],
+                          ),
                         ),
-                      ),
-                      const _DashedSeparator(),
-                    ],
-                  ),
-                if (state.summary != null) ...[
-                  const SizedBox(height: 8),
-                  const _DashedSeparator(),
-                  const SizedBox(height: 8),
-                  Text(
-                    '视频级摘要',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
+                        const _DashedSeparator(),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(state.summary!.fields['outline'] ?? '暂无'),
+                  if (state.summary != null) ...[
+                    const SizedBox(height: 8),
+                    const _DashedSeparator(),
+                    const SizedBox(height: 8),
+                    Text(
+                      '视频级摘要',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(state.summary!.fields['outline'] ?? '暂无'),
+                  ],
                 ],
-              ],
+              ),
             ),
     );
   }
@@ -2122,7 +2142,6 @@ class _VideoPreviewPaneState extends State<_VideoPreviewPane> {
       child: AdaptiveVideoViewport(
         player: _player,
         initialAspectRatio: widget.initialAspectRatio,
-        maxHeight: 440,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: DecoratedBox(
