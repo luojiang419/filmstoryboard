@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart'
+    show FileSelectorPlatform, SaveDialogOptions;
 import 'package:filmstoryboard/core/services/desktop_file_dialog_service.dart';
 import 'package:filmstoryboard/core/services/windows_sta_file_dialog_client.dart';
 import 'package:flutter/services.dart';
@@ -233,6 +235,98 @@ void main() {
     expect(events.map((event) => event['phase']), ['requested', 'completed']);
   });
 
+  test('旧 Windows 宿主缺少 STA 通道时回退文件选择器并保留所有参数', () async {
+    final original = FileSelectorPlatform.instance;
+    final legacy = _RecordingFileSelector();
+    FileSelectorPlatform.instance = legacy;
+    addTearDown(() => FileSelectorPlatform.instance = original);
+    const channel = MethodChannel('test.missing_file_dialog');
+    final service = DesktopFileDialogService(
+      defaultDirectory: fallback,
+      useWindowsStaFileDialog: true,
+      windowsStaFileDialogClient: const WindowsStaFileDialogClient(
+        channel: channel,
+      ),
+      beforeShow: () async {},
+      eventSink: (event) async => events.add(event),
+    );
+    addTearDown(service.dispose);
+    const videoTypes = XTypeGroup(label: '视频', extensions: ['mp4', 'mov']);
+
+    final files = await service.openFiles(
+      source: 'video_analysis.pick_video',
+      acceptedTypeGroups: const [videoTypes],
+      initialDirectory: '${root.path}/missing',
+      confirmButtonText: '添加',
+    );
+    expect(files.map((file) => file.path), ['one.mp4', 'two.mov']);
+    expect(legacy.calls, ['openFiles']);
+    expect(legacy.types, [videoTypes]);
+    expect(legacy.directory, fallback.absolute.path);
+    expect(legacy.confirmText, '添加');
+    expect(events.map((event) => event['phase']), [
+      'requested',
+      'fallback',
+      'completed',
+    ]);
+    expect(service.isBusy.value, isFalse);
+
+    expect((await service.openFile(source: 'test.single'))?.path, 'one.mp4');
+    final saved = await service.getSaveLocation(
+      source: 'test.save',
+      acceptedTypeGroups: const [videoTypes],
+      suggestedName: 'report.mp4',
+      confirmButtonText: '保存',
+      canCreateDirectories: false,
+    );
+    expect(saved?.path, 'saved.mp4');
+    expect(saved?.activeFilter, same(videoTypes));
+    expect(legacy.calls, ['openFiles', 'openFile', 'save']);
+    expect(legacy.saveOptions?.suggestedName, 'report.mp4');
+    expect(legacy.saveOptions?.canCreateDirectories, isFalse);
+  });
+
+  test('原生取消或真实错误不会重复弹出兼容选择器', () async {
+    final original = FileSelectorPlatform.instance;
+    final legacy = _RecordingFileSelector();
+    FileSelectorPlatform.instance = legacy;
+    addTearDown(() => FileSelectorPlatform.instance = original);
+    const channel = MethodChannel('test.available_file_dialog');
+    var fail = false;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (fail) {
+        throw PlatformException(code: 'dialog-show-failed');
+      }
+      return {
+        'cancelled': true,
+        'paths': <String>[],
+        'activeFilterIndex': null,
+      };
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final service = DesktopFileDialogService(
+      defaultDirectory: fallback,
+      useWindowsStaFileDialog: true,
+      windowsStaFileDialogClient: const WindowsStaFileDialogClient(
+        channel: channel,
+      ),
+      beforeShow: () async {},
+      eventSink: (event) async => events.add(event),
+    );
+    addTearDown(service.dispose);
+
+    expect(await service.openFiles(source: 'test.cancel'), isEmpty);
+    fail = true;
+    await expectLater(
+      service.openFiles(source: 'test.error'),
+      throwsA(isA<PlatformException>()),
+    );
+    expect(legacy.calls, isEmpty);
+    expect(service.isBusy.value, isFalse);
+  });
+
   test('Windows 保存结果保留建议文件名和活动过滤器', () async {
     const channel = MethodChannel('filmstoryboard/native_file_dialog');
     MethodCall? receivedCall;
@@ -304,4 +398,48 @@ void main() {
 
     expect(offenders, isEmpty);
   });
+}
+
+class _RecordingFileSelector extends FileSelectorPlatform {
+  final calls = <String>[];
+  List<XTypeGroup>? types;
+  String? directory;
+  String? confirmText;
+  SaveDialogOptions? saveOptions;
+
+  @override
+  Future<List<XFile>> openFiles({
+    List<XTypeGroup>? acceptedTypeGroups,
+    String? initialDirectory,
+    String? confirmButtonText,
+  }) async {
+    calls.add('openFiles');
+    types = acceptedTypeGroups;
+    directory = initialDirectory;
+    confirmText = confirmButtonText;
+    return [XFile('one.mp4'), XFile('two.mov')];
+  }
+
+  @override
+  Future<XFile?> openFile({
+    List<XTypeGroup>? acceptedTypeGroups,
+    String? initialDirectory,
+    String? confirmButtonText,
+  }) async {
+    calls.add('openFile');
+    return XFile('one.mp4');
+  }
+
+  @override
+  Future<FileSaveLocation?> getSaveLocation({
+    List<XTypeGroup>? acceptedTypeGroups,
+    SaveDialogOptions options = const SaveDialogOptions(),
+  }) async {
+    calls.add('save');
+    saveOptions = options;
+    return FileSaveLocation(
+      'saved.mp4',
+      activeFilter: acceptedTypeGroups?.first,
+    );
+  }
 }

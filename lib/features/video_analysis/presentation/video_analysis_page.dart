@@ -216,19 +216,25 @@ class _VideoAnalysisPageState extends ConsumerState<VideoAnalysisPage> {
     BuildContext context,
     VideoAnalysisController controller,
   ) async {
-    final results = await ref
-        .read(desktopFileDialogServiceProvider)
-        .openFiles(
-          source: 'video_analysis.pick_video',
-          acceptedTypeGroups: const [_videoTypes],
-          initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
-        );
-    if (results.isEmpty) {
-      return;
+    try {
+      final results = await ref
+          .read(desktopFileDialogServiceProvider)
+          .openFiles(
+            source: 'video_analysis.pick_video',
+            acceptedTypeGroups: const [_videoTypes],
+            initialDirectory: ref.read(projectDirectoriesProvider).imports.path,
+          );
+      if (results.isEmpty || !mounted) {
+        return;
+      }
+      await controller.importVideos(
+        results.map((result) => File(result.path)).toList(),
+      );
+    } catch (_) {
+      if (context.mounted) {
+        _showDropMessage(context, '添加视频失败，请重试或拖拽视频到此页面');
+      }
     }
-    await controller.importVideos(
-      results.map((result) => File(result.path)).toList(),
-    );
   }
 
   Future<void> _handleDroppedFiles(

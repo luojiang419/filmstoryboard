@@ -1,10 +1,12 @@
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:filmstoryboard/app/app_theme.dart';
 import 'package:filmstoryboard/core/database/app_database.dart';
 import 'package:filmstoryboard/core/providers/app_providers.dart';
 import 'package:filmstoryboard/core/services/app_directories.dart';
+import 'package:filmstoryboard/core/services/desktop_file_dialog_service.dart';
 import 'package:filmstoryboard/features/settings/application/settings_controller.dart';
 import 'package:filmstoryboard/features/settings/data/settings_repository.dart';
 import 'package:filmstoryboard/features/grid_cut/application/grid_cut_controller.dart';
@@ -21,6 +23,74 @@ import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 void main() {
+  for (final outcome in ['selected', 'cancelled', 'failed']) {
+    testWidgets('添加视频按钮处理选择结果：$outcome', (tester) async {
+      late final Directory root;
+      late final AppDirectories directories;
+      late final AppDatabase database;
+      late final SettingsController settings;
+      late final StoryboardController storyboard;
+      late final _RecordingVideoAnalysisController video;
+      await tester.runAsync(() async {
+        root = await Directory.systemTemp.createTemp('video_analysis_button_');
+        directories = await AppDirectories.create(executableDirectory: root);
+        database = await AppDatabase.open(directories.databaseFile);
+        final repository = SettingsRepository(database, directories);
+        settings = SettingsController(
+          repository: repository,
+          initialSettings: repository.load(),
+        );
+        storyboard = StoryboardController(
+          database: database,
+          directories: directories,
+          settingsController: settings,
+        );
+        video = _RecordingVideoAnalysisController(
+          directories: directories,
+          settingsController: settings,
+          repository: VideoAnalysisRepository(database),
+        );
+      });
+      final dialog = _RecordingVideoDialog(directories.imports, outcome);
+      addTearDown(() async {
+        dialog.dispose();
+        video.dispose();
+        storyboard.dispose();
+        settings.dispose();
+        database.dispose();
+        await root.delete(recursive: true);
+      });
+      await tester.binding.setSurfaceSize(const Size(1600, 1000));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await _pumpPage(
+        tester,
+        database: database,
+        directories: directories,
+        settingsController: settings,
+        storyboardController: storyboard,
+        videoController: video,
+        fileDialog: dialog,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('import-video')));
+      await tester.pumpAndSettle();
+      expect(dialog.calls, 1);
+      expect(dialog.source, 'video_analysis.pick_video');
+      expect(dialog.directory, directories.imports.path);
+      expect(dialog.types.single.extensions, contains('mp4'));
+      expect(
+        video.importedPaths,
+        outcome == 'selected'
+            ? [p.normalize('one.mp4'), p.normalize('two.mov')]
+            : isEmpty,
+      );
+      expect(tester.takeException(), isNull);
+      if (outcome == 'failed') {
+        expect(find.text('添加视频失败，请重试或拖拽视频到此页面'), findsOneWidget);
+      }
+    });
+  }
+
   test('视频帧网格会为4比5竖屏保留更高的卡片比例', () {
     final landscape = videoFrameCardAspectRatio(16 / 9);
     final portrait = videoFrameCardAspectRatio(4 / 5);
@@ -296,6 +366,7 @@ Future<void> _pumpPage(
   required StoryboardController storyboardController,
   required _RecordingVideoAnalysisController videoController,
   GridCutController? gridCutController,
+  DesktopFileDialogService? fileDialog,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -306,6 +377,8 @@ Future<void> _pumpPage(
         settingsControllerProvider.overrideWithValue(settingsController),
         storyboardControllerProvider.overrideWithValue(storyboardController),
         videoAnalysisControllerProvider.overrideWithValue(videoController),
+        if (fileDialog != null)
+          desktopFileDialogServiceProvider.overrideWithValue(fileDialog),
         if (gridCutController != null)
           gridCutControllerProvider.overrideWithValue(gridCutController),
       ],
@@ -334,5 +407,31 @@ class _RecordingVideoAnalysisController extends VideoAnalysisController {
   Future<void> importVideos(List<File> files) async {
     importedPaths.addAll(files.map((file) => p.normalize(file.path)));
     value = value.copyWith(message: '测试导入 ${files.length} 个视频');
+  }
+}
+
+class _RecordingVideoDialog extends DesktopFileDialogService {
+  _RecordingVideoDialog(Directory directory, this.outcome)
+    : super(defaultDirectory: directory);
+
+  final String outcome;
+  var calls = 0;
+  String? source;
+  String? directory;
+  List<XTypeGroup> types = [];
+
+  @override
+  Future<List<XFile>> openFiles({
+    required String source,
+    List<XTypeGroup> acceptedTypeGroups = const [],
+    String? initialDirectory,
+    String? confirmButtonText,
+  }) async {
+    calls++;
+    this.source = source;
+    directory = initialDirectory;
+    types = acceptedTypeGroups;
+    if (outcome == 'failed') throw StateError('file dialog failed');
+    return outcome == 'selected' ? [XFile('one.mp4'), XFile('two.mov')] : [];
   }
 }

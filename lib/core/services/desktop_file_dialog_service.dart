@@ -4,6 +4,7 @@ import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart' as file_selector;
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
@@ -51,6 +52,7 @@ class DesktopFileDialogService {
       Duration(seconds: 30),
     ],
   }) : _defaultDirectory = defaultDirectory,
+       _useWindowsStaFileDialog = useWindowsStaFileDialog ?? Platform.isWindows,
        _beforeShow = beforeShow ?? _yieldToNextFrame,
        _eventSink =
            eventSink ??
@@ -60,7 +62,7 @@ class DesktopFileDialogService {
                    File(p.join(logsDirectory.path, 'file_dialog.jsonl')),
                  ).write),
        _warningThresholds = List.unmodifiable(warningThresholds) {
-    final useStaDialog = useWindowsStaFileDialog ?? Platform.isWindows;
+    final useStaDialog = _useWindowsStaFileDialog;
     final staClient =
         windowsStaFileDialogClient ?? const WindowsStaFileDialogClient();
     _openFileDialog =
@@ -77,6 +79,7 @@ class DesktopFileDialogService {
   }
 
   final Directory _defaultDirectory;
+  final bool _useWindowsStaFileDialog;
   late final OpenFileDialog _openFileDialog;
   late final OpenFilesDialog _openFilesDialog;
   late final SaveFileDialog _saveFileDialog;
@@ -103,6 +106,11 @@ class DesktopFileDialogService {
         initialDirectory: safeDirectory,
         confirmButtonText: confirmButtonText,
       ),
+      fallback: (safeDirectory) => file_selector.openFile(
+        acceptedTypeGroups: acceptedTypeGroups,
+        initialDirectory: safeDirectory,
+        confirmButtonText: confirmButtonText,
+      ),
       resultSummary: (result) => {'selectedCount': result == null ? 0 : 1},
     );
   }
@@ -119,6 +127,11 @@ class DesktopFileDialogService {
       initialDirectory: initialDirectory,
       busyResult: const [],
       show: (safeDirectory) => _openFilesDialog(
+        acceptedTypeGroups: acceptedTypeGroups,
+        initialDirectory: safeDirectory,
+        confirmButtonText: confirmButtonText,
+      ),
+      fallback: (safeDirectory) => file_selector.openFiles(
         acceptedTypeGroups: acceptedTypeGroups,
         initialDirectory: safeDirectory,
         confirmButtonText: confirmButtonText,
@@ -147,6 +160,13 @@ class DesktopFileDialogService {
         confirmButtonText: confirmButtonText,
         canCreateDirectories: canCreateDirectories,
       ),
+      fallback: (safeDirectory) => file_selector.getSaveLocation(
+        acceptedTypeGroups: acceptedTypeGroups,
+        initialDirectory: safeDirectory,
+        suggestedName: suggestedName,
+        confirmButtonText: confirmButtonText,
+        canCreateDirectories: canCreateDirectories,
+      ),
       resultSummary: (result) => {'selectedCount': result == null ? 0 : 1},
     );
   }
@@ -157,6 +177,7 @@ class DesktopFileDialogService {
     required String? initialDirectory,
     required T busyResult,
     required Future<T> Function(String safeDirectory) show,
+    required Future<T> Function(String safeDirectory) fallback,
     required Map<String, Object?> Function(T result) resultSummary,
   }) async {
     final requestId = ++_requestSequence;
@@ -202,7 +223,26 @@ class DesktopFileDialogService {
         );
       }
 
-      final result = await show(safeDirectory);
+      T result;
+      try {
+        result = await show(safeDirectory);
+      } on MissingPluginException {
+        if (!_useWindowsStaFileDialog) {
+          rethrow;
+        }
+        // Older Windows runners may not register the custom STA channel.
+        // Only a missing implementation permits opening the legacy selector;
+        // cancellation and real native errors must never open a second dialog.
+        await _emit({
+          'requestId': requestId,
+          'source': source,
+          'operation': operation,
+          'phase': 'fallback',
+          'backend': 'file_selector',
+          'reason': 'missing_native_channel',
+        });
+        result = await fallback(safeDirectory);
+      }
       await _emit({
         'requestId': requestId,
         'source': source,
