@@ -1,0 +1,172 @@
+{
+  "mode": "Windows profile",
+  "shots": 500,
+  "tasks": 500,
+  "database_open_ms": 7,
+  "shell_first_pump_ms": 25,
+  "navigation": [
+    {
+      "round": 0,
+      "page": "视频解析",
+      "input_to_pump_ms": 40.307
+    },
+    {
+      "round": 0,
+      "page": "故事板",
+      "input_to_pump_ms": 30.017
+    },
+    {
+      "round": 0,
+      "page": "影视制作",
+      "input_to_pump_ms": 1236.403
+    },
+    {
+      "round": 0,
+      "page": "视频生成",
+      "input_to_pump_ms": 572.554
+    },
+    {
+      "round": 0,
+      "page": "导出",
+      "input_to_pump_ms": 178.329
+    },
+    {
+      "round": 0,
+      "page": "设置",
+      "input_to_pump_ms": 164.248
+    },
+    {
+      "round": 0,
+      "page": "设计分镜图",
+      "input_to_pump_ms": 153.56
+    },
+    {
+      "round": 1,
+      "page": "视频解析",
+      "input_to_pump_ms": 125.344
+    },
+    {
+      "round": 1,
+      "page": "故事板",
+      "input_to_pump_ms": 127.903
+    },
+    {
+      "round": 1,
+      "page": "影视制作",
+      "input_to_pump_ms": 831.652
+    },
+    {
+      "round": 1,
+      "page": "视频生成",
+      "input_to_pump_ms": 505.587
+    },
+    {
+      "round": 1,
+      "page": "导出",
+      "input_to_pump_ms": 177.864
+    },
+    {
+      "round": 1,
+      "page": "设置",
+      "input_to_pump_ms": 198.601
+    },
+    {
+      "round": 1,
+      "page": "设计分镜图",
+      "input_to_pump_ms": 169.801
+    },
+    {
+      "round": 2,
+      "page": "视频解析",
+      "input_to_pump_ms": 108.821
+    },
+    {
+      "round": 2,
+      "page": "故事板",
+      "input_to_pump_ms": 134.292
+    },
+    {
+      "round": 2,
+      "page": "影视制作",
+      "input_to_pump_ms": 879.478
+    },
+    {
+      "round": 2,
+      "page": "视频生成",
+      "input_to_pump_ms": 484.469
+    },
+    {
+      "round": 2,
+      "page": "导出",
+      "input_to_pump_ms": 174.916
+    },
+    {
+      "round": 2,
+      "page": "设置",
+      "input_to_pump_ms": 170.106
+    },
+    {
+      "round": 2,
+      "page": "设计分镜图",
+      "input_to_pump_ms": 138.046
+    },
+    {
+      "round": 3,
+      "page": "视频解析",
+      "input_to_pump_ms": 131.17
+    },
+    {
+      "round": 3,
+      "page": "故事板",
+      "input_to_pump_ms": 140.162
+    },
+    {
+      "round": 3,
+      "page": "影视制作",
+      "input_to_pump_ms": 890.546
+    },
+    {
+      "round": 3,
+      "page": "视频生成",
+      "input_to_pump_ms": 481.06
+    },
+    {
+      "round": 3,
+      "page": "导出",
+      "input_to_pump_ms": 169.7
+    },
+    {
+      "round": 3,
+      "page": "设置",
+      "input_to_pump_ms": 156.993
+    },
+    {
+      "round": 3,
+      "page": "设计分镜图",
+      "input_to_pump_ms": 102.648
+    }
+  ],
+  "frame_count": 59,
+  "ui_p95_ms": 345.77,
+  "ui_max_ms": 814.622,
+  "raster_p95_ms": 25.54,
+  "raster_max_ms": 58.282,
+  "counters": {
+    "build:app_shell": 28,
+    "build:video_analysis.page": 8,
+    "build:storyboard.page": 1,
+    "build:shooting_script.page": 1,
+    "build:shooting_script.header": 8,
+    "build:shooting_script.notice": 8,
+    "build:shooting_script.sidebar": 8,
+    "build:replicate.page": 1,
+    "build:shooting_script.step_right_panel": 1,
+    "build:shooting_script.step_right_panel.content": 8,
+    "build:video_generation.workspace": 1,
+    "video_generation.data_refresh": 1,
+    "build:video_generation.content": 8,
+    "build:video_generation.table": 8,
+    "build:video_generation.row": 24,
+    "build:exporter.page": 1
+  }
+}
