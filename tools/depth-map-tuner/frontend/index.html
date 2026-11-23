@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>filmstoryboard 深度图参数调整</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg>
+          </span>
+          <div>
+            <h1>深度图调参器</h1>
+            <p>DEPTH MAP CALIBRATION WORKBENCH</p>
+          </div>
+        </div>
+        <div class="model-status" data-model-status="checking">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div>
+            <strong data-model-title>正在检查共享模型</strong>
+            <span data-model-detail>读取 filmstoryboard person-depth 组件</span>
+          </div>
+          <span class="mode-chip" data-mode-label>人物模式</span>
+          <button class="button ghost compact" type="button" data-action="locate-model">重新定位</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="preview-grid" aria-label="图片与深度图预览">
+          <article class="preview-panel input-panel">
+            <header class="panel-heading">
+              <div>
+                <span class="eyebrow">SOURCE · 左上</span>
+                <h2>输入图片</h2>
+              </div>
+              <span class="meta-chip" data-input-dimensions>等待图片</span>
+            </header>
+            <button class="image-stage input-stage" type="button" data-action="choose-image" aria-label="选择输入图片">
+              <img data-input-image alt="输入图片预览" hidden>
+              <span class="empty-state" data-input-empty>
+                <span class="empty-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>
+                </span>
+                <strong>点击选择或拖入图片</strong>
+                <small>PNG · JPG · WEBP · BMP，最大 150MB</small>
+              </span>
+              <span class="source-badge" data-input-name hidden></span>
+            </button>
+          </article>
+
+          <article class="preview-panel output-panel">
+            <header class="panel-heading">
+              <div>
+                <span class="eyebrow">LIVE PREVIEW · 右上</span>
+                <h2>实时深度图</h2>
+              </div>
+              <span class="meta-chip accent" data-output-dimensions>8-BIT PNG</span>
+            </header>
+            <div class="image-stage output-stage">
+              <canvas data-depth-preview aria-label="调整后的深度图预览" hidden></canvas>
+              <span class="empty-state" data-output-empty>
+                <span class="depth-rings" aria-hidden="true"><i></i><i></i><i></i></span>
+                <strong>深度结果将在这里出现</strong>
+                <small>共享模型只推理一次，底部参数实时映射</small>
+              </span>
+              <div class="processing-overlay" data-processing hidden>
+                <span class="spinner" aria-hidden="true"></span>
+                <strong data-processing-title>正在提取人物深度</strong>
+                <small>首次加载模型可能需要一些时间</small>
+              </div>
+              <span class="preview-badge" data-preview-state hidden>已应用参数</span>
+            </div>
+          </article>
+        </section>
+
+        <section class="control-deck" aria-label="深度图参数控制区">
+          <div class="deck-heading">
+            <div>
+              <span class="eyebrow">PARAMETERS · 底部横区</span>
+              <h2>深度映射参数</h2>
+            </div>
+            <div class="preset-strip" data-presets aria-label="快速预设"></div>
+          </div>
+
+          <div class="control-layout">
+            <div class="control-groups">
+              <section class="control-group">
+                <header><strong>深度范围</strong><span>扩大黑白端点调节范围</span></header>
+                <label class="range-control" data-control="farPoint">
+                  <span class="range-heading"><span><b>远景黑点</b><small>压暗远处并裁切低值</small></span><output></output></span>
+                  <input type="range" data-field="farPoint">
+                  <span class="range-scale"><i>0%</i><em>节点 0–95</em><i>99%</i></span>
+                </label>
+                <label class="range-control" data-control="nearPoint">
+                  <span class="range-heading"><span><b>近景白点</b><small>提亮近处并裁切高值</small></span><output></output></span>
+                  <input type="range" data-field="nearPoint">
+                  <span class="range-scale"><i>1%</i><em>节点 5–100</em><i>100%</i></span>
+                </label>
+              </section>
+
+              <section class="control-group">
+                <header><strong>明暗塑形</strong><span>极限区间用于寻找最佳默认值</span></header>
+                <label class="range-control" data-control="midtone">
+                  <span class="range-heading"><span><b>中间层次</b><small>控制中灰区域的深浅重心</small></span><output></output></span>
+                  <input type="range" data-field="midtone">
+                  <span class="range-scale"><i>-100</i><em>节点 ±50</em><i>+100</i></span>
+                </label>
+                <label class="range-control" data-control="contrast">
+                  <span class="range-heading"><span><b>对比度</b><small>拉开或压缩前后景层次</small></span><output></output></span>
+                  <input type="range" data-field="contrast">
+                  <span class="range-scale"><i>0%</i><em>节点 50–150</em><i>300%</i></span>
+                </label>
+              </section>
+
+              <section class="control-group">
+                <header><strong>细节收尾</strong><span>亮度、平滑与深度方向</span></header>
+                <label class="range-control" data-control="brightness">
+                  <span class="range-heading"><span><b>整体亮度</b><small>移动完整深度灰阶</small></span><output></output></span>
+                  <input type="range" data-field="brightness">
+                  <span class="range-scale"><i>-100</i><em>节点 ±30</em><i>+100</i></span>
+                </label>
+                <label class="range-control" data-control="smooth">
+                  <span class="range-heading"><span><b>平滑强度</b><small>抑制碎片与局部噪点</small></span><output></output></span>
+                  <input type="range" data-field="smooth">
+                  <span class="range-scale"><i>0</i><em>节点 0–10</em><i>50</i></span>
+                </label>
+                <label class="toggle-control">
+                  <span><b>反转深度</b><small>交换近亮远暗关系</small></span>
+                  <input type="checkbox" data-field="invert">
+                  <i aria-hidden="true"></i>
+                </label>
+              </section>
+            </div>
+
+            <aside class="export-panel">
+              <div>
+                <span class="eyebrow">SAVE · 右下</span>
+                <h3>保存与全局应用</h3>
+                <p>保存当前模式的参数后，filmstoryboard 内所有深度图节点和页面会在下一次提取时立即使用。</p>
+              </div>
+              <div class="export-actions">
+                <button class="button secondary" type="button" data-action="reset-controls">
+                  <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8m0-5v5h5"/></svg>
+                  恢复原始参数
+                </button>
+                <button class="button primary" type="button" data-action="export-depth" disabled>
+                  <svg viewBox="0 0 24 24"><path d="M12 4v12m-5-5 5 5 5-5M5 20h14"/></svg>
+                  导出深度图
+                </button>
+                <button class="button config" type="button" data-action="save-config">
+                  保存配置
+                </button>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <span data-status-message>正在初始化调参工作台…</span>
+        <span class="license-note">Depth Anything V2 Large · CC-BY-NC-4.0 · 仅限非商业用途</span>
+      </footer>
+    </div>
+
+    <div class="toast-region" aria-live="polite" aria-atomic="true" data-toast-region></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

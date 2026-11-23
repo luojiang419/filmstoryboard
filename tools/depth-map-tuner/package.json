@@ -1,0 +1,13 @@
+{
+  "name": "shiyin-depth-map-tuner",
+  "private": true,
+  "version": "0.1.0",
+  "description": "filmstoryboard 人物/专业深度图参数调整插件",
+  "type": "module",
+  "scripts": {
+    "dev": "node ../../node_modules/@tauri-apps/cli/tauri.js dev",
+    "build": "node ../../node_modules/@tauri-apps/cli/tauri.js build --no-bundle",
+    "test": "node --test tests/*.test.mjs",
+    "check": "cargo check --manifest-path src-tauri/Cargo.toml"
+  }
+}
