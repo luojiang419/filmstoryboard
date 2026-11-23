@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BlackmagicDesign>
+    <Plugin>
+        <Id>com.filmstoryboard.timelinebridge</Id>
+        <Name>FilmStoryboard 时间线桥接</Name>
+        <Version>0.2.6</Version>
+        <Description>将 FilmStoryboard 生成素材和 I/O 点同步到 DaVinci Resolve 时间线</Description>
+        <FilePath>main.js</FilePath>
+    </Plugin>
+</BlackmagicDesign>
